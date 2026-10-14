@@ -100,7 +100,9 @@ Response {"Handoff": {"id": h'...', "outcome": {"Declined": "TooLarge"}}}
 
 `Accepted` means the receiver took the item. What it then does is up to its own policy for the sending device, and the sender is not told (see [security.md](security.md)). `Declined` carries a reason: `Unsupported`, `TooLarge`, `RateLimited`, `Blocked`, `Invalid` or `Other`.
 
-The item id is chosen at random by the sender and reused on retry. A receiver SHOULD remember recently seen ids per peer and answer `Accepted` to a repeat without acting on it again.
+The item id is chosen at random by the sender and reused when it retries, for example because the connection dropped before the answer arrived. A receiver SHOULD remember the outcome of recently handled ids per peer and give a repeat the same outcome without acting on it again. If the first copy is still being handled, the repeat waits for its outcome. The reference implementation remembers 1024 ids for 10 minutes.
+
+A receiver SHOULD check an item in this order: whether it supports the kind of item, whether it is within the size limit, whether it is a repeat, and only then the rate limit. A repeat is answered from memory and is not counted against the rate limit, so a sender that retries after a lost reply is never turned away for an item that was in fact taken. Refusals made before the item reaches the application (`Unsupported`, `TooLarge`, `RateLimited`) are not remembered, so a sender that has fixed the problem can try the same item again.
 
 Links are untrusted strings. The protocol does not restrict the scheme; receivers decide what they will open (the reference implementation opens only `http` and `https`). A link can carry a secret in its query or path, so implementations SHOULD log no more of one than its scheme and host.
 
@@ -108,7 +110,7 @@ Links are untrusted strings. The protocol does not restrict the scheme; receiver
 
 A request that cannot be handled at all gets `{"Error": {"code": "Malformed", "message": "..."}}` when a response can still be written. `code` is `Malformed` or `Internal` (or `Other` from a newer version). The message is for logs and MUST NOT be shown to a person as is.
 
-If the frame header itself is unacceptable (zero length or over the limit), the receiver resets the stream with code 400 instead.
+If the frame header itself is unacceptable (zero length or over the limit), the receiver resets the stream with code 400 instead, and with code 408 if the request does not arrive within the deadline.
 
 ### Close codes
 
@@ -120,7 +122,7 @@ The same codes are used to close a connection and to reset a stream.
 | 400 | Protocol violation |
 | 403 | Not paired |
 | 408 | Timeout |
-| 429 | Too many streams, connections or pairing attempts at once, or sending too fast |
+| 429 | Too many connections or pairing attempts at once. A sender that is too fast is told so in the response (`Declined(RateLimited)`), not by closing |
 | 500 | Internal error or shutting down |
 
 ## 4. Pairing protocol (`baton-pair/1`)
@@ -209,22 +211,22 @@ An offerer MUST:
 
 - accept `baton-pair/1` connections from anyone, whether or not an offer is open, and read at most one request from each. Whether an offer exists is not something a stranger may learn;
 - act on a request only if an offer is open and has not expired and the proof is valid. Proofs are compared in constant time;
-- answer every other request in the same way, `Rejected(Invalid)`: a wrong proof, an expired or used offer, no offer at all, or a payload that cannot be decoded. It SHOULD take the same time to do so, for example by always waiting a fixed short moment before answering, so that a caller who lacks the secret learns nothing;
-- have a person approve each request that carries a valid proof, showing the joiner's sanitised name, its key fingerprint and the confirmation code. There is no setting that skips this, because a ticket is a bearer secret and the approval is the safeguard against one that leaked. A request the person does not answer in time counts as declined;
+- answer every other request in the same way, `Rejected(Invalid)`: a wrong proof, an expired or used offer, no offer at all, or a payload that cannot be decoded. It SHOULD take the same time to do so, for example by always waiting a fixed short moment before answering, so that a caller who lacks the secret learns nothing (the reference implementation holds the answer back for 250 ms);
+- have a person approve each request that carries a valid proof, showing the joiner's sanitised name, its key fingerprint and the confirmation code. There is no setting that skips this, because a ticket is a bearer secret and the approval is the safeguard against one that leaked. A request the person does not answer in time counts as declined (the reference implementation waits 2 minutes);
 - handle one valid request at a time. A second one with a valid proof, while the first is waiting for the person, is answered `Rejected(Busy)`. Only someone holding the secret can see this answer, so it tells everyone else nothing. The proof is checked before the approval slot is taken, so a request without it can never occupy the slot;
 - close the offer after one successful pairing, after the person declines or does not answer, after it expires, and when it is withdrawn. Declining ends the offer on purpose: the person has just seen a request they did not expect, so the ticket may have leaked, and it must not stay usable. If the offer is withdrawn while a person is deciding, the question is dropped and the joiner is told `Rejected(Invalid)`.
 
 A wrong proof does not close the offer, and wrong proofs are not counted. The secret has 256 bits, so guessing it is not a realistic attack, while letting a few wrong proofs void the offer would hand a cheap trick to anyone who knows the offerer's device id, which a device announces on its network: they could cancel every pairing as it starts.
 
-What an offerer SHOULD limit is its own load: how many pairing connections it serves at once, how long each may last, and how often one peer key or address may ask. These limits protect the device and say nothing about the secret. A future way of pairing with a short code that a person types would be guessable, so it would need a password-authenticated key exchange and strict limits on attempts. It would be a new protocol (section 8), not a change to this one.
+What an offerer SHOULD limit is its own load: how many pairing connections it serves at once, how long each may last, and how often one peer key or address may ask. These limits protect the device and say nothing about the secret. The reference implementation serves 8 pairing connections at once and closes any further one with code 429. It closes a pairing connection with code 0 once the answer has been delivered, with 400 if the frame header breaks the limits, and with 408 if the request does not arrive in time. Both sides SHOULD turn on QUIC keep-alives, because the exchange can sit idle for as long as a person takes to decide. A future way of pairing with a short code that a person types would be guessable, so it would need a password-authenticated key exchange and strict limits on attempts. It would be a new protocol (section 8), not a change to this one.
 
 `Rejected(Declined)` is sent only after a valid proof, when the person said no or did not answer in time.
 
 ### Joiner rules
 
-A joiner MUST dial only the device id inside the ticket, MUST check that the peer's authenticated id equals it, and MUST store the offerer only after receiving `Accepted`. It MUST show the confirmation code while it waits, and SHOULD show the offerer's name and fingerprint so the person can check they paired with the device they meant to. It waits for the answer for as long as the offerer may wait for the person, plus time for the network.
+A joiner MUST dial only the device id inside the ticket, MUST check that the peer's authenticated id equals it, and MUST store the offerer only after receiving `Accepted`. It MUST show the confirmation code while it waits, and SHOULD show the offerer's name and fingerprint so the person can check they paired with the device they meant to. It waits for the answer for as long as the offerer may wait for the person, plus time for the network (the reference implementation waits 2 minutes 30 seconds).
 
-Pairing is not atomic: if the connection fails after the offerer accepted, the two sides can disagree. An offerer SHOULD store the joiner before it sends `Accepted`, so that a failure leaves it trusting a device that does not trust it back, which is harmless, and never the other way round. Pairing again resolves it.
+Pairing is not atomic: if the connection fails after the offerer accepted, the two sides can disagree. An offerer SHOULD store the joiner before it sends `Accepted`, so that a failure leaves it trusting a device that does not trust it back, which is harmless, and never the other way round. The reference implementation does. Pairing again resolves it.
 
 ## 5. Compatibility
 
@@ -257,6 +259,25 @@ Anything else, including a new variant of a non-extensible enum without a capabi
 | Ticket relay hint | 255 bytes |
 | Ticket addresses | 16 |
 | Ticket extensions | 16 |
+
+The reference implementation also applies the following by default. They are not part of the wire format and a receiver may choose differently; they are listed so that implementers know what a peer is likely to expect.
+
+| Behaviour | Default |
+| --- | --- |
+| Concurrent streams a peer may open on a connection | 16 |
+| Connection attempts let through before a QUIC retry token is asked for, from addresses that have not proven themselves | 64 a second |
+| Connection attempts from an address that has answered a retry token | 20 every 10 seconds |
+| Time for a request to arrive once its stream is open | 10 seconds |
+| Time to wait for the response to a request | 30 seconds |
+| Handoff ids remembered | 1024, for 10 minutes |
+| Items accepted from one paired device | 30 a minute (a setting, at most 600) |
+| Clipboard text accepted | 256 KiB (a setting) |
+| Connections kept open to or from one paired device | 8; the oldest are closed with 429 beyond that |
+| Idle session connection closed after | 2 minutes |
+| Pairing connections served at once | 8 |
+| Time a person has to approve a pairing request | 2 minutes |
+| Lifetime of a pairing ticket | 5 minutes (a setting, from 30 seconds to 15 minutes) |
+| QUIC keep-alive and idle timeout | 10 seconds and 30 seconds |
 
 ## 7. Test vectors
 

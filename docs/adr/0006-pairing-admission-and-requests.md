@@ -1,0 +1,60 @@
+# 0006: Who is let in, and how requests are handled
+
+Status: accepted
+
+## Context
+
+With the transport in place, anything on the internet can reach a Baton device and ask to pair, and paired devices can send items that end up opening links and changing the clipboard. Some choices here show on the wire, so they are expensive to change once other implementations exist. Others decide what a hostile peer can do.
+
+## Decision
+
+**Pairing is always listening, and treats everyone without a valid proof alike.** A device cannot know who will ask to pair, so it accepts `baton-pair/1` connections from anyone. A wrong proof, an expired or used offer, no offer at all, and a payload that cannot be decoded all get `Rejected(Invalid)` after the same 250 ms delay. Only someone holding the ticket's secret can learn anything else (`Busy`, `Declined`), and only a valid proof can make an approval prompt appear.
+
+**A wrong proof does not spend the offer.** The secret has 256 bits, so guessing is not a threat. Counting wrong proofs, as the first draft of the protocol text did (three and the offer closes), would let anyone who knows the device id cancel every pairing as it starts. The device id is public: it is announced on the local network.
+
+**A person approves every pairing, and compares a code to do it.** There is no always-yes approver outside the tests. The prompt shows the joiner's name, its key fingerprint and a six-digit code, and the joiner's own screen shows a code too; the person approves only if the two are the same. A proof tells the offerer that the joiner holds the ticket. It cannot tell the person whether that joiner is the device in their hand or a stranger who copied the ticket, because both prove it equally well, and a name or a fingerprint cannot either: a stranger chooses any name, and a fingerprint means nothing to someone who has not seen it before. The code is worked out from the ticket's secret, both device ids and the TLS session, and nothing about it is sent, so a stranger's request produces a different one. One offer is open at a time and works once. A valid request claims it: from then on it cannot be cancelled or expire while the person decides, and a decline or a time-out spends the ticket. Declining ends the offer on purpose, since the person has just seen a request they did not expect and the ticket may have leaked.
+
+**An offer's deadline follows a monotonic clock.** The offerer decides whether an offer is still open by a clock that only moves forward, so setting the wall clock, by hand, by a network time service or by a daylight saving change, neither stretches an offer nor ends it early. The expiry time inside the ticket is only a hint. The joiner turns a ticket away only when it is more than ten minutes out of date by its own clock, so two devices whose clocks disagree by a few minutes can still pair.
+
+**The offerer stores the joiner before it answers.** If the answer is lost, the offerer trusts a device that does not trust it back, which is harmless and fixed by pairing again. The other order could leave the joiner trusting a device that never agreed.
+
+**Trust is checked three times.** Right after the handshake (a stranger on `baton/1` is closed with 403 and leaves nothing behind), again for every request, looked up when the request arrives and not remembered from when the connection began, and when the trust store changes. A registry of open session connections, inbound and outbound, lets unpairing close them at once. The registry is filled from iroh's after-handshake hook, which runs for both directions, and only after the trust check passes, so strangers cannot make it grow. A connection is registered before the check is made a second time, so an unpairing that lands in between is seen by the check or by the registry, and a connection cannot slip through the gap.
+
+**Floods are handled at the first packet.** Before any key is derived, an incoming attempt is judged by where it comes from. While unproven UDP sources stay under 64 attempts a second they are let through, and above that they are asked for a QUIC retry token first, which a real client answers by itself. Addresses that have answered one are limited to 20 attempts per 10 seconds, and relayed senders are limited by their key, which the relay has already checked. Limiting an address before it has proven itself would let anyone lock out a real device by forging that address, which is why unproven sources are never rejected, only asked to prove themselves. At most 8 pairing connections are served at once, and a paired device may hold 8 session connections.
+
+**Handoff is idempotent.** The sender picks an id and reuses it on retry. A receiver remembers the outcome per peer and id (1024 of them, for 10 minutes) and answers a repeat from memory, without charging it to the rate limit. Refusals that happen before the application sees the item (unsupported, too large, rate limited) are not remembered, so fixing the problem and sending again works.
+
+**The core checks, the application decides.** `HandoffHandler` is called only with items that are well formed, from a paired device, of a kind it advertised, within the size and rate limits, and not repeats. What happens to an accepted item is its business.
+
+**A failing handler cannot stop the node.** iroh's router stops accepting connections for good if any protocol handler panics. Every connection is therefore served in a task of its own, so a bug reachable from the network ends one connection and not the node.
+
+**iroh stays behind `baton-core`.** Its types appear only in the networking modules (`node`, `gate`, `pairing`, `session`, `wire`, `link`), and in the public API only under the `test-support` feature. [ADR 0003](0003-iroh-transport.md) speaks of one module; in practice it is those six, and the boundary is the crate.
+
+## Prior art and where this differs
+
+This comes from reading public documentation of LocalSend, KDE Connect and RustDesk, not their source; their code is under licenses Baton cannot take from (see [ADR 0004](0004-apache-2-license.md)).
+
+- Tools that let any device on the local network ask to pair or to send, as I understand the documentation of KDE Connect and LocalSend, trade some safety for convenience: whoever can reach you can make a prompt appear. Baton gives that up. A prompt needs the ticket, which is shown on a screen the person is looking at.
+- The proof is bound to the TLS session and to both device ids with the TLS exporter, the same idea as channel binding in SCRAM-PLUS (RFC 9266 defines the TLS 1.3 form). A proof recorded on one connection is useless on another.
+- Showing both people a number derived from the key exchange and asking them to compare it is how, as I understand the specification, Bluetooth's numeric comparison pairing works, and ZRTP's short authentication string follows the same idea. Baton's code also depends on a secret that only the ticket holder knows, so it appears only for a request that already passed that bar, and each offer allows one prompt, which is what makes six digits enough.
+- Refusing everyone alike, with the same delay, is ordinary practice for login endpoints. Baton applies it to pairing, where a naive implementation would answer "no offer open" differently from "wrong code".
+- QUIC specifies retry tokens (RFC 9000, section 8.1.2). Baton uses them only under load, so ordinary connections do not pay for a round trip.
+- Delivery that is idempotent by id is a common technique. The detail Baton adds is that repeats are looked up before the rate limit, so a retry after a lost reply is never turned away for an item that was in fact taken.
+
+## Alternatives considered
+
+- **Show only the joiner's name and key fingerprint.** A stranger picks any name, and a fingerprint helps only someone who knows what to expect.
+- **A short code the person types on the joiner.** A code short enough to type can be guessed offline from a recorded exchange, so it would need a password-authenticated key exchange and strict limits on attempts. It would be a different protocol, not a change to this one.
+- **Close the offer after a few wrong proofs.** Standard for short codes, harmful here for the reason above.
+- **Refuse pairing connections when no offer is open.** Tells anyone who can reach the device whether it is offering to pair.
+- **Rate limit by address from the first packet.** Forged source addresses turn the limiter into a way to lock out real devices.
+- **Check trust only when a connection is made.** An unpaired device would keep its access for as long as the connection lived.
+- **Remember every item id forever.** Unbounded memory for a benefit that ends when the sender stops retrying.
+
+## Consequences
+
+- A flood can still make a device slow or unreachable. The limits make it harder, not impossible, and `docs/security.md` says so.
+- A stranger who holds a leaked ticket has one chance in a million of matching the code by guessing, and only once, because the person sees a prompt they did not expect and declining ends the offer.
+- Someone who fills all pairing slots blocks new pairings while they keep it up, but not devices that are already paired.
+- Rate limits and caches are in memory and start empty after a restart.
+- Other implementations must answer pairing requests uniformly, or they leak whether an offer is open. The protocol document says so.

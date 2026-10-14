@@ -46,9 +46,42 @@ The relays Baton uses by default are the iroh project's public ones. According t
 
 Connection handling comes from [iroh](https://github.com/n0-computer/iroh) (see [ADR 0003](adr/0003-iroh-transport.md)). The rest of Baton talks to it through a small boundary in `baton-core` so the transport can change.
 
+What a device knows about how to reach another is kept with the pairing: the ticket carries the offerer's relay and direct addresses, and after every connection each side remembers the relay and addresses that worked. A device that restarts can therefore reach its paired devices before discovery has found anything, and devices that cannot find each other any other way still connect through a relay.
+
+## Inside baton-core
+
+| Module | Job |
+| --- | --- |
+| `identity`, `trust`, `config`, `paths` | The device key, the list of paired devices, settings, and the state directory. |
+| `node` | Starts and stops everything: the network endpoint, discovery and the router. A `Node` is what an application holds. |
+| `gate` | Decides who may connect: `Admission` before the handshake, `Gate` after it, and a registry of open connections so that unpairing can close them. |
+| `pairing` | Offers, tickets, approval, and joining another device's offer. |
+| `session` | The `baton/1` protocol: serving requests, the pool of outgoing connections, and `Intake`, which checks every incoming item before the application sees it. |
+| `ratelimit`, `wire`, `link`, `clock`, `util` | Small shared parts: a sliding-window limiter, reading and writing frames with deadlines, describing which path a connection took, a clock that tests can control, and helpers that keep one failing task from taking others down. |
+
+An incoming connection passes through these checks, in this order:
+
+```
+incoming packet
+   │  Admission     Asks the sender to prove its address first when attempts arrive faster than
+   │                the node wants to handle. Costs the node a small reply, no cryptography.
+   ▼
+QUIC and TLS handshake        both ends are now known by their keys
+   │  Gate          baton/1 from a key that is not paired: closed with 403, nothing remembered.
+   │                baton-pair/1: allowed, because the person is not paired yet.
+   ▼
+SessionServer or PairServer   each connection runs as a task of its own, so a bug reachable
+   │                          from the network cannot stop the node accepting connections
+   │  per request   Still paired? Then Intake: kind of item, size, repeat, rate limit.
+   ▼
+the application's HandoffHandler
+```
+
+Outgoing requests use a pool that keeps one connection per paired device. It opens the connection on first use and says `Hello`, reuses it for later requests, retries once on a new connection if a reused one turned out to be dead, and closes connections that have been idle for two minutes. Unpairing a device closes its connections, whichever side opened them.
+
 ## Trust
 
-A device only talks to devices it has paired with. Pairing is explicit: one device offers a one-time ticket (shown as a QR code or text), the other redeems it, and the person on the offering device approves the request after checking that a six-digit code shown on both devices is the same. Both sides then remember each other's public key in a local trust store (`devices.json`, see [State on disk](#state-on-disk)). Connections from any other key are refused after the handshake, before any application data is read.
+A device only talks to devices it has paired with. Pairing is explicit: one device offers a one-time ticket (shown as a QR code or text), the other redeems it, and the person on the offering device approves the request after checking that a six-digit code shown on both devices is the same. There is no way to switch the approval off. Both sides then remember each other's public key in a local trust store (`devices.json`, see [State on disk](#state-on-disk)). Connections from any other key are refused after the handshake, before any application data is read. The check is repeated for each request, so unpairing a device ends its access at once, including on connections that are already open.
 
 There are no accounts in milestone 1. Accounts arrive in milestone 4 as an *introducer*: a server that tells your devices about each other. It is never in the data path and never holds the keys needed to read content.
 
