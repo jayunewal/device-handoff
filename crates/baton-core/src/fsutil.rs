@@ -59,9 +59,9 @@ fn check_existing_dir(dir: &Path) -> Result<()> {
 ///
 /// The rename is `std::fs::rename`, not the temporary file's own `persist`. On Windows `persist`
 /// cannot replace a file that anyone has open, so a command reading the inbox could make the
-/// listener fail to keep an item. `std::fs::rename` asks for the rename rules that let the name
-/// go to the new file while a reader keeps the old one open, as every other system does, and
-/// falls back to the old behaviour only where Windows does not have them.
+/// listener fail to keep an item. `std::fs::rename` tries the same rename first and, when
+/// Windows refuses because the file is open, asks again for the rename rules that let the name
+/// go to the new file while a reader keeps the old one open, as every other system does.
 pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let mut temp = tempfile::NamedTempFile::new_in(dir).map_err(Error::io("create", dir))?;
