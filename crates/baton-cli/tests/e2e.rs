@@ -589,6 +589,41 @@ fn a_pairing_request_waits_for_the_question_that_is_being_answered() {
 }
 
 #[test]
+fn a_damaged_inbox_stops_the_commands_that_need_it_and_none_of_the_others() {
+    let alpha = Device::new("Alpha");
+    let file = alpha.home.path().join("inbox.json");
+    std::fs::write(&file, "{ this is not an inbox").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // As private as the inbox's own file, so that it is the contents that are refused.
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    alpha.run(&["id"]).succeeded();
+    alpha.run(&["devices"]).succeeded();
+
+    // These would have nowhere to keep what arrives, and say what to do about the file.
+    for args in [&["inbox"][..], &["listen"], &["pair", "offer"]] {
+        alpha
+            .run(args)
+            .failed_with(1)
+            .explained("The inbox cannot be read")
+            .explained("rename that file");
+    }
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "{ this is not an inbox",
+        "the damaged file was changed"
+    );
+
+    // Renamed, it starts empty, and works.
+    std::fs::rename(&file, alpha.home.path().join("inbox.json.old")).unwrap();
+    let inbox = alpha.run(&["inbox"]).succeeded();
+    assert!(inbox.stdout.contains("The inbox is empty."), "{inbox}");
+}
+
+#[test]
 fn a_device_that_was_unpaired_there_says_so_here() {
     let (alpha, bravo) = (Device::new("Alpha"), Device::new("Bravo"));
     let (mut a, mut b) = paired_and_listening(&alpha, &bravo);

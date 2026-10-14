@@ -19,7 +19,7 @@ const PROMPT: &str = "baton> ";
 /// a terminal. Items that arrive are kept in the inbox and announced here.
 pub async fn run(ctx: &mut Context, console: &Console) -> Result<(), CliError> {
     // Subscribe before the node starts, so nothing that arrives first is missed.
-    let mut arrivals = ctx.inbox().subscribe();
+    let mut arrivals = ctx.inbox()?.subscribe();
     let node = ctx.node().await?;
 
     let id = node.device_id();

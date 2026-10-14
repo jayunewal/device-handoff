@@ -70,7 +70,7 @@ pub fn announcement(entry: &InboxEntry) -> String {
 }
 
 fn list(ctx: &Context) -> Result<(), CliError> {
-    let entries = ctx.inbox().list()?;
+    let entries = ctx.inbox()?.list()?;
     if entries.is_empty() {
         println!("The inbox is empty.");
         return Ok(());
@@ -99,7 +99,7 @@ fn list(ctx: &Context) -> Result<(), CliError> {
 
 /// The item `number`, or an error that says it is not there.
 fn find(ctx: &Context, number: u64) -> Result<InboxEntry, CliError> {
-    ctx.inbox().get(number)?.ok_or_else(|| {
+    ctx.inbox()?.get(number)?.ok_or_else(|| {
         CliError::new(format!(
             "There is no item #{number} in the inbox. `baton inbox` lists what is there."
         ))
@@ -166,7 +166,7 @@ fn copy(ctx: &Context, number: u64) -> Result<(), CliError> {
 fn remove(ctx: &Context, numbers: &[u64]) -> Result<(), CliError> {
     let mut removed = 0;
     for &number in numbers {
-        if ctx.inbox().remove(number)?.is_some() {
+        if ctx.inbox()?.remove(number)?.is_some() {
             println!("Removed #{number}.");
             removed += 1;
         } else {
@@ -180,7 +180,7 @@ fn remove(ctx: &Context, numbers: &[u64]) -> Result<(), CliError> {
 }
 
 async fn clear(ctx: &Context, console: &Console, yes: bool) -> Result<(), CliError> {
-    let shown = ctx.inbox().list()?;
+    let shown = ctx.inbox()?.list()?;
     let Some(last) = shown.last().map(|entry| entry.number) else {
         println!("The inbox is already empty.");
         return Ok(());
@@ -200,7 +200,7 @@ async fn clear(ctx: &Context, console: &Console, yes: bool) -> Result<(), CliErr
         }
     }
     // Only what the person was told about: an item that arrived while they decided stays.
-    let removed = ctx.inbox().clear_through(last)?;
+    let removed = ctx.inbox()?.clear_through(last)?;
     println!(
         "Removed {removed} {}.",
         if removed == 1 { "item" } else { "items" }
