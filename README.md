@@ -58,8 +58,10 @@ You need a recent stable Rust toolchain (the minimum supported version is in `Ca
 ```sh
 cargo build --workspace
 cargo test --workspace
-cargo run -p baton-cli -- --help   # the `baton` program
+cargo run -p baton-cli -- --help
 ```
+
+The last command prints the help of the `baton` program.
 
 [docs/try-it.md](docs/try-it.md) walks through pairing two computers and sending a link and some text. CI builds the `baton` program for macOS, Windows and Linux on every change; the guide says where to download it.
 
