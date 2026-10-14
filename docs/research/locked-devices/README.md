@@ -9,6 +9,9 @@ Nothing in them was tested on a device. Every claim carries the confidence label
 | [windows.md](windows.md) | Windows: sessions, Modern Standby and S3, capture and input on the secure desktop, detection APIs, tests T01 onwards |
 | [apple.md](apple.md) | macOS, iOS and iPadOS: locked session behaviour, sleep and Dark Wake, Local Network privacy, push, file protection, tests T1 onwards |
 | [linux-android-tools.md](linux-android-tools.md) | Linux (GNOME, KDE, X11), Android, existing remote tools (RustDesk, KDE Connect, Chrome Remote Desktop and others), mailbox and wake options, tests V-L, V-A onwards |
+| [review-additions.md](review-additions.md) | Facts added while the page was reviewed, each with its source and the way it was read |
+
+The last file is not a research pass. It holds the facts that came in while the page was reviewed, in the same format, so that their labels can be checked too.
 
 Where a note and the page disagree, the page rules. It is stricter than some notes propose: Baton has no system-level service by default, and nothing touches a lock screen at all.
 
