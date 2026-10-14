@@ -46,9 +46,23 @@ Connection handling comes from [iroh](https://github.com/n0-computer/iroh) (see 
 
 ## Trust
 
-A device only talks to devices it has paired with. Pairing is explicit: one device offers a one-time ticket (shown as a QR code or text), the other redeems it, and the person on the offering device approves the request after checking that a six-digit code shown on both devices is the same. Both sides then remember each other's public key in a local trust store. Connections from any other key are refused after the handshake, before any application data is read.
+A device only talks to devices it has paired with. Pairing is explicit: one device offers a one-time ticket (shown as a QR code or text), the other redeems it, and the person on the offering device approves the request after checking that a six-digit code shown on both devices is the same. Both sides then remember each other's public key in a local trust store (`devices.json`, see [State on disk](#state-on-disk)). Connections from any other key are refused after the handshake, before any application data is read.
 
 There are no accounts in milestone 1. Accounts arrive in milestone 4 as an *introducer*: a server that tells your devices about each other. It is never in the data path and never holds the keys needed to read content.
+
+## State on disk
+
+Each device keeps its state in one directory, which belongs to a single device identity. By default that is the per-user *local* data directory (`~/.local/share/baton` on Linux, `~/Library/Application Support/baton` on macOS, `%LOCALAPPDATA%\baton\data` on Windows), never a roaming or synced one, because a copied device key would make two machines the same device. Set `BATON_HOME` to use another directory, for example to run two instances on one machine.
+
+| File | Contents | Notes |
+| --- | --- | --- |
+| `identity.toml` | The device's Ed25519 secret key. | Created on first run. Readable by its owner only; Baton refuses to use it if other users can read it. |
+| `devices.json` | The trust store: paired devices, their last known addresses and their per-device policies. | Replaced atomically on every change. A file that cannot be read is an error, never an empty list. |
+| `config.toml` | Settings a person edits by hand (device name, relays, discovery, limits). | Optional. Unknown keys are rejected so a typo cannot silently leave a setting on. |
+| `inbox.json` | Items received and not yet acted on. | Added with the agent. |
+| `baton.lock` | An advisory lock. | Only one process may use a state directory at a time. |
+
+State files are written to a temporary file in the same directory, flushed, and renamed over the target, so a crash leaves the old file or the new one. Files and the directory are created readable by the owner only on Unix. Files are read with a size cap, and a file written by a newer, incompatible version is refused rather than misread or overwritten.
 
 ## Handoff
 
