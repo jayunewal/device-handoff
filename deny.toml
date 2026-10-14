@@ -16,7 +16,9 @@ all-features = true
 [advisories]
 # Known-vulnerable crates fail the build. Add an entry here only with a comment that
 # explains why the advisory does not apply to Baton.
-ignore = []
+ignore = [
+  { id = "RUSTSEC-2024-0436", reason = "`paste` is only a build-time macro, and the notice is about maintenance, not a vulnerability. It comes in through iroh's netwatch and netlink-packet-core on Linux; drop this entry when iroh no longer depends on it." },
+]
 
 [licenses]
 # Permissive licenses, plus MPL-2.0. MPL-2.0 is weak copyleft: it is allowed only for
