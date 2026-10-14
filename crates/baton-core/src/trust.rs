@@ -40,7 +40,9 @@ use std::{
 };
 
 use baton_proto::{
-    DeviceId, DeviceInfo, Platform, device::sanitize_display_name, ticket::is_valid_relay_hint,
+    DeviceId, DeviceInfo, Platform,
+    device::{FALLBACK_NAME, sanitize_display_name},
+    ticket::is_valid_relay_hint,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -77,12 +79,30 @@ pub struct PairedDevice {
     /// The device's identity.
     #[serde(with = "hex_id")]
     pub id: DeviceId,
-    /// Its name, as last reported and cleaned up for display.
+    /// The name the device last reported for itself, cleaned up for display.
+    ///
+    /// The device chooses this and can change it at any time, so it is never a reason to
+    /// trust it. Show [`display_name`](Self::display_name) instead.
     pub name: String,
+    /// The name the person on this device gave it, set when it was paired.
+    ///
+    /// A paired device that renames itself therefore cannot pass as another one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_name: Option<String>,
+    /// Whether the device has reported a different name since the person last looked.
+    ///
+    /// A UI should show what it now calls itself beside the name it is known by, and let
+    /// the person accept the new name or ignore it. Clear this with
+    /// [`TrustStore::update`] when they have.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub name_changed: bool,
     /// Its operating system.
     pub platform: Platform,
     /// When it was paired, in seconds since the Unix epoch.
     pub added_at: u64,
+    /// How it came to be trusted.
+    #[serde(default)]
+    pub provenance: Provenance,
     /// When this device last reached it or heard from it.
     #[serde(default)]
     pub last_seen_at: Option<u64>,
@@ -99,11 +119,15 @@ pub struct PairedDevice {
 
 impl PairedDevice {
     fn new(id: DeviceId, info: &DeviceInfo, now: u64) -> Self {
+        let name = sanitize_display_name(&info.name);
         Self {
             id,
-            name: sanitize_display_name(&info.name),
+            name: name.clone(),
+            local_name: Some(name),
+            name_changed: false,
             platform: info.platform,
             added_at: now,
+            provenance: Provenance::Paired,
             last_seen_at: Some(now),
             relay: None,
             addrs: Vec::new(),
@@ -111,9 +135,24 @@ impl PairedDevice {
         }
     }
 
+    /// The name to show for this device: the one the person gave it, or else the one it reported.
+    ///
+    /// Names are labels, not proof of anything. Where the difference matters, show the
+    /// device's key fingerprint beside it, and see [`TrustStore::shares_display_name`].
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        self.local_name.as_deref().unwrap_or(&self.name)
+    }
+
     /// Re-establishes the invariants that anything read from a file or a peer must satisfy.
     fn normalize(&mut self) {
         self.name = sanitize_display_name(&self.name);
+        // A name that is empty once cleaned means there is no local name.
+        self.local_name = self
+            .local_name
+            .take()
+            .map(|raw| sanitize_display_name(&raw))
+            .filter(|cleaned| cleaned != FALLBACK_NAME);
         self.addrs = canonical_addrs(std::mem::take(&mut self.addrs));
         if self
             .relay
@@ -136,6 +175,22 @@ fn canonical_addrs(mut addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
     addrs.dedup();
     addrs.truncate(MAX_ADDR_HINTS);
     addrs
+}
+
+/// How a device came to be trusted.
+///
+/// Today a device is trusted only because the person paired this one with it directly.
+/// Same-account sync will add another way: a signed list of the person's devices, in which
+/// a device already trusted vouches for a new one (see `docs/architecture.md`). A device
+/// trusted that way will say who vouched for it. The field is in the file now so that
+/// adding it later does not change the format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum Provenance {
+    /// The person paired this device with it directly, by approving a pairing request.
+    #[default]
+    Paired,
 }
 
 /// Where a device was last reachable. See [`TrustStore::record_contact`].
@@ -261,11 +316,27 @@ impl TrustStore {
         self.snapshot().get(id).cloned()
     }
 
-    /// All paired devices, sorted by name.
+    /// All paired devices, sorted by the name they are shown under.
     pub fn list(&self) -> Vec<PairedDevice> {
         let mut devices: Vec<_> = self.snapshot().values().cloned().collect();
-        devices.sort_by_cached_key(|d| (d.name.to_lowercase(), d.id));
+        devices.sort_by_cached_key(|d| (d.display_name().to_lowercase(), d.id));
         devices
+    }
+
+    /// Whether another paired device is shown under the same name as `id`, ignoring case.
+    ///
+    /// When it is, a UI should show the key fingerprints beside the names. Letters from
+    /// other scripts that look alike get past this check, which is one more reason a name
+    /// is never what a person relies on.
+    pub fn shares_display_name(&self, id: &DeviceId) -> bool {
+        let devices = self.snapshot();
+        let Some(device) = devices.get(id) else {
+            return false;
+        };
+        let shown = device.display_name().to_lowercase();
+        devices
+            .values()
+            .any(|other| other.id != *id && other.display_name().to_lowercase() == shown)
     }
 
     /// How many devices are paired.
@@ -293,12 +364,17 @@ impl TrustStore {
 
     /// Adds a device, or refreshes it if it is already paired.
     ///
-    /// Pairing again keeps the device's policy and original pairing time.
+    /// A new device is known by the name it reports, which the person can change with
+    /// [`update`](Self::update). Pairing again keeps the device's policy, its original
+    /// pairing time and any name the person gave it.
     pub fn pair(&self, id: DeviceId, info: &DeviceInfo, now: u64) -> Result<PairOutcome> {
         let writer = self.lock_writers();
         let mut next = Devices::clone(&self.snapshot());
         let outcome = if let Some(existing) = next.get_mut(&id) {
+            // The person has just approved pairing with this device under the name it
+            // reports now, so there is nothing left to review. A name they chose stays.
             existing.name = sanitize_display_name(&info.name);
+            existing.name_changed = false;
             existing.platform = info.platform;
             existing.last_seen_at = Some(now);
             PairOutcome::Refreshed
@@ -359,20 +435,49 @@ impl TrustStore {
     /// 0) are not changes. When nothing needs saving it neither waits for other changes nor
     /// makes them wait. It sends no event. Returns whether anything was saved.
     pub fn record_contact(&self, id: &DeviceId, now: u64, hints: &ContactHints) -> Result<bool> {
-        // Nearly every call finds nothing to save. Decide on a snapshot, so that those calls
-        // never queue behind a change that is being written.
-        if contact_update(&self.snapshot(), id, now, hints).is_none() {
+        self.save_if_needed(id, None, |device| contact_update(device, now, hints))
+    }
+
+    /// Notes what a paired device says about itself when a connection starts.
+    ///
+    /// A new name is remembered as the one the device reports and flagged, see
+    /// [`PairedDevice::name_changed`], but it does not replace the name the device is shown
+    /// under. Like [`record_contact`](Self::record_contact) this runs on every connection:
+    /// it saves only when something differs, and not again within a minute of the last save
+    /// for this device, so a peer that keeps renaming itself cannot turn its connections into
+    /// disk writes. Sends [`TrustEvent::Updated`] when it saves. Returns whether it did.
+    pub fn observe_info(&self, id: &DeviceId, info: &DeviceInfo, now: u64) -> Result<bool> {
+        self.save_if_needed(id, Some(TrustEvent::Updated(*id)), |device| {
+            info_update(device, info, now)
+        })
+    }
+
+    /// Replaces one device with `decide`'s answer, if it has one.
+    ///
+    /// Nearly every call finds nothing to save, so it first decides on a snapshot and never
+    /// queues behind a change that is being written. When it does have something to save it
+    /// decides again once it holds the writer lock: another change may have got in first, and
+    /// a contact that raced a removal must not bring the device back.
+    fn save_if_needed(
+        &self,
+        id: &DeviceId,
+        event: Option<TrustEvent>,
+        decide: impl Fn(&PairedDevice) -> Option<PairedDevice>,
+    ) -> Result<bool> {
+        if self.snapshot().get(id).and_then(&decide).is_none() {
             return Ok(false);
         }
         let writer = self.lock_writers();
-        // Another change may have got in first; decide again on the list as it is now.
         let current = self.snapshot();
-        let Some(updated) = contact_update(&current, id, now, hints) else {
+        let Some(updated) = current.get(id).and_then(&decide) else {
             return Ok(false);
         };
         let mut next = Devices::clone(&current);
         next.insert(*id, updated);
         self.commit(&writer, next)?;
+        if let Some(event) = event {
+            self.emit(event);
+        }
         Ok(true)
     }
 
@@ -403,14 +508,15 @@ impl TrustStore {
     }
 }
 
-/// What a contact with `id` would change, if it is worth a disk write.
-fn contact_update(
-    devices: &Devices,
-    id: &DeviceId,
-    now: u64,
-    hints: &ContactHints,
-) -> Option<PairedDevice> {
-    let current = devices.get(id)?;
+/// How long it has been since this device's record was last saved, as far as `now` can tell.
+fn since_saved(device: &PairedDevice, now: u64) -> u64 {
+    device
+        .last_seen_at
+        .map_or(u64::MAX, |seen| now.saturating_sub(seen))
+}
+
+/// What a contact with `current` would change, if it is worth a disk write.
+fn contact_update(current: &PairedDevice, now: u64, hints: &ContactHints) -> Option<PairedDevice> {
     let mut updated = current.clone();
     // A clock that was set back must not make a device look as if it was last seen earlier.
     updated.last_seen_at = Some(now.max(current.last_seen_at.unwrap_or(0)));
@@ -424,9 +530,7 @@ fn contact_update(
     }
     updated.normalize();
 
-    let since_saved = current
-        .last_seen_at
-        .map_or(u64::MAX, |seen| now.saturating_sub(seen));
+    let since_saved = since_saved(current, now);
     let stale = since_saved >= SEEN_REFRESH_SECS;
     // The first hint of a kind is saved at once. After that, changes wait their turn.
     let learned_something_new = (current.relay.is_none() && updated.relay.is_some())
@@ -434,6 +538,28 @@ fn contact_update(
     let hints_changed = updated.relay != current.relay || updated.addrs != current.addrs;
     let hints_due = hints_changed && (learned_something_new || since_saved >= HINT_REFRESH_SECS);
     (stale || hints_due).then_some(updated)
+}
+
+/// What `info` would change about `current`, if it is worth a disk write.
+fn info_update(current: &PairedDevice, info: &DeviceInfo, now: u64) -> Option<PairedDevice> {
+    let name = sanitize_display_name(&info.name);
+    if name == current.name && info.platform == current.platform {
+        return None;
+    }
+    if since_saved(current, now) < HINT_REFRESH_SECS {
+        return None;
+    }
+    let mut updated = current.clone();
+    updated.last_seen_at = Some(now.max(current.last_seen_at.unwrap_or(0)));
+    updated.platform = info.platform;
+    if name != current.name {
+        updated.name = name;
+        // Nothing to review if the person had already given it this very name.
+        if updated.local_name.as_deref() != Some(updated.name.as_str()) {
+            updated.name_changed = true;
+        }
+    }
+    Some(updated)
 }
 
 impl std::fmt::Debug for TrustStore {
@@ -672,6 +798,7 @@ mod tests {
         assert_eq!(outcome, PairOutcome::Refreshed);
         let device = store.get(&id(1)).unwrap();
         assert_eq!(device.name, "Renamed");
+        assert_eq!(device.display_name(), "Laptop", "the person's name stays");
         assert_eq!(device.added_at, 1_000);
         assert_eq!(device.last_seen_at, Some(2_000));
         assert_eq!(device.policy.links, LinkPolicy::Open);
@@ -1133,7 +1260,7 @@ mod tests {
 
     fn device_json(id_hex: &str, name: &str) -> String {
         format!(
-            r#"{{"id":"{id_hex}","name":{name:?},"platform":"linux","added_at":1,"last_seen_at":null}}"#
+            r#"{{"id":"{id_hex}","name":{name:?},"platform":"Linux","added_at":1,"last_seen_at":null}}"#
         )
     }
 
@@ -1156,7 +1283,10 @@ mod tests {
         assert!(err.to_string().contains("twice"), "{err}");
 
         let path = write_file(&dir, &text(&[device_json(&good, "a")]));
-        assert_eq!(TrustStore::load(&path).unwrap().len(), 1);
+        let store = TrustStore::load(&path).unwrap();
+        assert_eq!(store.len(), 1);
+        // The fixture must really be a Linux device, not one that fell back to `Other`.
+        assert_eq!(store.list()[0].platform, Platform::Linux);
     }
 
     #[test]
@@ -1182,6 +1312,7 @@ mod tests {
             "devices": [{
                 "id": "02".repeat(32),
                 "name": "Ann\u{202e}\u{7}",
+                "local_name": "Mum\u{202e}'s\nphone",
                 "platform": "somethingnew",
                 "added_at": 1,
                 "relay": "has spaces",
@@ -1193,6 +1324,7 @@ mod tests {
         let device = store.get(&id(2)).unwrap();
         assert!(!device.name.contains('\u{202e}'));
         assert!(!device.name.chars().any(char::is_control));
+        assert_eq!(device.display_name(), "Mum's phone");
         assert_eq!(device.platform, Platform::Other);
         assert_eq!(device.relay, None);
         let expected: Vec<SocketAddr> = (1..=8)
@@ -1369,5 +1501,260 @@ mod tests {
         assert!(store.contains(&id(1)));
         assert!(store.remove(&id(1)).unwrap().is_some());
         assert!(!reload(&store).contains(&id(1)));
+    }
+
+    #[test]
+    fn a_new_device_is_known_by_the_name_it_reported() {
+        let (_dir, store) = store();
+        store.pair(id(1), &info("Laptop"), 1).unwrap();
+        let device = store.get(&id(1)).unwrap();
+        assert_eq!(device.name, "Laptop");
+        assert_eq!(device.local_name.as_deref(), Some("Laptop"));
+        assert_eq!(device.display_name(), "Laptop");
+        assert!(!device.name_changed);
+        assert_eq!(device.provenance, Provenance::Paired);
+        assert_eq!(reload(&store).get(&id(1)).unwrap(), device);
+    }
+
+    #[test]
+    fn a_device_that_renames_itself_keeps_the_name_the_person_knows_it_by() {
+        let (_dir, store) = store();
+        store.pair(id(1), &info("Laptop"), 1_000).unwrap();
+        let mut events = store.subscribe();
+
+        let renamed = info("Work laptop");
+        assert!(
+            store
+                .observe_info(&id(1), &renamed, 1_000 + HINT_REFRESH_SECS)
+                .unwrap()
+        );
+        let device = store.get(&id(1)).unwrap();
+        assert_eq!(device.name, "Work laptop", "what it reports is remembered");
+        assert_eq!(
+            device.display_name(),
+            "Laptop",
+            "but not shown in place of the person's"
+        );
+        assert!(device.name_changed, "and the person is told");
+        assert_eq!(events.try_recv().unwrap(), TrustEvent::Updated(id(1)));
+        assert_eq!(reload(&store).get(&id(1)).unwrap(), device);
+
+        // Saying the same thing again changes nothing.
+        let later = 2_000 + HINT_REFRESH_SECS;
+        assert!(!store.observe_info(&id(1), &renamed, later).unwrap());
+        assert!(events.try_recv().is_err());
+
+        // The person looks and accepts the new name.
+        store
+            .update(&id(1), |d| {
+                d.local_name = Some(d.name.clone());
+                d.name_changed = false;
+            })
+            .unwrap();
+        let device = store.get(&id(1)).unwrap();
+        assert_eq!(device.display_name(), "Work laptop");
+        assert!(!device.name_changed);
+    }
+
+    #[test]
+    fn pairing_again_counts_as_looking_at_the_new_name() {
+        let (_dir, store) = store();
+        store.pair(id(1), &info("Laptop"), 1_000).unwrap();
+        store
+            .observe_info(&id(1), &info("Work laptop"), 1_000 + HINT_REFRESH_SECS)
+            .unwrap();
+        assert!(store.get(&id(1)).unwrap().name_changed);
+
+        // The person approved this pairing with the name it reports now.
+        store.pair(id(1), &info("Work laptop"), 5_000).unwrap();
+        let device = store.get(&id(1)).unwrap();
+        assert!(!device.name_changed);
+        assert_eq!(device.name, "Work laptop");
+        assert_eq!(
+            device.display_name(),
+            "Laptop",
+            "a name the person chose stays"
+        );
+    }
+
+    #[test]
+    fn a_rename_to_the_name_the_person_chose_needs_no_review() {
+        let (_dir, store) = store();
+        store.pair(id(1), &info("Galaxy S23"), 1_000).unwrap();
+        store
+            .update(&id(1), |d| d.local_name = Some("Mum's phone".to_owned()))
+            .unwrap();
+        let t = 1_000 + HINT_REFRESH_SECS;
+        assert!(store.observe_info(&id(1), &info("Mum's phone"), t).unwrap());
+        let device = store.get(&id(1)).unwrap();
+        assert_eq!(device.name, "Mum's phone");
+        assert!(!device.name_changed);
+    }
+
+    #[test]
+    fn a_new_platform_is_remembered_without_a_review() {
+        let (_dir, store) = store();
+        store.pair(id(1), &info("Laptop"), 1_000).unwrap();
+        let mut moved = info("Laptop");
+        moved.platform = Platform::Windows;
+        assert!(
+            store
+                .observe_info(&id(1), &moved, 1_000 + HINT_REFRESH_SECS)
+                .unwrap()
+        );
+        let device = store.get(&id(1)).unwrap();
+        assert_eq!(device.platform, Platform::Windows);
+        assert!(!device.name_changed);
+    }
+
+    #[test]
+    fn a_device_that_keeps_renaming_itself_is_not_saved_every_time() {
+        let saves = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&saves);
+        let (_dir, store) = store_with(Box::new(move |path, bytes| {
+            counter.fetch_add(1, SeqCst);
+            write_atomic(path, bytes)
+        }));
+        store.pair(id(1), &info("A"), 1_000).unwrap();
+        assert_eq!(saves.load(SeqCst), 1);
+
+        // Nothing differs: nothing to save, however late.
+        assert!(!store.observe_info(&id(1), &info("A"), 9_000).unwrap());
+        // Something differs, but the record was saved moments ago.
+        assert!(!store.observe_info(&id(1), &info("B"), 1_001).unwrap());
+        assert_eq!(store.get(&id(1)).unwrap().name, "A");
+        assert_eq!(saves.load(SeqCst), 1);
+
+        // A minute after the last save the latest name is taken, and then the clock starts again.
+        let t = 1_000 + HINT_REFRESH_SECS;
+        assert!(store.observe_info(&id(1), &info("C"), t).unwrap());
+        assert!(!store.observe_info(&id(1), &info("D"), t + 1).unwrap());
+        assert!(
+            store
+                .observe_info(&id(1), &info("E"), t + HINT_REFRESH_SECS)
+                .unwrap()
+        );
+        assert_eq!(saves.load(SeqCst), 3);
+        assert_eq!(store.get(&id(1)).unwrap().name, "E");
+    }
+
+    #[test]
+    fn learning_about_a_device_that_was_removed_does_nothing() {
+        let (_dir, store) = store();
+        assert!(!store.observe_info(&id(1), &info("Ghost"), 99_999).unwrap());
+        assert!(store.is_empty());
+        assert!(!store.path().exists());
+    }
+
+    #[test]
+    fn names_the_person_gives_are_cleaned_and_can_be_cleared() {
+        let (_dir, store) = store();
+        store.pair(id(1), &info("Galaxy S23"), 1).unwrap();
+
+        store
+            .update(&id(1), |d| {
+                d.local_name = Some("Ann\u{202e}'s\nphone".to_owned());
+            })
+            .unwrap();
+        let name = store.get(&id(1)).unwrap().display_name().to_owned();
+        assert!(
+            !name.contains('\u{202e}') && !name.chars().any(char::is_control),
+            "{name:?}"
+        );
+        assert_eq!(reload(&store).get(&id(1)).unwrap().display_name(), name);
+
+        // A name that is empty once cleaned means: use the one the device reports.
+        store
+            .update(&id(1), |d| d.local_name = Some("  \u{200b} ".to_owned()))
+            .unwrap();
+        let device = store.get(&id(1)).unwrap();
+        assert_eq!(device.local_name, None);
+        assert_eq!(device.display_name(), "Galaxy S23");
+    }
+
+    #[test]
+    fn devices_shown_under_the_same_name_are_noticed() {
+        let (_dir, store) = store();
+        store.pair(id(1), &info("Work laptop"), 1).unwrap();
+        store.pair(id(2), &info("work LAPTOP"), 1).unwrap();
+        store.pair(id(3), &info("Phone"), 1).unwrap();
+        assert!(store.shares_display_name(&id(1)));
+        assert!(store.shares_display_name(&id(2)));
+        assert!(!store.shares_display_name(&id(3)));
+        assert!(!store.shares_display_name(&id(9)), "not paired");
+
+        // What counts is the name shown, not the one reported.
+        store
+            .update(&id(2), |d| d.local_name = Some("Home laptop".to_owned()))
+            .unwrap();
+        assert!(!store.shares_display_name(&id(1)));
+        assert!(!store.shares_display_name(&id(2)));
+        let t = 1 + HINT_REFRESH_SECS;
+        store.observe_info(&id(3), &info("Home Laptop"), t).unwrap();
+        assert!(
+            !store.shares_display_name(&id(3)),
+            "a reported name does not count until accepted"
+        );
+        store
+            .update(&id(3), |d| d.local_name = Some("home laptop".to_owned()))
+            .unwrap();
+        assert!(store.shares_display_name(&id(2)) && store.shares_display_name(&id(3)));
+    }
+
+    #[test]
+    fn the_list_is_sorted_by_the_names_devices_are_shown_under() {
+        let (_dir, store) = store();
+        store.pair(id(1), &info("Alpha"), 1).unwrap();
+        store.pair(id(2), &info("Bravo"), 1).unwrap();
+        store
+            .update(&id(1), |d| d.local_name = Some("Zulu".to_owned()))
+            .unwrap();
+        let shown: Vec<_> = store
+            .list()
+            .iter()
+            .map(|d| d.display_name().to_owned())
+            .collect();
+        assert_eq!(shown, ["Bravo", "Zulu"]);
+    }
+
+    #[test]
+    fn the_file_says_how_each_device_came_to_be_trusted() {
+        let (_dir, store) = store();
+        store.pair(id(1), &info("Laptop"), 1).unwrap();
+        let text = fs::read_to_string(store.path()).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["devices"][0]["provenance"], "paired");
+
+        // Files from before the field existed are read as paired directly.
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_file(
+            &dir,
+            &format!(
+                r#"{{"version":1,"devices":[{}]}}"#,
+                device_json(&"03".repeat(32), "Old")
+            ),
+        );
+        let old = TrustStore::load(&path).unwrap();
+        let device = old.get(&id(3)).unwrap();
+        assert_eq!(device.provenance, Provenance::Paired);
+        assert_eq!(
+            device.display_name(),
+            "Old",
+            "no local name: the reported one is shown"
+        );
+
+        // A way of being trusted this build does not know is refused, not guessed at.
+        let document = serde_json::json!({
+            "version": 1,
+            "devices": [{
+                "id": "04".repeat(32), "name": "x", "platform": "Linux",
+                "added_at": 1, "provenance": "vouched-for-by-a-stranger",
+            }],
+        });
+        let path = write_file(&dir, &document.to_string());
+        assert!(matches!(
+            TrustStore::load(&path),
+            Err(Error::Invalid { .. })
+        ));
     }
 }

@@ -68,7 +68,7 @@ Request  {"Hello": {"protocol_minor": 0,
 Response {"Hello": { ... same shape ... }}
 ```
 
-A paired device can rename itself at any time, so the receiver SHOULD update the name it shows. Names are chosen by the peer and MUST be sanitised before display (`sanitize_display_name`).
+A paired device can rename itself at any time. The receiver SHOULD remember the name the device reports now, but SHOULD keep showing the name the person chose for it when they paired, and tell the person about the change so they can accept the new name or ignore it. Following a rename silently would let a paired device present itself as another one. Names are chosen by the peer and MUST be sanitised before display (`sanitize_display_name`).
 
 Sanitising removes control characters and every code point with the Unicode property `Default_Ignorable_Code_Point` (zero-width and joiner characters, text-direction controls, variation selectors, the tag characters, the blank Hangul fillers and similar), turns the braille blank into a space, collapses runs of whitespace, shortens the result to 64 characters, and gives `unnamed device` if nothing is left. Doing the same twice changes nothing more. A sanitised name is safe to print and to write to a log. It is still only a label chosen by the peer: letters from different scripts can look alike, so a name must never be what a person relies on to tell devices apart. Wherever the difference matters, show the key fingerprint next to it.
 

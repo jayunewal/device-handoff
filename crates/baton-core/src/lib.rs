@@ -47,4 +47,4 @@ pub use error::{Error, Result};
 pub use identity::Identity;
 pub use paths::{DataDir, DirLock, HOME_ENV};
 pub use policy::{ClipboardPolicy, DevicePolicy, LinkPolicy};
-pub use trust::{ContactHints, PairOutcome, PairedDevice, TrustEvent, TrustStore};
+pub use trust::{ContactHints, PairOutcome, PairedDevice, Provenance, TrustEvent, TrustStore};

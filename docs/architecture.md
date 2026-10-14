@@ -50,6 +50,19 @@ A device only talks to devices it has paired with. Pairing is explicit: one devi
 
 There are no accounts in milestone 1. Accounts arrive in milestone 4 as an *introducer*: a server that tells your devices about each other. It is never in the data path and never holds the keys needed to read content.
 
+### Same-account sync: a signed roster (design, not built)
+
+Pairing every pair of devices by hand is how tools such as KDE Connect work, and it is tedious past three or four devices. The plan for milestone 4 is a *roster* instead: the list of a person's device keys, kept as a chain of membership changes.
+
+- Each change, adding a device or removing one, is signed by a device that is already in the roster and carries the hash of the change before it. A device checks the whole chain from the first entry before it trusts anything in it.
+- Pairing a new phone with any one device adds it to the roster. The others trust it because the chain is signed by a key they already trust, with no further pairing.
+- The account server only relays roster changes. It holds no roster key, so it cannot add a device on its own. A compromised server could hold updates back or replay old ones, which the chain and a sequence number make visible, but it could not forge a device. That keeps the promise that the server is an introducer and never in the data path, even if it is compromised.
+- A removal is a signed entry too. A device that sees it drops the key like a manual unpairing, including closing live connections.
+
+Open questions: what to do when two devices change the roster at the same time (a fork), how a person recovers when every device is lost, and whether a device that was offline for a long time should accept a long chain without asking.
+
+The trust store leaves room for this before its format is in use: each entry records how the device came to be trusted (`provenance`, today only `paired`), and a device trusted through the roster will also say who vouched for it.
+
 ## State on disk
 
 Each device keeps its state in one directory, which belongs to a single device identity. By default that is the per-user *local* data directory (`~/.local/share/baton` on Linux, `~/Library/Application Support/baton` on macOS, `%LOCALAPPDATA%\baton\data` on Windows), never a roaming or synced one, because a copied device key would make two machines the same device. Set `BATON_HOME` to use another directory, for example to run two instances on one machine.
@@ -57,7 +70,7 @@ Each device keeps its state in one directory, which belongs to a single device i
 | File | Contents | Notes |
 | --- | --- | --- |
 | `identity.toml` | The device's Ed25519 secret key. | Created on first run. Readable by its owner only; Baton refuses to use it if other users can read it. |
-| `devices.json` | The trust store: paired devices, their last known addresses and their per-device policies. | Replaced atomically on every change. A file that cannot be read is an error, never an empty list. |
+| `devices.json` | The trust store: paired devices, the name the person knows each by, how each came to be trusted, their last known addresses and their per-device policies. | Replaced atomically on every change. A file that cannot be read is an error, never an empty list. |
 | `config.toml` | Settings a person edits by hand (device name, relays, discovery, limits). | Optional. Unknown keys are rejected so a typo cannot silently leave a setting on. |
 | `inbox.json` | Items received and not yet acted on. | Added with the agent. |
 | `baton.lock` | An advisory lock. | Only one process may use a state directory at a time. |
