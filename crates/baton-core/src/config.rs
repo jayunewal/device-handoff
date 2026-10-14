@@ -18,7 +18,7 @@ use url::Url;
 
 use crate::{
     error::{Error, Result},
-    fsutil::read_text,
+    fsutil::{Access, read_text},
 };
 
 /// How long a pairing ticket stays valid unless configured otherwise.
@@ -144,9 +144,11 @@ impl Default for HandoffConfig {
 impl Config {
     /// Reads the settings from `path`. A missing file means all defaults.
     ///
-    /// A file that exists but is wrong is an error naming the file and the problem.
+    /// A file that exists but is wrong is an error naming the file and the problem. On Unix
+    /// it is also refused if other users can change it, since it decides which relays and
+    /// discovery services this device uses.
     pub fn load(path: &Path) -> Result<Self> {
-        let Some(text) = read_text(path)? else {
+        let Some(text) = read_text(path, Access::OthersMayRead)? else {
             return Ok(Self::default());
         };
         Self::from_toml(&text).map_err(|e| match e {
@@ -483,5 +485,29 @@ mod tests {
 
         std::fs::write(&path, "[pairing]\noffer_ttl_secs = 60\n").unwrap();
         assert_eq!(Config::load(&path).unwrap().pairing.offer_ttl_secs, 60);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_settings_file_that_other_users_can_change_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[pairing]\noffer_ttl_secs = 60\n").unwrap();
+
+        // A text editor tends to leave a file readable by others, which is fine for settings.
+        for ok in [0o600, 0o644] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(ok)).unwrap();
+            assert!(Config::load(&path).is_ok(), "{ok:o}");
+        }
+        // Changeable by others is not: they could point this device at their own relay.
+        for bad in [0o664, 0o646, 0o666] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(bad)).unwrap();
+            let err = Config::load(&path).unwrap_err();
+            assert!(
+                matches!(err, Error::WritableByOthers { .. }),
+                "{bad:o}: {err}"
+            );
+        }
     }
 }

@@ -17,7 +17,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     error::{Error, Result},
-    fsutil::{read_text, require_owner_only, write_atomic},
+    fsutil::{Access, read_text, write_atomic},
 };
 
 /// Newest identity file format this build reads and writes.
@@ -67,8 +67,8 @@ impl Identity {
 
     /// Loads the identity at `path`, or creates and saves a new one if there is none.
     ///
-    /// On Unix this refuses to read a key file that other users can access. The
-    /// caller should hold the [`DataDir`](crate::DataDir) lock so two processes
+    /// On Unix this refuses to read a key file that other users can access, before any
+    /// of it is read. The caller should hold the [`DataDir`](crate::DataDir) lock so two processes
     /// cannot both create one.
     pub fn load_or_create(path: &Path) -> Result<Self> {
         if let Some(identity) = Self::load(path)? {
@@ -82,10 +82,9 @@ impl Identity {
 
     /// Loads the identity at `path`, if the file exists.
     pub fn load(path: &Path) -> Result<Option<Self>> {
-        let Some(text) = read_text(path)?.map(Zeroizing::new) else {
+        let Some(text) = read_text(path, Access::OwnerOnly)?.map(Zeroizing::new) else {
             return Ok(None);
         };
-        require_owner_only(path)?;
 
         let stored: StoredIdentity =
             toml::from_str(&text).map_err(|e| Error::invalid(path, e.message()))?;

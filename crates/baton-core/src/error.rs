@@ -44,13 +44,26 @@ pub enum Error {
         /// The newest format version this build reads.
         supported: u32,
     },
-    /// A file holding a secret can be read by other users.
+    /// A file holding a secret, or the list of trusted devices, can be reached by other users.
     #[error(
-        "{} can be read by other users (mode {mode:o}); run `chmod 600` on it and try again",
+        "{} can be read or changed by other users (mode {mode:o}); \
+         run `chmod 600` on it and try again",
         path.display()
     )]
     InsecurePermissions {
         /// The file involved.
+        path: PathBuf,
+        /// Its Unix permission bits.
+        mode: u32,
+    },
+    /// A file or directory that Baton relies on can be changed by other users.
+    #[error(
+        "{} can be changed by other users (mode {mode:o}); \
+         run `chmod go-w` on it and try again",
+        path.display()
+    )]
+    WritableByOthers {
+        /// The file or directory involved.
         path: PathBuf,
         /// Its Unix permission bits.
         mode: u32,

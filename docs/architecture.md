@@ -69,13 +69,13 @@ Each device keeps its state in one directory, which belongs to a single device i
 
 | File | Contents | Notes |
 | --- | --- | --- |
-| `identity.toml` | The device's Ed25519 secret key. | Created on first run. Readable by its owner only; Baton refuses to use it if other users can read it. |
-| `devices.json` | The trust store: paired devices, the name the person knows each by, how each came to be trusted, their last known addresses and their per-device policies. | Replaced atomically on every change. A file that cannot be read is an error, never an empty list. |
-| `config.toml` | Settings a person edits by hand (device name, relays, discovery, limits). | Optional. Unknown keys are rejected so a typo cannot silently leave a setting on. |
+| `identity.toml` | The device's Ed25519 secret key. | Created on first run. Readable by its owner only; Baton refuses to use it if other users can read or change it. |
+| `devices.json` | The trust store: paired devices, the name the person knows each by, how each came to be trusted, their last known addresses and their per-device policies. | Replaced atomically on every change. A file that cannot be read is an error, never an empty list. Refused if other users can read or change it. |
+| `config.toml` | Settings a person edits by hand (device name, relays, discovery, limits). | Optional. Unknown keys are rejected so a typo cannot silently leave a setting on. Refused if other users can change it. |
 | `inbox.json` | Items received and not yet acted on. | Added with the agent. |
 | `baton.lock` | An advisory lock. | Only one process may use a state directory at a time. |
 
-State files are written to a temporary file in the same directory, flushed, and renamed over the target, so a crash leaves the old file or the new one. Files and the directory are created readable by the owner only on Unix. Files are read with a size cap, and a file written by a newer, incompatible version is refused rather than misread or overwritten.
+State files are written to a temporary file in the same directory, flushed, and renamed over the target, so a crash leaves the old file or the new one. On Unix, files and a directory that Baton creates are readable by their owner only. A state directory that already exists is not changed, because it may be used for other things (think `BATON_HOME=$HOME`), but it is refused if other users can write to it, since they could replace the files in it. `identity.toml` and `devices.json` are refused if other users can read or change them, and `config.toml` if they can change it; the check is made on the file that is then read. Files are read with a size cap, and a file written by a newer, incompatible version is refused rather than misread or overwritten.
 
 ## Handoff
 

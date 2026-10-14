@@ -49,7 +49,7 @@ use tokio::sync::broadcast;
 
 use crate::{
     error::{Error, Result},
-    fsutil::{read_text, write_atomic},
+    fsutil::{Access, read_text, write_atomic},
     policy::DevicePolicy,
 };
 
@@ -256,14 +256,16 @@ impl TrustStore {
     ///
     /// A file that exists but cannot be understood is an error, never an empty
     /// list: silently forgetting everyone would be wrong, and so would
-    /// overwriting the file.
+    /// overwriting the file. On Unix a file that other users can read or change is
+    /// refused too, because anyone who can change it can add their own device to the
+    /// list of those trusted to connect.
     pub fn load(path: impl Into<PathBuf>) -> Result<Self> {
         Self::load_with(path, Box::new(write_atomic))
     }
 
     fn load_with(path: impl Into<PathBuf>, save: Saver) -> Result<Self> {
         let path = path.into();
-        let devices = match read_text(&path)? {
+        let devices = match read_text(&path, Access::OwnerOnly)? {
             None => Devices::new(),
             Some(text) => parse(&path, &text)?,
         };
@@ -1215,7 +1217,7 @@ mod tests {
 
     fn write_file(dir: &TempDir, text: &str) -> PathBuf {
         let path = dir.path().join("devices.json");
-        fs::write(&path, text).unwrap();
+        write_atomic(&path, text.as_bytes()).unwrap();
         path
     }
 
@@ -1238,6 +1240,30 @@ mod tests {
                 "file must not be touched"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_list_that_other_users_can_read_or_change_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, store) = store();
+        store.pair(id(1), &info("Laptop"), 1).unwrap();
+        let before = fs::read(store.path()).unwrap();
+        for bad in [0o644, 0o640, 0o620, 0o602, 0o666] {
+            fs::set_permissions(store.path(), fs::Permissions::from_mode(bad)).unwrap();
+            let err = TrustStore::load(store.path()).unwrap_err();
+            assert!(
+                matches!(err, Error::InsecurePermissions { mode, .. } if mode == bad),
+                "{bad:o}: {err}"
+            );
+            assert_eq!(
+                fs::read(store.path()).unwrap(),
+                before,
+                "must not be touched"
+            );
+        }
+        fs::set_permissions(store.path(), fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(TrustStore::load(store.path()).unwrap().contains(&id(1)));
     }
 
     #[test]

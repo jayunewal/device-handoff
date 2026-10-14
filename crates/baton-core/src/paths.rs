@@ -12,7 +12,7 @@ use directories::ProjectDirs;
 
 use crate::{
     error::{Error, Result},
-    fsutil::create_private_dir,
+    fsutil::open_state_dir,
 };
 
 /// Environment variable that overrides where Baton keeps its state.
@@ -47,10 +47,15 @@ impl DataDir {
             })
     }
 
-    /// Opens the state directory at `root`, creating it (owner-only on Unix) if needed.
+    /// Opens the state directory at `root`, creating it if needed.
+    ///
+    /// A directory created here is private to its owner on Unix. One that already exists is
+    /// not changed, since it may be used for other things, but it is refused if other users
+    /// can write to it: they could replace the files in it. That includes pointing
+    /// `BATON_HOME` at a shared directory such as `/tmp`.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
-        create_private_dir(&root)?;
+        open_state_dir(&root)?;
         Ok(Self { root })
     }
 
@@ -85,12 +90,15 @@ impl DataDir {
     /// system releases the lock if the process dies.
     pub fn lock(&self) -> Result<DirLock> {
         let path = self.root.join("baton.lock");
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&path)
-            .map_err(Error::io("open", &path))?;
+        let mut options = OpenOptions::new();
+        options.create(true).truncate(false).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // Nothing in the file matters, but another user who can open it could hold the lock.
+            options.mode(0o600);
+        }
+        let file = options.open(&path).map_err(Error::io("open", &path))?;
         match file.try_lock() {
             Ok(()) => Ok(DirLock { _file: file }),
             Err(TryLockError::WouldBlock) => Err(Error::Locked { path }),
@@ -117,6 +125,47 @@ mod tests {
         assert!(root.is_dir());
         assert_eq!(dir.root(), root);
         assert_eq!(dir.trust_file(), root.join("devices.json"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_that_is_created_is_private_and_one_that_exists_is_not_changed() {
+        use std::os::unix::fs::PermissionsExt;
+        let bits = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o7777;
+        let tmp = tempfile::tempdir().unwrap();
+
+        let made = tmp.path().join("made");
+        DataDir::open(&made).unwrap();
+        assert_eq!(bits(&made), 0o700);
+
+        // Something else's directory, such as BATON_HOME=$HOME, keeps its mode.
+        let shared = tmp.path().join("shared");
+        std::fs::create_dir(&shared).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+        DataDir::open(&shared).unwrap();
+        assert_eq!(bits(&shared), 0o755);
+
+        // One that other users can write to is refused, and left as it was.
+        let open = tmp.path().join("open");
+        std::fs::create_dir(&open).unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        let err = DataDir::open(&open).unwrap_err();
+        assert!(matches!(err, Error::WritableByOthers { .. }), "{err}");
+        assert_eq!(bits(&open), 0o1777);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_lock_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = DataDir::open(tmp.path().join("state")).unwrap();
+        let _lock = dir.lock().unwrap();
+        let mode = std::fs::metadata(dir.root().join("baton.lock"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]
