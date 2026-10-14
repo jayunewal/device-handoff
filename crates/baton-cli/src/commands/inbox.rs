@@ -185,13 +185,15 @@ async fn clear(ctx: &Context, console: &Console, yes: bool) -> Result<(), CliErr
         println!("The inbox is already empty.");
         return Ok(());
     }
-    if !yes {
-        let answer = console.ask();
+    // Kept until the result is printed, so that a pairing request that arrived meanwhile is
+    // put to the person after it, not between their answer and it.
+    let mut question = if yes { None } else { Some(console.ask().await) };
+    if let Some(question) = question.as_mut() {
         println!(
             "Remove all {count} {} from the inbox? Type yes to remove them.",
             if count == 1 { "item" } else { "items" }
         );
-        if !is_yes(answer.await.as_deref()) {
+        if !is_yes(question.answer().await.as_deref()) {
             println!("Nothing changed.");
             return Ok(());
         }

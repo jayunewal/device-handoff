@@ -539,6 +539,56 @@ fn a_path_typed_at_the_prompt_keeps_its_backslashes() {
 }
 
 #[test]
+fn a_pairing_request_waits_for_the_question_that_is_being_answered() {
+    let (alpha, bravo, charlie) = (
+        Device::new("Alpha"),
+        Device::new("Bravo"),
+        Device::new("Charlie"),
+    );
+    let (mut a, mut b) = paired_and_listening(&alpha, &bravo);
+    // Something in Alpha's inbox, so that clearing it asks.
+    b.type_line("send text keep me");
+    a.wait_for("[#1] text from Bravo");
+
+    // Alpha offers a ticket, then asks itself a question: remove everything in the inbox?
+    a.type_line("pair offer");
+    let ticket = a.ticket();
+    a.type_line("inbox clear");
+    a.wait_for("Type yes to remove them.");
+
+    // Charlie joins while that question is open. Its request reaches Alpha, which holds it.
+    let mut join = charlie.start(&["pair", "join", &ticket]);
+    join.wait_for("The code for this pairing is:");
+    thread::sleep(Duration::from_secs(1));
+    assert!(
+        !a.transcript().contains("Charlie"),
+        "the request was put to the person while another question was open:\n{}",
+        a.transcript()
+    );
+
+    // The yes is for the inbox, and only for the inbox.
+    a.type_line("yes");
+    a.wait_for("Removed 1 item.");
+    a.wait_for("A device wants to pair with this one");
+    a.wait_for("Charlie");
+    assert!(
+        !a.transcript().contains("Paired with Charlie"),
+        "a yes meant for another question paired a device:\n{}",
+        a.transcript()
+    );
+
+    // The pairing has its own question, and it was not answered by that yes.
+    a.answer_pairing("no");
+    a.wait_for("Declined.");
+    join.finish().failed_with(1).explained("declined");
+    let devices = alpha.run(&["devices"]).succeeded();
+    assert!(!devices.stdout.contains("Charlie"), "{devices}");
+
+    a.quit().succeeded();
+    b.quit().succeeded();
+}
+
+#[test]
 fn a_device_that_was_unpaired_there_says_so_here() {
     let (alpha, bravo) = (Device::new("Alpha"), Device::new("Bravo"));
     let (mut a, mut b) = paired_and_listening(&alpha, &bravo);

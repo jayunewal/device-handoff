@@ -32,6 +32,9 @@ pub async fn offer(ctx: &mut Context, console: &Console, mode: Mode) -> Result<(
 
     match mode {
         Mode::OneShot => {
+            // Anything typed while waiting is not an answer: the question comes with the
+            // request, once the codes are on the screen.
+            console.ignore_early_typing();
             let paired = tokio::select! {
                 paired = offer.wait() => paired.map_err(CliError::from)?,
                 () = crate::signal::interrupted() => return Err(CliError::new("Cancelled.")),
@@ -71,6 +74,11 @@ fn paired_message(paired: &PairedDevice, mode: Mode) -> String {
 
 /// Puts the joining device's request to the person and waits for their answer.
 async fn approve(console: &Console, request: PairApprovalRequest) -> bool {
+    // Asked before anything is printed, so that an answer typed (or piped) at once reaches
+    // this question and not the prompt. If the person is in the middle of another question,
+    // this waits until that command is done, so that a `yes` meant for it cannot pair a
+    // device.
+    let mut question = console.ask().await;
     println!(
         "\nA device wants to pair with this one:\n\n    Name:         {}\n    System:       {}\n    \
          Fingerprint:  {}\n",
@@ -82,11 +90,8 @@ async fn approve(console: &Console, request: PairApprovalRequest) -> bool {
         "If it is yours, it is showing this code:\n\n    {}\n",
         request.confirmation
     );
-    // Asked before the request is printed, so that an answer typed (or piped) at once
-    // reaches this question and not the prompt.
-    let answer = console.ask();
     println!("Type yes to pair only if the codes are the same. Anything else says no.");
-    let yes = is_yes(answer.await.as_deref());
+    let yes = is_yes(question.answer().await.as_deref());
     if !yes {
         println!("Declined.");
     }
@@ -103,11 +108,12 @@ pub async fn join(
     let text = if let Some(ticket) = ticket.filter(|ticket| ticket != "-") {
         ticket
     } else {
-        let answer = console.ask();
+        let mut question = console.ask().await;
         if console.is_interactive() {
             println!("Paste the ticket from the other device, then press Enter:");
         }
-        answer
+        question
+            .answer()
             .await
             .ok_or_else(|| CliError::new("No ticket was given."))?
     };

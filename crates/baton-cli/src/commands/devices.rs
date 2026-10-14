@@ -60,13 +60,19 @@ pub async fn unpair(
     let device = select::choose(&devices, Some(&args.device))?;
     let who = select::describe(&device);
 
-    if !args.yes {
-        let answer = console.ask();
+    // Kept until the result is printed, so that a pairing request that arrived meanwhile is
+    // put to the person after it, not between their answer and it.
+    let mut question = if args.yes {
+        None
+    } else {
+        Some(console.ask().await)
+    };
+    if let Some(question) = question.as_mut() {
         println!(
             "Unpair {who}? It will no longer be able to send you anything, and you will not be \
              able to send to it. Type yes to unpair."
         );
-        if !is_yes(answer.await.as_deref()) {
+        if !is_yes(question.answer().await.as_deref()) {
             println!("Nothing changed.");
             return Ok(());
         }
