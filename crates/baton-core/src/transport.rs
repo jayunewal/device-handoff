@@ -26,35 +26,49 @@
 //! which holds 6.25 MB in flight and is about what fast fibre at both ends of a long
 //! path can do. The receiver raises a window in steps of an eighth of it, so only
 //! seven eighths is always available, and 8 MiB is the smallest power of two that
-//! still covers the path.
+//! still covers the path. A faster path would need more, and what that would cost is
+//! now only a matter for paired devices (see below), so it is a question for the file
+//! transfer benchmark, which can measure long transfers on real paths.
 //!
-//! # What it costs
+//! # What it costs, and who gets the big window
 //!
 //! The windows also decide how much memory a peer can make a device use. Data that
 //! has arrived and not been read waits in a buffer, and the receiver's windows limit
-//! how much, so a connection can make a device hold at most [`CONNECTION_WINDOW`]
+//! how much, so a connection can make a device hold at most its connection window
 //! whatever the other side does. The library's default leaves the connection limit
 //! open and relies on the stream limits alone, which with 16 streams comes to about
-//! 20 MB. These settings therefore lower the worst case at the same time as they raise
-//! the speed of one stream, and a test keeps it that way.
+//! 20 MB.
 //!
-//! The settings are on the endpoint, so they apply to every connection a device
-//! accepts, including the pairing connections anyone can open (a device serves 8 at a
-//! time). `docs/adr/0007-quic-windows-and-connection-memory.md` has the arithmetic, the
+//! A device announces its settings before it knows who is calling: they are on the
+//! endpoint, so they are the same for a stranger on `baton-pair/1` and for a paired
+//! device. So every connection starts with a small connection window,
+//! [`INITIAL_WINDOW`], which is all a stranger ever gets, and the gate raises it to
+//! [`CONNECTION_WINDOW`] once the device on the other end is known to be paired
+//! ([`raise_window`]). The peer is told in a `MAX_DATA` frame, and the hook that does
+//! this runs for connections the device dials as well as those it accepts, so the
+//! rule is the same whichever side of a transfer dials. What a stranger can make a
+//! device hold is the number of pairing connections it serves times
+//! [`INITIAL_WINDOW`], and that is checked below.
+//!
+//! The stream window cannot be changed once a connection exists. It does not need to
+//! be: a connection never holds more than its connection window, so the stream window
+//! only decides how much of that window one stream can use, and it is sized for speed.
+//! What a paired device can make a device hold is [`CONNECTION_WINDOW`] for each of the
+//! connections it may keep, and that is checked below as well.
+//!
+//! Settings that bound what a device *sends*, the send window and the congestion
+//! controller, cost nothing that a stranger can reach, because a device sends only
+//! what it chose to. They are set for bulk transfer on the whole endpoint.
+//!
+//! `docs/adr/0007-quic-windows-and-connection-memory.md` has the arithmetic, the
 //! measurements and the alternatives.
-//!
-//! # Where larger windows would go
-//!
-//! A bigger window would carry a faster path and would cost the same again in memory
-//! for every connection, so it is not worth setting for everyone. File transfer can do
-//! better: iroh lets the side that dials choose its own windows for a connection
-//! (`Endpoint::connect_with_opts`), and a dialer's windows are the ones that limit what
-//! the other side sends to it. A receiver that dials the sender for a bulk transfer can
-//! therefore use large windows while the connections other devices open to it keep these.
 
 use std::time::Duration;
 
-use iroh::endpoint::{QuicTransportConfig, VarInt};
+use baton_proto::{frame::HEADER_LEN, limits::MAX_PAIR_FRAME_LEN};
+use iroh::endpoint::{Connection, QuicTransportConfig, VarInt};
+
+use crate::{gate::MAX_CONNECTIONS_PER_PEER, slots::MAX_PAIRING_CONNECTIONS};
 
 /// Streams a peer may have open on one connection at once.
 ///
@@ -87,20 +101,35 @@ const TARGET_IN_FLIGHT: u64 = TARGET_RATE * TARGET_ROUND_TRIP_MS / 1000;
 const LIBRARY_STREAM_WINDOW: u64 = 1_250_000;
 
 /// How much unread data one stream may hold, and so how much a sender may have in
-/// flight on it.
+/// flight on it. A stranger never gets this much: its connection is held to
+/// [`INITIAL_WINDOW`], which is smaller.
 pub(crate) const STREAM_WINDOW: u32 = 8 * MIB;
 
-/// How much unread data a whole connection may hold. It is twice a stream's window, so
-/// that a stream nobody reads cannot take all of it and stall the others.
+/// How much unread data a whole connection to a paired device may hold. It is twice a
+/// stream's window, so that a stream nobody reads cannot take all of it and stall the
+/// others. A connection has this only once the gate has seen that the device is paired.
 pub(crate) const CONNECTION_WINDOW: u32 = 2 * STREAM_WINDOW;
+
+/// How much unread data a connection may hold until the device on the other end is known
+/// to be paired, which is all a stranger ever gets. A pairing frame is at most 4 KiB, so
+/// this holds fifteen of them with their headers.
+pub(crate) const INITIAL_WINDOW: u32 = 64 * 1024;
 
 /// How much this device sends on a connection before the other side has acknowledged
 /// it. It bounds our own memory when a peer offers more room than we want to use.
 pub(crate) const SEND_WINDOW: u64 = CONNECTION_WINDOW as u64;
 
-/// The settings for the endpoint, and so for every connection it makes or accepts.
+/// The settings for the endpoint, and so for every connection it makes or accepts. The
+/// connection window it announces is the small one, until [`raise_window`].
 pub(crate) fn config() -> QuicTransportConfig {
-    build(STREAM_WINDOW, CONNECTION_WINDOW, SEND_WINDOW)
+    build(STREAM_WINDOW, INITIAL_WINDOW, SEND_WINDOW)
+}
+
+/// Raises a connection's window to [`CONNECTION_WINDOW`], for a device that is paired.
+/// The peer learns of it in a `MAX_DATA` frame, so nothing is lost if data is already
+/// on its way.
+pub(crate) fn raise_window(connection: &Connection) {
+    connection.set_receive_window(VarInt::from_u32(CONNECTION_WINDOW));
 }
 
 fn build(stream_window: u32, connection_window: u32, send_window: u64) -> QuicTransportConfig {
@@ -134,18 +163,37 @@ const _: () = {
         CONNECTION_WINDOW >= 2 * STREAM_WINDOW,
         "a stream nobody reads could take the whole connection window and stall the others"
     );
-    // A peer using these settings offers a connection window this big, and we should not
-    // hold back data it is willing to take.
+    // A peer using these settings offers a connection window this big once we are paired,
+    // and we should not hold back data it is willing to take.
     assert!(
         SEND_WINDOW >= CONNECTION_WINDOW as u64,
         "we would send less than the peer is willing to take"
     );
+    // What a stranger can reach: pairing connections, each with the window every connection
+    // starts with. A pairing request has to fit with room to spare, and all of them together
+    // must stay small enough that a phone does not notice.
+    assert!(
+        INITIAL_WINDOW as usize >= 4 * (MAX_PAIR_FRAME_LEN + HEADER_LEN),
+        "a pairing request would not fit in the window a stranger gets"
+    );
+    assert!(
+        MAX_PAIRING_CONNECTIONS * INITIAL_WINDOW as usize <= MIB as usize,
+        "strangers could make a device hold more than 1 MiB"
+    );
+    assert!(
+        INITIAL_WINDOW < CONNECTION_WINDOW,
+        "there would be nothing to raise"
+    );
     // Bigger windows are a trade of memory for speed, and this is where the trade stops
-    // being free. A change that breaks this has to say, in the record that explains these
-    // numbers, why a device may now hold more than it did.
+    // for a paired device. A change that breaks either of these has to say, in the record
+    // that explains these numbers, why a device may now hold more than it did.
     assert!(
         CONNECTION_WINDOW as u64 <= LIBRARY_STREAM_WINDOW * MAX_CONCURRENT_REQUESTS as u64,
-        "a peer could make a device hold more than the library default allowed"
+        "a connection could make a device hold more than the library default allowed"
+    );
+    assert!(
+        CONNECTION_WINDOW as u64 * MAX_CONNECTIONS_PER_PEER as u64 <= 128 * MIB as u64,
+        "a paired device could make a device hold more than 128 MiB"
     );
 };
 
@@ -268,11 +316,22 @@ mod tests {
         round_trip: Duration,
         /// From the first byte of the data written to the receiver's one-byte answer.
         elapsed: Duration,
+        /// How long the receiver took to get the second half of the data, once the first
+        /// half was in. A transfer starts slowly while the congestion controller opens up,
+        /// so this is closer to what the settings allow than the whole run is.
+        second_half: Duration,
     }
 
     /// Sends `bytes` bytes on one stream between two devices that reach each other only
-    /// through `path`, after checking how long the path takes to answer.
-    async fn transfer(config: &QuicTransportConfig, path: Path, bytes: usize) -> Measured {
+    /// through `path`, after checking how long the path takes to answer. `raise_to` is
+    /// what each device does once the connection is up, as the gate does for a paired
+    /// device: raise its connection window.
+    async fn transfer(
+        config: &QuicTransportConfig,
+        raise_to: Option<u32>,
+        path: Path,
+        bytes: usize,
+    ) -> Measured {
         let (_map, _url, relay_server) = run_relay_server_with(false).await.unwrap();
         let through_path = start_path(relay_server.https_addr().unwrap(), path).await;
         let relay: RelayUrl = format!("https://{through_path}").parse().unwrap();
@@ -284,6 +343,9 @@ mod tests {
             let server = server.clone();
             async move {
                 let connection = server.accept().await.unwrap().await.unwrap();
+                if let Some(window) = raise_to {
+                    connection.set_receive_window(VarInt::from_u32(window));
+                }
                 let (mut echo, mut ping) = connection.accept_bi().await.unwrap();
                 let mut byte = [0_u8; 1];
                 while ping.read_exact(&mut byte).await.is_ok() {
@@ -293,18 +355,26 @@ mod tests {
                 let (mut reply, mut request) = connection.accept_bi().await.unwrap();
                 let mut buffer = vec![0_u8; 256 * 1024];
                 let mut received = 0;
+                let mut half_in = None;
                 while let Some(len) = request.read(&mut buffer).await.unwrap() {
                     received += len;
+                    if half_in.is_none() && received >= bytes / 2 {
+                        half_in = Some(Instant::now());
+                    }
                 }
+                let second_half = half_in.map_or(Duration::ZERO, |at| at.elapsed());
                 reply.write_all(b"k").await.unwrap();
                 reply.finish().unwrap();
                 connection.closed().await;
-                received
+                (received, second_half)
             }
         });
 
         let address = EndpointAddr::new(server.id()).with_relay_url(relay);
         let connection = client.connect(address, ALPN).await.unwrap();
+        if let Some(window) = raise_to {
+            connection.set_receive_window(VarInt::from_u32(window));
+        }
 
         // On an idle path, so this is the delay the path adds and nothing else.
         let (mut ping, mut echo) = connection.open_bi().await.unwrap();
@@ -330,12 +400,14 @@ mod tests {
         answer.read_to_end(8).await.unwrap();
         let elapsed = started.elapsed();
         connection.close(0_u8.into(), b"done");
-        assert_eq!(receiver.await.unwrap(), chunks * chunk.len());
+        let (arrived, second_half) = receiver.await.unwrap();
+        assert_eq!(arrived, chunks * chunk.len());
         client.close().await;
         server.close().await;
         Measured {
             round_trip,
             elapsed,
+            second_half,
         }
     }
 
@@ -347,7 +419,7 @@ mod tests {
         };
         let measured = tokio::time::timeout(
             Duration::from_mins(1),
-            transfer(&config(), path, 4 * MIB as usize),
+            transfer(&config(), Some(CONNECTION_WINDOW), path, 4 * MIB as usize),
         )
         .await
         .expect("the transfer never finished");
@@ -361,6 +433,16 @@ mod tests {
         );
     }
 
+    /// The median of `values`, and the smallest and largest of them.
+    fn spread(mut values: Vec<f64>) -> (f64, f64, f64) {
+        values.sort_by(f64::total_cmp);
+        (
+            values[values.len() / 2],
+            values[0],
+            values[values.len() - 1],
+        )
+    }
+
     /// Measures what the windows buy. It is ignored because it takes a while and
     /// reports numbers instead of checking them. Run it with
     ///
@@ -369,11 +451,16 @@ mod tests {
     /// ```
     ///
     /// The paths include one with a short round trip, where the windows should make no
-    /// difference, so a change that slows the ordinary case would show too.
+    /// difference, so a change that slows the ordinary case would show too. Each cell is
+    /// run several times, because one run says little: two runs of the same cell on a
+    /// busy machine can differ by a fifth. Each is reported over the whole transfer and
+    /// over its second half, which leaves out the time the congestion controller takes to
+    /// open up, as the median of the runs with the smallest and the largest in brackets.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[ignore = "measures throughput over an emulated path; run it by hand"]
     #[allow(clippy::cast_precision_loss)]
     async fn windows_on_a_long_path() {
+        const RUNS: usize = 5;
         let bytes = 128 * MIB as usize;
         let paths = [
             ("100 ms round trip, 40 MB/s (320 Mbit/s)", 25, 40_000_000),
@@ -381,42 +468,60 @@ mod tests {
             ("20 ms round trip, 40 MB/s (320 Mbit/s)", 5, 40_000_000),
             ("4 ms round trip, 100 MB/s (800 Mbit/s)", 1, 100_000_000),
         ];
+        // The window each device raises its connection to once it knows the other is
+        // paired, as the gate does, or none for the library's own settings.
         let settings = [
             (
                 "library default, 1.25 MB per stream",
                 QuicTransportConfig::default(),
+                None,
                 LIBRARY_STREAM_WINDOW,
             ),
             (
-                "these settings, 8 MiB per stream",
+                "these settings: 8 MiB per stream",
                 config(),
+                Some(CONNECTION_WINDOW),
                 u64::from(STREAM_WINDOW),
             ),
             (
-                "twice as large, 16 MiB per stream",
-                build(2 * STREAM_WINDOW, 2 * CONNECTION_WINDOW, 2 * SEND_WINDOW),
+                "twice as large: 16 MiB per stream",
+                build(2 * STREAM_WINDOW, INITIAL_WINDOW, 2 * SEND_WINDOW),
+                Some(2 * CONNECTION_WINDOW),
                 u64::from(2 * STREAM_WINDOW),
             ),
         ];
         println!(
-            "\nsending {} MiB on one stream through a relay",
+            "\nsending {} MiB on one stream through a relay, {RUNS} runs for each cell",
             bytes / MIB as usize
         );
-        println!("(top speed = stream window / measured round trip, an upper bound)");
+        println!(
+            "MB/s: median (smallest to largest); ceiling = seven eighths of the stream window / round trip"
+        );
         for (name, one_way_ms, bytes_per_second) in paths {
             let path = Path {
                 one_way: Duration::from_millis(one_way_ms),
                 bytes_per_second: Some(bytes_per_second),
             };
             println!("\n{name}");
-            for (label, settings, window) in &settings {
-                let run = transfer(settings, path, bytes).await;
+            for (label, settings, raise_to, window) in &settings {
+                let (mut whole, mut half, mut trips) = (Vec::new(), Vec::new(), Vec::new());
+                for _ in 0..RUNS {
+                    let run = transfer(settings, *raise_to, path, bytes).await;
+                    whole.push(bytes as f64 / run.elapsed.as_secs_f64() / 1e6);
+                    half.push(
+                        (bytes / 2) as f64 / run.second_half.as_secs_f64().max(f64::EPSILON) / 1e6,
+                    );
+                    trips.push(run.round_trip.as_secs_f64());
+                }
+                let (whole, low, high) = spread(whole);
+                let (half, half_low, half_high) = spread(half);
+                let (trip, _, _) = spread(trips);
                 println!(
-                    "  {label:<36} {:>6.1} MB/s in {:>4.1} s; round trip {:.0} ms, top speed {:.0} MB/s",
-                    bytes as f64 / run.elapsed.as_secs_f64() / 1e6,
-                    run.elapsed.as_secs_f64(),
-                    run.round_trip.as_secs_f64() * 1e3,
-                    *window as f64 / run.round_trip.as_secs_f64() / 1e6,
+                    "  {label:<42} whole run {whole:>5.1} ({low:.1} to {high:.1}), \
+                     second half {half:>5.1} ({half_low:.1} to {half_high:.1}); \
+                     round trip {:.0} ms, ceiling {:.0}",
+                    trip * 1e3,
+                    *window as f64 * 7.0 / 8.0 / trip / 1e6,
                 );
             }
         }

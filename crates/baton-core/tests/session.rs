@@ -421,3 +421,16 @@ async fn a_device_cannot_open_streams_the_protocol_does_not_use() {
     let attempt = tokio::time::timeout(Duration::from_millis(500), connection.open_uni()).await;
     assert!(attempt.is_err(), "a unidirectional stream was opened");
 }
+
+#[tokio::test]
+async fn a_paired_devices_connection_is_given_room_for_bulk_data_once_it_is_known() {
+    let a = device("Laptop").await;
+    let (_raw, connection) = paired_raw(&a).await;
+    // A device announces a small window to everyone and raises it once it knows the peer is
+    // paired, which it tells the peer in a MAX_DATA frame. Nothing else would send one on a
+    // connection that has carried no data.
+    eventually("the device to raise the connection window", || {
+        connection.stats().frame_rx.max_data > 0
+    })
+    .await;
+}

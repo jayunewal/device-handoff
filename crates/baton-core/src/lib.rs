@@ -55,6 +55,7 @@ mod gate;
 mod machine;
 mod ratelimit;
 mod shared;
+mod slots;
 mod transport;
 mod wire;
 

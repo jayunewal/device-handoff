@@ -58,7 +58,7 @@ use iroh::{
     protocol::Router,
 };
 use iroh_mdns_address_lookup::MdnsAddressLookup;
-use tokio::sync::{Semaphore, broadcast};
+use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -72,7 +72,8 @@ use crate::{
     link::{PathKind, is_dialable, is_local, selected_path},
     pairing::{self, Offers, PairApprover, PairOffer, PairServer},
     session::{HandoffHandler, Intake, NoHandoff, Pool, SessionServer, call, worth_retrying},
-    shared::{MAX_PAIRING_CONNECTIONS, Shared},
+    shared::Shared,
+    slots::{MAX_PAIRING_CONNECTIONS, PairSlots},
     transport,
     trust::{PairedDevice, TrustEvent, TrustStore},
     util::random_bytes,
@@ -88,7 +89,9 @@ const RELAY_WAIT: Duration = Duration::from_secs(3);
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Tuning {
-    /// How long a peer has to send a request once it has opened a stream.
+    /// How long a peer has to open a stream and send its request. A pairing connection
+    /// that has sent nothing by then is closed, which is what keeps its place from being
+    /// held by a peer that never intends to.
     pub request_deadline: Duration,
     /// How long to wait for the answer to a request.
     pub reply_deadline: Duration,
@@ -249,7 +252,7 @@ impl NodeBuilder {
             stop: CancellationToken::new(),
             registry: Arc::clone(&registry),
             offers: Offers::default(),
-            pair_slots: Arc::new(Semaphore::new(MAX_PAIRING_CONNECTIONS)),
+            pair_slots: PairSlots::new(MAX_PAIRING_CONNECTIONS),
             handler,
             intake: Intake::new(&config.handoff),
         });
@@ -283,7 +286,7 @@ impl NodeBuilder {
 
         // Subscribe before the first connection can arrive, so no unpairing is missed.
         let trust_events = trust.subscribe();
-        let admission = Arc::new(Admission::new());
+        let admission = Arc::new(Admission::new(trust.clone()));
         let router = Router::builder(endpoint.clone())
             .accept(
                 ALPN_SESSION,
@@ -703,6 +706,10 @@ fn ticket_hints(addr: &EndpointAddr) -> (Option<String>, Vec<SocketAddr>) {
 }
 
 /// Ends an offer when its time is up, so that waiting on it returns.
+///
+/// An offer that a request is with the person for is left alone, and looked at again
+/// until it has been answered, timed out or withdrawn: the person is not interrupted
+/// in the middle of answering.
 async fn end_offer_when_due(
     shared: Arc<Shared>,
     id: u64,
@@ -717,8 +724,7 @@ async fn end_offer_when_due(
             () = shared.stop.cancelled() => return,
             _ = tick.tick() => {}
         }
-        if shared.clock.monotonic() >= deadline {
-            shared.offers.end(id, OfferEnd::Expired);
+        if shared.clock.monotonic() >= deadline && shared.offers.expire(id) {
             return;
         }
     }

@@ -5,7 +5,6 @@
 use std::{fmt, sync::Arc};
 
 use baton_proto::{DeviceId, DeviceInfo};
-use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -14,12 +13,9 @@ use crate::{
     node::Tuning,
     pairing::Offers,
     session::{HandoffHandler, Intake},
+    slots::PairSlots,
     trust::TrustStore,
 };
-
-/// Pairing connections served at the same time. Anyone may open one, so the
-/// number is small; a real pairing needs one.
-pub(crate) const MAX_PAIRING_CONNECTIONS: usize = 8;
 
 pub(crate) struct Shared {
     /// This device.
@@ -35,7 +31,7 @@ pub(crate) struct Shared {
     pub(crate) stop: CancellationToken,
     pub(crate) registry: Arc<ConnectionRegistry>,
     pub(crate) offers: Offers,
-    pub(crate) pair_slots: Arc<Semaphore>,
+    pub(crate) pair_slots: Arc<PairSlots>,
     pub(crate) handler: Arc<dyn HandoffHandler>,
     pub(crate) intake: Intake,
 }
