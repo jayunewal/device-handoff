@@ -42,7 +42,21 @@
 //!
 //! No extension and no flag is defined yet. A change that older readers cannot do
 //! without a loss, for example to how the secret is used, still needs a new version
-//! number.
+//! number. A new version is announced in two places, and a reader that does not know it
+//! recognises either one and gives [`TicketError::NeedsNewerVersion`], so the person is
+//! told to update the app and not that the ticket is damaged:
+//!
+//! - the text prefix, `BATON2:` for version 2, which an older reader recognises without
+//!   decoding anything after it;
+//! - the first byte of the binary layout, which an older reader reaches only if it can
+//!   check the checksum first.
+//!
+//! The second is why the checksum does not change from one version to the next: every
+//! version ends with the same four bytes, made the same way (see `CHECKSUM_CONTEXT`),
+//! so that a reader which cannot read a later layout can still tell a newer ticket
+//! from a damaged one. A version that has to change how the checksum is made must
+//! change the prefix as well, because the prefix is the only part an older reader can
+//! recognise without it.
 //!
 //! The checksum is not a security feature. It turns a mistyped or truncated
 //! ticket into a clear error instead of a failed connection.
@@ -64,8 +78,13 @@ use zeroize::Zeroizing;
 
 use crate::{id::DeviceId, pair::PairSecret};
 
-/// Text form prefix, as written. Parsers accept it in any case.
+/// Text form prefix, as written. Parsers accept it in any case. The digit is the version
+/// of the ticket format.
 pub const PREFIX: &str = "BATON1:";
+
+/// The part of the prefix before the version number. A reader recognises it on a later
+/// version's tickets, `BATON2:` and so on, to tell the person to update.
+const PREFIX_STEM: &str = "BATON";
 
 /// Most direct addresses a ticket can carry.
 pub const MAX_ADDRS: usize = 16;
@@ -86,6 +105,9 @@ pub const CLOCK_SKEW_ALLOWANCE_SECS: u64 = 10 * 60;
 
 const FORMAT_VERSION: u8 = 1;
 const CHECKSUM_LEN: usize = 4;
+/// Names the checksum, not the ticket format, so the `v1` stays when the format moves to
+/// version 2. A reader that meets a later version must still be able to check the
+/// checksum to tell a newer ticket from a damaged one; the module docs say why.
 const CHECKSUM_CONTEXT: &str = "baton 2026-10-14 pairing ticket checksum v1";
 
 /// Set in an extension type, or in the high half of `flags`, when a reader must
@@ -120,7 +142,7 @@ pub struct PairTicket {
 /// Why a ticket could not be produced or read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum TicketError {
-    /// The text does not start with `baton1:`.
+    /// The text does not start with `BATON1:` or with the prefix of a later version.
     #[error("not a Baton pairing ticket (it should start with \"{PREFIX}\")")]
     BadPrefix,
     /// The text is longer than any ticket can be.
@@ -135,10 +157,9 @@ pub enum TicketError {
     /// The ticket ends before it should.
     #[error("the ticket is cut short")]
     Truncated,
-    /// The ticket was made by a newer, incompatible version.
-    #[error("unsupported ticket version {0}")]
-    UnsupportedVersion(u8),
-    /// The ticket needs a feature this version does not have. Updating the app may help.
+    /// The ticket needs something this version does not have: it was made by a later
+    /// format version, or it sets a flag or an extension that must be understood.
+    /// Updating the app may help.
     #[error("this ticket needs a newer version of Baton")]
     NeedsNewerVersion,
     /// A field has a value this version does not accept.
@@ -222,9 +243,12 @@ impl PairTicket {
         }
 
         let mut reader = Reader(body);
-        let version = reader.u8()?;
-        if version != FORMAT_VERSION {
-            return Err(TicketError::UnsupportedVersion(version));
+        // The checksum matched, so this is not a damaged ticket. A later version may lay
+        // out the rest differently, so nothing after this byte is read for it.
+        match reader.u8()? {
+            FORMAT_VERSION => {}
+            0 => return Err(TicketError::Invalid("unknown ticket version")),
+            _ => return Err(TicketError::NeedsNewerVersion),
         }
         if reader.u8()? & CRITICAL_FLAGS != 0 {
             return Err(TicketError::NeedsNewerVersion);
@@ -315,7 +339,11 @@ impl FromStr for PairTicket {
                 .filter(|c| !c.is_whitespace())
                 .map(|c| c.to_ascii_uppercase()),
         );
-        let encoded = compact.strip_prefix(PREFIX).ok_or(TicketError::BadPrefix)?;
+        let encoded = match compact.strip_prefix(PREFIX) {
+            Some(encoded) => encoded,
+            None if is_later_prefix(&compact) => return Err(TicketError::NeedsNewerVersion),
+            None => return Err(TicketError::BadPrefix),
+        };
         let bytes = Zeroizing::new(
             BASE32_NOPAD
                 .decode(encoded.as_bytes())
@@ -323,6 +351,21 @@ impl FromStr for PairTicket {
         );
         Self::from_bytes(&bytes)
     }
+}
+
+/// Whether `text`, already in capitals, starts with the prefix of a later version:
+/// `BATON`, a version number above 1 written without leading zeros, and a colon.
+///
+/// Nothing after the colon is looked at. A later version may encode the rest differently,
+/// so an older reader cannot judge it, and the person should be told to update.
+fn is_later_prefix(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix(PREFIX_STEM) else {
+        return false;
+    };
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    // `BATON1:` was taken care of by the caller, so a number that starts with 1 and has
+    // no further digit is not a later version. Anything else without a leading zero is.
+    rest[digits..].starts_with(':') && !rest.starts_with('0') && digits > 0
 }
 
 /// Checks the relay hint: it is an address the joiner will connect to, and a ticket
@@ -581,10 +624,6 @@ mod tests {
             TicketError::BadPrefix
         );
         assert_eq!(
-            "baton2:aaaa".parse::<PairTicket>().unwrap_err(),
-            TicketError::BadPrefix
-        );
-        assert_eq!(
             "baton1:!!!!".parse::<PairTicket>().unwrap_err(),
             TicketError::BadEncoding
         );
@@ -627,15 +666,6 @@ mod tests {
 
     #[test]
     fn structural_errors_are_reported_even_with_a_valid_checksum() {
-        let body = body_of(&ticket());
-
-        let mut future_version = body.clone();
-        future_version[0] = 2;
-        assert_eq!(
-            PairTicket::from_bytes(&reseal(future_version)).unwrap_err(),
-            TicketError::UnsupportedVersion(2)
-        );
-
         let mut bad_tag = body_of(&PairTicket {
             relay: None,
             addrs: vec!["1.2.3.4:5".parse().unwrap()],
@@ -647,6 +677,118 @@ mod tests {
             PairTicket::from_bytes(&reseal(bad_tag)).unwrap_err(),
             TicketError::Invalid(_)
         ));
+    }
+
+    #[test]
+    fn the_prefix_carries_the_format_version() {
+        assert_eq!(PREFIX, format!("{PREFIX_STEM}{FORMAT_VERSION}:"));
+    }
+
+    #[test]
+    fn a_later_prefix_tells_the_person_to_update() {
+        for text in [
+            "BATON2:",
+            "baton2:aaaa",
+            "BATON3:AEABCEIR",
+            "BATON10:",
+            "BATON255:!!! not even base32",
+            "  baton2:\n AEAB CEIR ",
+            // A number too large for any integer type is still a later version: it is never
+            // parsed.
+            "BATON99999999999999999999999999:AA",
+            // The rest is not looked at, because a later version may encode it differently.
+            "BATON2:\u{1F4A5}",
+        ] {
+            assert_eq!(
+                text.parse::<PairTicket>().unwrap_err(),
+                TicketError::NeedsNewerVersion,
+                "{text:?}"
+            );
+        }
+
+        // A valid ticket whose prefix has been changed to the next version's.
+        let current = ticket().to_text().unwrap();
+        let next = format!("BATON2:{}", &current[PREFIX.len()..]);
+        assert_eq!(
+            next.parse::<PairTicket>().unwrap_err(),
+            TicketError::NeedsNewerVersion
+        );
+    }
+
+    #[test]
+    fn text_that_only_looks_like_a_later_prefix_is_not_one() {
+        for text in [
+            "BATON",
+            "BATON:",
+            "BATON0:AA",
+            // No leading zeros: this is not how a version number is written.
+            "BATON01:AA",
+            "BATON02:AA",
+            // Missing colon, or something other than digits before it.
+            "BATON2",
+            "BATON2AAAA",
+            "BATON2x:AA",
+            "BATONX:AA",
+            "BATON1X:AA",
+            "BATON+2:AA",
+            // Not a Baton ticket at all.
+            "BAT0N2:AA",
+            "XBATON2:AA",
+            "https://example.org/BATON2:",
+        ] {
+            assert_eq!(
+                text.parse::<PairTicket>().unwrap_err(),
+                TicketError::BadPrefix,
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_later_version_byte_tells_the_person_to_update() {
+        let body = body_of(&ticket());
+        for version in [2, 3, 0x7f, 0xff] {
+            // The rest of the body is this version's layout, not a later one's. A later
+            // layout is not read, so nothing it holds can make this fail.
+            for rest in [&body[1..], &[0xde, 0xad][..], &[][..]] {
+                let mut later = vec![version];
+                later.extend_from_slice(rest);
+                let sealed = reseal(later);
+                assert_eq!(
+                    PairTicket::from_bytes(&sealed).unwrap_err(),
+                    TicketError::NeedsNewerVersion,
+                    "version {version}, {} more bytes",
+                    rest.len()
+                );
+                // Under the version 1 prefix, as text, the answer is the same.
+                let mut text = String::from(PREFIX);
+                BASE32_NOPAD.encode_append(&sealed, &mut text);
+                assert_eq!(
+                    text.parse::<PairTicket>().unwrap_err(),
+                    TicketError::NeedsNewerVersion
+                );
+            }
+        }
+
+        // Version 0 was never used by anyone. It is not a newer ticket.
+        let mut zero = body;
+        zero[0] = 0;
+        assert_eq!(
+            PairTicket::from_bytes(&reseal(zero)).unwrap_err(),
+            TicketError::Invalid("unknown ticket version")
+        );
+    }
+
+    #[test]
+    fn a_damaged_ticket_is_not_taken_for_a_newer_one() {
+        // The checksum is checked before the version, so a flipped bit in the version byte
+        // is reported as damage and not as a reason to update.
+        let mut bytes = ticket().to_bytes().unwrap().to_vec();
+        bytes[0] = 2;
+        assert_eq!(
+            PairTicket::from_bytes(&bytes).unwrap_err(),
+            TicketError::BadChecksum
+        );
     }
 
     #[test]
