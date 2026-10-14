@@ -15,7 +15,7 @@ use baton_proto::{
     ALPN_PAIR, ALPN_SESSION,
     message::{ClipboardText, Item},
 };
-use common::{Raw, Spec, device, pair};
+use common::{Raw, Spec, device, pair, retrying};
 use iroh::{SecretKey, endpoint::ConnectionError};
 
 fn closed_with(error: &ConnectionError) -> Option<u64> {
@@ -232,8 +232,11 @@ async fn a_burst_of_connection_attempts_from_one_place_is_answered_one_way_or_th
         }
     }
 
-    // And the device is none the worse for it.
+    // And the device is none the worse for it. A device at the same address as the burst is
+    // held to the allowance the burst used up, and every device in these tests has this
+    // address, so the friend has to be let through once it has refilled. It is not waited for
+    // by the clock: on a busy machine that takes longer, and on a quick one it takes no time.
     let friend = device("Phone").await;
-    friend.pair_with(&a).await;
-    friend.node.ping(&a.id).await.unwrap();
+    retrying("the friend pairing", || friend.try_pair_with(&a)).await;
+    retrying("the friend's ping", || friend.node.ping(&a.id)).await;
 }
