@@ -19,7 +19,9 @@ all-features = true
 ignore = []
 
 [licenses]
-# Permissive licenses only. See docs/adr/0004-apache-2-license.md.
+# Permissive licenses, plus MPL-2.0. MPL-2.0 is weak copyleft: it is allowed only for
+# dependencies used unmodified, which cargo-deny cannot check, so reviewers must.
+# See docs/adr/0004-apache-2-license.md.
 allow = [
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception",

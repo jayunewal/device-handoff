@@ -24,7 +24,10 @@ rust_2018_idioms = { level = "warn", priority = -1 }
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 # Network input is untrusted: a panic in a parser is a remote denial of service.
+# Library code returns errors instead. Tests may use all of these (see clippy.toml).
 unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
 dbg_macro = "warn"
 todo = "warn"
 unimplemented = "warn"

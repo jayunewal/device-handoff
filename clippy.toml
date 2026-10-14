@@ -1,4 +1,6 @@
-# Tests may use unwrap, expect, panic and indexing freely; library code may not.
+# Library code may not unwrap, expect or panic (the lints are enabled for the whole
+# workspace in Cargo.toml). Crates that parse network input also enable
+# clippy::indexing_slicing for themselves. Tests may use all of these freely.
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
