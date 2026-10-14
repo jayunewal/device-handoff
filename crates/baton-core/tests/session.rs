@@ -392,7 +392,7 @@ async fn bad_requests_are_answered_or_cut_off_and_the_connection_survives() {
         baton_proto::frame::decode::<Response>(&reply).unwrap(),
         Response::Pong(_)
     ));
-    assert!(a.inbox.items().is_empty());
+    assert_eq!(a.inbox.items(), Vec::new());
 }
 
 #[tokio::test]

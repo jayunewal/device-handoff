@@ -41,8 +41,8 @@ async fn a_stranger_is_turned_away_before_it_can_say_anything() {
             assert_eq!(closed_with(&ended), Some(403), "{ended}");
         }
     }
-    assert!(a.node.connected_peers().is_empty());
-    assert!(a.inbox.items().is_empty());
+    assert_eq!(a.node.connected_peers(), Vec::new());
+    assert_eq!(a.inbox.items(), Vec::new());
 }
 
 #[tokio::test]
@@ -66,7 +66,7 @@ async fn a_stranger_cannot_get_a_request_answered_even_by_racing_the_refusal() {
         let _ = send.finish();
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(a.inbox.items().is_empty());
+    assert_eq!(a.inbox.items(), Vec::new());
 }
 
 #[tokio::test]
@@ -78,7 +78,7 @@ async fn many_strangers_leave_nothing_behind() {
             let _ = tokio::time::timeout(Duration::from_secs(5), connection.closed()).await;
         }
     }
-    assert!(a.node.connected_peers().is_empty());
+    assert_eq!(a.node.connected_peers(), Vec::new());
     assert!(a.trust.is_empty());
 }
 
@@ -172,7 +172,7 @@ async fn a_device_unpaired_between_the_check_and_the_registration_is_cut_off_any
         }
     }
     assert!(!a.trust.contains(&phone_id));
-    assert!(a.node.connected_peers().is_empty());
+    assert_eq!(a.node.connected_peers(), Vec::new());
 }
 
 #[tokio::test]
