@@ -4,7 +4,7 @@ Status: accepted
 
 ## Context
 
-Baton is meant to be adopted widely and shipped through app stores. The projects closest to it have mixed licenses: RustDesk is AGPL-3.0, KDE Connect and Sunshine are GPL, LocalSend and scrcpy are Apache-2.0, iroh is MIT or Apache-2.0.
+Baton is meant to be adopted widely and shipped through app stores. The projects closest to it have mixed licenses: RustDesk is AGPL-3.0, KDE Connect and Sunshine are GPL, scrcpy is Apache-2.0, iroh is MIT or Apache-2.0.
 
 ## Decision
 

@@ -71,7 +71,6 @@ Platform limits: iOS and iPadOS suspend apps in the background, so a phone canno
 | --- | --- | --- |
 | RustDesk | Remote desktop on all five platforms with a self-hostable relay. Closest to the streaming half. | AGPL-3.0 |
 | KDE Connect | Clipboard, file and URL sharing; model for pairing and plugins. | GPL |
-| LocalSend | LAN file sharing in Flutter; cross-platform discovery. | Apache-2.0 |
 | Sunshine and Moonlight | Low-latency GPU streaming. | GPL-3.0 |
 | scrcpy | Android mirroring and control over adb. | Apache-2.0 |
 | Syncthing | Discovery and relay pools. | MPL-2.0 |
