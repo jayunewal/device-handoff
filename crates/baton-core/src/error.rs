@@ -192,7 +192,10 @@ fn rejection_text(rejection: PairRejection) -> &'static str {
     match rejection {
         PairRejection::Invalid => "the ticket was wrong, already used or expired",
         PairRejection::Declined => "the person on the other device declined",
-        PairRejection::Busy => "the other device is busy with another request; try again",
+        PairRejection::Busy => {
+            "another device with this ticket is already waiting for an answer on the other device; \
+             if that is not yours, decline it there and make a new ticket"
+        }
         PairRejection::Other => "the other device refused for a reason this version does not know",
     }
 }

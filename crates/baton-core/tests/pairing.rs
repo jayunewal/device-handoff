@@ -403,7 +403,7 @@ async fn a_newer_offer_replaces_the_older_one() {
 }
 
 #[tokio::test]
-async fn a_second_request_is_told_to_wait_while_the_first_is_with_the_person() {
+async fn a_second_holder_of_the_ticket_is_told_busy_while_the_first_is_with_the_person() {
     let a = device("Laptop").await;
     let b = Arc::new(device("Phone").await);
     let c = device("Tablet").await;
@@ -434,12 +434,21 @@ async fn a_second_request_is_told_to_wait_while_the_first_is_with_the_person() {
 
     let error = c.node.join_pairing(&ticket, |_| {}).await.unwrap_err();
     assert_eq!(rejected(&error), Some(PairRejection::Busy), "{error}");
+    // Trying again cannot help, so the message must not suggest it. It says what to do
+    // about a ticket that someone else holds.
+    let message = error.to_string();
+    assert!(!message.contains("try again"), "{message}");
+    assert!(message.contains("new ticket"), "{message}");
 
     answer.notify_one();
     first.await.unwrap().unwrap();
     offer.wait().await.unwrap();
     assert!(a.trust.contains(&b.id));
     assert!(!a.trust.contains(&c.id));
+
+    // However the first request ends, the offer is spent, so a second try gets `Invalid`.
+    let error = c.node.join_pairing(&ticket, |_| {}).await.unwrap_err();
+    assert_eq!(rejected(&error), Some(PairRejection::Invalid), "{error}");
 }
 
 #[tokio::test]

@@ -235,7 +235,12 @@ pub enum PairRejection {
     /// not answer in time. The ticket is spent.
     Declined,
     /// The proof was right, but the offerer is already waiting for its person to
-    /// answer another request. Only a holder of the secret ever sees this. Try again.
+    /// answer another request. Only a holder of the secret ever sees this.
+    ///
+    /// Another device holds the ticket and is being asked about right now. Unless the
+    /// person started that request themselves, someone else has seen the ticket. Trying
+    /// again with it cannot help: every way that request can end spends the offer, so a
+    /// second try gets `Busy` again while it waits and `Invalid` after it.
     Busy,
     /// Any reason this version does not know about.
     #[serde(other)]
