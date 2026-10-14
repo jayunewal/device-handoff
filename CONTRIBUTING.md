@@ -4,7 +4,7 @@ Thanks for helping. Baton is pre-alpha, so the most useful contributions right n
 
 ## Setting up
 
-You need a recent stable Rust toolchain (the minimum supported version is `rust-version` in `Cargo.toml`) and [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny).
+You need a recent stable Rust toolchain (the minimum supported version is `rust-version` in `Cargo.toml`) and [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny). CI uses the newest stable release, and a new release can add Clippy lints that fail `-D warnings`, so run `rustup update stable` before you push to see what CI will see.
 
 ```sh
 cargo build --workspace
