@@ -162,6 +162,11 @@ pub enum OfferEnd {
     Expired,
     /// The person declined the request.
     Declined,
+    /// The device that asked disconnected while the person was still deciding.
+    ///
+    /// The person never got to decline the request, and it may have come from someone
+    /// who copied the ticket, so the ticket is spent just as it is after a decline.
+    Abandoned,
 }
 
 impl fmt::Display for OfferEnd {
@@ -170,6 +175,7 @@ impl fmt::Display for OfferEnd {
             Self::Cancelled => "it was cancelled",
             Self::Expired => "it expired",
             Self::Declined => "the request was declined",
+            Self::Abandoned => "the device that asked disconnected before the request was answered",
         })
     }
 }

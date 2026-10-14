@@ -5,7 +5,13 @@
 
 mod common;
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst},
+    },
+    time::Duration,
+};
 
 use baton_core::{ConfirmationCode, Error, PairApprovalRequest, error::OfferEnd};
 use baton_proto::{
@@ -16,7 +22,7 @@ use baton_proto::{
     },
     ticket::CLOCK_SKEW_ALLOWANCE_SECS,
 };
-use common::{Raw, Spec, approve, device, eventually, header, info, refuse};
+use common::{Raw, Spec, approve, device, header, info, refuse};
 use tokio::sync::{Notify, mpsc};
 
 fn rejected(error: &Error) -> Option<PairRejection> {
@@ -467,6 +473,129 @@ async fn cancelling_while_the_person_is_deciding_leaves_nobody_paired() {
     assert!(a.trust.is_empty() && b.trust.is_empty());
 }
 
+/// Notes that the question it belongs to went away before anyone answered it, which
+/// is what a prompt on a screen sees when its future is dropped.
+struct TakenAway {
+    flag: Arc<AtomicBool>,
+    answered: bool,
+}
+
+impl Drop for TakenAway {
+    fn drop(&mut self) {
+        if !self.answered {
+            self.flag.store(true, SeqCst);
+        }
+    }
+}
+
+/// An offer whose approver says `asked` when it is put to the person, waits for `answer`,
+/// and sets `taken_away` if the question is dropped before then.
+async fn offer_that_waits_for_the_person(
+    node: &baton_core::Node,
+    asked: &Arc<Notify>,
+    answer: &Arc<Notify>,
+    taken_away: &Arc<AtomicBool>,
+) -> baton_core::PairOffer {
+    let (asked, answer, taken_away) = (
+        Arc::clone(asked),
+        Arc::clone(answer),
+        Arc::clone(taken_away),
+    );
+    node.offer_pairing(move |_request: PairApprovalRequest| {
+        let (asked, answer, taken_away) = (
+            Arc::clone(&asked),
+            Arc::clone(&answer),
+            Arc::clone(&taken_away),
+        );
+        async move {
+            let mut question = TakenAway {
+                flag: taken_away,
+                answered: false,
+            };
+            asked.notify_one();
+            answer.notified().await;
+            question.answered = true;
+            true
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_request_that_arrived_before_the_deadline_is_still_answered_after_it() {
+    let a = device("Laptop").await;
+    let b = Arc::new(device("Phone").await);
+    let c = device("Tablet").await;
+    let (asked, answer, taken_away) = (
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let offer = offer_that_waits_for_the_person(&a.node, &asked, &answer, &taken_away).await;
+    let ticket = offer.ticket().clone();
+    let lifetime = offer.expires_at() - common::START;
+
+    let join = {
+        let (b, ticket) = (Arc::clone(&b), ticket.clone());
+        tokio::spawn(async move { b.node.join_pairing(&ticket, |_| {}).await })
+    };
+    asked.notified().await;
+
+    // The offer runs out while the person is looking at the request. The task that ends
+    // offers looks every half second, so give it time to act if it is going to.
+    a.clock.advance(lifetime + 1);
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    assert!(
+        !taken_away.load(SeqCst),
+        "the deadline took the question away from the person who was answering it"
+    );
+
+    // Nobody new is let in after the deadline, and nobody is told to wait for a request
+    // that is only still here because of the one already being answered.
+    let error = c.node.join_pairing(&ticket, |_| {}).await.unwrap_err();
+    assert_eq!(rejected(&error), Some(PairRejection::Invalid), "{error}");
+    assert!(!taken_away.load(SeqCst));
+
+    answer.notify_one();
+    join.await.unwrap().unwrap();
+    offer.wait().await.unwrap();
+    assert!(a.trust.contains(&b.id));
+    assert!(!a.trust.contains(&c.id));
+}
+
+#[tokio::test]
+async fn a_prompt_that_outlived_the_deadline_still_ends_with_the_approval_time_out() {
+    let mut spec = Spec::new("Laptop");
+    spec.tuning.approval_timeout = Duration::from_millis(1_500);
+    let a = spec.start().await;
+    let b = Arc::new(device("Phone").await);
+    let (asked, answer, taken_away) = (
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let offer = offer_that_waits_for_the_person(&a.node, &asked, &answer, &taken_away).await;
+    let lifetime = offer.expires_at() - common::START;
+    let join = {
+        let (b, ticket) = (Arc::clone(&b), offer.ticket().clone());
+        tokio::spawn(async move { b.node.join_pairing(&ticket, |_| {}).await })
+    };
+    asked.notified().await;
+    a.clock.advance(lifetime + 1);
+
+    // Nobody answers. The deadline has passed, so only the time the person was given
+    // decides, and the joiner hears what it hears from any request nobody answered.
+    let error = tokio::time::timeout(Duration::from_secs(10), join)
+        .await
+        .expect("the approval time-out should end the request")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(rejected(&error), Some(PairRejection::Declined), "{error}");
+    assert!(offer.wait().await.is_err());
+    assert!(a.trust.is_empty() && b.trust.is_empty());
+}
+
 /// Makes a joiner's request by hand, so a test can send what a real device would not.
 struct Forger {
     raw: Raw,
@@ -618,19 +747,19 @@ async fn someone_with_the_ticket_gets_a_code_of_their_own_not_the_real_joiners()
 }
 
 #[tokio::test]
-async fn a_joiner_that_leaves_does_not_block_the_offer() {
+async fn a_joiner_that_leaves_while_the_person_is_deciding_spends_the_offer() {
     let a = device("Laptop").await;
     let b = device("Phone").await;
     let asked = Arc::new(Notify::new());
-    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let prompts = Arc::new(AtomicUsize::new(0));
     let offer = {
-        let (asked, calls) = (Arc::clone(&asked), Arc::clone(&calls));
+        let (asked, prompts) = (Arc::clone(&asked), Arc::clone(&prompts));
         a.node
             .offer_pairing(move |_request: PairApprovalRequest| {
-                let (asked, calls) = (Arc::clone(&asked), Arc::clone(&calls));
+                let (asked, prompts) = (Arc::clone(&asked), Arc::clone(&prompts));
                 async move {
-                    // The first request is left hanging; later ones are accepted.
-                    if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    // The first request is left hanging; a second prompt would be accepted.
+                    if prompts.fetch_add(1, SeqCst) == 0 {
                         asked.notify_one();
                         std::future::pending::<bool>().await
                     } else {
@@ -641,16 +770,14 @@ async fn a_joiner_that_leaves_does_not_block_the_offer() {
             .await
             .unwrap()
     };
+    let ticket = offer.ticket().clone();
 
-    let forger = Forger::new().await;
-    let connection = forger.connect(&a).await;
+    // Someone with the ticket asks, and walks away while the person is looking at it.
+    let leaver = Forger::new().await;
+    let connection = leaver.connect(&a).await;
     let request = PairRequest {
         device: info("Flaky"),
-        proof: Forger::proof_for(
-            offer.ticket(),
-            &forger.raw.id,
-            &Forger::binding_of(&connection),
-        ),
+        proof: Forger::proof_for(&ticket, &leaver.raw.id, &Forger::binding_of(&connection)),
     };
     let (mut send, _recv) = connection.open_bi().await.unwrap();
     send.write_all(&frame::encode(&request).unwrap())
@@ -658,19 +785,36 @@ async fn a_joiner_that_leaves_does_not_block_the_offer() {
         .unwrap();
     send.finish().unwrap();
     asked.notified().await;
-    // The person is now looking at the prompt. The joiner walks away.
     connection.close(0u32.into(), b"gone");
 
-    // The offer must not stay stuck on the request that went away.
-    eventually("the abandoned request to be forgotten", || {
-        a.trust.is_empty()
-    })
-    .await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    b.node.join_pairing(offer.ticket(), |_| {}).await.unwrap();
-    offer.wait().await.unwrap();
-    assert!(a.trust.contains(&b.id));
-    assert!(!a.trust.contains(&forger.raw.id));
+    // The person who made the offer is told the request was abandoned, because they never
+    // got to decline it, and the ticket is spent, because it may be in someone else's hands.
+    let ended = tokio::time::timeout(Duration::from_secs(5), offer.wait())
+        .await
+        .expect("the offerer should be told the request was abandoned")
+        .unwrap_err();
+    assert!(
+        matches!(ended, Error::OfferEnded(OfferEnd::Abandoned)),
+        "{ended}"
+    );
+
+    // Whoever asks next with the same ticket, the real joiner or a stranger with a new key,
+    // gets no prompt. Each prompt shows a fresh code, so a ticket that could raise any
+    // number of them would give a stranger any number of chances to match the code.
+    let error = b.node.join_pairing(&ticket, |_| {}).await.unwrap_err();
+    assert_eq!(rejected(&error), Some(PairRejection::Invalid), "{error}");
+    for _ in 0..3 {
+        let stranger = Forger::new().await;
+        let connection = stranger.connect(&a).await;
+        let request = PairRequest {
+            device: info("Stranger"),
+            proof: Forger::proof_for(&ticket, &stranger.raw.id, &Forger::binding_of(&connection)),
+        };
+        let response = Forger::ask(&connection, &request).await.unwrap();
+        assert_eq!(response, PairResponse::Rejected(PairRejection::Invalid));
+    }
+    assert_eq!(prompts.load(SeqCst), 1, "one ticket raised a second prompt");
+    assert!(a.trust.is_empty());
 }
 
 #[tokio::test]

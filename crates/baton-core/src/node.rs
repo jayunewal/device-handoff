@@ -703,6 +703,10 @@ fn ticket_hints(addr: &EndpointAddr) -> (Option<String>, Vec<SocketAddr>) {
 }
 
 /// Ends an offer when its time is up, so that waiting on it returns.
+///
+/// An offer that a request is with the person for is left alone, and looked at again
+/// until it has been answered, timed out or withdrawn: the person is not interrupted
+/// in the middle of answering.
 async fn end_offer_when_due(
     shared: Arc<Shared>,
     id: u64,
@@ -717,8 +721,7 @@ async fn end_offer_when_due(
             () = shared.stop.cancelled() => return,
             _ = tick.tick() => {}
         }
-        if shared.clock.monotonic() >= deadline {
-            shared.offers.end(id, OfferEnd::Expired);
+        if shared.clock.monotonic() >= deadline && shared.offers.expire(id) {
             return;
         }
     }

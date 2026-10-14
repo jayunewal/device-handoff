@@ -8,7 +8,9 @@
 //! `docs/protocol.md`; this module is the state around it:
 //!
 //! - an offer has a secret, a deadline, and a [`PairApprover`] that asks a person;
-//! - only one offer is open at a time, and it is used at most once;
+//! - only one offer is open at a time, and it is used at most once: it puts one request
+//!   to the person, and whatever becomes of that request (an answer, no answer, the
+//!   joiner leaving) spends it;
 //! - what a caller learns about a failed attempt is the same whether the proof
 //!   was wrong, the offer expired, or there was no offer at all;
 //! - both devices work out the same [`ConfirmationCode`] from the session and show it,
@@ -85,6 +87,10 @@ impl PairApprovalRequest {
 pub trait PairApprover: Send + Sync + 'static {
     /// Resolves to `true` if the person accepts the device. If it takes longer
     /// than two minutes, the request counts as declined.
+    ///
+    /// The future is dropped if the question stops mattering before the person answers:
+    /// the offer is withdrawn, or the device that asked disconnects. A prompt on a screen
+    /// should go away when that happens.
     fn approve(&self, request: PairApprovalRequest) -> BoxFuture<'_, bool>;
 }
 
@@ -108,6 +114,8 @@ struct Open {
     /// the offer nor end it early.
     deadline: Duration,
     approver: Arc<dyn PairApprover>,
+    /// A valid request has been put to the person. It stays set until the offer ends:
+    /// one offer shows one prompt.
     busy: bool,
     done: Done,
     /// Fired when the offer ends without being claimed, to abort a question to the person.
@@ -220,6 +228,31 @@ impl Offers {
         }
     }
 
+    /// Ends offer `id` because its time is up, unless a valid request is with the person.
+    ///
+    /// A request that arrived before the deadline is still answered after it: the
+    /// question is not taken away from someone who is in the middle of answering it, and
+    /// the approval time-out decides when they have taken too long. Returns `false` while
+    /// that is so, and `true` once there is nothing left to wait for, whether the offer
+    /// ended just now or had already ended.
+    pub(crate) fn expire(&self, id: u64) -> bool {
+        let mut slot = self.lock();
+        match slot.current.as_ref() {
+            Some(open) if open.id == id => {
+                if open.busy {
+                    return false;
+                }
+            }
+            _ => return true,
+        }
+        let open = slot.current.take();
+        drop(slot);
+        if let Some(open) = open {
+            finish(open, OfferEnd::Expired);
+        }
+        true
+    }
+
     /// Decides what to do with a request from `joiner` carrying `proof`. `now` is a
     /// reading of the monotonic clock.
     pub(crate) fn check(
@@ -235,6 +268,11 @@ impl Offers {
             return Verdict::Invalid;
         };
         if now >= open.deadline {
+            // Nobody new gets in after the deadline. An offer that a request is already
+            // with the person for stays until they answer (see `expire`).
+            if open.busy {
+                return Verdict::Invalid;
+            }
             let expired = slot.current.take();
             drop(slot);
             if let Some(expired) = expired {
@@ -258,21 +296,25 @@ impl Offers {
         })
     }
 
-    /// Lets another request through after the one waiting for a person went away.
-    pub(crate) fn release(&self, id: u64) {
-        if let Some(open) = self.lock().current.as_mut().filter(|open| open.id == id) {
-            open.busy = false;
-        }
-    }
-
-    /// Takes the offer for good, once a person has answered. After this it can no
-    /// longer be cancelled or expire; `None` means it ended while they decided.
+    /// Takes the offer for good, once the request that was put to the person has been
+    /// settled: answered, timed out, or abandoned by the joiner. After this it can no
+    /// longer be cancelled or expire, and no other request can be put to anyone; `None`
+    /// means it was withdrawn or replaced while they decided.
     pub(crate) fn claim(&self, id: u64) -> Option<Done> {
         let mut slot = self.lock();
         if slot.current.as_ref().is_none_or(|open| open.id != id) {
             return None;
         }
         slot.current.take().map(|open| open.done)
+    }
+
+    /// Spends offer `id` because the request that was put to the person will not be
+    /// answered: the device that asked has gone, or the task serving it was dropped. Does
+    /// nothing if the request was settled or the offer has ended in the meantime.
+    pub(crate) fn abandon(&self, id: u64) {
+        if let Some(done) = self.claim(id) {
+            let _ = done.send(Err(Error::OfferEnded(OfferEnd::Abandoned)));
+        }
     }
 }
 
@@ -333,8 +375,9 @@ impl PairOffer {
     ///
     /// # Errors
     ///
-    /// [`Error::OfferEnded`] if the offer expired, was cancelled or replaced, or
-    /// the person declined; another error if the pairing could not be saved.
+    /// [`Error::OfferEnded`] if the offer expired, was cancelled or replaced, the
+    /// person declined, or the device that asked disconnected before they answered;
+    /// another error if the pairing could not be saved.
     pub async fn wait(mut self) -> Result<PairedDevice> {
         match (&mut self.done).await {
             Ok(result) => result,
@@ -491,6 +534,14 @@ impl PairServer {
             device: device.clone(),
             confirmation: approval.confirmation,
         };
+        // If this task is dropped before the request is settled (the connection ran out
+        // of time, the approver panicked), nothing else would end the offer: the deadline
+        // leaves an offer alone while a request is with the person. Settling a request
+        // below takes the offer first, which makes this a no-op.
+        let _abandon_if_dropped = AbandonOnDrop {
+            offers: &shared.offers,
+            id: approval.id,
+        };
         let answer = tokio::select! {
             biased;
             () = approval.cancel.cancelled() => Answer::Withdrawn,
@@ -502,8 +553,13 @@ impl PairServer {
         match answer {
             // `end` already told the offerer; the joiner is told what any bad ticket gets.
             Answer::Withdrawn => PairResponse::Rejected(PairRejection::Invalid),
+            // A prompt that was shown and then abandoned counts as a decline that the
+            // person never got to make. Giving the offer back instead would let one
+            // leaked ticket raise any number of prompts, each with a fresh code, and the
+            // six digits are enough only because an offer shows one.
             Answer::JoinerLeft => {
-                shared.offers.release(approval.id);
+                shared.offers.abandon(approval.id);
+                // Nobody is there to read it.
                 PairResponse::Rejected(PairRejection::Invalid)
             }
             Answer::TimedOut | Answer::No => {
@@ -568,6 +624,18 @@ enum Answer {
     TimedOut,
     Withdrawn,
     JoinerLeft,
+}
+
+/// Spends the offer as abandoned when dropped, unless the request has been settled.
+struct AbandonOnDrop<'a> {
+    offers: &'a Offers,
+    id: u64,
+}
+
+impl Drop for AbandonOnDrop<'_> {
+    fn drop(&mut self) {
+        self.offers.abandon(self.id);
+    }
 }
 
 /// Redeems `ticket`: connects to the offerer, proves possession of the secret, and
@@ -761,7 +829,7 @@ mod tests {
     }
 
     #[test]
-    fn a_second_valid_request_waits_its_turn() {
+    fn a_second_valid_request_waits_its_turn_and_is_never_asked() {
         let offers = Offers::default();
         let started = offers.open(secret(7), secs(1_000), approver());
         let first = approve(check(&offers, 7, 2, 100));
@@ -769,21 +837,103 @@ mod tests {
         // A caller without the secret is not told that a request is pending.
         assert!(matches!(check(&offers, 8, 3, 100), Verdict::Invalid));
 
-        offers.release(first.id);
-        assert!(matches!(check(&offers, 7, 3, 100), Verdict::Approve(_)));
-        drop(started);
+        // Once the first request is settled the offer is spent: it has shown its one
+        // prompt, so the second request is not asked either.
+        let done = offers.claim(first.id).expect("the offer is still open");
+        assert!(matches!(check(&offers, 7, 3, 100), Verdict::Invalid));
+        drop((done, started));
     }
 
     #[test]
     fn an_offer_expires_at_its_deadline() {
         let offers = Offers::default();
         let started = offers.open(secret(7), secs(1_000), approver());
-        assert!(matches!(check(&offers, 7, 2, 999), Verdict::Approve(_)));
-        offers.release(0);
         assert!(matches!(check(&offers, 7, 2, 1_000), Verdict::Invalid));
         assert_eq!(ended_with(started.done), OfferEnd::Expired);
         // It is gone for good, not merely refused once.
         assert!(matches!(check(&offers, 7, 2, 10), Verdict::Invalid));
+    }
+
+    #[test]
+    fn a_request_just_before_the_deadline_is_still_asked() {
+        let offers = Offers::default();
+        let _started = offers.open(secret(7), secs(1_000), approver());
+        assert!(matches!(check(&offers, 7, 2, 999), Verdict::Approve(_)));
+    }
+
+    #[test]
+    fn the_task_that_ends_offers_ends_one_nobody_is_answering() {
+        let offers = Offers::default();
+        let started = offers.open(secret(7), secs(1_000), approver());
+        assert!(offers.expire(started.id));
+        assert_eq!(ended_with(started.done), OfferEnd::Expired);
+        // Nothing is left to wait for, however often it asks.
+        assert!(offers.expire(started.id));
+    }
+
+    #[test]
+    fn a_request_that_is_with_the_person_outlives_the_deadline() {
+        let offers = Offers::default();
+        let started = offers.open(secret(7), secs(1_000), approver());
+        let approval = approve(check(&offers, 7, 2, 999));
+
+        // The deadline passes while the person is deciding. Neither the task that ends
+        // offers nor a request that arrives late may take the question away.
+        assert!(!offers.expire(started.id), "the offer must be held open");
+        assert!(!approval.cancel.is_cancelled());
+        assert!(matches!(check(&offers, 7, 3, 1_001), Verdict::Invalid));
+        // Not `Busy` either: nothing new is let in after the deadline, and a caller
+        // that has the secret learns nothing it could not have learned before.
+        assert!(matches!(check(&offers, 7, 2, 1_001), Verdict::Invalid));
+        assert!(!approval.cancel.is_cancelled());
+
+        // The answer still counts, and then there is nothing left to expire.
+        let done = offers.claim(approval.id).expect("the offer is still open");
+        assert!(offers.expire(started.id));
+        drop(done);
+    }
+
+    #[test]
+    fn a_request_whose_task_is_dropped_spends_the_offer() {
+        let offers = Offers::default();
+        let started = offers.open(secret(7), secs(1_000), approver());
+        let approval = approve(check(&offers, 7, 2, 100));
+        // The connection serving the request is cut off before the person answers. The
+        // deadline leaves a busy offer alone, so without this nothing would ever end it.
+        drop(AbandonOnDrop {
+            offers: &offers,
+            id: approval.id,
+        });
+        assert_eq!(ended_with(started.done), OfferEnd::Abandoned);
+        assert!(matches!(check(&offers, 7, 3, 100), Verdict::Invalid));
+    }
+
+    #[test]
+    fn a_request_that_was_settled_is_not_abandoned_afterwards() {
+        let offers = Offers::default();
+        let mut started = offers.open(secret(7), secs(1_000), approver());
+        let approval = approve(check(&offers, 7, 2, 100));
+        let done = offers.claim(approval.id).expect("the offer is still open");
+        drop(AbandonOnDrop {
+            offers: &offers,
+            id: approval.id,
+        });
+        // Nothing was sent: the answer is still the settled request's to give.
+        assert!(started.done.try_recv().is_err());
+        let _ = done.send(Err(Error::OfferEnded(OfferEnd::Declined)));
+        assert_eq!(ended_with(started.done), OfferEnd::Declined);
+    }
+
+    #[test]
+    fn withdrawing_still_drops_a_question_after_the_deadline() {
+        let offers = Offers::default();
+        let started = offers.open(secret(7), secs(1_000), approver());
+        let approval = approve(check(&offers, 7, 2, 999));
+        assert!(!offers.expire(started.id));
+        // The deadline does not protect an offer from the person who made it.
+        assert!(offers.end(started.id, OfferEnd::Cancelled));
+        assert!(approval.cancel.is_cancelled());
+        assert_eq!(ended_with(started.done), OfferEnd::Cancelled);
     }
 
     #[test]
@@ -830,7 +980,8 @@ mod tests {
         let second = offers.open(secret(8), secs(1_000), approver());
         assert!(!offers.end(first.id, OfferEnd::Expired));
         assert!(offers.claim(first.id).is_none());
-        offers.release(first.id);
+        // Nothing is left of the old offer to expire, so there is nothing to wait for.
+        assert!(offers.expire(first.id));
         assert!(matches!(check(&offers, 8, 2, 100), Verdict::Approve(_)));
         assert!(offers.end(second.id, OfferEnd::Cancelled));
     }
