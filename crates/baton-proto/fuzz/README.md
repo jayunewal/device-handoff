@@ -27,7 +27,7 @@ The independent checker is the point of the first target: a crash search alone w
 
 ## Seeds
 
-`seeds/decode_payload` holds one valid payload of every message, plus malformed ones that once got through a decoder. `seeds/ticket` holds valid tickets with and without a relay and addresses, tickets with ignorable and critical extensions and flags, and the text form. They are small on purpose, so that the fuzzer starts from the interesting shapes instead of finding them.
+`seeds/decode_payload` holds one valid payload of every message, plus malformed ones that once got through a decoder. `seeds/ticket` holds valid tickets with and without a relay and addresses, tickets with ignorable and critical extensions and flags, the text form, and a text form with the prefix of a later version. They are small on purpose, so that the fuzzer starts from the interesting shapes instead of finding them.
 
 When the fuzzer or a bug report finds an input that breaks something, do three things in the same pull request as the fix:
 

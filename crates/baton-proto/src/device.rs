@@ -81,10 +81,13 @@ impl DeviceInfo {
 /// text, are removed: the whole Unicode `Default_Ignorable_Code_Point` set, which
 /// includes zero-width characters, direction overrides and isolates, the Hangul
 /// fillers that render as blank, variation selectors, and the "tag" characters that
-/// can hide text in plain sight. The braille blank, which renders as empty but is
-/// not ignorable, counts as a space. Runs of whitespace collapse to one space, and
-/// the result is shortened to [`MAX_DISPLAY_NAME_CHARS`] characters. If nothing is
-/// left, [`FALLBACK_NAME`] is returned.
+/// can hide text in plain sight. The three interlinear annotation characters,
+/// U+FFF9 to U+FFFB, are removed too: they are format characters but not default
+/// ignorable, and a renderer that supports them may hide the text between them. The
+/// braille blank, which renders as empty but is not ignorable, counts as a space.
+/// Runs of whitespace collapse to one space, and the result is shortened to
+/// [`MAX_DISPLAY_NAME_CHARS`] characters. If nothing is left, [`FALLBACK_NAME`] is
+/// returned.
 ///
 /// Removing the zero-width joiner and non-joiner has a cost: they are used inside
 /// ordinary words in some scripts (Persian, for one) and to build emoji sequences, so
@@ -100,7 +103,7 @@ pub fn sanitize_display_name(raw: &str) -> String {
     let mut chars = 0;
     let mut pending_space = false;
     for c in raw.chars() {
-        if is_default_ignorable(c) {
+        if is_default_ignorable(c) || is_interlinear_annotation(c) {
             continue;
         }
         if c.is_control() || c.is_whitespace() || c == BRAILLE_BLANK {
@@ -128,6 +131,19 @@ pub fn sanitize_display_name(raw: &str) -> String {
 /// U+2800 BRAILLE PATTERN BLANK. It draws nothing, yet it is a letter-like symbol, so it
 /// is neither whitespace nor default-ignorable.
 const BRAILLE_BLANK: char = '\u{2800}';
+
+/// Whether `c` is one of the interlinear annotation characters: U+FFF9 anchor, U+FFFA
+/// separator and U+FFFB terminator.
+///
+/// They mark annotated text, such as a reading printed above a word, and they are in
+/// general category Cf (format) but not in `Default_Ignorable_Code_Point`, so
+/// [`is_default_ignorable`] is right to say no. A renderer that implements them may draw
+/// only the annotated text, or only the annotation, so a name that contains them could
+/// show something other than the words it holds. A name has no use for them, and the
+/// text between them stays, as ordinary text.
+const fn is_interlinear_annotation(c: char) -> bool {
+    matches!(c, '\u{FFF9}'..='\u{FFFB}')
+}
 
 /// Whether `c` has the Unicode property `Default_Ignorable_Code_Point` (Unicode 16.0).
 ///
@@ -212,6 +228,9 @@ mod tests {
             ("shorthand format overlap", '\u{1BCA0}'),
             ("musical symbol begin beam", '\u{1D173}'),
             ("zero-width joiner", '\u{200D}'),
+            ("interlinear annotation anchor", '\u{FFF9}'),
+            ("interlinear annotation separator", '\u{FFFA}'),
+            ("interlinear annotation terminator", '\u{FFFB}'),
         ] {
             assert_eq!(
                 sanitize_display_name(&format!("a{c}b")),
@@ -219,6 +238,25 @@ mod tests {
                 "{what} was not removed"
             );
         }
+    }
+
+    #[test]
+    fn interlinear_annotation_characters_are_removed_and_the_text_between_them_stays() {
+        // A renderer that supports annotations may show only one of the two parts. The
+        // name keeps both, as plain words, so that what is shown is what is there.
+        assert_eq!(
+            sanitize_display_name("Kitchen\u{FFF9}laptop\u{FFFA}tablet\u{FFFB}"),
+            "Kitchenlaptoptablet"
+        );
+        assert_eq!(
+            sanitize_display_name("a \u{FFF9} b \u{FFFA} c \u{FFFB} d"),
+            "a b c d"
+        );
+        // Their neighbours in the block are visible characters and stay.
+        assert_eq!(
+            sanitize_display_name("a\u{FFFC}b\u{FFFD}c"),
+            "a\u{FFFC}b\u{FFFD}c"
+        );
     }
 
     #[test]
@@ -238,6 +276,7 @@ mod tests {
             "\u{FFA0}",
             "\u{2800}\u{2800}",
             "\u{E0041}\u{FE0F}",
+            "\u{FFF9}\u{FFFA}\u{FFFB}",
             " \u{3164} \u{2800} ",
         ] {
             assert_eq!(sanitize_display_name(raw), FALLBACK_NAME, "{raw:?}");
@@ -256,9 +295,10 @@ mod tests {
         for c in ('\0'..=char::MAX).filter(|c| *c != '\u{FFFE}') {
             let clean = sanitize_display_name(&format!("a{c}b"));
             assert!(
-                !clean
-                    .chars()
-                    .any(|k| is_default_ignorable(k) || k.is_control() || k == BRAILLE_BLANK),
+                !clean.chars().any(|k| is_default_ignorable(k)
+                    || is_interlinear_annotation(k)
+                    || k.is_control()
+                    || k == BRAILLE_BLANK),
                 "U+{:04X} survived as {clean:?}",
                 u32::from(c)
             );
