@@ -979,12 +979,15 @@ mod tests {
         .unwrap();
         inbox.add(&laptop(), text("x"), NOW).unwrap();
 
-        // Another process in the middle of a change.
+        // Another process in the middle of a change. Waiting for the lock, not trying for
+        // it: a lock belongs to the open file, so a child process that another test is
+        // starting holds a copy of `inbox`'s lock file until it runs its program, and the
+        // lock can look taken for a moment after `add` has returned. macOS CI hit this.
         let other = OpenOptions::new()
             .write(true)
             .open(dir.path().join("inbox.lock"))
             .unwrap();
-        other.try_lock().unwrap();
+        other.lock().unwrap();
 
         let started = Instant::now();
         assert!(matches!(
