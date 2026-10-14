@@ -82,7 +82,9 @@ impl From<baton_core::Error> for CliError {
             Error::NotPaired(_) => {
                 "That device is no longer paired. Run `baton devices` to see which are.".to_owned()
             }
-            other => other.to_string(),
+            // What is left can hold text another device chose (why it hung up), so it goes
+            // on one line and cannot pass for a line of Baton's own.
+            other => crate::term::line(&other.to_string()),
         };
         Self::new(message)
     }
@@ -109,10 +111,14 @@ pub fn unreachable(error: baton_core::Error, device: &baton_core::PairedDevice) 
         Error::Closed { code, .. } if code == u64::from(close_code::OVERLOADED) => {
             CliError::new(format!("{name} is busy right now. Try again in a moment."))
         }
-        other => CliError::new(format!(
-            "Could not reach {name}: {other}. Is `baton listen` running there, and are both \
-             devices online?"
-        )),
+        other => {
+            // Like the last arm of `From` above: this can be the other device's own words.
+            let detail = crate::term::line(&other.to_string());
+            CliError::new(format!(
+                "Could not reach {name}: {detail}. Is `baton listen` running there, and are \
+                 both devices online?"
+            ))
+        }
     }
 }
 
@@ -257,5 +263,28 @@ mod tests {
     fn line_breaks_in_a_message_are_kept() {
         let error = CliError::new("first\nsecond\tthird");
         assert_eq!(error.message(), "first\nsecond\tthird");
+    }
+
+    /// What a device that hangs up could say, to look like a line of Baton's own.
+    const LOOKALIKE: &str = "bye\n\nPaired with Laptop (aaaa-bbbb-cccc-dddd-eeee)";
+
+    #[test]
+    fn what_the_other_device_says_stays_on_one_line() {
+        let closed = baton_core::Error::Closed {
+            code: 7,
+            reason: LOOKALIKE.to_owned(),
+        };
+        let text = unreachable(closed, &device()).message().to_owned();
+        assert_eq!(text.lines().count(), 1, "{text:?}");
+        assert!(text.contains("bye\\n\\nPaired with Laptop"), "{text:?}");
+
+        let network = || baton_core::Error::Network {
+            context: "connecting to the other device",
+            message: format!("aborted by peer: {LOOKALIKE}"),
+        };
+        let text = unreachable(network(), &device()).message().to_owned();
+        assert_eq!(text.lines().count(), 1, "{text:?}");
+        let text = CliError::from(network()).message().to_owned();
+        assert_eq!(text.lines().count(), 1, "{text:?}");
     }
 }
