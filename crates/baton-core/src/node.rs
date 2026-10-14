@@ -286,7 +286,7 @@ impl NodeBuilder {
 
         // Subscribe before the first connection can arrive, so no unpairing is missed.
         let trust_events = trust.subscribe();
-        let admission = Arc::new(Admission::new());
+        let admission = Arc::new(Admission::new(trust.clone()));
         let router = Router::builder(endpoint.clone())
             .accept(
                 ALPN_SESSION,

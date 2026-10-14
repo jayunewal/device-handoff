@@ -65,7 +65,7 @@ An incoming connection passes through these checks, in this order:
 ```
 incoming packet
    │  Admission     Asks the sender to prove its address first when attempts arrive faster than
-   │                the node wants to handle. Costs the node a small reply, no cryptography.
+   │                the node wants to handle. Costs the node a small reply, not a handshake.
    ▼
 QUIC and TLS handshake        both ends are now known by their keys
    │  Gate          baton/1 from a key that is not paired: closed with 403, nothing remembered.

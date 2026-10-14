@@ -267,8 +267,10 @@ The reference implementation also applies the following by default. They are not
 | Concurrent streams a peer may open on a connection | 16 |
 | Unread data a stream may hold, and so how much a sender may have in flight on it | 8 MiB |
 | Unread data a connection may hold | 16 MiB |
-| Connection attempts let through before a QUIC retry token is asked for, from addresses that have not proven themselves | 64 a second |
-| Connection attempts from an address that has answered a retry token | 20 every 10 seconds |
+| Connection attempts let through before a QUIC retry token is asked for, from addresses, and relayed keys that are not paired, that have not proven themselves | 64 a second, together |
+| Connection attempts from an address that has answered a retry token (for IPv6, from one /64) | 20 every 10 seconds |
+| Connection attempts through a relay from the key of one paired device | 20 every 10 seconds |
+| Connection attempts through a relay from keys that are not paired and have answered a retry token | 20 every 10 seconds, all together |
 | Time for a request to arrive once its stream is open. On a pairing connection the time runs from when the connection was made, so opening the stream counts | 10 seconds |
 | Time to wait for the response to a request | 30 seconds |
 | Handoff ids remembered | 1024, for 10 minutes |
