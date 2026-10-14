@@ -32,9 +32,9 @@ With the transport in place, anything on the internet can reach a Baton device a
 
 ## Prior art and where this differs
 
-This comes from reading public documentation of LocalSend, KDE Connect and RustDesk, not their source; their code is under licenses Baton cannot take from (see [ADR 0004](0004-apache-2-license.md)).
+This comes from reading public documentation of KDE Connect and RustDesk, not their source; their code is under licenses Baton cannot take from (see [ADR 0004](0004-apache-2-license.md)).
 
-- Tools that let any device on the local network ask to pair or to send, as I understand the documentation of KDE Connect and LocalSend, trade some safety for convenience: whoever can reach you can make a prompt appear. Baton gives that up. A prompt needs the ticket, which is shown on a screen the person is looking at.
+- Tools that let any device on the local network ask to pair, KDE Connect among them as I understand its documentation, trade some safety for convenience: whoever can reach you can make a prompt appear. Baton gives that up. A prompt needs the ticket, which is shown on a screen the person is looking at.
 - The proof is bound to the TLS session and to both device ids with the TLS exporter, the same idea as channel binding in SCRAM-PLUS (RFC 9266 defines the TLS 1.3 form). A proof recorded on one connection is useless on another.
 - Showing both people a number derived from the key exchange and asking them to compare it is how, as I understand the specification, Bluetooth's numeric comparison pairing works, and ZRTP's short authentication string follows the same idea. Baton's code also depends on a secret that only the ticket holder knows, so it appears only for a request that already passed that bar, and each offer allows one prompt, which is what makes six digits enough.
 - Refusing everyone alike, with the same delay, is ordinary practice for login endpoints. Baton applies it to pairing, where a naive implementation would answer "no offer open" differently from "wrong code".
