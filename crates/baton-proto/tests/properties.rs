@@ -109,7 +109,7 @@ fn ticket() -> impl Strategy<Value = PairTicket> {
         device_id(),
         any::<[u8; 32]>(),
         any::<u64>(),
-        proptest::option::of("[!-~]{1,100}"),
+        proptest::option::of("(http|https)://[a-z0-9.-]{1,40}(:[0-9]{1,5})?(/[a-z0-9._~-]{0,20})?"),
         // The ticket carries an IP and a port only, not IPv6 flow info or scope ids.
         proptest::collection::vec(
             any::<std::net::SocketAddr>().prop_map(|a| std::net::SocketAddr::new(a.ip(), a.port())),
@@ -169,7 +169,36 @@ proptest! {
 
     #[test]
     fn tickets_round_trip(ticket in ticket()) {
-        let parsed: PairTicket = ticket.to_string().parse().unwrap();
+        let parsed: PairTicket = ticket.to_text().unwrap().parse().unwrap();
+        prop_assert_eq!(parsed.offerer, ticket.offerer);
+        prop_assert_eq!(parsed.secret.expose(), ticket.secret.expose());
+        prop_assert_eq!(parsed.expires_at, ticket.expires_at);
+        prop_assert_eq!(parsed.relay, ticket.relay);
+        prop_assert_eq!(parsed.addrs, ticket.addrs);
+    }
+
+    #[test]
+    fn optional_extensions_never_change_what_a_ticket_says(
+        ticket in ticket(),
+        extensions in proptest::collection::vec(
+            // Types below 0x80 are optional; the length byte is the vector's length.
+            (0u8..0x80, proptest::collection::vec(any::<u8>(), 0..=255)),
+            0..=16,
+        ),
+        flags in 0u8..=0x0f,
+    ) {
+        let mut body = ticket.to_bytes().unwrap().to_vec();
+        body.truncate(body.len() - 4);
+        body[1] = flags;
+        for (kind, value) in &extensions {
+            body.push(*kind);
+            body.push(u8::try_from(value.len()).unwrap());
+            body.extend_from_slice(value);
+        }
+        let sum = blake3::derive_key("baton 2026-10-14 pairing ticket checksum v1", &body);
+        body.extend_from_slice(&sum[..4]);
+
+        let parsed = PairTicket::from_bytes(&body).unwrap();
         prop_assert_eq!(parsed.offerer, ticket.offerer);
         prop_assert_eq!(parsed.secret.expose(), ticket.secret.expose());
         prop_assert_eq!(parsed.expires_at, ticket.expires_at);
