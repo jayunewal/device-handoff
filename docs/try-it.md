@@ -57,13 +57,11 @@ With more than one paired device, say which: `--to "Name"` for `send`, or the na
 
 On A, in any window, also while `baton listen` is running:
 
-```sh
-baton inbox             # the list
-baton inbox show 2      # one item in full
-baton inbox open 1      # a link, in your browser (web links only)
-baton inbox copy 2      # onto the clipboard
-baton inbox rm 1        # remove one; `baton inbox clear` removes all
-```
+- `baton inbox` shows the list.
+- `baton inbox show 2` prints item 2 in full.
+- `baton inbox open 1` opens item 1 in your browser (web links only).
+- `baton inbox copy 2` puts item 2 on the clipboard.
+- `baton inbox rm 1` removes item 1, and `baton inbox clear` removes everything.
 
 `baton devices` lists the paired computers and `baton unpair NAME` forgets one. `baton id` prints this computer's name, fingerprint and where it keeps its files.
 
