@@ -6,12 +6,37 @@
 //! transport consults the list after every handshake and refuses connections
 //! from any key that is not on it, so removing a device here is what revokes
 //! it. The list is kept in memory and saved to `devices.json` on every change.
+//!
+//! # Reading and writing
+//!
+//! Reading never waits for the disk. Every change is written to disk (and
+//! flushed, which on some systems takes tens of milliseconds) *before* it takes
+//! effect in memory, and the changes of all handles to one list are carried out
+//! one at a time, but the readers only ever see a finished list: they take a
+//! snapshot and let go of the lock at once. [`contains`](TrustStore::contains)
+//! can therefore be called from async code on every request. The methods that
+//! change the list do disk I/O and block the calling thread for as long as that
+//! takes, so call them from `spawn_blocking` when running on an async runtime.
+//!
+//! # Revocation
+//!
+//! Removing a device has to stop it, including over a connection it already
+//! has. Two things make that reliable:
+//!
+//! - By the time [`remove`](TrustStore::remove) returns, and by the time any
+//!   [`TrustEvent::Removed`] can be received, [`contains`](TrustStore::contains)
+//!   is already `false` for every handle.
+//! - Code that serves a peer must check `contains` again for each request, and
+//!   treat events only as a way to close connections sooner. An event alone is
+//!   not enough: a removal that lands between a connection's check and its being
+//!   registered finds nothing to close, and a receiver that lags never learns of
+//!   it.
 
 use std::{
     collections::BTreeMap,
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard},
+    sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock},
 };
 
 use baton_proto::{DeviceId, DeviceInfo, Platform, device::sanitize_display_name};
@@ -128,10 +153,19 @@ struct StoredTrust {
 
 type Devices = BTreeMap<DeviceId, PairedDevice>;
 
+/// How a new version of the file reaches the disk. Tests replace it to make saving slow or fail.
+type Saver = Box<dyn Fn(&Path, &[u8]) -> Result<()> + Send + Sync>;
+
 struct Inner {
     path: PathBuf,
-    devices: RwLock<Devices>,
+    /// The list as last saved. A reader copies the `Arc` and lets go of the lock at once, and a
+    /// writer takes the write lock only to put a finished list in place, so nobody waits for the disk.
+    current: RwLock<Arc<Devices>>,
+    /// Held by a writer from the moment it starts working on a change until its event is sent,
+    /// disk write included. It keeps changes, saves and events in one order.
+    writer: Mutex<()>,
     events: broadcast::Sender<TrustEvent>,
+    save: Saver,
 }
 
 /// The shared, persistent list of paired devices. Cloning gives another handle to the same list.
@@ -147,6 +181,10 @@ impl TrustStore {
     /// list: silently forgetting everyone would be wrong, and so would
     /// overwriting the file.
     pub fn load(path: impl Into<PathBuf>) -> Result<Self> {
+        Self::load_with(path, Box::new(write_atomic))
+    }
+
+    fn load_with(path: impl Into<PathBuf>, save: Saver) -> Result<Self> {
         let path = path.into();
         let devices = match read_text(&path)? {
             None => Devices::new(),
@@ -156,8 +194,10 @@ impl TrustStore {
         Ok(Self {
             inner: Arc::new(Inner {
                 path,
-                devices: RwLock::new(devices),
+                current: RwLock::new(Arc::new(devices)),
+                writer: Mutex::new(()),
                 events,
+                save,
             }),
         })
     }
@@ -167,54 +207,64 @@ impl TrustStore {
         &self.inner.path
     }
 
-    fn read(&self) -> RwLockReadGuard<'_, Devices> {
-        // A panic while holding the lock cannot leave the map half-updated
-        // (every change is swapped in whole), so a poisoned lock is safe to reuse.
+    /// The list as it is right now. Cheap, and never waits for a save.
+    fn snapshot(&self) -> Arc<Devices> {
+        // Lists are swapped in whole, so a panic elsewhere cannot leave one half-updated and
+        // a poisoned lock is safe to reuse.
+        Arc::clone(
+            &self
+                .inner
+                .current
+                .read()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
+    }
+
+    /// Takes the right to change the list. Held until the change has been announced.
+    fn lock_writers(&self) -> MutexGuard<'_, ()> {
         self.inner
-            .devices
-            .read()
+            .writer
+            .lock()
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn write(&self) -> RwLockWriteGuard<'_, Devices> {
-        self.inner
-            .devices
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Whether `id` is paired. This is fast and does not touch the disk.
+    /// Whether `id` is paired. This is fast and does not touch the disk, and it does not wait
+    /// for a save that is in progress, so it can be called for every request.
     pub fn contains(&self, id: &DeviceId) -> bool {
-        self.read().contains_key(id)
+        self.snapshot().contains_key(id)
     }
 
     /// The paired device with this id.
     pub fn get(&self, id: &DeviceId) -> Option<PairedDevice> {
-        self.read().get(id).cloned()
+        self.snapshot().get(id).cloned()
     }
 
     /// All paired devices, sorted by name.
     pub fn list(&self) -> Vec<PairedDevice> {
-        let mut devices: Vec<_> = self.read().values().cloned().collect();
+        let mut devices: Vec<_> = self.snapshot().values().cloned().collect();
         devices.sort_by_cached_key(|d| (d.name.to_lowercase(), d.id));
         devices
     }
 
     /// How many devices are paired.
     pub fn len(&self) -> usize {
-        self.read().len()
+        self.snapshot().len()
     }
 
     /// Whether no device is paired.
     pub fn is_empty(&self) -> bool {
-        self.read().is_empty()
+        self.snapshot().is_empty()
     }
 
     /// Receives a [`TrustEvent`] for every change made through any handle to this list.
     ///
-    /// Events are sent in the order the changes were made. A receiver that falls
-    /// behind gets [`RecvError::Lagged`](broadcast::error::RecvError::Lagged) and
-    /// should then re-read the list instead of relying on the events it missed.
+    /// Events are sent in the order the changes were made, and only after the change is
+    /// visible to [`contains`](Self::contains) and the other readers. A receiver that falls
+    /// behind gets [`RecvError::Lagged`](broadcast::error::RecvError::Lagged) and should
+    /// then re-read the list instead of relying on the events it missed.
+    ///
+    /// Events are not enough to enforce a removal. See the module documentation: check
+    /// [`contains`](Self::contains) for each request.
     pub fn subscribe(&self) -> broadcast::Receiver<TrustEvent> {
         self.inner.events.subscribe()
     }
@@ -223,8 +273,8 @@ impl TrustStore {
     ///
     /// Pairing again keeps the device's policy and original pairing time.
     pub fn pair(&self, id: DeviceId, info: &DeviceInfo, now: u64) -> Result<PairOutcome> {
-        let mut guard = self.write();
-        let mut next = guard.clone();
+        let writer = self.lock_writers();
+        let mut next = Devices::clone(&self.snapshot());
         let outcome = if let Some(existing) = next.get_mut(&id) {
             existing.name = sanitize_display_name(&info.name);
             existing.platform = info.platform;
@@ -237,7 +287,7 @@ impl TrustStore {
             next.insert(id, PairedDevice::new(id, info, now));
             PairOutcome::Added
         };
-        self.commit(&mut guard, next)?;
+        self.commit(&writer, next)?;
         self.emit(match outcome {
             PairOutcome::Added => TrustEvent::Added(id),
             PairOutcome::Refreshed => TrustEvent::Updated(id),
@@ -248,29 +298,32 @@ impl TrustStore {
     /// Changes a paired device. Returns `false` if there is no such device.
     ///
     /// The id cannot be changed. Names and hints are cleaned up again afterwards.
-    /// The closure runs while the list is locked, so it must not call back into it.
+    /// The closure runs while other changes to the list wait, so it must not change the list
+    /// itself; reading it is fine.
     pub fn update(&self, id: &DeviceId, change: impl FnOnce(&mut PairedDevice)) -> Result<bool> {
-        let mut guard = self.write();
-        let mut next = guard.clone();
+        let writer = self.lock_writers();
+        let mut next = Devices::clone(&self.snapshot());
         let Some(device) = next.get_mut(id) else {
             return Ok(false);
         };
         change(device);
         device.id = *id;
         device.normalize();
-        self.commit(&mut guard, next)?;
+        self.commit(&writer, next)?;
         self.emit(TrustEvent::Updated(*id));
         Ok(true)
     }
 
     /// Unpairs a device. Returns what was removed, if anything.
+    ///
+    /// When this returns, [`contains`](Self::contains) is `false` for the device.
     pub fn remove(&self, id: &DeviceId) -> Result<Option<PairedDevice>> {
-        let mut guard = self.write();
-        let mut next = guard.clone();
+        let writer = self.lock_writers();
+        let mut next = Devices::clone(&self.snapshot());
         let Some(removed) = next.remove(id) else {
             return Ok(None);
         };
-        self.commit(&mut guard, next)?;
+        self.commit(&writer, next)?;
         self.emit(TrustEvent::Removed(*id));
         Ok(Some(removed))
     }
@@ -278,55 +331,77 @@ impl TrustStore {
     /// Notes that a device was just reached, and where.
     ///
     /// This runs on every connection, so it writes to disk only when the hints
-    /// changed or the last-seen time is stale. It sends no event. Returns
+    /// changed or the last-seen time is stale, and when nothing needs saving it neither
+    /// waits for other changes nor makes them wait. It sends no event. Returns
     /// whether anything was saved.
     pub fn record_contact(&self, id: &DeviceId, now: u64, hints: &ContactHints) -> Result<bool> {
-        let mut guard = self.write();
-        let Some(current) = guard.get(id) else {
+        // Nearly every call finds nothing to save. Decide on a snapshot, so that those calls
+        // never queue behind a change that is being written.
+        if contact_update(&self.snapshot(), id, now, hints).is_none() {
+            return Ok(false);
+        }
+        let writer = self.lock_writers();
+        // Another change may have got in first; decide again on the list as it is now.
+        let current = self.snapshot();
+        let Some(updated) = contact_update(&current, id, now, hints) else {
             return Ok(false);
         };
-        let mut updated = current.clone();
-        updated.last_seen_at = Some(now);
-        if hints.relay.is_some() {
-            updated.relay.clone_from(&hints.relay);
-        }
-        if !hints.addrs.is_empty() {
-            updated.addrs.clone_from(&hints.addrs);
-        }
-        updated.normalize();
-
-        let stale = current
-            .last_seen_at
-            .is_none_or(|seen| now.saturating_sub(seen) >= SEEN_REFRESH_SECS);
-        let hints_changed = updated.relay != current.relay || updated.addrs != current.addrs;
-        if !stale && !hints_changed {
-            return Ok(false);
-        }
-        let mut next = guard.clone();
+        let mut next = Devices::clone(&current);
         next.insert(*id, updated);
-        self.commit(&mut guard, next)?;
+        self.commit(&writer, next)?;
         Ok(true)
     }
 
     /// Saves `next`, and only if that worked makes it the current list.
-    fn commit(&self, current: &mut Devices, next: Devices) -> Result<()> {
+    ///
+    /// The caller holds the writer lock, which is what the guard argument stands for.
+    fn commit(&self, _writer: &MutexGuard<'_, ()>, next: Devices) -> Result<()> {
         let stored = StoredTrust {
             version: FORMAT_VERSION,
             devices: next.values().cloned().collect(),
         };
         let json =
             serde_json::to_vec_pretty(&stored).map_err(|e| Error::invalid(&self.inner.path, &e))?;
-        write_atomic(&self.inner.path, &json)?;
-        *current = next;
+        (self.inner.save)(&self.inner.path, &json)?;
+        *self
+            .inner
+            .current
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = Arc::new(next);
         Ok(())
     }
 
-    /// Sending never blocks, so this is called with the list still locked: that is
+    /// Sending never blocks, so this is called while the writer lock is still held: that is
     /// what keeps events in the order of the changes.
     fn emit(&self, event: TrustEvent) {
         // Nobody listening is fine.
         let _ = self.inner.events.send(event);
     }
+}
+
+/// What a contact with `id` would change, if it is worth a disk write.
+fn contact_update(
+    devices: &Devices,
+    id: &DeviceId,
+    now: u64,
+    hints: &ContactHints,
+) -> Option<PairedDevice> {
+    let current = devices.get(id)?;
+    let mut updated = current.clone();
+    updated.last_seen_at = Some(now);
+    if hints.relay.is_some() {
+        updated.relay.clone_from(&hints.relay);
+    }
+    if !hints.addrs.is_empty() {
+        updated.addrs.clone_from(&hints.addrs);
+    }
+    updated.normalize();
+
+    let stale = current
+        .last_seen_at
+        .is_none_or(|seen| now.saturating_sub(seen) >= SEEN_REFRESH_SECS);
+    let hints_changed = updated.relay != current.relay || updated.addrs != current.addrs;
+    (stale || hints_changed).then_some(updated)
 }
 
 impl std::fmt::Debug for TrustStore {
@@ -393,7 +468,16 @@ mod hex_id {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{
+        fs,
+        panic::{AssertUnwindSafe, catch_unwind},
+        sync::{
+            atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst},
+            mpsc,
+        },
+        thread,
+        time::Duration,
+    };
 
     use baton_proto::Platform;
     use tempfile::TempDir;
@@ -421,6 +505,73 @@ mod tests {
 
     fn reload(store: &TrustStore) -> TrustStore {
         TrustStore::load(store.path()).unwrap()
+    }
+
+    fn store_with(save: Saver) -> (TempDir, TrustStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = TrustStore::load_with(dir.path().join("devices.json"), save).unwrap();
+        (dir, store)
+    }
+
+    /// Holds a save half-way, so a test can look at the list while the disk is busy.
+    struct Gate {
+        armed: Arc<AtomicBool>,
+        entered: mpsc::Receiver<()>,
+        release: mpsc::Sender<()>,
+    }
+
+    impl Gate {
+        /// The next save will stop and wait. Saves made while it is not armed go straight through.
+        fn arm(&self) {
+            self.armed.store(true, SeqCst);
+        }
+
+        /// Waits until a save has started and is being held.
+        fn wait_for_save(&self) {
+            self.entered
+                .recv_timeout(Duration::from_secs(10))
+                .expect("a save should have started");
+        }
+
+        /// Lets the held save finish, and disarms the gate.
+        fn let_save_finish(&self) {
+            self.armed.store(false, SeqCst);
+            self.release.send(()).unwrap();
+        }
+    }
+
+    fn gated_store() -> (TempDir, TrustStore, Gate) {
+        let armed = Arc::new(AtomicBool::new(false));
+        let (entered_tx, entered) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        let gate = Gate {
+            armed: Arc::clone(&armed),
+            entered,
+            release,
+        };
+        let (dir, store) = store_with(Box::new(move |path, bytes| {
+            if armed.load(SeqCst) {
+                let _ = entered_tx.send(());
+                // A test that gave up drops the sender, which also ends the wait.
+                let _ = release_rx.lock().unwrap().recv();
+            }
+            write_atomic(path, bytes)
+        }));
+        (dir, store, gate)
+    }
+
+    /// Runs `work` on another thread and fails the test, rather than hanging it, if it is held up.
+    fn promptly<T: Send + 'static>(what: &str, work: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = tx.send(work());
+        });
+        match rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(value) => value,
+            Err(mpsc::RecvTimeoutError::Timeout) => panic!("{what} was held up"),
+            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("{what} failed"),
+        }
     }
 
     #[test]
@@ -874,5 +1025,161 @@ mod tests {
         let text = format!("{store:?}");
         assert!(text.contains("devices: 1"), "{text}");
         assert!(!text.contains("Laptop"), "{text}");
+    }
+
+    #[test]
+    fn readers_do_not_wait_for_a_save() {
+        let (_dir, store, gate) = gated_store();
+        store.pair(id(2), &info("Phone"), 1_000).unwrap();
+        let mut events = store.subscribe();
+
+        gate.arm();
+        let writer = thread::spawn({
+            let store = store.clone();
+            move || store.pair(id(1), &info("Laptop"), 2_000)
+        });
+        gate.wait_for_save();
+
+        // The disk is busy with a change. Reading, and noting a contact that needs no write, go on.
+        let reader = store.clone();
+        promptly("a reader", move || {
+            assert!(reader.contains(&id(2)));
+            assert!(
+                !reader.contains(&id(1)),
+                "a change must not show before it is saved"
+            );
+            assert_eq!(reader.get(&id(2)).unwrap().name, "Phone");
+            assert_eq!(reader.len(), 1);
+            assert!(!reader.is_empty());
+            assert_eq!(reader.list().len(), 1);
+            drop(reader.subscribe());
+            let saved = reader
+                .record_contact(&id(2), 1_010, &ContactHints::default())
+                .unwrap();
+            assert!(!saved);
+        });
+        assert!(
+            events.try_recv().is_err(),
+            "nothing is announced before it is in effect"
+        );
+
+        gate.let_save_finish();
+        assert_eq!(writer.join().unwrap().unwrap(), PairOutcome::Added);
+        assert!(store.contains(&id(1)));
+        assert_eq!(events.try_recv().unwrap(), TrustEvent::Added(id(1)));
+    }
+
+    #[test]
+    fn a_removal_is_in_effect_before_anyone_hears_of_it() {
+        let (_dir, store) = store();
+        for n in 1..=50 {
+            let target = id(n);
+            store.pair(target, &info("Laptop"), 1).unwrap();
+            let mut events = store.subscribe();
+            let watcher = thread::spawn({
+                let store = store.clone();
+                move || loop {
+                    match events.blocking_recv() {
+                        Ok(TrustEvent::Removed(gone)) if gone == target => {
+                            return store.contains(&gone);
+                        }
+                        Ok(_) => {}
+                        Err(e) => panic!("{e}"),
+                    }
+                }
+            });
+            store.remove(&target).unwrap();
+            assert!(
+                !watcher.join().unwrap(),
+                "heard of a removal while the device was still trusted"
+            );
+        }
+    }
+
+    #[test]
+    fn a_contact_that_raced_a_removal_does_not_bring_the_device_back() {
+        let (_dir, store, gate) = gated_store();
+        store.pair(id(1), &info("Laptop"), 1_000).unwrap();
+
+        gate.arm();
+        let remover = thread::spawn({
+            let store = store.clone();
+            move || store.remove(&id(1))
+        });
+        gate.wait_for_save();
+        assert!(
+            store.contains(&id(1)),
+            "the removal is not in effect until it is saved"
+        );
+
+        // Late enough to be worth saving, so it queues behind the removal.
+        let contact = thread::spawn({
+            let store = store.clone();
+            move || store.record_contact(&id(1), 99_999, &ContactHints::default())
+        });
+        // Waiting makes the interesting order likely. The assertions below hold either way.
+        thread::sleep(Duration::from_millis(200));
+
+        gate.let_save_finish();
+        remover.join().unwrap().unwrap();
+        let saved = contact.join().unwrap().unwrap();
+        assert!(!saved, "there is nothing left to save for a removed device");
+        assert!(!store.contains(&id(1)));
+        assert!(!reload(&store).contains(&id(1)));
+    }
+
+    #[test]
+    fn changes_from_many_threads_are_all_kept_and_saved_one_at_a_time() {
+        let running = Arc::new(AtomicUsize::new(0));
+        let most = Arc::new(AtomicUsize::new(0));
+        let (during, peak) = (Arc::clone(&running), Arc::clone(&most));
+        let (_dir, store) = store_with(Box::new(move |path, bytes| {
+            peak.fetch_max(during.fetch_add(1, SeqCst) + 1, SeqCst);
+            thread::sleep(Duration::from_millis(2));
+            let result = write_atomic(path, bytes);
+            during.fetch_sub(1, SeqCst);
+            result
+        }));
+        let mut events = store.subscribe();
+
+        let threads: Vec<_> = (1..=30)
+            .map(|n| {
+                let store = store.clone();
+                thread::spawn(move || store.pair(id(n), &info("Laptop"), 1).unwrap())
+            })
+            .collect();
+        for handle in threads {
+            handle.join().unwrap();
+        }
+
+        assert_eq!(store.len(), 30);
+        assert_eq!(reload(&store).len(), 30, "no change was overwritten");
+        assert_eq!(most.load(SeqCst), 1, "two saves overlapped");
+        assert_eq!(running.load(SeqCst), 0);
+        let mut added = 0;
+        while let Ok(event) = events.try_recv() {
+            assert!(matches!(event, TrustEvent::Added(_)), "{event:?}");
+            added += 1;
+        }
+        assert_eq!(added, 30);
+    }
+
+    #[test]
+    fn a_panic_while_saving_does_not_wedge_the_list() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let (_dir, store) = store_with(Box::new(move |path, bytes| {
+            assert!(counter.fetch_add(1, SeqCst) > 0, "the disk caught fire");
+            write_atomic(path, bytes)
+        }));
+
+        let outcome = catch_unwind(AssertUnwindSafe(|| store.pair(id(1), &info("Laptop"), 1)));
+        assert!(outcome.is_err());
+        assert!(store.is_empty(), "a change that was not saved is not made");
+
+        store.pair(id(1), &info("Laptop"), 2).unwrap();
+        assert!(store.contains(&id(1)));
+        assert!(store.remove(&id(1)).unwrap().is_some());
+        assert!(!reload(&store).contains(&id(1)));
     }
 }
