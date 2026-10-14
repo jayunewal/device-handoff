@@ -8,6 +8,12 @@ use std::{fmt, process::ExitCode};
 ///
 /// The message is written for them, not for a log: it says what went wrong and, where
 /// there is something to do about it, what.
+///
+/// It is also escaped for the terminal when the error is made, so that nothing which
+/// prints it has to remember to. Some of what goes into a message was chosen by another
+/// device: the reason in its close frame, the transport's text about why it hung up, the
+/// name it calls itself. Printed raw, those could move the cursor, change the terminal's
+/// title or, in terminals that allow it, set the clipboard.
 #[derive(Debug)]
 pub struct CliError {
     message: String,
@@ -24,17 +30,17 @@ enum Kind {
 
 impl CliError {
     /// A command that could not do what was asked.
-    pub fn new(message: impl Into<String>) -> Self {
+    pub fn new(message: impl AsRef<str>) -> Self {
         Self {
-            message: message.into(),
+            message: crate::term::block(message.as_ref()),
             kind: Kind::Failed,
         }
     }
 
     /// An item that reached the other device, which did not take it.
-    pub fn declined(message: impl Into<String>) -> Self {
+    pub fn declined(message: impl AsRef<str>) -> Self {
         Self {
-            message: message.into(),
+            message: crate::term::block(message.as_ref()),
             kind: Kind::Declined,
         }
     }
@@ -195,5 +201,61 @@ mod tests {
         device.name = "x\u{1b}[2J".to_owned();
         let error = unreachable(baton_core::Error::Timeout("connecting"), &device);
         assert!(!error.message().contains('\u{1b}'));
+    }
+
+    /// Text that would set the clipboard in terminals that allow it (OSC 52), clear the
+    /// screen, and ring the bell.
+    const HOSTILE: &str = "\x1b]52;c;aGk=\x07\x1b[2J\u{9b}31m\u{202e}";
+
+    fn assert_safe(text: &str) {
+        for c in text.chars() {
+            assert!(
+                !c.is_control() || c == '\n' || c == '\t',
+                "{c:?} would reach the terminal in {text:?}"
+            );
+        }
+        assert!(!text.contains('\u{202e}'), "{text:?}");
+        assert!(
+            text.contains("\\u{1b}"),
+            "the escape should stay visible: {text:?}"
+        );
+    }
+
+    #[test]
+    fn the_reason_the_other_device_gave_for_closing_is_escaped() {
+        let closed = baton_core::Error::Closed {
+            code: 7,
+            reason: HOSTILE.to_owned(),
+        };
+        let error = unreachable(closed, &device());
+        assert_safe(error.message());
+        assert_safe(&error.to_string());
+    }
+
+    #[test]
+    fn the_transports_text_about_a_hang_up_is_escaped() {
+        let network = baton_core::Error::Network {
+            context: "connecting to the other device",
+            message: format!("aborted by peer: {HOSTILE}"),
+        };
+        assert_safe(unreachable(network, &device()).message());
+        let network = baton_core::Error::Network {
+            context: "connecting to the other device",
+            message: format!("aborted by peer: {HOSTILE}"),
+        };
+        assert_safe(CliError::from(network).message());
+    }
+
+    #[test]
+    fn any_message_is_escaped_whatever_made_it() {
+        assert_safe(CliError::new(format!("x {HOSTILE}")).message());
+        assert_safe(&CliError::declined(format!("x {HOSTILE}")).to_string());
+        assert_safe(&CliError::from(std::io::Error::other(HOSTILE)).to_string());
+    }
+
+    #[test]
+    fn line_breaks_in_a_message_are_kept() {
+        let error = CliError::new("first\nsecond\tthird");
+        assert_eq!(error.message(), "first\nsecond\tthird");
     }
 }

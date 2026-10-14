@@ -92,9 +92,14 @@ fn list(devices: &[PairedDevice]) -> String {
     devices.iter().map(describe).collect::<Vec<_>>().join(", ")
 }
 
-/// `name (fingerprint)`: the name is only a label, so the fingerprint comes with it.
+/// `name (fingerprint)`: the name is only a label, so the fingerprint comes with it. The
+/// name is one the device chose, so it is escaped for the terminal.
 pub fn describe(device: &PairedDevice) -> String {
-    format!("{} ({})", device.display_name(), device.id.fingerprint())
+    format!(
+        "{} ({})",
+        crate::term::line(device.display_name()),
+        device.id.fingerprint()
+    )
 }
 
 #[cfg(test)]
@@ -246,6 +251,14 @@ mod tests {
         let devices = [device(1, "Laptop")];
         let text = message(choose(&devices, Some("x\u{1b}[2J")));
         assert!(!text.contains('\u{1b}'), "{text:?}");
+    }
+
+    #[test]
+    fn a_name_is_escaped_when_a_device_is_described() {
+        let devices = [device(1, "x\u{1b}[2J")];
+        let text = describe(&devices[0]);
+        assert!(!text.contains('\u{1b}'), "{text:?}");
+        assert!(text.contains("\\u{1b}"), "{text:?}");
     }
 
     #[test]
