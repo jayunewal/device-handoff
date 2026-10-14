@@ -4,14 +4,22 @@ Baton is pre-alpha. This page gets two computers handing links and text to each 
 
 ## Get the program
 
-You need a recent stable [Rust toolchain](https://rustup.rs). From a clone of this repository:
+**Download a build.** The repository builds the program for macOS, Windows and Linux on every change. Open the [CI runs](https://github.com/jayunewal/device-handoff/actions/workflows/ci.yml), pick the latest run on `main` with a green tick and, under **Artifacts** at the bottom of the page, download `baton-macos`, `baton-windows` or `baton-linux`. GitHub asks you to sign in to download.
+
+- **macOS** (Apple Silicon and Intel): the download is a zip with `baton-macos.tar.gz` inside. In Terminal, run `tar xzf baton-macos.tar.gz` in the folder it is in, then `./baton --help`. The program is not signed by a developer, so if macOS refuses to run it, run `xattr -d com.apple.quarantine ./baton` once and try again.
+- **Windows**: unzip `baton-windows.zip`, open PowerShell in that folder and run `.\baton.exe --help`. If Windows says it protected your PC, run `Unblock-File .\baton.exe` first.
+- **Linux** (x86-64; Ubuntu 22.04 or later, or any distribution with glibc 2.35 or newer): the download is a zip with `baton-linux.tar.gz` inside. Run `tar xzf baton-linux.tar.gz`, then `./baton --help`.
+
+The examples below say `baton`. Put the program in a folder on your `PATH`, or type `./baton` (`.\baton.exe` on Windows) in the folder it is in.
+
+**Or build it yourself.** You need a recent stable [Rust toolchain](https://rustup.rs). From a clone of this repository:
 
 ```sh
 cargo install --path crates/baton-cli --locked
 baton --help
 ```
 
-That puts a program called `baton` in Cargo's `bin` folder. To run it without installing, use `cargo run -p baton-cli --release --` where the examples below say `baton`.
+That puts a program called `baton` in Cargo's `bin` folder. To run it without installing, use `cargo run -p baton-cli --release --` where the examples say `baton`.
 
 ## Pair two computers
 
@@ -93,6 +101,6 @@ What to expect: the items arrive while A is locked, and nothing is opened or cop
 - Phones and tablets, accounts that pair every device at once, and window streaming.
 - An outbox. Sending to a computer that is asleep or offline fails; it does not wait.
 - Real-network testing. Pairing, sending, the inbox and the command line are tested automatically on Linux, macOS and Windows with two copies on one machine. Finding each other across a real Wi-Fi network (mDNS), through the public relays and through a router are written but have not yet been run on real networks, so these are the likeliest places for a surprise. Reports are welcome.
-- Signed programs. The programs this repository builds are not signed, which is why macOS and Windows may warn.
+- Signed programs. The builds are not signed by a developer, which is why macOS and Windows may warn.
 
 Everything sent between computers is end-to-end encrypted, including through a relay. The default relays are the iroh project's public ones, which are rate limited.

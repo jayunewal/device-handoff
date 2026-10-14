@@ -61,7 +61,7 @@ cargo test --workspace
 cargo run -p baton-cli -- --help   # the `baton` program
 ```
 
-[docs/try-it.md](docs/try-it.md) walks through pairing two computers and sending a link and some text.
+[docs/try-it.md](docs/try-it.md) walks through pairing two computers and sending a link and some text. CI builds the `baton` program for macOS, Windows and Linux on every change; the guide says where to download it.
 
 ## Contributing
 
