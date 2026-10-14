@@ -37,6 +37,9 @@ allow = [
   "0BSD",
   "MPL-2.0",
   "CDLA-Permissive-2.0",
+  # Boost Software License 1.0: permissive. `clipboard-win` and `error-code`, Windows-only
+  # dependencies of `arboard` (the command-line program's clipboard access), use it.
+  "BSL-1.0",
 ]
 confidence-threshold = 0.8
 # The allow-list is a policy, not an inventory of what is currently in the tree.
