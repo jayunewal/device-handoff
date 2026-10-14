@@ -21,7 +21,6 @@ baton-core.workspace = true
 baton-proto.workspace = true
 clap.workspace = true
 open.workspace = true
-shlex.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true

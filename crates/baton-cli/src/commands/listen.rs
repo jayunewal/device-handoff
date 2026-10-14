@@ -100,7 +100,7 @@ async fn handle(line: &str, ctx: &mut Context, console: &Console) -> bool {
     {
         return false;
     }
-    let Some(words) = shlex::split(line) else {
+    let Some(words) = crate::words::split(line) else {
         eprintln!("baton: a quote was opened and never closed.");
         return true;
     };

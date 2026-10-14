@@ -522,6 +522,23 @@ fn a_pairing_the_person_declines_pairs_nothing() {
 }
 
 #[test]
+fn a_path_typed_at_the_prompt_keeps_its_backslashes() {
+    let (alpha, bravo) = (Device::new("Alpha"), Device::new("Bravo"));
+    let (mut a, mut b) = paired_and_listening(&alpha, &bravo);
+
+    let path = r"C:\Users\jay\notes.txt";
+    b.type_line(&format!("send text {path}"));
+    b.wait_for("Sent the text to Alpha.");
+    a.wait_for(&format!(
+        "[#1] text from Bravo ({} bytes): {path}",
+        path.len()
+    ));
+
+    a.quit().succeeded();
+    b.quit().succeeded();
+}
+
+#[test]
 fn a_device_that_was_unpaired_there_says_so_here() {
     let (alpha, bravo) = (Device::new("Alpha"), Device::new("Bravo"));
     let (mut a, mut b) = paired_and_listening(&alpha, &bravo);

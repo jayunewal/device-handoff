@@ -26,6 +26,7 @@ mod select;
 mod signal;
 mod term;
 mod util;
+mod words;
 
 use cli::Cli;
 use console::Console;

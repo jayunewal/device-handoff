@@ -336,7 +336,6 @@ dependencies = [
  "baton-proto",
  "clap",
  "open",
- "shlex",
  "tempfile",
  "tokio",
  "tracing",
