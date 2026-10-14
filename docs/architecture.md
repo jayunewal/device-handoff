@@ -42,13 +42,42 @@ Reaching a device uses the best path available, tried in this order:
 2. **Direct over the internet.** A relay helps both sides learn each other's public addresses and hole-punch through NAT.
 3. **Relay.** If no direct path works, traffic flows through a relay. The relay forwards encrypted packets addressed to a public key. It cannot read or alter them.
 
+The relays Baton uses by default are the iroh project's public ones. According to iroh's documentation they are rate limited and meant for development and hobby use, so a transfer that cannot go direct is only as fast as that shared limit. That is fine for trying Baton out. The self-hostable server runs a relay of its own with limits its owner sets, and the file transfer benchmark includes a relayed run so the cost shows up in the numbers.
+
 Connection handling comes from [iroh](https://github.com/n0-computer/iroh) (see [ADR 0003](adr/0003-iroh-transport.md)). The rest of Baton talks to it through a small boundary in `baton-core` so the transport can change.
 
 ## Trust
 
-A device only talks to devices it has paired with. Pairing is explicit: one device offers a one-time ticket (shown as a QR code or text), the other redeems it, and the person on the offering device approves the request after checking that a six-digit code shown on both devices is the same. Both sides then remember each other's public key in a local trust store. Connections from any other key are refused after the handshake, before any application data is read.
+A device only talks to devices it has paired with. Pairing is explicit: one device offers a one-time ticket (shown as a QR code or text), the other redeems it, and the person on the offering device approves the request after checking that a six-digit code shown on both devices is the same. Both sides then remember each other's public key in a local trust store (`devices.json`, see [State on disk](#state-on-disk)). Connections from any other key are refused after the handshake, before any application data is read.
 
 There are no accounts in milestone 1. Accounts arrive in milestone 4 as an *introducer*: a server that tells your devices about each other. It is never in the data path and never holds the keys needed to read content.
+
+### Same-account sync: a signed roster (design, not built)
+
+Pairing every pair of devices by hand is how tools such as KDE Connect work, and it is tedious past three or four devices. The plan for milestone 4 is a *roster* instead: the list of a person's device keys, kept as a chain of membership changes.
+
+- Each change, adding a device or removing one, is signed by a device that is already in the roster and carries the hash of the change before it. A device checks the whole chain from the first entry before it trusts anything in it.
+- Pairing a new phone with any one device adds it to the roster. The others trust it because the chain is signed by a key they already trust, with no further pairing.
+- The account server only relays roster changes. It holds no roster key, so it cannot add a device on its own. A compromised server could hold updates back or replay old ones, which the chain and a sequence number make visible, but it could not forge a device. That keeps the promise that the server is an introducer and never in the data path, even if it is compromised.
+- A removal is a signed entry too. A device that sees it drops the key like a manual unpairing, including closing live connections.
+
+Open questions: what to do when two devices change the roster at the same time (a fork), how a person recovers when every device is lost, and whether a device that was offline for a long time should accept a long chain without asking.
+
+The trust store leaves room for this before its format is in use: each entry records how the device came to be trusted (`provenance`, today only `paired`), and a device trusted through the roster will also say who vouched for it.
+
+## State on disk
+
+Each device keeps its state in one directory, which belongs to a single device identity. By default that is the per-user *local* data directory (`~/.local/share/baton` on Linux, `~/Library/Application Support/baton` on macOS, `%LOCALAPPDATA%\baton\data` on Windows), never a roaming or synced one, because a copied device key would make two machines the same device. As a second line of defence the identity file records which machine made the key, and Baton refuses it on another one. Set `BATON_HOME` to use another directory, for example to run two instances on one machine.
+
+| File | Contents | Notes |
+| --- | --- | --- |
+| `identity.toml` | The device's Ed25519 secret key. | Created on first run. Readable by its owner only; Baton refuses to use it if other users can read or change it. |
+| `devices.json` | The trust store: paired devices, the name the person knows each by, how each came to be trusted, their last known addresses and their per-device policies. | Replaced atomically on every change. A file that cannot be read is an error, never an empty list. Refused if other users can read or change it. |
+| `config.toml` | Settings a person edits by hand (device name, relays, discovery, limits). | Optional. Unknown keys are rejected so a typo cannot silently leave a setting on. Refused if other users can change it. |
+| `inbox.json` | Items received and not yet acted on. | Added with the agent. |
+| `baton.lock` | An advisory lock. | Only one process may use a state directory at a time. |
+
+State files are written to a temporary file in the same directory, flushed, and renamed over the target, so a crash leaves the old file or the new one. On Unix, files and a directory that Baton creates are readable by their owner only. A state directory that already exists is not changed, because it may be used for other things (think `BATON_HOME=$HOME`), but it is refused if other users can write to it, since they could replace the files in it. `identity.toml` and `devices.json` are refused if other users can read or change them, and `config.toml` if they can change it; the check is made on the file that is then read. Files are read with a size cap, and a file written by a newer, incompatible version is refused rather than misread or overwritten.
 
 ## Handoff
 

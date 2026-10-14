@@ -411,6 +411,15 @@ fn check_relay_hint(relay: &str) -> Result<(), TicketError> {
     Ok(())
 }
 
+/// Whether `relay` would be accepted as the relay hint of a ticket.
+///
+/// A relay that a device remembers about a peer, and will connect to later, is the same
+/// kind of untrusted address as one in a scanned ticket, so it is held to the same rule.
+#[must_use]
+pub fn is_valid_relay_hint(relay: &str) -> bool {
+    check_relay_hint(relay).is_ok()
+}
+
 fn checksum(body: &[u8]) -> [u8; CHECKSUM_LEN] {
     let digest = blake3::derive_key(CHECKSUM_CONTEXT, body);
     let [a, b, c, d, ..] = digest;
@@ -894,6 +903,7 @@ mod tests {
             "https://euw1-1.relay.n0.iroh.link./",
         ] {
             assert_eq!(check_relay_hint(good), Ok(()), "{good}");
+            assert!(is_valid_relay_hint(good), "{good}");
         }
         for bad in [
             "relay.example",
@@ -914,6 +924,7 @@ mod tests {
                 matches!(check_relay_hint(bad), Err(TicketError::Invalid(_))),
                 "{bad}"
             );
+            assert!(!is_valid_relay_hint(bad), "{bad}");
         }
     }
 

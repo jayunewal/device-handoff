@@ -45,9 +45,10 @@ The order is a proposal and can change. See [docs/roadmap.md](docs/roadmap.md) f
 | Path | What lives there |
 | --- | --- |
 | `crates/baton-proto` | Wire protocol: message types, framing, the pairing handshake and ticket format. No networking. |
+| `crates/baton-core` | Device identity, the trust store, per-device policy and settings, and the state directory. Networking and pairing are added next. |
 | `docs/` | Architecture, protocol and security documents, and architecture decision records in `docs/adr/`. |
 
-More crates are added as milestone 1 lands (`baton-core`, `baton-agent`, `baton-cli`). Flutter apps will live under `apps/`.
+More crates are added as milestone 1 lands (`baton-agent`, `baton-cli`). Flutter apps will live under `apps/`.
 
 ## Building
 
