@@ -515,7 +515,7 @@ mod tests {
         };
         let parsed: PairTicket = minimal.to_text().unwrap().parse().unwrap();
         assert_eq!(parsed.relay, None);
-        assert!(parsed.addrs.is_empty());
+        assert_eq!(parsed.addrs, Vec::new());
     }
 
     #[test]

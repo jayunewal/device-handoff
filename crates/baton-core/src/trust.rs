@@ -739,7 +739,7 @@ mod tests {
         let (dir, store) = store();
         assert!(store.is_empty());
         assert_eq!(store.len(), 0);
-        assert!(store.list().is_empty());
+        assert_eq!(store.list(), Vec::new());
         assert!(!dir.path().join("devices.json").exists());
     }
 
@@ -822,7 +822,7 @@ mod tests {
         store.pair(id(2), &info(&"x".repeat(500)), 1).unwrap();
         assert!(store.get(&id(2)).unwrap().name.chars().count() <= 64);
         store.pair(id(3), &info(""), 1).unwrap();
-        assert!(!store.get(&id(3)).unwrap().name.is_empty());
+        assert_ne!(store.get(&id(3)).unwrap().name, "");
     }
 
     #[test]
@@ -1088,7 +1088,7 @@ mod tests {
             addrs: junk.clone(),
         };
         assert!(!store.record_contact(&id(1), 1_001, &only_junk).unwrap());
-        assert!(store.get(&id(1)).unwrap().addrs.is_empty());
+        assert_eq!(store.get(&id(1)).unwrap().addrs, Vec::new());
 
         // Mixed with a usable one: only the usable one is kept.
         let usable: SocketAddr = "192.168.1.5:4000".parse().unwrap();
