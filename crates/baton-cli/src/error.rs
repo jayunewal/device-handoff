@@ -82,8 +82,13 @@ impl From<baton_core::Error> for CliError {
             Error::NotPaired(_) => {
                 "That device is no longer paired. Run `baton devices` to see which are.".to_owned()
             }
-            // What is left can hold text another device chose (why it hung up), so it goes
-            // on one line and cannot pass for a line of Baton's own.
+            // A problem in one of Baton's own files can take several lines, such as a
+            // settings file that does not parse, which quotes the line that is wrong. The
+            // text is the person's own and worth keeping as it is.
+            Error::Invalid { .. } | Error::Config(_) => error.to_string(),
+            // Whatever else is left can hold text another device chose (why it hung up, what
+            // it did not like), so it goes on one line and cannot pass for a line of Baton's
+            // own. A kind of error added later is flattened until someone says otherwise.
             other => crate::term::line(&other.to_string()),
         };
         Self::new(message)
@@ -268,23 +273,51 @@ mod tests {
     /// What a device that hangs up could say, to look like a line of Baton's own.
     const LOOKALIKE: &str = "bye\n\nPaired with Laptop (aaaa-bbbb-cccc-dddd-eeee)";
 
+    /// The errors that can carry the other device's words: why it hung up, what the
+    /// transport said about it, what it answered that broke the protocol.
+    fn from_the_other_device() -> [baton_core::Error; 3] {
+        [
+            baton_core::Error::Closed {
+                code: 7,
+                reason: LOOKALIKE.to_owned(),
+            },
+            baton_core::Error::Network {
+                context: "connecting to the other device",
+                message: format!("aborted by peer: {LOOKALIKE}"),
+            },
+            baton_core::Error::Protocol(LOOKALIKE.to_owned()),
+        ]
+    }
+
     #[test]
     fn what_the_other_device_says_stays_on_one_line() {
-        let closed = baton_core::Error::Closed {
-            code: 7,
-            reason: LOOKALIKE.to_owned(),
-        };
-        let text = unreachable(closed, &device()).message().to_owned();
-        assert_eq!(text.lines().count(), 1, "{text:?}");
-        assert!(text.contains("bye\\n\\nPaired with Laptop"), "{text:?}");
+        for error in from_the_other_device() {
+            let text = unreachable(error, &device()).message().to_owned();
+            assert_eq!(text.lines().count(), 1, "{text:?}");
+            assert!(text.contains("bye\\n\\nPaired with Laptop"), "{text:?}");
+        }
+        for error in from_the_other_device() {
+            let text = CliError::from(error).message().to_owned();
+            assert_eq!(text.lines().count(), 1, "{text:?}");
+            assert!(text.contains("bye\\n\\nPaired with Laptop"), "{text:?}");
+        }
+    }
 
-        let network = || baton_core::Error::Network {
-            context: "connecting to the other device",
-            message: format!("aborted by peer: {LOOKALIKE}"),
-        };
-        let text = unreachable(network(), &device()).message().to_owned();
-        assert_eq!(text.lines().count(), 1, "{text:?}");
-        let text = CliError::from(network()).message().to_owned();
-        assert_eq!(text.lines().count(), 1, "{text:?}");
+    #[test]
+    fn a_settings_file_that_does_not_parse_keeps_its_lines() {
+        // The message quotes the line that is wrong, which takes several lines. It is the
+        // person's own file, not another device's words, and flattened it is hard to read.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "device_name = B\n").unwrap();
+        let error = baton_core::Config::load(&path).unwrap_err();
+        assert!(
+            matches!(error, baton_core::Error::Invalid { .. }),
+            "{error:?}"
+        );
+
+        let text = CliError::from(error).message().to_owned();
+        assert!(text.lines().count() > 1, "{text:?}");
+        assert!(text.contains("device_name = B"), "{text:?}");
     }
 }
