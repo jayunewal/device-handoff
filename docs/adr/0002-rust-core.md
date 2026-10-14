@@ -20,5 +20,5 @@ Write the shared logic once in Rust (`baton-proto`, `baton-core`) and build the 
 
 - Contributors need Rust for the core. The UI is approachable to Flutter developers.
 - The FFI boundary must stay narrow and made of simple types, so it is easy to wrap.
-- RustDesk (Rust core, Flutter UI) and LocalSend (Flutter) show that this combination works on all five target platforms.
+- RustDesk (Rust core, Flutter UI) shows that this combination works on all five target platforms.
 - Window capture still needs native code on each platform. That was always true.
