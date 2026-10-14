@@ -1,0 +1,31 @@
+[package]
+name = "baton-proto-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Fuzz targets for baton-proto. Not part of the main workspace."
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+baton-proto = { path = ".." }
+data-encoding = "2.11"
+
+[[bin]]
+name = "decode_payload"
+path = "fuzz_targets/decode_payload.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ticket"
+path = "fuzz_targets/ticket.rs"
+test = false
+doc = false
+bench = false
+
+# The fuzz crate is its own workspace; the real one must not pick it up.
+[workspace]
