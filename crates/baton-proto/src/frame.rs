@@ -95,12 +95,22 @@ pub fn decode_payload<M: Message>(payload: &[u8]) -> Result<M, FrameError> {
             max: M::MAX_FRAME_LEN,
         });
     }
+    // Read the whole item into a generic value first. That pass is where the CBOR itself is
+    // checked: well-formedness, nesting depth, and nothing left over. Only then is the value
+    // turned into a message. Deserializing straight from the bytes is not equivalent. For an
+    // enum that is not in its expected form, ciborium can return without consuming the value
+    // that belongs to the variant, so the rest of the item is misread and a payload that is not
+    // CBOR at all can come out as a message.
     let mut rest = payload;
-    let message: M = ciborium::de::from_reader_with_recursion_limit(&mut rest, RECURSION_LIMIT)
-        .map_err(|e| FrameError::Decode(e.to_string()))?;
+    let value: ciborium::Value =
+        ciborium::de::from_reader_with_recursion_limit(&mut rest, RECURSION_LIMIT)
+            .map_err(|e| FrameError::Decode(e.to_string()))?;
     if !rest.is_empty() {
         return Err(FrameError::TrailingBytes(rest.len()));
     }
+    let message: M = value
+        .deserialized()
+        .map_err(|e| FrameError::Decode(e.to_string()))?;
     message.validate()?;
     Ok(message)
 }
@@ -124,7 +134,7 @@ pub fn decode<M: Message>(frame: &[u8]) -> Result<M, FrameError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::{Ping, Request};
+    use crate::message::{Ping, Request, Response};
 
     #[test]
     fn ping_has_a_known_wire_encoding() {
@@ -217,6 +227,55 @@ mod tests {
         // A text string that claims to be 4 GiB long, with no bytes behind it.
         let payload = [0x7b, 0, 0, 0, 1, 0, 0, 0, 0];
         assert!(decode_payload::<Request>(&payload).is_err());
+    }
+
+    fn from_hex(text: &str) -> Vec<u8> {
+        data_encoding::HEXLOWER.decode(text.as_bytes()).unwrap()
+    }
+
+    fn cbor(value: &ciborium::Value) -> Vec<u8> {
+        let mut out = Vec::new();
+        ciborium::into_writer(value, &mut out).unwrap();
+        out
+    }
+
+    #[test]
+    fn a_payload_cut_short_behind_a_map_form_unit_variant_is_rejected() {
+        // {"Handoff": {"outcome": {"Accepted": "id"}, h'4242...': <missing>}}
+        //
+        // `Accepted` is a unit variant, which must be the bare text "Accepted". Here it is the
+        // key of a one-entry map. A decoder that skips the map's value without reading it takes
+        // "id" for the next key and the byte string for that key's value, and the outer map is
+        // then one item short, which a strict CBOR parser reports as a truncated payload.
+        let payload = from_hex(
+            "a16748616e646f6666a2676f7574636f6d65a16841636365707465646269645042424242424242424242424242424242",
+        );
+        assert!(matches!(
+            decode_payload::<Response>(&payload),
+            Err(FrameError::Decode(_))
+        ));
+    }
+
+    #[test]
+    fn a_data_carrying_variant_of_an_extensible_enum_is_a_decode_error() {
+        use ciborium::{Value, cbor};
+        // {"Handoff": {"id": h'4242...', "outcome": {"Declined": {"RetryAfter": {"secs": 5}}}}}
+        //
+        // A newer peer has to add variants of `DeclineReason` as unit variants: an older decoder
+        // maps those to `Other`, but it cannot skip over data it does not understand.
+        let payload = cbor(
+            &cbor!({
+                "Handoff" => {
+                    "id" => Value::Bytes(vec![0x42; 16]),
+                    "outcome" => { "Declined" => { "RetryAfter" => { "secs" => 5 } } },
+                },
+            })
+            .unwrap(),
+        );
+        assert!(matches!(
+            decode_payload::<Response>(&payload),
+            Err(FrameError::Decode(_))
+        ));
     }
 
     #[test]
