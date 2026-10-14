@@ -122,7 +122,7 @@ The same codes are used to close a connection and to reset a stream.
 | 400 | Protocol violation |
 | 403 | Not paired |
 | 408 | Timeout |
-| 429 | Too many connections or pairing attempts at once. A sender that is too fast is told so in the response (`Declined(RateLimited)`), not by closing |
+| 429 | Too many connections or pairing attempts at once, or a pairing connection that was pushed out by a newer one. A sender that is too fast is told so in the response (`Declined(RateLimited)`), not by closing |
 | 500 | Internal error or shutting down |
 
 ## 4. Pairing protocol (`baton-pair/1`)
@@ -218,7 +218,7 @@ An offerer MUST:
 
 A wrong proof does not close the offer, and wrong proofs are not counted. The secret has 256 bits, so guessing it is not a realistic attack, while letting a few wrong proofs void the offer would hand a cheap trick to anyone who knows the offerer's device id, which a device announces on its network: they could cancel every pairing as it starts.
 
-What an offerer SHOULD limit is its own load: how many pairing connections it serves at once, how long each may last, and how often one peer key or address may ask. These limits protect the device and say nothing about the secret. The reference implementation serves 8 pairing connections at once and closes any further one with code 429. It closes a pairing connection with code 0 once the answer has been delivered, with 400 if the frame header breaks the limits, and with 408 if the request does not arrive in time. Both sides SHOULD turn on QUIC keep-alives, because the exchange can sit idle for as long as a person takes to decide. A future way of pairing with a short code that a person types would be guessable, so it would need a password-authenticated key exchange and strict limits on attempts. It would be a new protocol (section 8), not a change to this one.
+What an offerer SHOULD limit is its own load: how many pairing connections it serves at once, how long each may last, and how often one peer key or address may ask. These limits protect the device and say nothing about the secret. The reference implementation serves 8 pairing connections at once. When all 8 places are taken, a new connection takes the place of the oldest one that has not shown a valid proof, which is closed with code 429; a new connection is refused with 429 only when every place holds a connection that has. A connection that has not delivered its request within 10 seconds of being made, which includes opening the stream, is closed with 408 whether or not any other connection is waiting. It closes a pairing connection with code 0 once the answer has been delivered, and with 400 if the frame header breaks the limits. Both sides SHOULD turn on QUIC keep-alives, because the exchange can sit idle for as long as a person takes to decide. A future way of pairing with a short code that a person types would be guessable, so it would need a password-authenticated key exchange and strict limits on attempts. It would be a new protocol (section 8), not a change to this one.
 
 `Rejected(Declined)` is sent only after a valid proof, when the person said no or did not answer in time.
 
@@ -269,14 +269,14 @@ The reference implementation also applies the following by default. They are not
 | Unread data a connection may hold | 16 MiB |
 | Connection attempts let through before a QUIC retry token is asked for, from addresses that have not proven themselves | 64 a second |
 | Connection attempts from an address that has answered a retry token | 20 every 10 seconds |
-| Time for a request to arrive once its stream is open | 10 seconds |
+| Time for a request to arrive once its stream is open. On a pairing connection the time runs from when the connection was made, so opening the stream counts | 10 seconds |
 | Time to wait for the response to a request | 30 seconds |
 | Handoff ids remembered | 1024, for 10 minutes |
 | Items accepted from one paired device | 30 a minute (a setting, at most 600) |
 | Clipboard text accepted | 256 KiB (a setting) |
 | Connections kept open to or from one paired device | 8; the oldest are closed with 429 beyond that |
 | Idle session connection closed after | 2 minutes |
-| Pairing connections served at once | 8 |
+| Pairing connections served at once | 8; a newcomer pushes out the oldest one that has shown no valid proof |
 | Time a person has to approve a pairing request | 2 minutes |
 | Lifetime of a pairing ticket | 5 minutes (a setting, from 30 seconds to 15 minutes) |
 | QUIC keep-alive and idle timeout | 10 seconds and 30 seconds |

@@ -46,6 +46,7 @@ use crate::{
     gate::{code, remote_device},
     link::contact_hints,
     shared::Shared,
+    slots::PairSlot,
     trust::{ContactHints, PairedDevice},
     util::{BoxFuture, blocking, contained},
     wire::{ReadFailure, read_message, write_message},
@@ -426,24 +427,29 @@ enum Exit {
     TooSlow,
     /// This device is shutting down.
     Stopping,
+    /// A newer connection took this one's place, because it had shown nothing.
+    PushedOut,
     /// The connection failed by itself, so there is nobody to tell.
     Gone,
 }
 
 impl PairServer {
     async fn run(&self, connection: Connection) {
-        // Anyone may open a pairing connection, so bound how many are in progress.
-        let Ok(_slot) = Arc::clone(&self.shared.pair_slots).try_acquire_owned() else {
+        // Anyone may open a pairing connection, so bound how many are in progress. When
+        // they are all taken, the newcomer pushes out the oldest one that has shown
+        // nothing, so idle connections cannot keep a real joiner out.
+        let Some(slot) = self.shared.pair_slots.admit() else {
             connection.close(code(close_code::OVERLOADED), b"busy");
             return;
         };
         let served = tokio::time::timeout(
             self.shared.tuning.pair_connection_limit(),
-            self.serve(&connection),
+            self.serve(&connection, &slot),
         );
         let exit = tokio::select! {
             biased;
             () = self.shared.stop.cancelled() => Exit::Stopping,
+            () = slot.pushed_out() => Exit::PushedOut,
             result = served => result.unwrap_or(Exit::TooSlow),
         };
         let closing: Option<(u32, &[u8])> = match exit {
@@ -451,6 +457,7 @@ impl PairServer {
             Exit::Violation => Some((close_code::PROTOCOL_VIOLATION, b"bad request")),
             Exit::TooSlow => Some((close_code::TIMEOUT, b"too slow")),
             Exit::Stopping => Some((close_code::INTERNAL, b"shutting down")),
+            Exit::PushedOut => Some((close_code::OVERLOADED, b"busy")),
             // Nobody is left to tell.
             Exit::Gone => None,
         };
@@ -459,13 +466,25 @@ impl PairServer {
         }
     }
 
-    async fn serve(&self, connection: &Connection) -> Exit {
-        let Ok((mut send, mut recv)) = connection.accept_bi().await else {
+    async fn serve(&self, connection: &Connection, slot: &PairSlot) -> Exit {
+        // A joiner opens its stream as soon as the handshake is done, so a connection that
+        // has not delivered a request by the deadline is not going to. The deadline covers
+        // opening the stream as well as sending on it: a stream with nothing written is not
+        // visible here, so the wait for one is where a peer that does nothing would sit.
+        let started = tokio::time::Instant::now();
+        let deadline = self.shared.tuning.request_deadline;
+        let Ok(opened) = tokio::time::timeout(deadline, connection.accept_bi()).await else {
+            return Exit::TooSlow;
+        };
+        let Ok((mut send, mut recv)) = opened else {
             return Exit::Gone;
         };
-        let deadline = self.shared.tuning.request_deadline;
-        let response = match read_message::<PairRequest>(&mut recv, deadline).await {
-            Ok(request) => self.decide(connection, request).await,
+        let remaining = deadline.saturating_sub(started.elapsed());
+        let response = match read_message::<PairRequest>(&mut recv, remaining).await {
+            Ok(request) => match self.decide(connection, slot, request).await {
+                Ok(response) => response,
+                Err(exit) => return exit,
+            },
             // A frame header that breaks the limits is not worth an answer.
             Err(ReadFailure::BadHeader(_)) => return Exit::Violation,
             Err(ReadFailure::TimedOut) => return Exit::TooSlow,
@@ -488,7 +507,13 @@ impl PairServer {
         PairResponse::Rejected(PairRejection::Invalid)
     }
 
-    async fn decide(&self, connection: &Connection, request: PairRequest) -> PairResponse {
+    /// Answers a request, or reports that this connection was pushed out before it could.
+    async fn decide(
+        &self,
+        connection: &Connection,
+        slot: &PairSlot,
+        request: PairRequest,
+    ) -> Result<PairResponse, Exit> {
         let shared = &self.shared;
         // The joiner's id is the one the transport authenticated, never one it claims.
         let joiner = remote_device(connection);
@@ -497,9 +522,15 @@ impl PairServer {
             .export_keying_material(&mut binding, EXPORTER_LABEL, &[])
             .is_err()
         {
-            return self.reject_invalid().await;
+            return Ok(self.reject_invalid().await);
         }
 
+        // Judging a request can start something that cannot be taken back (a prompt on the
+        // person's screen), so this connection must not be pushed out halfway. It is
+        // protected first, and open to being pushed out again if the request was no good.
+        if !slot.protect() {
+            return Err(Exit::PushedOut);
+        }
         let verdict = shared.offers.check(
             &shared.id,
             &joiner,
@@ -507,8 +538,11 @@ impl PairServer {
             &request.proof,
             shared.clock.monotonic(),
         );
-        match verdict {
-            Verdict::Invalid => self.reject_invalid().await,
+        Ok(match verdict {
+            Verdict::Invalid => {
+                slot.unprotect();
+                self.reject_invalid().await
+            }
             Verdict::Busy => PairResponse::Rejected(PairRejection::Busy),
             Verdict::Approve(approval) => {
                 let device = DeviceInfo {
@@ -518,7 +552,7 @@ impl PairServer {
                 self.ask_and_pair(connection, joiner, device, approval)
                     .await
             }
-        }
+        })
     }
 
     async fn ask_and_pair(

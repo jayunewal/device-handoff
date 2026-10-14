@@ -856,34 +856,174 @@ async fn an_oversized_pairing_frame_is_cut_off_before_it_is_read() {
     }
 }
 
+/// The application error code a connection was closed with by the other side, if any.
+fn closed_with(connection: &iroh::endpoint::Connection) -> Option<u64> {
+    match connection.close_reason() {
+        Some(iroh::endpoint::ConnectionError::ApplicationClosed(close)) => {
+            Some(close.error_code.into_inner())
+        }
+        _ => None,
+    }
+}
+
 #[tokio::test]
-async fn the_pairing_protocol_serves_only_a_few_connections_at_once() {
+async fn idle_connections_do_not_keep_a_real_joiner_out() {
+    let a = device("Laptop").await;
+    let b = device("Phone").await;
+    let offer = a.node.offer_pairing(approve).await.unwrap();
+
+    // Eight strangers connect and then say nothing, one for each place the device has.
+    // Each stays well inside the admission limits, and none has to do anything else.
+    let strangers = Forger::new().await;
+    let mut idle = Vec::new();
+    for _ in 0..8 {
+        idle.push(strangers.connect(&a).await);
+    }
+    // Let the device take them all in before the real joiner arrives.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(idle.iter().all(|c| closed_with(c).is_none()));
+
+    let joined = tokio::time::timeout(
+        Duration::from_secs(5),
+        b.node.join_pairing(offer.ticket(), |_| {}),
+    )
+    .await
+    .expect("the real joiner was kept waiting");
+    let joined = joined.expect("the real joiner was turned away by idle connections");
+    assert_eq!(joined.id, a.id);
+    offer.wait().await.unwrap();
+    assert!(a.trust.contains(&b.id));
+
+    // The joiner took the place of exactly one idle connection, which was told why.
+    let pushed: Vec<_> = idle.iter().filter_map(closed_with).collect();
+    assert_eq!(pushed, vec![429]);
+}
+
+#[tokio::test]
+async fn new_connections_push_out_the_oldest_ones_that_have_shown_nothing() {
+    let a = device("Laptop").await;
+    let forger = Forger::new().await;
+
+    let mut connections = Vec::new();
+    for _ in 0..20 {
+        connections.push(forger.connect(&a).await);
+    }
+    // A connection that is pushed out is closed as soon as the newcomer is accepted.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Eight places, so twelve of the twenty were pushed out, and they are the early ones.
+    // The order in which the device takes connections in can differ a little from the
+    // order they were made in, so the ends are checked, not every position.
+    let pushed = connections
+        .iter()
+        .filter(|c| closed_with(c) == Some(429))
+        .count();
+    assert_eq!(
+        pushed, 12,
+        "12 of 20 connections should have been pushed out"
+    );
+    assert!(
+        connections[..4].iter().all(|c| closed_with(c) == Some(429)),
+        "the oldest connections should have been pushed out first"
+    );
+    assert!(
+        connections[16..].iter().all(|c| closed_with(c).is_none()),
+        "the newest connections should have been kept"
+    );
+}
+
+#[tokio::test]
+async fn a_request_with_a_valid_proof_keeps_its_place_whatever_arrives() {
+    let a = device("Laptop").await;
+    let asked = Arc::new(Notify::new());
+    let answer = Arc::new(Notify::new());
+    let offer = {
+        let (asked, answer) = (Arc::clone(&asked), Arc::clone(&answer));
+        a.node
+            .offer_pairing(move |_request: PairApprovalRequest| {
+                let (asked, answer) = (Arc::clone(&asked), Arc::clone(&answer));
+                async move {
+                    asked.notify_one();
+                    answer.notified().await;
+                    true
+                }
+            })
+            .await
+            .unwrap()
+    };
+    let joiner = Forger::new().await;
+    let connection = joiner.connect(&a).await;
+    let request = PairRequest {
+        device: info("Phone"),
+        proof: Forger::proof_for(
+            offer.ticket(),
+            &joiner.raw.id,
+            &Forger::binding_of(&connection),
+        ),
+    };
+    let reply = tokio::spawn(async move { Forger::ask(&connection, &request).await });
+    asked.notified().await;
+
+    // While the person is looking at the request, far more connections arrive than the
+    // device has places for. All of them are strangers' that have shown nothing.
+    let strangers = Forger::new().await;
+    let mut flood = Vec::new();
+    for _ in 0..30 {
+        flood.push(strangers.connect(&a).await);
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let pushed = flood.iter().filter(|c| closed_with(c) == Some(429)).count();
+    assert!(pushed >= 22, "only {pushed} of 30 were pushed out");
+
+    // The person says yes, and the joiner is still there to be told.
+    answer.notify_one();
+    let response = reply.await.unwrap().unwrap();
+    assert!(
+        matches!(response, PairResponse::Accepted { .. }),
+        "{response:?}"
+    );
+    assert!(a.trust.contains(&joiner.raw.id));
+}
+
+#[tokio::test]
+async fn a_connection_that_sends_nothing_is_cut_off_at_the_request_deadline() {
     let mut spec = Spec::new("Laptop");
-    // Holds slots long enough for the test to fill them.
-    spec.tuning.request_deadline = Duration::from_secs(20);
+    spec.tuning.request_deadline = Duration::from_millis(300);
     let a = spec.start().await;
     let forger = Forger::new().await;
 
-    let mut held = Vec::new();
-    let mut refused = 0;
-    for _ in 0..20 {
-        let connection = forger.connect(&a).await;
-        // Open a stream and say nothing, which keeps the slot busy.
-        let (send, recv) = connection.open_bi().await.unwrap();
-        held.push((connection, send, recv));
-    }
-    // Refusals are sent as soon as a connection is accepted, so a short wait is plenty.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    for (connection, _, _) in &held {
-        if let Some(iroh::endpoint::ConnectionError::ApplicationClosed(close)) =
-            connection.close_reason()
-        {
-            assert_eq!(close.error_code.into_inner(), 429);
-            refused += 1;
+    // No stream is ever opened. (A stream with nothing written on it is not seen by the
+    // other side in QUIC, so opening one would change nothing.)
+    let connection = forger.connect(&a).await;
+    let closed = tokio::time::timeout(Duration::from_secs(5), connection.closed())
+        .await
+        .expect("a connection that sent nothing was left open");
+    match closed {
+        iroh::endpoint::ConnectionError::ApplicationClosed(close) => {
+            assert_eq!(close.error_code.into_inner(), 408);
         }
+        other => panic!("expected the connection to be closed with code 408, got {other}"),
     }
-    assert!(
-        refused >= 20 - 8,
-        "only {refused} of 20 connections were refused"
-    );
+}
+
+#[tokio::test]
+async fn a_connection_that_starts_a_request_and_stalls_is_cut_off_at_the_same_deadline() {
+    let mut spec = Spec::new("Laptop");
+    spec.tuning.request_deadline = Duration::from_millis(300);
+    let a = spec.start().await;
+    let forger = Forger::new().await;
+    let connection = forger.connect(&a).await;
+
+    // Half a frame header, then nothing.
+    let (mut send, _recv) = connection.open_bi().await.unwrap();
+    send.write_all(&header(100)[..2]).await.unwrap();
+    let closed = tokio::time::timeout(Duration::from_secs(5), connection.closed())
+        .await
+        .expect("a stalled request was left open");
+    match closed {
+        iroh::endpoint::ConnectionError::ApplicationClosed(close) => {
+            assert_eq!(close.error_code.into_inner(), 408);
+        }
+        other => panic!("expected the connection to be closed with code 408, got {other}"),
+    }
 }
