@@ -69,7 +69,14 @@ baton inbox rm 1        # remove one; `baton inbox clear` removes all
 
 ## Try it on one computer first
 
-Each copy of Baton keeps its state in a folder, and `--home` picks another, so one computer can be both. In the first terminal, play A:
+Each copy of Baton keeps its state in a folder, and `--home` picks another, so one computer can be both. Both copies would call themselves by this computer's name, and a computer is shown under the name it had when it paired, so give the second one its own name first:
+
+```sh
+mkdir -p /tmp/baton-b
+echo 'device_name = "B"' > /tmp/baton-b/config.toml
+```
+
+Then, in the first terminal, play A:
 
 ```sh
 baton --home /tmp/baton-a listen
@@ -94,13 +101,13 @@ baton --home /tmp/baton-b send text hello
 baton --home /tmp/baton-b send link https://example.com
 ```
 
-and the first terminal prints each item as it arrives. That is a full pairing and send on one machine, with nothing else to set up. Both copies call themselves by this computer's name, so give one its own with `device_name = "B"` in `/tmp/baton-b/config.toml` if you want to tell them apart. Stop with Ctrl+C.
+and the first terminal prints each item as it arrives. That is a full pairing and send on one machine, with nothing else to set up. Stop with Ctrl+C.
 
 ## While a computer is locked
 
 The reason Baton exists is to let you walk away, so this is the part to try. On A, run `baton listen` and keep the computer awake (plugged in, and with sleep switched off for the test; on a Mac, `caffeinate -i baton listen` does it). Lock A. From B, send a link and some text, and run `baton ping`. Unlock A and run `baton inbox`.
 
-What to expect: the items arrive while A is locked, and nothing is opened or copied. What does not work: a computer that has gone to sleep cannot answer, so B says `Could not reach ...`. Waking sleeping computers and sending from a locked one need the background agent, which is not built. [locked-devices.md](locked-devices.md) has what each system allows.
+What to expect: the items arrive while A is locked, and nothing is opened or copied. What does not work: a computer that has gone to sleep cannot answer, so B says `Could not reach ...`. Waking sleeping computers and sending from a locked one need the background agent, which is not built. [locked-devices.md](https://github.com/jayunewal/device-handoff/blob/main/docs/locked-devices.md) has what each system allows.
 
 ## If something does not work
 
@@ -108,7 +115,7 @@ What to expect: the items arrive while A is locked, and nothing is opened or cop
 - **macOS** asks whether Terminal may find devices on your local network the first time. Allow it (System Settings, Privacy & Security, Local Network). If it refuses to run a downloaded copy, `xattr -d com.apple.quarantine ./baton` clears the download flag.
 - **Windows** asks whether to allow `baton` through the firewall the first time it listens. Allow it on private networks.
 - **More detail**: add `-v` (or `-vv`) before the command, as in `baton -v listen`. Without it, only Baton's own warnings are shown, and the networking library's messages are left out.
-- **A different name** for this computer: put `device_name = "Kitchen laptop"` in `config.toml` in the folder `baton id` shows.
+- **A different name** for this computer: put `device_name = "Kitchen laptop"` in `config.toml` in the folder `baton id` shows. Do it before pairing: a computer is shown under the name it had when it paired, so the other computers keep showing the old one.
 - **Only one `baton` can run a device at a time.** A second one says so. `baton inbox` and `baton devices` still work while another window listens.
 
 ## What is not built yet
