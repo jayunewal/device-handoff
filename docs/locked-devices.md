@@ -259,7 +259,7 @@ No documented way captures a locked session on any platform examined (section 3)
 As far as the research could tell, and without having tested any of these tools:
 
 - RustDesk, AnyDesk, Parsec, KDE Connect and Chrome Remote Desktop treat a locked remote machine as something to get past: stored credentials, remote unlock, privacy modes, or a separate session. Baton treats locked as a mode to respect: stage before leaving, queue, quarantine, and never unlock.
-- Sealing queued items to a key that exists only while the receiving phone is unlocked is an idea I did not find in the hand-off tools examined (Magic Wormhole, Taildrop, LocalSend, KDE Connect). It rests on a documented Android feature, and it is untested.
+- Sealing queued items to a key that exists only while the receiving phone is unlocked is an idea I did not find in the hand-off tools examined (Magic Wormhole, Taildrop, KDE Connect). It rests on a documented Android feature, and it is untested.
 - Locking the old device as part of a hand-off, when the other device acknowledges it, is related to RustDesk's option to lock a host when a remote session ends. Tying it to the acknowledgement of one item is the new part, and its value is unproven.
 
 ### 5.11 Where each rule lands
