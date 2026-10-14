@@ -54,6 +54,18 @@ There are no accounts in milestone 1. Accounts arrive in milestone 4 as an *intr
 
 Moving something to another device is a *handoff item*: a link, some clipboard text, and later files and tabs. The receiver does not blindly act on an item. What happens next is decided by a per-device policy on the receiving side. By default received links and clipboard text go to an inbox and nothing is opened or overwritten until the person chooses; auto-open and auto-apply are opt-in, per device. See [security.md](security.md) for why.
 
+## Locked devices
+
+Handing work off means walking away from the first device, so that device is usually locked and often asleep. Baton has to work in that state: an app that needs the source unlocked fails at its one job. The rules below follow from that requirement. They are design rules, not a statement of what every platform allows. What each operating system really permits while locked is still being researched, and the results will be written down separately with a list of behaviour to verify on real hardware.
+
+- **The agent does not need an unlocked session.** On desktops it runs as a background service that does not depend on the screen being unlocked. Receiving items, answering pings and serving what is already prepared must work with the screen locked.
+- **Capture while the person is there.** What a person might want to continue, such as the clipboard or the current tab, cannot be counted on to be readable once the device locks, and on phones it is readable only while the app is in the foreground. So it is captured while the device is in use and kept ready in a small outbox that paired devices can fetch from. When the device is about to lock or sleep, the agent pushes the latest of it to paired devices that are reachable.
+- **Store and forward.** Items that cannot be delivered right now, because the other device is asleep, offline or locked itself, wait in an outbox and are delivered when it can be reached, instead of failing.
+- **Keys stay readable at the lock screen.** The device key and the trust store live in storage that is available after the first unlock of the device, not in storage that is sealed whenever the screen locks. A keystore that locks with the screen would make the agent deaf exactly when it is needed.
+- **Serving from a locked device is an explicit, per-device choice.** Letting a paired device fetch what was open on a locked machine changes who can see what, so it has its own policy and is off by default.
+- **Sleeping devices need a way to be woken.** That is Wake-on-LAN or the platform's network wake on desktops, and push notifications through a gateway on phones (milestone 4). Where there is no wake path, the outbox covers the gap.
+- **Limits stay visible.** Some things cannot be done on a locked device, such as capturing a window from a locked desktop without a privacy mode or a virtual display. Those limits are documented per platform, not hidden.
+
 ## Platform boundaries
 
 Some things only native code can do, and they are kept out of the core:

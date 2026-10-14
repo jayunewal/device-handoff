@@ -23,15 +23,17 @@ The research behind these limits, and the ideas for working around them, is in [
 - **End-to-end encrypted.** Devices authenticate each other with keys that never leave them. A relay only forwards ciphertext.
 - **No account required.** You pair devices with a QR code or a one-time code. Optional, self-hostable accounts will make pairing automatic later.
 - **Open protocol.** The wire format is specified in `docs/protocol.md` (it arrives with the protocol crate), so other implementations are possible.
+- **Works while locked.** You hand work off so that you can walk away, so Baton is designed to keep working while the device you left is locked. What each operating system allows is still being researched; see [docs/architecture.md](docs/architecture.md#locked-devices).
+- **Fast.** File transfer is Baton's own protocol, built to fill the link, and its speed is measured by a benchmark that lives in the repository.
 - **Small trusted core.** Networking, cryptography and the protocol live in one Rust library. Each platform adds a thin layer for what only it can do, such as the clipboard or screen capture.
 
 ## Roadmap
 
 | Milestone | Scope | State |
 | --- | --- | --- |
-| 1 | Rust core: device identity, pairing, LAN discovery, encrypted transport with relay fallback. Clipboard and link handoff between two desktop clients, from a command-line app. CI on Linux, macOS and Windows. | In progress |
-| 2 | Flutter apps for desktop and mobile that wrap the core. Pairing by QR code, send and receive links and clipboard. | Planned |
-| 3 | Files and browser tabs. Browser extension, phone share sheet, iOS Shortcuts. | Planned |
+| 1 | Rust core: device identity, pairing, LAN discovery, encrypted transport with relay fallback. Clipboard, link and file handoff between two desktop clients from a command-line app, with Baton's own fast file transfer and a benchmark. Designed to work while devices are locked. CI on Linux, macOS and Windows. | In progress |
+| 2 | Flutter apps for desktop and mobile that wrap the core. Pairing by QR code, send and receive links, clipboard and files. | Planned |
+| 3 | Browser tabs and sharing. Browser extension, phone share sheet, iOS Shortcuts. | Planned |
 | 4 | Self-hostable account server: automatic device list, signaling and push notification gateway, so devices on the same account find each other. | Planned |
 | 5 | Window streaming from Mac and Windows to an iPad or phone, with input. | Planned |
 | Later | iPhone control kit, Mac bridge for iPhone Mirroring, Linux screen capture. | Ideas |
@@ -64,4 +66,4 @@ Please read [CONTRIBUTING.md](CONTRIBUTING.md) first. Report security problems p
 
 Apache License 2.0. See [LICENSE](LICENSE).
 
-Baton is informed by the design of [RustDesk](https://github.com/rustdesk/rustdesk), [KDE Connect](https://kdeconnect.kde.org/), [LocalSend](https://github.com/localsend/localsend) and [Syncthing](https://syncthing.net/), and builds on [iroh](https://github.com/n0-computer/iroh). It does not contain code from projects whose licenses are incompatible with Apache-2.0.
+Baton is informed by the design of [RustDesk](https://github.com/rustdesk/rustdesk), [KDE Connect](https://kdeconnect.kde.org/) and [Syncthing](https://syncthing.net/), and builds on [iroh](https://github.com/n0-computer/iroh). It does not contain code from projects whose licenses are incompatible with Apache-2.0.

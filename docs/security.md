@@ -36,12 +36,26 @@ Out of scope: an attacker who controls an unlocked user session or the operating
 | **Handoff policy.** Per paired device, on the receiving side. Defaults: links and clipboard text go to an inbox. Auto-opening links and auto-applying the clipboard are opt-in. Only `http` and `https` links are ever opened. | Planned |
 | **Resource limits.** Maximum frame and item sizes checked before allocating, a limit on concurrent streams, timeouts on every read, a limit on concurrent pairing attempts, and a rate limit on items per device. | Planned |
 | **Display names.** Names that arrive from a peer have control and bidirectional-override characters removed and are length-limited before they reach a prompt or a log. | Planned |
+| **Private discovery.** On the local network a device announces a short value that changes every 15 minutes and that only its paired devices can recognise, instead of its permanent key. See the design goal below. | Planned, after milestone 1 |
 | **Key storage in OS keystores** (Keychain, Credential Manager, Secret Service, Android Keystore). | Planned, later milestone |
 | **Honoring "concealed" clipboard flags** that password managers set. | Planned, later milestone |
 
+## Design goal: private discovery
+
+A device that wants to be found on the local network announces its public key over mDNS, and with DNS discovery on it also publishes where to reach that key in a public DNS service. A key that never changes is a tracking handle. Anyone on the same café Wi-Fi learns it, and can then ask public DNS from anywhere, at any later time, whether the device is online and roughly which region it is in. Other tools in this space broadcast stable identifiers in the same way. Baton aims to do better: someone who is not paired with a device should learn nothing that links one sighting of it to another.
+
+The sketch below is to be refined when it is built.
+
+- At pairing, each device gives the other a random 32-byte *presence key*.
+- On the local network a device announces only `BLAKE3-keyed(presence key, current 15-minute window)` cut to about eight bytes, plus its addresses. A paired device works out the value it expects from each peer, accepting the neighbouring windows to allow for clock skew. Everyone else sees a value that changes every window and links to nothing. It is the same idea as the resolvable private addresses in Bluetooth.
+- iroh's discovery is pluggable, so this can be a discovery service of Baton's own rather than a fork.
+- On the internet side, the trust store already remembers each peer's home relay, which is enough to dial it. A DNS lookup is needed only after that relay changes, so DNS discovery stays off by default until a record under a name derived for each pair can replace the one published under the device key.
+
+Open questions: whether there is one presence key per device or one per pair (a key per pair makes the announcement larger and shows how many devices are paired, while a key per device has to be replaced and handed out again whenever a device is unpaired), and how a device that was offline for longer than a window catches up.
+
 ## Known limitations
 
-- **Metadata is not hidden.** To find devices on the local network, Baton announces its public key and addresses over mDNS to everyone on that network. The service name is specific to Baton, but a person on the same Wi-Fi can see that a Baton device is present. Relays see which keys talk to each other and from where. Turn LAN discovery off in settings if that matters to you.
+- **Metadata is not hidden.** To find devices on the local network, Baton announces its public key and addresses over mDNS to everyone on that network. The service name is specific to Baton, but a person on the same Wi-Fi can see that a Baton device is present. Because the key never changes, it can also be used to recognise the same device on other networks. Private discovery, described above, is the planned fix. Relays see which keys talk to each other and from where. Turn LAN discovery off in settings if that matters to you.
 - **A ticket is a bearer secret.** Anyone who gets it before it expires or is used can request pairing. The approval step is the safeguard, so read the name and fingerprint you are asked to approve. Do not paste tickets into services that keep logs. A QR code swapped for a different one by someone with physical access would pair you with them; the joiner prints the fingerprint of the device it paired with so it can be compared.
 - **The clipboard may contain secrets.** Automatic clipboard sync is off by default. Until Baton honors the "concealed" flags password managers set, turning it on for a device means everything copied on the other devices is sent to it.
 - **The inbox is stored on disk unencrypted**, readable only by the owner. Anything you send to a device can be read from its inbox by anyone who can read that user's files.

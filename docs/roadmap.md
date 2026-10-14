@@ -2,33 +2,38 @@
 
 A proposal, not a promise. Each milestone ends in something a person can use, and each is built as a series of small pull requests.
 
-## Milestone 1: core and command-line handoff
+## Requirement that cuts across every milestone
 
-Scope: the Rust core, and a command-line client that hands off clipboard text and links between two desktop machines.
+**Baton keeps working while the device you left is locked.** The point of handing work off is to walk away from the first device, so nothing may depend on that device staying unlocked. This shapes the agent, the key storage, the transport and window streaming, and [architecture.md](architecture.md#locked-devices) lists the design rules that follow from it. What each operating system actually allows is still being researched. The findings, and a list of behaviour to verify on real hardware, will be written down before the designs that depend on them are built.
+
+## Milestone 1: core, handoff and fast file transfer
+
+Scope: the Rust core, and a command-line client that hands off clipboard text, links and files between two desktop machines.
 
 - Device identity and a persistent trust store.
 - Pairing with a one-time ticket, approved on the offering device.
 - Discovery on the local network (mDNS) and connection by public key, with the internet relay as a fallback.
 - Handoff of links and clipboard text with per-device policies and an inbox.
+- File and folder transfer in Baton's own protocol, built to be much faster than LocalSend and the other common tools for this job. A folder is one offer with a manifest, files move over parallel resumable streams, and hashing happens while sending. A benchmark that anyone can rerun is part of the milestone, with four cases that each hit a different limit: one large file, thousands of small files, Wi-Fi under load, and a relayed connection. There is no compatibility with other tools' protocols.
 - Continuous integration on Linux, macOS and Windows; license checks on dependencies.
 
-Done when: two machines on the same Wi-Fi pair with `baton`, a link sent from one is waiting in the other's inbox (or opens, if the person opted in), and the same works across different networks through a relay.
+Done when: two machines on the same Wi-Fi pair with `baton`, a link sent from one is waiting in the other's inbox (or opens, if the person opted in), a folder of files arrives faster than with the tools the benchmark compares against, and the same works across different networks through a relay.
 
 ## Milestone 2: apps
 
-Flutter apps for macOS, Windows, Android, iOS and iPadOS that wrap the core. QR pairing, a device list, sending and receiving links and clipboard. Tray icon and notifications on desktop.
+Flutter apps for macOS, Windows, Android, iOS and iPadOS that wrap the core. QR pairing, a device list, sending and receiving links, clipboard and files. Tray icon and notifications on desktop.
 
-## Milestone 3: files and tabs
+## Milestone 3: tabs and sharing
 
-Send files and the current browser tab. A browser extension, the phone share sheet, and iOS Shortcuts and App Intents ("Send this to my PC").
+Send the current browser tab. A browser extension, the phone share sheet, and iOS Shortcuts and App Intents ("Send this to my PC").
 
 ## Milestone 4: accounts
 
-A self-hostable server that keeps a device roster, so devices signed in to the same account find and trust each other without scanning QR codes. It also runs signaling, a relay and a push gateway for iOS. Sign-in by email link or OpenID Connect. QR pairing stays for people who want no server.
+A self-hostable server that keeps a device roster, so devices signed in to the same account find and trust each other without scanning QR codes. It also runs signaling, a relay of its own and a push gateway for iOS. The relay is part of the server because the public relays are rate limited and meant for development and hobby use, which would cap file transfers on every connection that cannot go direct. Sign-in by email link or OpenID Connect. QR pairing stays for people who want no server.
 
 ## Milestone 5: window streaming
 
-Stream a window from a Mac or Windows PC to an iPad or phone, with touch and keyboard control. Needs capture and encode on the source, decode and render on the viewer, and a transport choice for video (QUIC streams or WebRTC).
+Stream a window from a Mac or Windows PC to an iPad or phone, with touch and keyboard control. Needs capture and encode on the source, decode and render on the viewer, and a transport choice for video (QUIC streams or WebRTC). A locked desktop cannot be captured the ordinary way, so this milestone also needs a privacy mode or a virtual display.
 
 ## Later
 
@@ -39,6 +44,7 @@ Stream a window from a Mac or Windows PC to an iPad or phone, with touch and key
 ## Open questions
 
 - Video transport for milestone 5: QUIC datagrams and streams on the existing connection, or WebRTC?
-- Where each OS should keep the device key (Keychain, Credential Manager, Secret Service, Android Keystore).
+- Where each OS should keep the device key (Keychain, Credential Manager, Secret Service, Android Keystore). The answer must stay readable at the lock screen.
 - Who hosts the default relay and account server, and how that is paid for.
 - Short typed pairing codes (a password-authenticated key exchange) for devices that cannot scan a QR code.
+- Which of the things a person might continue (current tabs, the clipboard) a locked device may serve to a paired device, and under which policy.
