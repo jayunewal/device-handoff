@@ -1,0 +1,16 @@
+name: Feature request
+description: Suggest something Baton should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the situation first, then the feature you have in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: platforms
+    attributes:
+      label: Which devices and platforms?
+      description: For example "from my Windows PC to my iPad".

@@ -1,0 +1,38 @@
+name: Bug report
+description: Something does not work the way it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `baton --version`, or the commit you built.
+    validations:
+      required: true
+  - type: dropdown
+    id: platforms
+    attributes:
+      label: Platforms involved
+      multiple: true
+      options: [macOS, Windows, Linux, iOS, iPadOS, Android]
+    validations:
+      required: true
+  - type: dropdown
+    id: network
+    attributes:
+      label: Network
+      description: How were the devices connected?
+      options: [Same Wi-Fi or LAN, Different networks (internet), Not sure]
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Run with `RUST_LOG=baton=debug`. Remove anything private before pasting.
+      render: text
