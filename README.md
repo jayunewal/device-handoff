@@ -23,7 +23,7 @@ The research behind these limits, and the ideas for working around them, is in [
 - **End-to-end encrypted.** Devices authenticate each other with keys that never leave them. A relay only forwards ciphertext.
 - **No account required.** You pair devices with a QR code or a one-time ticket you copy across, and confirm with a six-digit code that both devices show. Optional, self-hostable accounts will make pairing automatic later.
 - **Open protocol.** The wire format is specified in [docs/protocol.md](docs/protocol.md), so other implementations are possible.
-- **Works while locked.** You hand work off so that you can walk away, so Baton is designed to keep working while the device you left is locked. What each operating system allows is still being researched; see [docs/architecture.md](docs/architecture.md#locked-devices).
+- **Works while locked.** You hand work off so that you can walk away, so Baton is designed to keep working while the device you left is locked. What each operating system allows, with the evidence and the tests still to run on real hardware, is in [docs/locked-devices.md](docs/locked-devices.md); [docs/architecture.md](docs/architecture.md#locked-devices) has the short form of the rules.
 - **Fast.** File transfer is Baton's own protocol, built to fill the link, and its speed is measured by a benchmark that lives in the repository.
 - **Small trusted core.** Networking, cryptography and the protocol live in one Rust library. Each platform adds a thin layer for what only it can do, such as the clipboard or screen capture.
 
@@ -46,7 +46,7 @@ The order is a proposal and can change. See [docs/roadmap.md](docs/roadmap.md) f
 | --- | --- |
 | `crates/baton-proto` | Wire protocol: message types, framing, the pairing handshake and ticket format. No networking. |
 | `crates/baton-core` | Device identity, the trust store, per-device policy and settings, the state directory, and the encrypted transport: discovery, pairing, admission control and the session protocol between paired devices. |
-| `docs/` | Architecture, protocol and security documents, and architecture decision records in `docs/adr/`. |
+| `docs/` | Architecture, protocol and security documents, the locked-device page, and architecture decision records in `docs/adr/`. The research notes behind the locked-device page are in `docs/research/`. |
 
 More crates are added as milestone 1 lands (`baton-agent`, `baton-cli`). Flutter apps will live under `apps/`.
 
