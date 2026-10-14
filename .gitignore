@@ -1,0 +1,21 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Secrets and local state (never commit device keys or local config)
+.env
+*.key
+/.baton/
+
+# Flutter / Dart (apps come in a later milestone)
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+build/
