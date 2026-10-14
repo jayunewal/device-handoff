@@ -56,6 +56,12 @@ fn check_existing_dir(dir: &Path) -> Result<()> {
 ///
 /// The data is written to a temporary file in the same directory, flushed to disk, then renamed over
 /// the target. The file is readable by its owner only.
+///
+/// The rename is `std::fs::rename`, not the temporary file's own `persist`. On Windows `persist`
+/// cannot replace a file that anyone has open, so a command reading the inbox could make the
+/// listener fail to keep an item. `std::fs::rename` asks for the rename rules that let the name
+/// go to the new file while a reader keeps the old one open, as every other system does, and
+/// falls back to the old behaviour only where Windows does not have them.
 pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let mut temp = tempfile::NamedTempFile::new_in(dir).map_err(Error::io("create", dir))?;
@@ -63,8 +69,15 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     temp.as_file()
         .sync_all()
         .map_err(Error::io("flush", path))?;
-    temp.persist(path)
+    // Closes the file and takes over its name, so nothing deletes it behind the rename.
+    let staged = temp
+        .into_temp_path()
+        .keep()
         .map_err(|e| Error::io("replace", path)(e.error))?;
+    if let Err(e) = fs::rename(&staged, path) {
+        let _ = fs::remove_file(&staged);
+        return Err(Error::io("replace", path)(e));
+    }
     sync_dir(dir);
     Ok(())
 }
@@ -177,6 +190,39 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), b"one");
         write_atomic(&path, b"two").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"two");
+    }
+
+    #[test]
+    fn a_file_someone_is_reading_can_still_be_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        write_atomic(&path, b"old").unwrap();
+
+        // A command reading the file while the listener changes it. The reader keeps what it
+        // opened; whoever opens the file next gets the new one. On Windows a plain
+        // `persist` fails here.
+        let mut reader = File::open(&path).unwrap();
+        write_atomic(&path, b"new").unwrap();
+        let mut seen = String::new();
+        reader.read_to_string(&mut seen).unwrap();
+        assert_eq!(seen, "old");
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+    }
+
+    #[test]
+    fn a_failed_replace_leaves_the_old_file_and_no_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        // A directory cannot be replaced by a file, on any system.
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("inside"), b"x").unwrap();
+        assert!(write_atomic(&path, b"new").is_err());
+        assert!(path.is_dir());
+        let names: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["state.json"]);
     }
 
     #[test]

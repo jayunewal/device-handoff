@@ -41,7 +41,7 @@ use std::{
 
 use baton_proto::{
     DeviceId,
-    device::{FALLBACK_NAME, sanitize_display_name},
+    device::{MAX_DISPLAY_TITLE_CHARS, sanitize_display_name, sanitize_text},
     limits::{MAX_CLIPBOARD_TEXT_BYTES, MAX_TITLE_BYTES, MAX_URL_BYTES},
     message::{DeclineReason, Handoff, Item, Outcome, capability},
 };
@@ -90,7 +90,8 @@ pub enum InboxItem {
     Link {
         /// The address.
         url: String,
-        /// The page title, cleaned like a device name, if the sender knew one.
+        /// The page title, cleaned like a device name but allowed to be longer, if the sender
+        /// knew one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         title: Option<String>,
     },
@@ -290,8 +291,18 @@ impl Inbox {
     /// # Errors
     ///
     /// If the file cannot be read, is not a valid inbox, cannot be written, or stays locked by
-    /// another process for several seconds.
+    /// another process for several seconds. Also if `item` is one the file could not be read
+    /// back with: an empty link, or anything longer than the protocol allows. Nothing is
+    /// written then.
     pub fn add(&self, from: &PairedDevice, item: InboxItem, now: u64) -> Result<Added> {
+        // An item the file would refuse to read back must never be written, or every later
+        // read fails until someone edits the file by hand. Items from the network were
+        // checked before they got here.
+        if let Some(problem) = item.problem() {
+            return Err(Error::Internal(format!(
+                "an item that could not be read back was offered to the inbox: {problem}"
+            )));
+        }
         let _held = self.lock()?;
         let mut state = read_state(&self.inner.path)?;
         let number = state.next_number;
@@ -458,6 +469,12 @@ fn parse(path: &Path, text: &str) -> Result<State> {
             ),
         ));
     }
+    if stored.next_number == 0 {
+        return Err(Error::invalid(
+            path,
+            "the next item number must be above 0, since numbers start at 1",
+        ));
+    }
     let mut previous = 0;
     for entry in &mut stored.items {
         if entry.number <= previous || entry.number >= stored.next_number {
@@ -476,9 +493,12 @@ fn parse(path: &Path, text: &str) -> Result<State> {
                 &format!("item {}: {problem}", entry.number),
             ));
         }
-        // A name is cleaned when it is received, but this file is only as trustworthy as the
-        // disk, and a name read back is shown to a person.
+        // A name and a title are cleaned when they are received, but this file is only as
+        // trustworthy as the disk, and both are shown to a person when they are read back.
         entry.from_name = sanitize_display_name(&entry.from_name);
+        if let InboxItem::Link { title, .. } = &mut entry.item {
+            *title = title.as_deref().and_then(clean_title);
+        }
     }
     Ok(State {
         next_number: stored.next_number,
@@ -582,10 +602,11 @@ fn normalise_link(raw: &str) -> std::result::Result<String, DeclineReason> {
 }
 
 /// A page title that is safe to show, or `None` if nothing visible is left of it.
+///
+/// It is cleaned like a device name, but a title may run to [`MAX_DISPLAY_TITLE_CHARS`]
+/// characters, where a name stops at 64.
 fn clean_title(raw: &str) -> Option<String> {
-    let cleaned = sanitize_display_name(raw);
-    // Nothing left to show is no title, not a title that says "unnamed device".
-    (cleaned != FALLBACK_NAME || raw.trim() == FALLBACK_NAME).then_some(cleaned)
+    sanitize_text(raw, MAX_DISPLAY_TITLE_CHARS)
 }
 
 #[cfg(test)]
@@ -880,6 +901,9 @@ mod tests {
                 "a number the next one would repeat",
                 file_json(3, &[entry(3)]),
             ),
+            // Nothing in the file is wrong, but the next item would be numbered 0 and the
+            // file would then refuse to be read.
+            ("a next number of zero", file_json(0, &[])),
         ];
         for (what, json) in cases {
             let dir = tempfile::tempdir().unwrap();
@@ -925,6 +949,72 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_file(&dir, &file_json(5_000, &entries));
         assert!(matches!(Inbox::load(&path, 10), Err(Error::Invalid { .. })));
+    }
+
+    #[test]
+    fn titles_read_back_are_cleaned_like_titles_received() {
+        let link = |title: &str| {
+            let title = serde_json::to_string(title).unwrap();
+            format!(r#"{{"kind":"link","url":"https://example.com/","title":{title}}}"#)
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_file(
+            &dir,
+            &file_json(
+                3,
+                &[
+                    entry_json(1, "Laptop", &link("Pay\u{202e}ment\n\u{1b}[31m page")),
+                    entry_json(2, "Laptop", &link(" \u{200b}\n ")),
+                ],
+            ),
+        );
+        let titles: Vec<_> = Inbox::load(&path, 10)
+            .unwrap()
+            .list()
+            .unwrap()
+            .into_iter()
+            .map(|entry| match entry.item {
+                InboxItem::Link { title, .. } => title,
+                InboxItem::Text { .. } => unreachable!(),
+            })
+            .collect();
+        assert_eq!(titles, [Some("Payment [31m page".to_owned()), None]);
+    }
+
+    #[test]
+    fn an_item_the_file_could_not_be_read_back_with_is_never_written() {
+        let (dir, inbox) = inbox(10);
+        inbox.add(&laptop(), text("kept"), NOW).unwrap();
+        let before = fs::read(dir.path().join("inbox.json")).unwrap();
+
+        let refused = [
+            InboxItem::Link {
+                url: String::new(),
+                title: None,
+            },
+            InboxItem::Link {
+                url: format!("https://example.com/{}", "a".repeat(MAX_URL_BYTES)),
+                title: None,
+            },
+            InboxItem::Link {
+                url: "https://example.com/".to_owned(),
+                title: Some("t".repeat(MAX_TITLE_BYTES + 1)),
+            },
+            InboxItem::Text {
+                text: "x".repeat(MAX_CLIPBOARD_TEXT_BYTES + 1),
+            },
+        ];
+        for item in refused {
+            assert!(matches!(
+                inbox.add(&laptop(), item, NOW),
+                Err(Error::Internal(_))
+            ));
+        }
+        // Nothing was written, so the inbox still reads, and the next item is number 2.
+        assert_eq!(fs::read(dir.path().join("inbox.json")).unwrap(), before);
+        assert_eq!(numbers(&inbox), [1]);
+        stored(inbox.add(&laptop(), text("next"), NOW).unwrap());
+        assert_eq!(numbers(&inbox), [1, 2]);
     }
 
     #[test]
@@ -979,12 +1069,15 @@ mod tests {
         .unwrap();
         inbox.add(&laptop(), text("x"), NOW).unwrap();
 
-        // Another process in the middle of a change.
+        // Another process in the middle of a change. Waiting for the lock, not trying for
+        // it: a lock belongs to the open file, so a child process that another test is
+        // starting holds a copy of `inbox`'s lock file until it runs its program, and the
+        // lock can look taken for a moment after `add` has returned. macOS CI hit this.
         let other = OpenOptions::new()
             .write(true)
             .open(dir.path().join("inbox.lock"))
             .unwrap();
-        other.try_lock().unwrap();
+        other.lock().unwrap();
 
         let started = Instant::now();
         assert!(matches!(
@@ -1241,6 +1334,9 @@ mod tests {
         )
         .await;
         offer(&handler, &from, link_item(url, Some(" \u{200b}\n "))).await;
+        // A page title can be much longer than a device name, up to its own limit.
+        let long = "w".repeat(MAX_DISPLAY_TITLE_CHARS + 50);
+        offer(&handler, &from, link_item(url, Some(&long))).await;
         let titles: Vec<_> = inbox
             .list()
             .unwrap()
@@ -1250,7 +1346,14 @@ mod tests {
                 InboxItem::Text { .. } => unreachable!(),
             })
             .collect();
-        assert_eq!(titles, [Some("Payment [31m page".to_owned()), None]);
+        assert_eq!(
+            titles,
+            [
+                Some("Payment [31m page".to_owned()),
+                None,
+                Some("w".repeat(MAX_DISPLAY_TITLE_CHARS)),
+            ]
+        );
     }
 
     #[tokio::test]

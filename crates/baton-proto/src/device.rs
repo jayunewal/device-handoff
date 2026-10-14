@@ -11,6 +11,10 @@ use crate::limits::{
 /// Most characters of a device name that are ever shown.
 pub const MAX_DISPLAY_NAME_CHARS: usize = 64;
 
+/// Most characters of a link's title that are ever shown or kept. Page titles run longer
+/// than device names, so this is higher.
+pub const MAX_DISPLAY_TITLE_CHARS: usize = 256;
+
 /// Shown when a peer's name is empty once cleaned up.
 pub const FALLBACK_NAME: &str = "unnamed device";
 
@@ -99,7 +103,17 @@ impl DeviceInfo {
 /// name chosen by a peer must never be what tells a person which device they are
 /// dealing with.
 pub fn sanitize_display_name(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len().min(MAX_NAME_BYTES));
+    sanitize_text(raw, MAX_DISPLAY_NAME_CHARS).unwrap_or_else(|| FALLBACK_NAME.to_owned())
+}
+
+/// Makes any other text from a peer that is only ever shown safe to show, in the way
+/// [`sanitize_display_name`] does for a name, except that the result is shortened to
+/// `max_chars` characters and is `None`, not [`FALLBACK_NAME`], if nothing visible is left.
+///
+/// Everything said there about what is removed, and about what cleaning does not do, holds
+/// here too.
+pub fn sanitize_text(raw: &str, max_chars: usize) -> Option<String> {
+    let mut out = String::with_capacity(raw.len().min(max_chars.saturating_mul(4)));
     let mut chars = 0;
     let mut pending_space = false;
     for c in raw.chars() {
@@ -111,7 +125,7 @@ pub fn sanitize_display_name(raw: &str) -> String {
             continue;
         }
         let needed = 1 + usize::from(pending_space);
-        if chars + needed > MAX_DISPLAY_NAME_CHARS {
+        if chars + needed > max_chars {
             break;
         }
         if pending_space {
@@ -121,11 +135,7 @@ pub fn sanitize_display_name(raw: &str) -> String {
         out.push(c);
         chars += needed;
     }
-    if out.is_empty() {
-        FALLBACK_NAME.to_owned()
-    } else {
-        out
-    }
+    (!out.is_empty()).then_some(out)
 }
 
 /// U+2800 BRAILLE PATTERN BLANK. It draws nothing, yet it is a letter-like symbol, so it
@@ -287,6 +297,43 @@ mod tests {
     fn the_braille_blank_counts_as_a_space() {
         assert_eq!(sanitize_display_name("a\u{2800}\u{2800}b"), "a b");
         assert_eq!(sanitize_display_name("\u{2800}a\u{2800}"), "a");
+    }
+
+    #[test]
+    fn other_text_is_cleaned_the_same_way_with_a_limit_of_its_own() {
+        assert_eq!(
+            sanitize_text("Pay\u{202e}ment\n\u{1b}[31m  page", 100).as_deref(),
+            Some("Payment [31m page")
+        );
+        // The limit is the caller's, counted in characters, not bytes.
+        let long = "é".repeat(300);
+        let cut = sanitize_text(&long, MAX_DISPLAY_TITLE_CHARS).unwrap();
+        assert_eq!(cut.chars().count(), MAX_DISPLAY_TITLE_CHARS);
+        assert_eq!(sanitize_text("abcdef", 3).as_deref(), Some("abc"));
+        // A name stays short even though a title may be long.
+        assert_eq!(
+            sanitize_display_name(&"x".repeat(300)).chars().count(),
+            MAX_DISPLAY_NAME_CHARS
+        );
+    }
+
+    #[test]
+    fn other_text_with_nothing_visible_left_is_nothing_not_the_fallback_name() {
+        for raw in [
+            "",
+            "   ",
+            "\u{200b}\u{202e}\n",
+            "\u{3164}\u{2800}",
+            "\u{FFF9}",
+        ] {
+            assert_eq!(sanitize_text(raw, 100), None, "{raw:?}");
+        }
+        assert_eq!(sanitize_text("abc", 0), None);
+        // The words of the fallback are ordinary text when a peer really sends them.
+        assert_eq!(
+            sanitize_text(FALLBACK_NAME, 100).as_deref(),
+            Some(FALLBACK_NAME)
+        );
     }
 
     #[test]
