@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Where Baton keeps its state, and a lock so only one process uses it at a time.
+//! Where Baton keeps its state, and a lock so only one process runs a node with it at a time.
 
 use std::{
     env,
@@ -20,9 +20,12 @@ pub const HOME_ENV: &str = "BATON_HOME";
 
 /// The directory holding one device's identity, trust store, settings and inbox.
 ///
-/// Everything in it belongs to a single device identity, so only one running
-/// process may use a directory at a time (see [`DataDir::lock`]). Tests and
-/// people running several instances on one machine give each its own directory.
+/// Everything in it belongs to a single device identity, so only one process at a time may
+/// run a node with a directory, or change which devices are paired: it takes
+/// [`DataDir::lock`] first. Reading the files needs no lock. The inbox is shared on purpose
+/// and has a lock of its own, so that a command can read or empty it while the listener adds
+/// to it. Tests and people running several instances on one machine give each its own
+/// directory.
 #[derive(Debug, Clone)]
 pub struct DataDir {
     root: PathBuf,
@@ -182,6 +185,16 @@ mod tests {
         ));
 
         drop(first);
-        assert!(dir.lock().is_ok());
+        // The lock belongs to the open file, so a child process that another test is
+        // starting holds a copy of it until it runs its program, and the directory can look
+        // taken for a moment after the guard is gone. macOS CI showed it with the inbox's
+        // lock. Wait that moment out; a lock that never comes free is still a failure.
+        let again = (0..200).find_map(|_| {
+            dir.lock().ok().or_else(|| {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+                None
+            })
+        });
+        assert!(again.is_some(), "the lock never came free");
     }
 }

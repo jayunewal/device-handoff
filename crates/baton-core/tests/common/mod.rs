@@ -91,6 +91,19 @@ impl HandoffHandler for Recorder {
     }
 }
 
+/// Lets a test choose the handler a device starts with.
+struct Chosen(Box<dyn HandoffHandler>);
+
+impl HandoffHandler for Chosen {
+    fn capabilities(&self) -> &'static [&'static str] {
+        self.0.capabilities()
+    }
+
+    fn handle<'a>(&'a self, from: &'a PairedDevice, handoff: Handoff) -> BoxFuture<'a, Outcome> {
+        self.0.handle(from, handoff)
+    }
+}
+
 /// The ways a test device can differ from the default.
 pub struct Spec {
     pub name: String,
@@ -102,6 +115,8 @@ pub struct Spec {
     pub relay_only: Option<String>,
     /// Waited for, for each session connection the gate is about to register.
     pub before_registering: Option<Arc<dyn Fn(DeviceId) -> BoxFuture<'static, ()> + Send + Sync>>,
+    /// Takes the place of the recorder, which then stays empty.
+    handler: Option<Box<dyn HandoffHandler>>,
 }
 
 impl Spec {
@@ -128,7 +143,14 @@ impl Spec {
             clock: Arc::new(ManualClock::new(START)),
             relay_only: None,
             before_registering: None,
+            handler: None,
         }
+    }
+
+    /// Hands what the device receives to `handler` instead of recording it.
+    pub fn with_handler(mut self, handler: impl HandoffHandler) -> Self {
+        self.handler = Some(Box::new(handler));
+        self
     }
 
     /// Reaches the world only through the relay at `url`.
@@ -154,8 +176,12 @@ impl Spec {
             accepts: self.accepts,
         };
         let relay_only = self.relay_only.is_some();
+        let handler: Box<dyn HandoffHandler> = match self.handler {
+            Some(handler) => handler,
+            None => Box::new(recorder),
+        };
         let mut builder = Node::builder(identity, trust.clone(), self.config)
-            .handoff_handler(recorder)
+            .handoff_handler(Chosen(handler))
             .clock(Arc::clone(&self.clock))
             .tuning(self.tuning);
         if let Some(hook) = self.before_registering {
@@ -221,8 +247,14 @@ impl Device {
     /// Pairs this device with `other` the way people do, with `other` approving.
     ///
     /// Returns what each screen showed. The person compares the two, so a test that
-    /// pairs has to as well: this panics if they differ.
+    /// pairs has to as well: this panics if they differ, or if the pairing fails.
     pub async fn pair_with(&self, other: &Device) -> Codes {
+        self.try_pair_with(other).await.unwrap()
+    }
+
+    /// Like [`Device::pair_with`], but says so when this device cannot reach `other`, for
+    /// a test that expects to be turned away for a while and to try again.
+    pub async fn try_pair_with(&self, other: &Device) -> Result<Codes, baton_core::Error> {
         let on_offerer = Arc::new(Mutex::new(None));
         let offer = {
             let on_offerer = Arc::clone(&on_offerer);
@@ -239,8 +271,7 @@ impl Device {
         let mut on_joiner = None;
         self.node
             .join_pairing(&ticket, |code| on_joiner = Some(code))
-            .await
-            .unwrap();
+            .await?;
         offer.wait().await.unwrap();
         assert!(self.trust.contains(&other.id) && other.trust.contains(&self.id));
         let codes = Codes {
@@ -254,7 +285,7 @@ impl Device {
             codes.offerer, codes.joiner,
             "the two screens show different codes"
         );
-        codes
+        Ok(codes)
     }
 }
 
@@ -328,6 +359,33 @@ impl Raw {
         .await
         .map_err(|_| "timed out".to_owned())?
         .map_err(|e| e.to_string())
+    }
+}
+
+/// How long [`retrying`] keeps at it: past the 10 seconds in which a device's allowance for
+/// one sender's connection attempts refills.
+const RETRY_WITHIN: Duration = Duration::from_secs(15);
+
+/// Runs `attempt` until it works, and panics if it still does not after [`RETRY_WITHIN`].
+///
+/// For what a test does right after flooding a device with connection attempts. Every device in
+/// these tests has the same address, so until the allowance that address was held to has
+/// refilled, a device turns the next sender away as it did the flood. How long that takes
+/// depends on how busy the machine is, so a fixed wait would either flake or be slow.
+pub async fn retrying<T, E, Fut>(what: &str, mut attempt: impl FnMut() -> Fut) -> T
+where
+    E: std::fmt::Display,
+    Fut: Future<Output = Result<T, E>>,
+{
+    let started = tokio::time::Instant::now();
+    loop {
+        match attempt().await {
+            Ok(done) => return done,
+            Err(_) if started.elapsed() < RETRY_WITHIN => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("{what} still fails after {RETRY_WITHIN:?}: {error}"),
+        }
     }
 }
 

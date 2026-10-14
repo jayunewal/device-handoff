@@ -12,11 +12,11 @@ This document describes how Baton is put together. The trust model is in [securi
 ├──────────────────────────────┤                ├──────────────────────────────┤
 │ baton-agent                  │                │ baton-agent                  │
 │ clipboard, opening links,    │                │                              │
-│ policies, inbox              │                │                              │
+│ acting on policies           │                │                              │
 ├──────────────────────────────┤                ├──────────────────────────────┤
 │ baton-core                   │  QUIC + TLS    │ baton-core                   │
 │ identity, trust store,       │◄──────────────►│                              │
-│ pairing, handoff service     │  (via iroh)    │                              │
+│ pairing, handoff, inbox      │  (via iroh)    │                              │
 ├──────────────────────────────┤                ├──────────────────────────────┤
 │ baton-proto                  │                │ baton-proto                  │
 │ message types, framing       │                │                              │
@@ -26,8 +26,8 @@ This document describes how Baton is put together. The trust model is in [securi
 | Layer | Responsibility | Platform code? |
 | --- | --- | --- |
 | `baton-proto` | Message types, framing and the pairing ticket format. No I/O, so it can be tested and fuzzed on its own. | No |
-| `baton-core` | Device identity, the trust store, pairing, discovery, the encrypted transport and the handoff service. Everything that must behave identically on every platform. | No |
-| `baton-agent` | The parts that touch the desktop: reading and writing the clipboard, opening links, per-device policies and the inbox of received items. | Yes (desktop) |
+| `baton-core` | Device identity, the trust store, pairing, discovery, the encrypted transport, the handoff service and the inbox where received items rest. Everything that must behave identically on every platform. | No |
+| `baton-agent` | The parts that touch the desktop: reading and writing the clipboard, opening links, and acting on the per-device policies that open or apply what arrives instead of leaving it in the inbox. | Yes (desktop) |
 | UI | Presents devices, pairing and received items. Command line first, Flutter apps later. | Yes |
 
 On mobile, the Flutter app calls `baton-core` through an FFI layer and implements the equivalent of `baton-agent` natively (share sheet, Shortcuts, Android intents), because those platforms do not let a background process read the clipboard or open links the way a desktop agent does.
@@ -109,14 +109,17 @@ Each device keeps its state in one directory, which belongs to a single device i
 | `identity.toml` | The device's Ed25519 secret key. | Created on first run. Readable by its owner only; Baton refuses to use it if other users can read or change it. |
 | `devices.json` | The trust store: paired devices, the name the person knows each by, how each came to be trusted, their last known addresses and their per-device policies. | Replaced atomically on every change. A file that cannot be read is an error, never an empty list. Refused if other users can read or change it. |
 | `config.toml` | Settings a person edits by hand (device name, relays, discovery, limits). | Optional. Unknown keys are rejected so a typo cannot silently leave a setting on. Refused if other users can change it. |
-| `inbox.json` | Items received and not yet acted on. | Added with the agent. |
-| `baton.lock` | An advisory lock. | Only one process may use a state directory at a time. |
+| `inbox.json` | Links and text received and not yet dealt with, each with its sender, the time and a number that counts up and is never reused. | Replaced atomically on every change. At most `handoff.max_inbox_items` items and 3 MiB, the oldest dropped first. Readable by its owner only, because clipboard text can be a password. A file that cannot be read is an error, never an empty inbox. |
+| `inbox.lock` | An advisory lock held for the length of one change to the inbox. | The listener adds to the inbox while other commands read and clear it, so unlike the rest of the state it is changed by several processes. A change takes this lock and reads the file again first. Reading takes no lock. |
+| `baton.lock` | An advisory lock. | Only one process may run a node in a state directory at a time. |
 
-State files are written to a temporary file in the same directory, flushed, and renamed over the target, so a crash leaves the old file or the new one. On Unix, files and a directory that Baton creates are readable by their owner only. A state directory that already exists is not changed, because it may be used for other things (think `BATON_HOME=$HOME`), but it is refused if other users can write to it, since they could replace the files in it. `identity.toml` and `devices.json` are refused if other users can read or change them, and `config.toml` if they can change it; the check is made on the file that is then read. Files are read with a size cap, and a file written by a newer, incompatible version is refused rather than misread or overwritten.
+State files are written to a temporary file in the same directory, flushed, and renamed over the target, so a crash leaves the old file or the new one. On Unix, files and a directory that Baton creates are readable by their owner only. A state directory that already exists is not changed, because it may be used for other things (think `BATON_HOME=$HOME`), but it is refused if other users can write to it, since they could replace the files in it. `identity.toml`, `devices.json` and `inbox.json` are refused if other users can read or change them, and `config.toml` if they can change it; the check is made on the file that is then read. Files are read with a size cap, and a file written by a newer, incompatible version is refused rather than misread or overwritten.
 
 ## Handoff
 
 Moving something to another device is a *handoff item*: a link, some clipboard text, and later files and tabs. The receiver does not blindly act on an item. What happens next is decided by a per-device policy on the receiving side. By default received links and clipboard text go to an inbox and nothing is opened or overwritten until the person chooses; auto-open and auto-apply are opt-in, per device. See [security.md](security.md) for why.
+
+The inbox is part of `baton-core`: `InboxHandler` is the handler that keeps a link or some clipboard text in `inbox.json` and answers the sender, and the command-line program uses it. A device set to ignore links, or clipboard text, from another device declines them as blocked. Everything else is kept, including links set to open and text set to apply, because those settings are carried out by the agent, which comes with the locked-device rules below, and a device that cannot yet tell whether it is locked should not open anything. The agent will act on an item that is already in the inbox, so a setting never changes what is stored.
 
 ## Locked devices
 

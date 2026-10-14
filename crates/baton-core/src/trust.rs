@@ -606,18 +606,18 @@ fn parse(path: &Path, text: &str) -> Result<Devices> {
 }
 
 /// Device ids are written as hexadecimal text so the file is readable.
-mod hex_id {
+pub(crate) mod hex_id {
     use baton_proto::DeviceId;
     use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
 
-    pub(super) fn serialize<S: Serializer>(
+    pub(crate) fn serialize<S: Serializer>(
         id: &DeviceId,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         serializer.collect_str(id)
     }
 
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<DeviceId, D::Error> {
         String::deserialize(deserializer)?
