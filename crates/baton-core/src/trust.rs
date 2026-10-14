@@ -39,7 +39,9 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock},
 };
 
-use baton_proto::{DeviceId, DeviceInfo, Platform, device::sanitize_display_name};
+use baton_proto::{
+    DeviceId, DeviceInfo, Platform, device::sanitize_display_name, ticket::is_valid_relay_hint,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
@@ -55,14 +57,19 @@ pub const MAX_DEVICES: usize = 256;
 /// Most direct addresses remembered per device.
 pub const MAX_ADDR_HINTS: usize = 8;
 
-/// Longest relay URL remembered.
-const MAX_RELAY_BYTES: usize = 255;
-
 /// Newest file format this build reads and writes.
 const FORMAT_VERSION: u32 = 1;
 
 /// How stale `last_seen_at` may get before seeing a device again rewrites the file.
 const SEEN_REFRESH_SECS: u64 = 300;
+
+/// How soon after its last save a device's hints are saved again when they merely changed.
+///
+/// A peer that reports different addresses on every connection (a phone moving between
+/// networks, or a paired device behaving badly) would otherwise turn every connection into
+/// a write and an fsync. Hints are best effort, and the next contact after this long carries
+/// the current ones.
+const HINT_REFRESH_SECS: u64 = 60;
 
 /// A device this one is paired with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,13 +114,28 @@ impl PairedDevice {
     /// Re-establishes the invariants that anything read from a file or a peer must satisfy.
     fn normalize(&mut self) {
         self.name = sanitize_display_name(&self.name);
-        self.addrs.truncate(MAX_ADDR_HINTS);
-        if self.relay.as_deref().is_some_and(|r| {
-            r.is_empty() || r.len() > MAX_RELAY_BYTES || !r.bytes().all(|b| b.is_ascii_graphic())
-        }) {
+        self.addrs = canonical_addrs(std::mem::take(&mut self.addrs));
+        if self
+            .relay
+            .as_deref()
+            .is_some_and(|r| !is_valid_relay_hint(r))
+        {
             self.relay = None;
         }
     }
+}
+
+/// The addresses worth remembering from `addrs`: usable ones, each once, in a fixed order.
+///
+/// A given set of addresses always comes out the same, whatever order it arrived in, so
+/// comparing two results tells whether anything really changed. When there are more than
+/// [`MAX_ADDR_HINTS`], which ones survive is arbitrary but stable.
+fn canonical_addrs(mut addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
+    addrs.retain(|a| a.port() != 0 && !a.ip().is_unspecified() && !a.ip().is_multicast());
+    addrs.sort_unstable();
+    addrs.dedup();
+    addrs.truncate(MAX_ADDR_HINTS);
+    addrs
 }
 
 /// Where a device was last reachable. See [`TrustStore::record_contact`].
@@ -330,10 +352,12 @@ impl TrustStore {
 
     /// Notes that a device was just reached, and where.
     ///
-    /// This runs on every connection, so it writes to disk only when the hints
-    /// changed or the last-seen time is stale, and when nothing needs saving it neither
-    /// waits for other changes nor makes them wait. It sends no event. Returns
-    /// whether anything was saved.
+    /// This runs on every connection, so it writes to disk rarely: when the last-seen time
+    /// is stale, when a first address or relay is learned, or when the hints changed and
+    /// the device was last saved a minute or more ago. The same addresses in another order,
+    /// repeated addresses, and addresses nobody can connect to (unspecified, multicast, port
+    /// 0) are not changes. When nothing needs saving it neither waits for other changes nor
+    /// makes them wait. It sends no event. Returns whether anything was saved.
     pub fn record_contact(&self, id: &DeviceId, now: u64, hints: &ContactHints) -> Result<bool> {
         // Nearly every call finds nothing to save. Decide on a snapshot, so that those calls
         // never queue behind a change that is being written.
@@ -388,20 +412,28 @@ fn contact_update(
 ) -> Option<PairedDevice> {
     let current = devices.get(id)?;
     let mut updated = current.clone();
-    updated.last_seen_at = Some(now);
-    if hints.relay.is_some() {
-        updated.relay.clone_from(&hints.relay);
+    // A clock that was set back must not make a device look as if it was last seen earlier.
+    updated.last_seen_at = Some(now.max(current.last_seen_at.unwrap_or(0)));
+    // Hints that say nothing, or nothing usable, do not erase what is known.
+    if let Some(relay) = hints.relay.as_deref().filter(|r| is_valid_relay_hint(r)) {
+        updated.relay = Some(relay.to_owned());
     }
-    if !hints.addrs.is_empty() {
-        updated.addrs.clone_from(&hints.addrs);
+    let addrs = canonical_addrs(hints.addrs.clone());
+    if !addrs.is_empty() {
+        updated.addrs = addrs;
     }
     updated.normalize();
 
-    let stale = current
+    let since_saved = current
         .last_seen_at
-        .is_none_or(|seen| now.saturating_sub(seen) >= SEEN_REFRESH_SECS);
+        .map_or(u64::MAX, |seen| now.saturating_sub(seen));
+    let stale = since_saved >= SEEN_REFRESH_SECS;
+    // The first hint of a kind is saved at once. After that, changes wait their turn.
+    let learned_something_new = (current.relay.is_none() && updated.relay.is_some())
+        || (current.addrs.is_empty() && !updated.addrs.is_empty());
     let hints_changed = updated.relay != current.relay || updated.addrs != current.addrs;
-    (stale || hints_changed).then_some(updated)
+    let hints_due = hints_changed && (learned_something_new || since_saved >= HINT_REFRESH_SECS);
+    (stale || hints_due).then_some(updated)
 }
 
 impl std::fmt::Debug for TrustStore {
@@ -837,12 +869,161 @@ mod tests {
         store.record_contact(&id(1), 2, &hints).unwrap();
         assert_eq!(store.get(&id(1)).unwrap().addrs.len(), MAX_ADDR_HINTS);
 
+        // A relay that is not acceptable is ignored; it does not erase the good one.
         let junk = ContactHints {
             relay: Some("not ascii \u{1f600} or short".to_owned()),
             addrs: Vec::new(),
         };
-        store.record_contact(&id(1), 3, &junk).unwrap();
-        assert_eq!(store.get(&id(1)).unwrap().relay, None);
+        let later = 2 + HINT_REFRESH_SECS + 1;
+        assert!(!store.record_contact(&id(1), later, &junk).unwrap());
+        assert_eq!(
+            store.get(&id(1)).unwrap().relay.as_deref(),
+            Some("https://r.example/")
+        );
+    }
+
+    #[test]
+    fn the_same_addresses_in_another_order_are_not_a_change() {
+        let (_dir, store) = store();
+        store.pair(id(1), &info("Laptop"), 1_000).unwrap();
+        let addr = |text: &str| text.parse::<SocketAddr>().unwrap();
+        let first = ContactHints {
+            relay: None,
+            addrs: vec![
+                addr("192.168.1.5:4000"),
+                addr("10.0.0.2:4000"),
+                addr("[2001:db8::1]:4000"),
+            ],
+        };
+        assert!(store.record_contact(&id(1), 1_001, &first).unwrap());
+        let saved = fs::read(store.path()).unwrap();
+
+        // Long enough that a real change would be saved, so only the order and repeats are on trial.
+        let mut later = 1_001 + HINT_REFRESH_SECS;
+        for shuffled in [
+            vec![
+                addr("[2001:db8::1]:4000"),
+                addr("192.168.1.5:4000"),
+                addr("10.0.0.2:4000"),
+            ],
+            vec![
+                addr("10.0.0.2:4000"),
+                addr("10.0.0.2:4000"),
+                addr("[2001:db8::1]:4000"),
+                addr("192.168.1.5:4000"),
+            ],
+        ] {
+            let hints = ContactHints {
+                relay: None,
+                addrs: shuffled,
+            };
+            later += 1;
+            assert!(!store.record_contact(&id(1), later, &hints).unwrap());
+            assert_eq!(
+                fs::read(store.path()).unwrap(),
+                saved,
+                "the file must not be rewritten"
+            );
+        }
+
+        // They are kept sorted and without repeats, so a file never differs only by order.
+        let device = store.get(&id(1)).unwrap();
+        assert_eq!(
+            device.addrs,
+            [
+                addr("10.0.0.2:4000"),
+                addr("192.168.1.5:4000"),
+                addr("[2001:db8::1]:4000")
+            ]
+        );
+    }
+
+    #[test]
+    fn addresses_nobody_can_connect_to_are_not_remembered() {
+        let (_dir, store) = store();
+        store.pair(id(1), &info("Laptop"), 1_000).unwrap();
+        let junk: Vec<SocketAddr> = [
+            "0.0.0.0:4000",
+            "[::]:4000",
+            "224.0.0.251:5353",
+            "[ff02::fb]:5353",
+            "192.168.1.5:0",
+        ]
+        .into_iter()
+        .map(|a| a.parse().unwrap())
+        .collect();
+
+        // Nothing usable: nothing changes, and nothing is saved.
+        let only_junk = ContactHints {
+            relay: None,
+            addrs: junk.clone(),
+        };
+        assert!(!store.record_contact(&id(1), 1_001, &only_junk).unwrap());
+        assert!(store.get(&id(1)).unwrap().addrs.is_empty());
+
+        // Mixed with a usable one: only the usable one is kept.
+        let usable: SocketAddr = "192.168.1.5:4000".parse().unwrap();
+        let mixed = ContactHints {
+            relay: None,
+            addrs: [junk.clone(), vec![usable]].concat(),
+        };
+        assert!(store.record_contact(&id(1), 1_002, &mixed).unwrap());
+        assert_eq!(store.get(&id(1)).unwrap().addrs, [usable]);
+
+        // And a later report with only unusable ones does not erase it.
+        assert!(
+            !store
+                .record_contact(&id(1), 1_002 + HINT_REFRESH_SECS, &only_junk)
+                .unwrap()
+        );
+        assert_eq!(store.get(&id(1)).unwrap().addrs, [usable]);
+    }
+
+    #[test]
+    fn a_peer_that_changes_its_addresses_every_time_is_not_saved_every_time() {
+        let saves = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&saves);
+        let (_dir, store) = store_with(Box::new(move |path, bytes| {
+            counter.fetch_add(1, SeqCst);
+            write_atomic(path, bytes)
+        }));
+        store.pair(id(1), &info("Laptop"), 1_000).unwrap();
+        assert_eq!(saves.load(SeqCst), 1);
+
+        let at = |port: u16| ContactHints {
+            relay: None,
+            addrs: vec![SocketAddr::from(([10, 0, 0, 1], port))],
+        };
+        // The first address ever heard of is worth saving at once.
+        assert!(store.record_contact(&id(1), 1_001, &at(1)).unwrap());
+        // A different one on each of the next connections is not.
+        for (offset, port) in (2u16..20).enumerate() {
+            let t = 1_002 + u64::try_from(offset).unwrap();
+            assert!(
+                !store.record_contact(&id(1), t, &at(port)).unwrap(),
+                "port {port}"
+            );
+        }
+        assert_eq!(saves.load(SeqCst), 2);
+        assert_eq!(store.get(&id(1)).unwrap().addrs, at(1).addrs);
+
+        // Once the minute is up the latest report is saved.
+        let t = 1_001 + HINT_REFRESH_SECS;
+        assert!(store.record_contact(&id(1), t, &at(99)).unwrap());
+        assert_eq!(saves.load(SeqCst), 3);
+        assert_eq!(store.get(&id(1)).unwrap().addrs, at(99).addrs);
+    }
+
+    #[test]
+    fn a_clock_set_back_does_not_make_a_device_look_less_recently_seen() {
+        let (_dir, store) = store();
+        store.pair(id(1), &info("Laptop"), 5_000).unwrap();
+        let hints = ContactHints {
+            relay: Some("https://r.example/".to_owned()),
+            addrs: Vec::new(),
+        };
+        assert!(store.record_contact(&id(1), 100, &hints).unwrap());
+        assert_eq!(store.get(&id(1)).unwrap().last_seen_at, Some(5_000));
     }
 
     #[test]
@@ -994,7 +1175,8 @@ mod tests {
     #[test]
     fn what_is_read_back_is_cleaned_like_what_is_received() {
         let dir = tempfile::tempdir().unwrap();
-        let addrs: Vec<String> = (1..=20).map(|p| format!("10.0.0.1:{p}")).collect();
+        let mut addrs: Vec<String> = (1..=20).rev().map(|p| format!("10.0.0.1:{p}")).collect();
+        addrs.extend(["10.0.0.1:3".to_owned(), "0.0.0.0:9".to_owned()]);
         let document = serde_json::json!({
             "version": 1,
             "devices": [{
@@ -1013,7 +1195,13 @@ mod tests {
         assert!(!device.name.chars().any(char::is_control));
         assert_eq!(device.platform, Platform::Other);
         assert_eq!(device.relay, None);
-        assert_eq!(device.addrs.len(), MAX_ADDR_HINTS);
+        let expected: Vec<SocketAddr> = (1..=8)
+            .map(|p| format!("10.0.0.1:{p}").parse().unwrap())
+            .collect();
+        assert_eq!(
+            device.addrs, expected,
+            "sorted, without repeats, and capped"
+        );
         assert_eq!(device.policy, DevicePolicy::default());
         assert_eq!(device.last_seen_at, None);
     }
