@@ -14,10 +14,9 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(name = "baton", version, arg_required_else_help = true)]
 #[command(after_help = "Try it:\n  \
-    on the first device:   baton pair offer\n  \
-    on the second device:  baton pair join <ticket>\n  \
-    on one of them:        baton listen\n  \
-    on the other:          baton send link https://example.com")]
+    1. on the first device:   baton listen, then type `pair offer` at its prompt\n  \
+    2. on the second device:  baton pair join <ticket>\n  \
+    3. on the second device:  baton send link https://example.com")]
 pub struct Cli {
     #[arg(
         long,
@@ -74,6 +73,9 @@ pub enum PairCommand {
     ///
     /// The ticket works once and for a few minutes. When the other device joins, both
     /// devices show a six-digit code. If they match, type yes here to finish pairing.
+    ///
+    /// It is better typed at the prompt of `baton listen` than run on its own: the ticket
+    /// holds the addresses of the program that made it, and `listen` keeps them.
     Offer,
     /// Pair with the device that showed you a ticket
     Join {

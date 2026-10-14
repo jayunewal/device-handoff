@@ -16,7 +16,10 @@ pub fn list(ctx: &Context) -> Result<(), CliError> {
     let devices = ctx.devices()?;
     if devices.is_empty() {
         println!("No devices are paired yet.");
-        println!("Run `baton pair offer` on one device and `baton pair join` on the other.");
+        println!(
+            "Run `baton listen` on one device and type `pair offer` at its prompt, then run \
+             `baton pair join <ticket>` on the other."
+        );
         return Ok(());
     }
 

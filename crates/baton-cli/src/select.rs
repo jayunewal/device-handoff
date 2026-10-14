@@ -82,8 +82,8 @@ pub fn choose(devices: &[PairedDevice], query: Option<&str>) -> Result<PairedDev
 
 fn none_paired() -> CliError {
     CliError::new(
-        "No devices are paired yet. Run `baton pair offer` on one computer and \
-         `baton pair join` on the other.",
+        "No devices are paired yet. Run `baton listen` on one computer and type `pair offer` \
+         at its prompt, then run `baton pair join <ticket>` on the other.",
     )
 }
 
@@ -138,7 +138,8 @@ mod tests {
     #[test]
     fn with_no_query_and_no_device_the_message_says_how_to_pair() {
         let text = message(choose(&[], None));
-        assert!(text.contains("baton pair offer"), "{text}");
+        assert!(text.contains("baton listen"), "{text}");
+        assert!(text.contains("pair offer"), "{text}");
         assert!(text.contains("baton pair join"), "{text}");
         assert_eq!(message(choose(&[], Some("x"))), text);
     }
