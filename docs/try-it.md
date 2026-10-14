@@ -69,11 +69,18 @@ baton inbox rm 1        # remove one; `baton inbox clear` removes all
 
 ## Try it on one computer first
 
-Each copy of Baton keeps its state in a folder, and `--home` picks another, so one computer can be both. Both copies would call themselves by this computer's name, and a computer is shown under the name it had when it paired, so give the second one its own name first:
+Each copy of Baton keeps its state in a folder, and `--home` picks another, so one computer can be both. Both copies would call themselves by this computer's name, and a computer is shown under the name it had when it paired, so give the second one its own name first. On a Mac or Linux:
 
 ```sh
 mkdir -p /tmp/baton-b
 echo 'device_name = "B"' > /tmp/baton-b/config.toml
+```
+
+On Windows, use `C:\baton-a` and `C:\baton-b` where the steps below say `/tmp/baton-a` and `/tmp/baton-b`, and write the name from PowerShell like this (a plain `echo ... >` saves the file in a format Baton cannot read, and it stops with `not valid UTF-8 text`):
+
+```powershell
+mkdir C:\baton-b
+Set-Content -Path C:\baton-b\config.toml -Value 'device_name = "B"' -Encoding utf8
 ```
 
 Then, in the first terminal, play A:
