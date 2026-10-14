@@ -19,6 +19,8 @@ Scope: the Rust core, and a command-line client that hands off clipboard text, l
 - A small probe program that records lock, sleep and resume events and answers pings, so that the tests listed in [locked-devices.md](locked-devices.md#8-to-verify-on-real-hardware) can be run on real machines.
 - Continuous integration on Linux, macOS and Windows; license checks on dependencies.
 
+Where it stands: identity, the trust store, pairing, the encrypted transport, the inbox, and a `baton` program that pairs two computers and sends links and text are built and tested on Linux, macOS and Windows, with the locked-device rules written down. Still to build: the background agent with lock detection (so a link can open and clipboard text can apply, when the person opts in), file transfer with its benchmark, and the lock, sleep and resume probe.
+
 Done when: two machines on the same Wi-Fi pair with `baton`, a link sent from one is waiting in the other's inbox (or opens, if the person opted in), the benchmark meets the two targets above, and the same works across different networks through a relay.
 
 ## Milestone 2: apps

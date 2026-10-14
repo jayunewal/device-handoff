@@ -4,7 +4,7 @@
 
 Baton is an open source app for moving your work between your own devices: send a link, a browser tab, a file or your clipboard from one device to another, and later stream a window from your Mac or PC to your iPad or phone. It is meant to work between macOS, Windows, Linux, iOS, iPadOS and Android, in every direction. Devices talk directly over your local network when they can and fall back to the internet when they can't. Everything between devices is end-to-end encrypted.
 
-> **Status: pre-alpha.** Milestone 1 (the Rust core and a command-line client) is under construction. Nothing here is ready to use yet. "Baton" is a working name and may change.
+> **Status: pre-alpha.** Milestone 1 (the Rust core and a command-line client) is under construction. The `baton` program can pair two computers and send links and text between them, and [docs/try-it.md](docs/try-it.md) says how to try it and what does not work yet. Files, the background agent, phone apps and accounts are not built. "Baton" is a working name and may change.
 
 ## What Baton can and cannot do
 
@@ -46,9 +46,10 @@ The order is a proposal and can change. See [docs/roadmap.md](docs/roadmap.md) f
 | --- | --- |
 | `crates/baton-proto` | Wire protocol: message types, framing, the pairing handshake and ticket format. No networking. |
 | `crates/baton-core` | Device identity, the trust store, per-device policy and settings, the state directory, and the encrypted transport: discovery, pairing, admission control and the session protocol between paired devices. |
+| `crates/baton-cli` | The `baton` command-line program: pair devices, send links and text, read the inbox, and listen for what other devices send. |
 | `docs/` | Architecture, protocol and security documents, the locked-device page, and architecture decision records in `docs/adr/`. The research notes behind the locked-device page are in `docs/research/`. |
 
-More crates are added as milestone 1 lands (`baton-agent`, `baton-cli`). Flutter apps will live under `apps/`.
+More crates are added as milestone 1 lands (`baton-agent`). Flutter apps will live under `apps/`.
 
 ## Building
 
@@ -57,7 +58,10 @@ You need a recent stable Rust toolchain (the minimum supported version is in `Ca
 ```sh
 cargo build --workspace
 cargo test --workspace
+cargo run -p baton-cli -- --help   # the `baton` program
 ```
+
+[docs/try-it.md](docs/try-it.md) walks through pairing two computers and sending a link and some text.
 
 ## Contributing
 
