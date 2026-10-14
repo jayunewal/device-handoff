@@ -33,7 +33,7 @@ Commit messages: a short imperative summary (about 70 characters), a blank line,
 - `cargo fmt` and `cargo clippy -D warnings` must be clean.
 - No `unsafe` in the core crates (`unsafe_code` is forbidden workspace-wide). If a platform layer needs it, put it in its own crate with the reason written down.
 - Input from the network is untrusted. Parsing code must not panic: return an error. Avoid `unwrap()` outside tests, do not index or slice with `[]` (`baton-proto` turns on `clippy::indexing_slicing`; use `get`, `split_first_chunk` and the like), and bound every length and count before allocating.
-- Errors in library crates use `thiserror`; the command-line app uses `anyhow`.
+- Errors in library crates use `thiserror`; the command-line program turns them into messages written for the person who ran the command, with the likeliest cause and what to do about it (`CliError`).
 - Start new source files with `// SPDX-License-Identifier: Apache-2.0`.
 
 ## Licensing

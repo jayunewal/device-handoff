@@ -28,9 +28,18 @@ This document describes how Baton is put together. The trust model is in [securi
 | `baton-proto` | Message types, framing and the pairing ticket format. No I/O, so it can be tested and fuzzed on its own. | No |
 | `baton-core` | Device identity, the trust store, pairing, discovery, the encrypted transport, the handoff service and the inbox where received items rest. Everything that must behave identically on every platform. | No |
 | `baton-agent` | The parts that touch the desktop: reading and writing the clipboard, opening links, and acting on the per-device policies that open or apply what arrives instead of leaving it in the inbox. | Yes (desktop) |
-| UI | Presents devices, pairing and received items. Command line first, Flutter apps later. | Yes |
+| UI | Presents devices, pairing and received items. The command-line program (`baton-cli`, the `baton` binary) is first; Flutter apps come later. | Yes |
 
 On mobile, the Flutter app calls `baton-core` through an FFI layer and implements the equivalent of `baton-agent` natively (share sheet, Shortcuts, Android intents), because those platforms do not let a background process read the clipboard or open links the way a desktop agent does.
+
+## The command-line program
+
+`baton-cli` builds the `baton` program, the first front end. It holds no protocol logic: it opens a state directory, starts a `Node` from `baton-core` when a command needs the network, and turns what the core reports into text for a person.
+
+- **One-shot commands** (`id`, `devices`, `pair offer`, `pair join`, `unpair`, `ping`, `send`, `inbox`) do one thing and exit. **`baton listen`** keeps a node running so that other devices can reach this one, announces what arrives, and doubles as a prompt that takes the same commands without the word `baton`. A device can be reached only while something is listening, and a pairing offer is made at the same prompt so that the address in its ticket is still the right one when the other device joins.
+- **Only one process runs the node.** The commands that start the network or change the list of devices take `baton.lock` first and say so when another window already holds it. Reading needs no lock: `baton inbox` and `baton devices` work while `baton listen` runs, because the inbox is a file with a lock of its own (see [State on disk](#state-on-disk)).
+- **Questions and the prompt share standard input.** One thread reads lines. A line goes to the question that is waiting for an answer, such as "type yes to pair", and otherwise to the prompt, so a pairing request can interrupt a listening prompt without the two taking each other's lines. A question is registered before it is printed, so an answer that arrives at once, as when input is piped, is never taken for a command.
+- **Everything another device chose is escaped before it is printed**, and only `http` and `https` links are opened ([security.md](security.md)). Nothing is opened, copied or applied by itself: the program has no agent and cannot yet tell whether the device is locked, so it only keeps what arrives.
 
 ## Connecting devices
 
