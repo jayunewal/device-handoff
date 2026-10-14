@@ -54,10 +54,10 @@ What a device knows about how to reach another is kept with the pairing: the tic
 | --- | --- |
 | `identity`, `trust`, `config`, `paths` | The device key, the list of paired devices, settings, and the state directory. |
 | `node` | Starts and stops everything: the network endpoint, discovery and the router. A `Node` is what an application holds. |
-| `gate` | Decides who may connect: `Admission` before the handshake, `Gate` after it, and a registry of open connections so that unpairing can close them. |
+| `gate` | Decides who may connect: `Admission` before the handshake, `Gate` after it (which also raises the connection window for paired devices), and a registry of open connections so that unpairing can close them. |
 | `pairing` | Offers, tickets, approval, and joining another device's offer. |
 | `session` | The `baton/1` protocol: serving requests, the pool of outgoing connections, and `Intake`, which checks every incoming item before the application sees it. |
-| `transport` | The QUIC settings every connection uses: how many streams a peer may open, keep-alives, and the flow-control windows that set how fast one stream can go and how much unread data a peer can make a device hold. |
+| `transport` | The QUIC settings every connection uses: how many streams a peer may open, keep-alives, and the flow-control windows that set how fast one stream can go and how much unread data a peer can make a device hold. Connections start with a small window and the gate raises it for paired devices. |
 | `ratelimit`, `wire`, `link`, `clock`, `util` | Small shared parts: a sliding-window limiter, reading and writing frames with deadlines, describing which path a connection took, a clock that tests can control, and helpers that keep one failing task from taking others down. |
 
 An incoming connection passes through these checks, in this order:
@@ -69,7 +69,8 @@ incoming packet
    ▼
 QUIC and TLS handshake        both ends are now known by their keys
    │  Gate          baton/1 from a key that is not paired: closed with 403, nothing remembered.
-   │                baton-pair/1: allowed, because the person is not paired yet.
+   │                baton/1 from a paired key: the connection's window is raised.
+   │                baton-pair/1: allowed, because the person is not paired yet, and left small.
    ▼
 SessionServer or PairServer   each connection runs as a task of its own, so a bug reachable
    │                          from the network cannot stop the node accepting connections

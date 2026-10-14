@@ -35,11 +35,11 @@ use iroh::{
 
 #[cfg(any(test, feature = "test-support"))]
 use crate::util::BoxFuture;
-use crate::{ratelimit::RateLimiter, trust::TrustStore, util::lock};
+use crate::{ratelimit::RateLimiter, transport, trust::TrustStore, util::lock};
 
 /// Most session connections kept open to or from one paired device. A well-behaved
 /// device needs one; the margin is for reconnects that overlap.
-const MAX_CONNECTIONS_PER_PEER: usize = 8;
+pub(crate) const MAX_CONNECTIONS_PER_PEER: usize = 8;
 
 /// Handshakes from sources that have not proven their address that are let
 /// through each second without asking them to. Beyond this the node asks for proof
@@ -238,6 +238,9 @@ impl EndpointHooks for Gate {
         // registering, a connection could slip through unnoticed.
         self.registry.register(peer, connection.weak_handle());
         if self.trust.contains(&peer) {
+            // Until now the connection could make this device hold only a small window of
+            // data. The other end is paired, so it gets the one meant for paired devices.
+            transport::raise_window(connection);
             AfterHandshakeOutcome::Accept
         } else {
             Self::refuse_unpaired()
@@ -381,7 +384,7 @@ mod tests {
     use std::{net::SocketAddr, ops::Deref};
 
     use baton_proto::{DeviceInfo, Platform};
-    use iroh::{RelayUrl, SecretKey};
+    use iroh::{Endpoint, EndpointAddr, RelayUrl, SecretKey, endpoint::presets};
 
     use super::*;
 
@@ -679,6 +682,112 @@ mod tests {
         assert_eq!(
             admission.judge_at(&relayed(1), false, now),
             IncomingFilterOutcome::Accept
+        );
+    }
+
+    /// A bare endpoint on loopback that uses the gate, as a node does.
+    async fn gated_endpoint(secret: SecretKey, trust: TrustStore) -> Endpoint {
+        Endpoint::builder(presets::Minimal)
+            .secret_key(secret)
+            .alpns(vec![ALPN_SESSION.to_vec(), ALPN_PAIR.to_vec()])
+            .hooks(Gate::new(trust, Arc::new(ConnectionRegistry::default())))
+            .transport_config(transport::config())
+            .clear_ip_transports()
+            .bind_addr("127.0.0.1:0")
+            .unwrap()
+            .bind()
+            .await
+            .unwrap()
+    }
+
+    fn device_info() -> DeviceInfo {
+        DeviceInfo {
+            name: "Device".to_owned(),
+            platform: Platform::Linux,
+            app_version: "0.0.0-test".to_owned(),
+        }
+    }
+
+    /// Waits until `connection` has been told of a raised window, which a peer announces in
+    /// a `MAX_DATA` frame. A connection that has carried no data has no other reason to
+    /// receive one.
+    async fn raised(connection: &Connection, patience: Duration) -> bool {
+        for _ in 0..(patience.as_millis() / 20) {
+            if connection.stats().frame_rx.max_data > 0 {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn both_ends_of_a_paired_session_connection_raise_their_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a_key, b_key) = (SecretKey::generate(), SecretKey::generate());
+        let a_trust = TrustStore::load(dir.path().join("a.json")).unwrap();
+        let b_trust = TrustStore::load(dir.path().join("b.json")).unwrap();
+        a_trust
+            .pair(
+                DeviceId::from_bytes(*b_key.public().as_bytes()),
+                &device_info(),
+                1,
+            )
+            .unwrap();
+        b_trust
+            .pair(
+                DeviceId::from_bytes(*a_key.public().as_bytes()),
+                &device_info(),
+                1,
+            )
+            .unwrap();
+        let a = gated_endpoint(a_key, a_trust).await;
+        let b = gated_endpoint(b_key, b_trust).await;
+
+        let accepting = tokio::spawn({
+            let b = b.clone();
+            async move { b.accept().await.unwrap().await.unwrap() }
+        });
+        let address = EndpointAddr::new(b.id()).with_ip_addr(b.bound_sockets()[0]);
+        let dialed = a.connect(address, ALPN_SESSION).await.unwrap();
+        let accepted = accepting.await.unwrap();
+
+        // Each end raised its own window after the check, and so told the other. It is the
+        // same for the end that dialed, so it does not matter which side asks for a file.
+        assert!(
+            raised(&dialed, Duration::from_secs(5)).await,
+            "the device that was dialed did not raise its window"
+        );
+        assert!(
+            raised(&accepted, Duration::from_secs(5)).await,
+            "the device that dialed did not raise its window"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pairing_connection_keeps_the_small_window_in_both_directions() {
+        let dir = tempfile::tempdir().unwrap();
+        let a_trust = TrustStore::load(dir.path().join("a.json")).unwrap();
+        let b_trust = TrustStore::load(dir.path().join("b.json")).unwrap();
+        // Nobody is paired with anybody.
+        let a = gated_endpoint(SecretKey::generate(), a_trust).await;
+        let b = gated_endpoint(SecretKey::generate(), b_trust).await;
+
+        let accepting = tokio::spawn({
+            let b = b.clone();
+            async move { b.accept().await.unwrap().await.unwrap() }
+        });
+        let address = EndpointAddr::new(b.id()).with_ip_addr(b.bound_sockets()[0]);
+        let dialed = a.connect(address, ALPN_PAIR).await.unwrap();
+        let accepted = accepting.await.unwrap();
+
+        assert!(
+            !raised(&dialed, Duration::from_millis(400)).await,
+            "a pairing connection was given the big window"
+        );
+        assert!(
+            !raised(&accepted, Duration::from_millis(400)).await,
+            "a pairing connection was given the big window"
         );
     }
 }

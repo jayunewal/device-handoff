@@ -1027,3 +1027,44 @@ async fn a_connection_that_starts_a_request_and_stalls_is_cut_off_at_the_same_de
         other => panic!("expected the connection to be closed with code 408, got {other}"),
     }
 }
+
+#[tokio::test]
+async fn a_stranger_cannot_fill_the_device_with_unread_data() {
+    let a = device("Laptop").await;
+    let forger = Forger::new().await;
+    let connection = forger.connect(&a).await;
+
+    // The device takes one stream at a time and reads it, so a stream that starts with half
+    // a frame header keeps it busy, and whatever is sent on a second stream waits in its
+    // buffers until flow control says stop.
+    let (mut busy, _busy_recv) = connection.open_bi().await.unwrap();
+    busy.write_all(&header(100)[..2]).await.unwrap();
+    let (mut flood, _flood_recv) = connection.open_bi().await.unwrap();
+    let chunk = vec![0u8; 16 * 1024];
+    let mut sent = 2;
+    while sent <= 64 * 1024 * 1024 {
+        match tokio::time::timeout(Duration::from_millis(300), flood.write(&chunk)).await {
+            Ok(Ok(written)) => sent += written,
+            // Flow control has stopped the sender, or the connection is gone.
+            _ => break,
+        }
+    }
+    // What a stranger can make the device hold is bounded by the window every connection
+    // starts with, however much the stream's own window would allow.
+    assert!(
+        sent <= 64 * 1024,
+        "{sent} bytes of a stranger's data got past flow control"
+    );
+}
+
+#[tokio::test]
+async fn a_pairing_connection_is_never_given_the_big_window() {
+    let a = device("Laptop").await;
+    let _offer = a.node.offer_pairing(approve).await.unwrap();
+    let forger = Forger::new().await;
+    let connection = forger.connect(&a).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Raising the window would be announced to the peer in a MAX_DATA frame.
+    assert_eq!(connection.stats().frame_rx.max_data, 0);
+}
