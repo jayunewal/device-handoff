@@ -4,7 +4,7 @@ A proposal, not a promise. Each milestone ends in something a person can use, an
 
 ## Requirement that cuts across every milestone
 
-**Baton keeps working while the device you left is locked.** The point of handing work off is to walk away from the first device, so nothing may depend on that device staying unlocked. This shapes the agent, the key storage, the transport and window streaming, and [architecture.md](architecture.md#locked-devices) lists the design rules that follow from it. What each operating system actually allows is still being researched. The findings, and a list of behaviour to verify on real hardware, will be written down before the designs that depend on them are built.
+**Baton keeps working while the device you left is locked.** The point of handing work off is to walk away from the first device, so nothing may depend on that device staying unlocked. This shapes the agent, the key storage, the transport and window streaming, and [architecture.md](architecture.md#locked-devices) lists the design rules that follow from it. [locked-devices.md](locked-devices.md) records what each operating system allows, the design rules that follow, and the behaviour that still has to be verified on real hardware.
 
 ## Milestone 1: core, handoff and fast file transfer
 
@@ -15,6 +15,7 @@ Scope: the Rust core, and a command-line client that hands off clipboard text, l
 - Discovery on the local network (mDNS) and connection by public key, with the internet relay as a fallback.
 - Handoff of links and clipboard text with per-device policies and an inbox.
 - File and folder transfer in Baton's own protocol, built to be much faster than LocalSend and the other common tools for this job. A folder is one offer with a manifest, files move over parallel resumable streams, and hashing happens while sending. A benchmark that anyone can rerun is part of the milestone, with four cases that each hit a different limit: one large file, thousands of small files, Wi-Fi under load, and a relayed connection. There is no compatibility with other tools' protocols.
+- A small probe program that records lock, sleep and resume events and answers pings, so that the tests listed in [locked-devices.md](locked-devices.md#8-to-verify-on-real-hardware) can be run on real machines.
 - Continuous integration on Linux, macOS and Windows; license checks on dependencies.
 
 Done when: two machines on the same Wi-Fi pair with `baton`, a link sent from one is waiting in the other's inbox (or opens, if the person opted in), a folder of files arrives faster than with the tools the benchmark compares against, and the same works across different networks through a relay.
@@ -33,7 +34,7 @@ A self-hostable server that keeps a device roster, so devices signed in to the s
 
 ## Milestone 5: window streaming
 
-Stream a window from a Mac or Windows PC to an iPad or phone, with touch and keyboard control. Needs capture and encode on the source, decode and render on the viewer, and a transport choice for video (QUIC streams or WebRTC). A locked desktop cannot be captured the ordinary way, so this milestone also needs a privacy mode or a virtual display.
+Stream a window from a Mac or Windows PC to an iPad or phone, with touch and keyboard control. Needs capture and encode on the source, decode and render on the viewer, and a transport choice for video (QUIC streams or WebRTC). No documented API captures a locked desktop (see [locked-devices.md](locked-devices.md)), so the first version needs the source unlocked while it streams and can lock it afterwards. A privacy mode or a separate session may follow.
 
 ## Later
 
@@ -48,3 +49,4 @@ Stream a window from a Mac or Windows PC to an iPad or phone, with touch and key
 - Who hosts the default relay and account server, and how that is paid for.
 - Short typed pairing codes (a password-authenticated key exchange) for devices that cannot scan a QR code.
 - Which of the things a person might continue (current tabs, the clipboard) a locked device may serve to a paired device, and under which policy.
+- How long a hand-off may keep a device awake. The sleep tests in [locked-devices.md](locked-devices.md) should settle the bound.
