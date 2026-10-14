@@ -42,6 +42,8 @@ Reaching a device uses the best path available, tried in this order:
 2. **Direct over the internet.** A relay helps both sides learn each other's public addresses and hole-punch through NAT.
 3. **Relay.** If no direct path works, traffic flows through a relay. The relay forwards encrypted packets addressed to a public key. It cannot read or alter them.
 
+The relays Baton uses by default are the iroh project's public ones. According to iroh's documentation they are rate limited and meant for development and hobby use, so a transfer that cannot go direct is only as fast as that shared limit. That is fine for trying Baton out. The self-hostable server runs a relay of its own with limits its owner sets, and the file transfer benchmark includes a relayed run so the cost shows up in the numbers.
+
 Connection handling comes from [iroh](https://github.com/n0-computer/iroh) (see [ADR 0003](adr/0003-iroh-transport.md)). The rest of Baton talks to it through a small boundary in `baton-core` so the transport can change.
 
 ## Trust

@@ -66,6 +66,12 @@ pub struct Config {
 #[serde(rename_all = "kebab-case")]
 pub enum RelayMode {
     /// The public relays run by the iroh project.
+    ///
+    /// Fine for trying Baton out. According to iroh's documentation these relays are rate
+    /// limited at a level it does not publish, and are meant for development and hobby use.
+    /// A transfer that has to go through one, as phones behind carrier-grade NAT often do,
+    /// runs at whatever that shared limit allows. The self-hostable server is planned to run
+    /// a relay of its own, with limits its owner sets.
     #[default]
     Default,
     /// No relay: devices connect directly or not at all.
@@ -89,6 +95,13 @@ pub struct NetworkConfig {
     /// Publish this device's relay to, and look paired devices' relays up from, the
     /// public iroh DNS service. Without it devices find each other only on the local
     /// network or through addresses remembered from pairing.
+    ///
+    /// Off by default. A record published under the device key lets anyone who has ever
+    /// seen the key ask public DNS, at any later time, whether the device is online and
+    /// roughly where. Paired devices already remember each other's relay, which is enough to
+    /// reach them, and the lookup only helps after a peer's relay changes. Turn it on if
+    /// paired devices stop finding each other after moving between networks. See
+    /// `docs/security.md`.
     pub dns_discovery: bool,
 }
 
@@ -105,10 +118,16 @@ pub struct PairingConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct HandoffConfig {
     /// Most items kept in the inbox. The oldest are dropped first.
+    ///
+    /// A file transfer is one item, however many files it holds.
     pub max_inbox_items: usize,
     /// Largest clipboard text, in bytes, that is accepted from or sent to another device.
     pub max_clipboard_bytes: usize,
     /// Most items accepted from one paired device per minute.
+    ///
+    /// A whole file transfer counts as one item, not one per file or per chunk, so a folder
+    /// of a thousand photos is not throttled. Transfers get limits of their own, a byte quota
+    /// per device and a minimum of free disk space, which come with file transfer.
     pub max_items_per_minute: u32,
 }
 
@@ -118,7 +137,7 @@ impl Default for NetworkConfig {
             relay: RelayMode::Default,
             relay_urls: Vec::new(),
             lan_discovery: true,
-            dns_discovery: true,
+            dns_discovery: false,
         }
     }
 }
@@ -317,6 +336,10 @@ mod tests {
         config.validate().unwrap();
         assert_eq!(config.network.relay, RelayMode::Default);
         assert!(config.network.lan_discovery);
+        assert!(
+            !config.network.dns_discovery,
+            "publishing under the device key is a choice, not a default"
+        );
         assert_eq!(config.pairing.offer_ttl_secs, 300);
         assert!(config.handoff.max_clipboard_bytes <= MAX_CLIPBOARD_TEXT_BYTES);
     }
@@ -341,7 +364,7 @@ mod tests {
                 relay: RelayMode::Custom,
                 relay_urls: vec!["https://relay.example.org/".into()],
                 lan_discovery: false,
-                dns_discovery: false,
+                dns_discovery: true,
             },
             pairing: PairingConfig {
                 offer_ttl_secs: 120,
@@ -360,7 +383,7 @@ mod tests {
     fn partial_files_fill_in_the_rest() {
         let config = Config::from_toml("[network]\nlan_discovery = false\n").unwrap();
         assert!(!config.network.lan_discovery);
-        assert!(config.network.dns_discovery);
+        assert!(!config.network.dns_discovery);
         assert_eq!(config.pairing, PairingConfig::default());
     }
 
