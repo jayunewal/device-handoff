@@ -68,6 +68,19 @@ pub enum Error {
         /// Its Unix permission bits.
         mode: u32,
     },
+    /// The device identity was made on a different machine.
+    #[error(
+        "{} holds the identity of another machine. It was probably copied here by a migration \
+         tool or restored from a backup, and using it would make two machines answer to one \
+         device identity. To give this machine its own identity, move the file away and pair \
+         again. If this is the machine that made it (its system identifier changed), adopt \
+         the identity here once no other copy is in use",
+        path.display()
+    )]
+    WrongMachine {
+        /// The key file.
+        path: PathBuf,
+    },
     /// Another process already holds the state directory.
     #[error("another Baton process is already running with {}", path.display())]
     Locked {

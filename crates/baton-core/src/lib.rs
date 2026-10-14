@@ -41,6 +41,7 @@ pub mod policy;
 pub mod trust;
 
 mod fsutil;
+mod machine;
 
 pub use config::Config;
 pub use error::{Error, Result};

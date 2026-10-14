@@ -28,6 +28,7 @@ name = "baton-core"
 version = "0.1.0"
 dependencies = [
  "baton-proto",
+ "blake3",
  "data-encoding",
  "directories",
  "gethostname",

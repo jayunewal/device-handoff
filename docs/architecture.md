@@ -65,7 +65,7 @@ The trust store leaves room for this before its format is in use: each entry rec
 
 ## State on disk
 
-Each device keeps its state in one directory, which belongs to a single device identity. By default that is the per-user *local* data directory (`~/.local/share/baton` on Linux, `~/Library/Application Support/baton` on macOS, `%LOCALAPPDATA%\baton\data` on Windows), never a roaming or synced one, because a copied device key would make two machines the same device. Set `BATON_HOME` to use another directory, for example to run two instances on one machine.
+Each device keeps its state in one directory, which belongs to a single device identity. By default that is the per-user *local* data directory (`~/.local/share/baton` on Linux, `~/Library/Application Support/baton` on macOS, `%LOCALAPPDATA%\baton\data` on Windows), never a roaming or synced one, because a copied device key would make two machines the same device. As a second line of defence the identity file records which machine made the key, and Baton refuses it on another one. Set `BATON_HOME` to use another directory, for example to run two instances on one machine.
 
 | File | Contents | Notes |
 | --- | --- | --- |
