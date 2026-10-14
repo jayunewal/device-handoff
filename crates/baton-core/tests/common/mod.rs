@@ -247,8 +247,14 @@ impl Device {
     /// Pairs this device with `other` the way people do, with `other` approving.
     ///
     /// Returns what each screen showed. The person compares the two, so a test that
-    /// pairs has to as well: this panics if they differ.
+    /// pairs has to as well: this panics if they differ, or if the pairing fails.
     pub async fn pair_with(&self, other: &Device) -> Codes {
+        self.try_pair_with(other).await.unwrap()
+    }
+
+    /// Like [`Device::pair_with`], but says so when this device cannot reach `other`, for
+    /// a test that expects to be turned away for a while and to try again.
+    pub async fn try_pair_with(&self, other: &Device) -> Result<Codes, baton_core::Error> {
         let on_offerer = Arc::new(Mutex::new(None));
         let offer = {
             let on_offerer = Arc::clone(&on_offerer);
@@ -265,8 +271,7 @@ impl Device {
         let mut on_joiner = None;
         self.node
             .join_pairing(&ticket, |code| on_joiner = Some(code))
-            .await
-            .unwrap();
+            .await?;
         offer.wait().await.unwrap();
         assert!(self.trust.contains(&other.id) && other.trust.contains(&self.id));
         let codes = Codes {
@@ -280,7 +285,7 @@ impl Device {
             codes.offerer, codes.joiner,
             "the two screens show different codes"
         );
-        codes
+        Ok(codes)
     }
 }
 
@@ -354,6 +359,33 @@ impl Raw {
         .await
         .map_err(|_| "timed out".to_owned())?
         .map_err(|e| e.to_string())
+    }
+}
+
+/// How long [`retrying`] keeps at it: past the 10 seconds in which a device's allowance for
+/// one sender's connection attempts refills.
+const RETRY_WITHIN: Duration = Duration::from_secs(15);
+
+/// Runs `attempt` until it works, and panics if it still does not after [`RETRY_WITHIN`].
+///
+/// For what a test does right after flooding a device with connection attempts. Every device in
+/// these tests has the same address, so until the allowance that address was held to has
+/// refilled, a device turns the next sender away as it did the flood. How long that takes
+/// depends on how busy the machine is, so a fixed wait would either flake or be slow.
+pub async fn retrying<T, E, Fut>(what: &str, mut attempt: impl FnMut() -> Fut) -> T
+where
+    E: std::fmt::Display,
+    Fut: Future<Output = Result<T, E>>,
+{
+    let started = tokio::time::Instant::now();
+    loop {
+        match attempt().await {
+            Ok(done) => return done,
+            Err(_) if started.elapsed() < RETRY_WITHIN => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("{what} still fails after {RETRY_WITHIN:?}: {error}"),
+        }
     }
 }
 
