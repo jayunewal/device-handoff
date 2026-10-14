@@ -131,7 +131,9 @@ How far the evidence goes:
 | Capture the screen | **No** (documented, reported). MediaProjection stops when the screen locks (Android 15 QPR1 and later), and the lock screen is protected from capture. |
 | Inject input | **Partly**, privileged only (reported). Debug-bridge tools can type a PIN blind. An ordinary app's accessibility service on the lock screen is **Unknown**. |
 
-## 4. Sleep is what stops the agent, not the lock
+## 4. On desktops, sleep is what stops the agent, not the lock
+
+On phones it is different. An iOS or iPadOS app is suspended shortly after the lock itself, and Android's limits come from Doze and the phone makers' background killers (the last two rows).
 
 | Platform | What stops it | What Baton can do |
 | --- | --- | --- |

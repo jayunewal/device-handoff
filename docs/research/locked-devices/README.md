@@ -17,7 +17,10 @@ Where a note and the page disagree, the page rules. It is stricter than some not
 
 The notes number their tests T (Windows and Apple) and V (Linux and Android). Section 8 of the page uses its own ids (W, M, L, A, I, D) and names the original id where a test comes from a note.
 
-Left out of this copy:
+Left out or changed in this copy:
 
 - Step-level procedures for reaching or typing into a lock screen: a SYSTEM-level helper on Windows, input posted at a lock screen, and shell-level input on Android. Baton never unlocks or types into a lock screen (section 5.5 of the page), so each is replaced by a short stub that says what it covered.
 - Entries about other file-sharing tools that Baton does not follow, and wording about who asked for the research and how the research sessions were run.
+- Punctuation in one quotation from Apple (the PushKit entry in apple.md). The original has long dashes and the copy has commas. The words are unchanged.
+
+Corrections made during review are lines that begin "Correction (review, 2026-10-14)", placed under the text they correct. The original text stays.
