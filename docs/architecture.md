@@ -46,7 +46,7 @@ Connection handling comes from [iroh](https://github.com/n0-computer/iroh) (see 
 
 ## Trust
 
-A device only talks to devices it has paired with. Pairing is explicit: one device offers a one-time ticket (shown as a QR code or text), the other redeems it, and the person on the offering device approves the request. Both sides then remember each other's public key in a local trust store. Connections from any other key are refused after the handshake, before any application data is read.
+A device only talks to devices it has paired with. Pairing is explicit: one device offers a one-time ticket (shown as a QR code or text), the other redeems it, and the person on the offering device approves the request after checking that a six-digit code shown on both devices is the same. Both sides then remember each other's public key in a local trust store. Connections from any other key are refused after the handshake, before any application data is read.
 
 There are no accounts in milestone 1. Accounts arrive in milestone 4 as an *introducer*: a server that tells your devices about each other. It is never in the data path and never holds the keys needed to read content.
 

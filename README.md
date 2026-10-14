@@ -21,7 +21,7 @@ The research behind these limits, and the ideas for working around them, is in [
 
 - **Local first.** Devices on the same network connect directly. The internet, through a relay, is the fallback.
 - **End-to-end encrypted.** Devices authenticate each other with keys that never leave them. A relay only forwards ciphertext.
-- **No account required.** You pair devices with a QR code or a one-time code. Optional, self-hostable accounts will make pairing automatic later.
+- **No account required.** You pair devices with a QR code or a one-time ticket you copy across, and confirm with a six-digit code that both devices show. Optional, self-hostable accounts will make pairing automatic later.
 - **Open protocol.** The wire format is specified in [docs/protocol.md](docs/protocol.md), so other implementations are possible.
 - **Works while locked.** You hand work off so that you can walk away, so Baton is designed to keep working while the device you left is locked. What each operating system allows is still being researched; see [docs/architecture.md](docs/architecture.md#locked-devices).
 - **Fast.** File transfer is Baton's own protocol, built to fill the link, and its speed is measured by a benchmark that lives in the repository.
