@@ -41,5 +41,5 @@ zeroize.workspace = true
 # The crate's own tests use the test helpers.
 baton-core = { path = ".", features = ["test-support"] }
 ciborium.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net"] }
 

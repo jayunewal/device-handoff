@@ -10,3 +10,4 @@ Short notes on decisions that are expensive to reverse, written when the decisio
 | [0004](0004-apache-2-license.md) | Apache-2.0, and no code copied from copyleft projects |
 | [0005](0005-cbor-wire-format.md) | CBOR in length-prefixed frames for control messages |
 | [0006](0006-pairing-admission-and-requests.md) | Who is let in, and how requests are handled |
+| [0007](0007-quic-windows-and-connection-memory.md) | QUIC flow-control windows, and how much a peer can make a device hold |

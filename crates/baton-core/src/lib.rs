@@ -55,6 +55,7 @@ mod gate;
 mod machine;
 mod ratelimit;
 mod shared;
+mod transport;
 mod wire;
 
 pub use baton_proto::pair::ConfirmationCode;

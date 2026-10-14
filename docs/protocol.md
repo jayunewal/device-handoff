@@ -51,7 +51,7 @@ String and list sizes are limited as well (see section 6). A message that breaks
 
 ## 3. Session protocol (`baton/1`)
 
-Each request uses its own bidirectional stream: the client opens a stream, writes one `Request` frame, and finishes its side; the server reads the frame, writes one `Response` frame, and finishes. Either side MAY have several streams open at once. A receiver SHOULD give a peer no more than 16 concurrent streams and SHOULD time out a stream that makes no progress for 10 seconds. These limits are for the control messages of this section, which are small. Bulk transfer (section 8) uses streams of its own with a separate budget, so that a long transfer neither counts against the 16 nor is cut off by a timer meant for a request. Peers do not open unidirectional streams or send datagrams, and a receiver SHOULD NOT allow them.
+Each request uses its own bidirectional stream: the client opens a stream, writes one `Request` frame, and finishes its side; the server reads the frame, writes one `Response` frame, and finishes. Either side MAY have several streams open at once. A receiver SHOULD give a peer no more than 16 concurrent streams and SHOULD time out a stream that makes no progress for 10 seconds. These limits are for the control messages of this section, which are small. Bulk transfer (section 8) uses streams of its own with a separate budget, so that a long transfer neither counts against the 16 nor is cut off by a timer meant for a request. Peers do not open unidirectional streams or send datagrams, and a receiver SHOULD NOT allow them. Each receiver also chooses its own QUIC flow-control windows, which cap how much data a sender may have in flight and so how fast one stream can go: a stream cannot carry more than one window per round trip. The reference implementation uses 8 MiB for each stream and 16 MiB for a connection, which lets one stream fill a path of 500 Mbit/s with a round trip of 100 ms and still bounds the unread data a peer can make a device hold. The QUIC library's default of about 1.25 MB would cap the same stream at 12.5 MB/s at that round trip.
 
 Both directions use the same protocol: a device that has paired with another may open a connection to it, and the other may open one back. A connection is not tied to one direction of traffic.
 
@@ -265,6 +265,8 @@ The reference implementation also applies the following by default. They are not
 | Behaviour | Default |
 | --- | --- |
 | Concurrent streams a peer may open on a connection | 16 |
+| Unread data a stream may hold, and so how much a sender may have in flight on it | 8 MiB |
+| Unread data a connection may hold | 16 MiB |
 | Connection attempts let through before a QUIC retry token is asked for, from addresses that have not proven themselves | 64 a second |
 | Connection attempts from an address that has answered a retry token | 20 every 10 seconds |
 | Time for a request to arrive once its stream is open | 10 seconds |

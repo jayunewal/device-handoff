@@ -54,7 +54,7 @@ use baton_proto::{
 use iroh::{
     Endpoint, EndpointAddr, RelayMode, RelayUrl, SecretKey,
     address_lookup::{DnsAddressLookup, PkarrPublisher, PkarrResolver},
-    endpoint::{Builder, PortmapperConfig, QuicTransportConfig, VarInt, presets},
+    endpoint::{Builder, PortmapperConfig, VarInt, presets},
     protocol::Router,
 };
 use iroh_mdns_address_lookup::MdnsAddressLookup;
@@ -73,15 +73,13 @@ use crate::{
     pairing::{self, Offers, PairApprover, PairOffer, PairServer},
     session::{HandoffHandler, Intake, NoHandoff, Pool, SessionServer, call, worth_retrying},
     shared::{MAX_PAIRING_CONNECTIONS, Shared},
+    transport,
     trust::{PairedDevice, TrustEvent, TrustStore},
     util::random_bytes,
 };
 
 /// The name devices use to find each other on the local network.
 const MDNS_SERVICE: &str = "baton";
-
-/// Streams a peer may have open on one connection at once.
-const MAX_CONCURRENT_REQUESTS: u32 = 16;
 
 /// How long to wait for the relay before making a ticket without it.
 const RELAY_WAIT: Duration = Duration::from_secs(3);
@@ -266,7 +264,7 @@ impl NodeBuilder {
             .secret_key(secret)
             .relay_mode(relay_mode(&config.network)?)
             .hooks(gate)
-            .transport_config(transport_config())
+            .transport_config(transport::config())
             .portmapper_config(portmapper_config(&config.network));
         if config.network.dns_discovery && relay_enabled {
             builder = builder
@@ -651,20 +649,6 @@ fn portmapper_config(network: &NetworkConfig) -> PortmapperConfig {
     } else {
         PortmapperConfig::Disabled
     }
-}
-
-fn transport_config() -> QuicTransportConfig {
-    QuicTransportConfig::builder()
-        // Requests are one per stream. A device needs a handful at a time.
-        .max_concurrent_bidi_streams(VarInt::from_u32(MAX_CONCURRENT_REQUESTS))
-        // Nothing in the protocol uses these, so peers may not open them.
-        .max_concurrent_uni_streams(VarInt::from_u32(0))
-        .datagram_receive_buffer_size(None)
-        // A person approving a pairing request leaves the connection silent for a
-        // while; keep-alives stop the idle timeout from ending it.
-        .keep_alive_interval(Duration::from_secs(10))
-        .max_idle_timeout(Some(VarInt::from_u32(30_000).into()))
-        .build()
 }
 
 /// Announces this device on the local network and looks for others there. A
