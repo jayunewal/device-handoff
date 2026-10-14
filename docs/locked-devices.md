@@ -10,7 +10,7 @@ This page records what each operating system allows, so that Baton promises only
 
 What Baton can plan to deliver:
 
-- **Hand something off, then lock the device.** A link, text or file that the person sends while at the device is delivered when the other device can be reached. Locking the source afterwards changes nothing about that, because nothing needs the source again once the item has left it. Where the platform has a way to lock a device (Windows and Linux; Android only with privileged permissions; macOS has no documented one; iOS has none), Baton can lock the source for the person once the other device has acknowledged the item.
+- **Hand something off, then lock the device.** A link, text or file that the person sends while at the device is delivered when the other device can be reached, and a lock on the source does not stop that: a locked agent keeps delivering what the person explicitly sent (section 5.3). The "send and lock" gesture goes one step further. It waits for the other device to acknowledge the item and only then locks the source, so the item has left before the device can lock or sleep (section 5.6). Where the platform has a way to lock a device (Windows and Linux; Android only with privileged permissions; macOS has no documented one; iOS has none), Baton can lock the source for the person once the other device has acknowledged the item. The gap that remains is a source that goes to sleep before the other device appears. Only the mailbox of milestone 4 covers that.
 - **A locked desktop that is still awake keeps receiving.** On Windows (documented), Linux (reported) and macOS (inferred) a lock covers the screen but leaves the person's processes and network running, so the agent can accept items into its inbox, answer pings and serve what was already prepared. The person sees what arrived when they unlock.
 - **Phones are reached through push notifications.** A locked iPhone or iPad suspends Baton within seconds, so a push notification is the only dependable route. A locked Android phone keeps a listener only through a foreground service, which the phone's maker may still stop.
 - **Baton never unlocks anything.** Not for the person, not for another device, not as a convenience. See section 5.5.
@@ -164,26 +164,41 @@ After a restart a device cannot be reached until its person signs in (or unlocks
 
 ### 5.2 Stage before leaving, and do not read a locked device
 
-What a person wants to continue cannot be counted on to be readable once the device locks. iOS and Android do not allow background clipboard reads, GNOME has no sanctioned background access, and on Windows and macOS it is untested. So a hand-off starts while the person is there:
+What a person wants to continue cannot be counted on to be readable once the device locks. iOS and Android do not allow background clipboard reads, GNOME has no sanctioned background access, and on Windows and macOS it is unknown (section 3). So a hand-off starts while the person is there:
 
-- by an explicit gesture: a share target, a tray menu, a hotkey, or a notification action; or
-- where the platform allows background clipboard reads (X11 and KDE; probably Windows and macOS, untested), by staging the clipboard continuously, but only if the person turns that on, and never items that a password manager marks as concealed (see [security.md](security.md)).
+- by an explicit gesture that names the item and the device it goes to: a share target, a tray menu, a hotkey, a notification action, or "send and lock" (section 5.6). The result is a **sent item**; or
+- where the platform allows background clipboard reads (X11 and KDE; unknown on Windows and macOS), by staging the clipboard continuously, but only if the person turns that on, and never items that a password manager marks as concealed (see [security.md](security.md)). The result is a **staged item**, which nobody addressed to a device.
 
-Staged items wait in an outbox on the device.
+Sent items wait in an outbox until their target can be reached (section 5.3). Staged items wait on the device until a paired device asks for them, and section 5.4 says when a locked device answers.
 
-The lock event does not send anything new. Many locks are idle timeouts with the person still at the desk, and a push at every lock would deliver content that nobody asked to move. At a lock the agent may flush items that the person already chose to send.
+**The lock event sends nothing new.** Many locks are idle timeouts with the person still at the desk (inferred; the research has no data on how often), and a push at every lock would deliver content that nobody asked to move. On GNOME and Android nothing would be readable at that moment anyway (section 3). A lock does not hold back what the person already chose, though: sent items keep going out while the device is locked, to the device the person picked.
 
-This replaces the earlier rule that the agent pushes the latest clipboard and tab "when the device is about to lock or sleep". The time for a push before sleep is short (on Linux a delay inhibitor holds a suspend for five seconds at most, and the network may already be going down), and on some platforms nothing can be read at that moment.
+**A sleep sends nothing new either, and the time before it is short.** That is a separate argument from the lock:
+
+- Linux: a delay inhibitor holds a suspend for five seconds at most by default (documented), and the network may already be going down.
+- macOS: an observer of `willSleepNotification` can delay sleep for up to 30 seconds (documented).
+- Windows: on Modern Standby the person's processes are suspended a few seconds after the sleep starts (documented), and a program receives `PBT_APMSUSPEND` only if it registered for it (reported).
+
+The agent may use these moments to send the sent items that are still in the outbox, within those limits. It does not read or push anything else.
+
+This replaces the earlier rule that the agent pushes the latest clipboard and tab "when the device is about to lock or sleep". It also overrides a recommendation of the Apple research, which was to flush pending clipboard, link and file announcements at the lock and screen-saver notifications and at `willSleep`. Baton flushes only what the person has already sent, because a staged item was never chosen for a device.
 
 ### 5.3 A hand-off must not need the source afterwards
 
 Delivery has three paths, tried in this order:
 
 1. **Direct.** Both devices are awake and can reach each other, on the same network or through a relay. The item is delivered at once.
-2. **Sender outbox.** The item waits on the sender until the other device can be reached. This needs the sender to be awake.
+2. **Sender outbox.** The item waits on the sender until the other device can be reached. This needs the sender to be awake, and it does not need the sender to be unlocked: **a locked agent delivers what the person explicitly sent.** It may dial the named device when that device appears on the network or becomes reachable through the relay, and it dials no other device. The person chose both the item and the target while at the device, so delivering it reveals nothing that they had not decided to share.
 3. **Mailbox on the account server** (milestone 4). The server holds the item, encrypted, until the other device comes online. This is the only path that works when the sender has gone to sleep or off before the target appears.
 
-Until the mailbox exists, an item for a device that is off or out of reach is delivered when both devices are awake and reachable at the same time, and the apps say so.
+Until the mailbox exists, an item for a device that is off or out of reach is delivered when both devices are awake and reachable at the same time, and the apps say so. A sender that is locked and awake counts as awake. The case that stays open is a laptop that goes to sleep with the item still in the outbox, and the "send and lock" gesture of section 5.6 exists to avoid it: the source is not locked until the other device has the item.
+
+The limits on a locked outbox:
+
+- **Sent items only.** A locked agent does not push staged items. It serves them on request, and only under the opt-in in section 5.4.
+- **Only the named device.** The agent never widens an item to another device. Unpairing a device cancels everything queued for it.
+- **A lifetime.** An item that has not been delivered within its lifetime is dropped, and the person is told. The proposed default is 24 hours, to be decided before the outbox ships.
+- **The receiver decides what happens next.** The receiving device applies its own locked mode and its own policy (section 5.4).
 
 The mailbox is a proposal, drawn from how Magic Wormhole's rendezvous server queues messages for clients that connect later and how Firebase Cloud Messaging stores a message until the device connects (both documented). It needs:
 
@@ -200,10 +215,10 @@ Items for a locked Android phone can be sealed to a key in the Android Keystore 
 - The agent learns the lock state from the platform's events (section 6), reads it once when it starts, because it may start inside a locked session, and reads it again after every resume. **If the state cannot be known, it acts as if the device were locked.** iOS has no public API for it, and on Linux only GNOME's and KDE's lockers were verified to set the logind `LockedHint`.
 - While locked, the agent accepts items from paired devices into the inbox and does nothing else with them. No link is opened, no clipboard is written, and no file is opened. Policies that open or apply items automatically are suspended until unlock.
 - It shows a notification that names the sender and hides the content where the platform lets it (Android visibility settings and actions that require authentication, the iOS preview setting and actions that require authentication). On unlock the inbox is shown, and what the person's policy allows is opened then.
-- It starts no connection and no hand-off of its own. It answers pings and `Hello`. It serves staged items to a paired device only if the person turned that on for that device, which is off by default.
+- It starts no hand-off of its own, but it finishes the ones the person started: it delivers sent items to the devices they were addressed to, dialing them if needed (section 5.3). It answers pings and `Hello`. It answers a request from a paired device for the items that were sent to that device. It serves staged items, which nobody addressed, to a paired device only if the person turned that on for that device, which is off by default.
 - An open pairing offer ends when the device locks. Pairing needs a person to compare the codes and approve, so it is never completed on a locked device.
 
-Why: on Windows a handler started while locked opens on a desktop nobody sees, and GNOME hides every window in lock mode, so a link that "opened" is invisible and anything it did goes unobserved. A stolen device that is locked but running also holds the device key, which section 7 covers.
+Why: on Windows a handler started while locked opens on a desktop nobody sees, and GNOME hides every window in lock mode, so a link that "opened" is invisible and anything it did goes unobserved. Sending is different: it shows nothing on the lock screen, and it goes only where the person pointed it. A stolen device that is locked but running also holds the device key, which section 7 covers.
 
 ### 5.5 Baton never unlocks
 
@@ -213,11 +228,14 @@ On Linux any process of the same user can call logind `Session.Unlock` without a
 
 ### 5.6 Lock the old device after a hand-off (optional)
 
-The person's worry is leaving the first device unlocked. Baton can address it from the other side: when the receiving device has acknowledged a hand-off, it asks the sending device to lock itself.
+The person's worry is leaving the first device unlocked. Baton can address it in two ways, and both lock only after the other device has acknowledged the item:
+
+- **Send and lock.** One gesture on the source: send these items to that device, wait for its acknowledgement, then lock this device. The lock is a local act on the device the person is using, so it needs no request to another device and no setting beyond the gesture. With a reachable target this meets the requirement in milestone 1, without waiting for the mailbox. If no acknowledgement arrives within a short wait (a setting, with a default that the tests should set), the app says so and asks whether to lock anyway. Locking anyway leaves the item in the outbox, where the locked agent keeps trying (section 5.3) for as long as the device stays awake.
+- **Lock on request.** The receiving device asks the sending device to lock itself once it has acknowledged a hand-off. This is for hand-offs that were not started with "send and lock", and it is the setting described in the rules below.
 
 | Platform | How a lock is started |
 | --- | --- |
-| Windows | `LockWorkStation()` from the agent in the person's session. It is asynchronous and needs a caller on the interactive desktop (documented), so it does not work from a service (inferred). |
+| Windows | `LockWorkStation()` from the agent in the person's session. It is asynchronous, a credential provider can deny it, and it needs a caller on the interactive desktop (documented), so it does not work from a service (inferred). |
 | Linux | logind `Session.Lock()`, allowed for the session owner without a password and honoured by GNOME Shell and KDE's locker (reported). |
 | macOS | No documented public API. Private functions exist and other tools use them. Baton will not depend on a private function without a fallback, so macOS is unsupported until a supported route is verified. |
 | Android | `DevicePolicyManager.lockNow()` for an app that is an active device administrator, or an accessibility service's lock-screen action (documented). Both are privileged, the accessibility route has Google Play policy consequences, and whether Android's deprecation of some device-admin policies affects the first was not checked. So this is offered only as an opt-in. |
@@ -225,8 +243,9 @@ The person's worry is leaving the first device unlocked. Baton can address it fr
 
 The rules:
 
-- It is off by default and set on the device that gets locked, per paired device ("let this device lock me").
+- Lock on request is off by default and set on the device that gets locked, per paired device ("let this device lock me"). "Send and lock" is the person's own gesture on that device and needs no setting.
 - It happens only after the item is acknowledged. On GNOME a lock closes remote-access sessions immediately, so a transfer that depends on one would die.
+- **A lock is confirmed, not assumed.** After asking for a lock the agent waits for the platform's lock signal (`WTS_SESSION_LOCK` on Windows, `LockedHint` on Linux; section 6). It tells the person the device is locked only when that signal arrives. If it does not arrive within a few seconds, the app reports that the lock was refused or failed, on the device the person is now using, because they may already have walked away.
 - The trigger is the acknowledgement from a device that is unlocked and in use. Proximity is not a trigger: it needs Bluetooth signal-strength heuristics that were not researched.
 - It is rate limited and the person is told when it happens. A compromised paired device could lock the person out repeatedly, which is a nuisance and not a leak.
 - There is no opposite command. Locking can only make a device safer, which is why it is allowed where unlocking is not.
@@ -260,13 +279,13 @@ As far as the research could tell, and without having tested any of these tools:
 
 - RustDesk, AnyDesk, Parsec, KDE Connect and Chrome Remote Desktop treat a locked remote machine as something to get past: stored credentials, remote unlock, privacy modes, or a separate session. Baton treats locked as a mode to respect: stage before leaving, queue, quarantine, and never unlock.
 - Sealing queued items to a key that exists only while the receiving phone is unlocked is an idea I did not find in the hand-off tools examined (Magic Wormhole, Taildrop, KDE Connect). It rests on a documented Android feature, and it is untested.
-- Locking the old device as part of a hand-off, when the other device acknowledges it, is related to RustDesk's option to lock a host when a remote session ends. Tying it to the acknowledgement of one item is the new part, and its value is unproven.
+- Locking the old device as part of a hand-off is related to RustDesk's option to lock a host when a remote session ends, to Windows Dynamic Lock, which locks a PC when a paired phone's signal falls (documented), and to the "Lock PC" action of Link to Windows, which locks a PC from an Android phone and has no unlock (weak sources). None of them is tied to the delivery of something. "Send and lock", which locks the source only after the other device has acknowledged the item, is the new part, and its value is unproven.
 
 ### 5.11 Where each rule lands
 
-- **Milestone 1.** The per-user agent on desktops. Lock detection on Windows, macOS and Linux, with unknown treated as locked. Locked mode for received items. Resume handling. The sender outbox. The tests in section 8, with a small probe program built for them.
+- **Milestone 1.** The per-user agent on desktops. Lock detection on Windows, macOS and Linux, with unknown treated as locked. Locked mode for received items. Resume handling. The sender outbox, which a locked agent keeps delivering, and "send and lock" on Windows and Linux. The tests in section 8, with a small probe program built for them.
 - **Milestone 2.** The Android foreground service and its permission. The apps' share targets as the explicit "continue on" gesture. The iOS app works while it is in the foreground.
-- **When the agent exists.** Lock after hand-off, on Windows and Linux first.
+- **When the agent exists.** Lock on request from the receiving device, on Windows and Linux first.
 - **Milestone 4.** The mailbox, the push gateway for Firebase and Apple push, wake helpers, and unlock-gated content keys on Android.
 - **Milestone 5.** Window streaming under the rules in section 5.8.
 
@@ -313,6 +332,7 @@ The agent holds the device key while the device is locked, and the network is up
 | --- | --- | --- |
 | Probe the running agent over the network | A lock stops nothing, and Android keeps its foreground service alive. | In place: mutual authentication in the handshake, nothing served to unpaired devices, and rate limits (see [security.md](security.md)). |
 | Use the stolen device's key to push links or files to the person's other devices | The agent can sign while locked. | Receivers open nothing on their own unless the person opted in, and show the sender. Unpairing the device on any other device ends its access. Proposed: per-device rights (links yes, files into a quarantine only) and trust that expires after a number of days without contact. |
+| Items waiting in the outbox of a stolen device | A locked agent delivers sent items, so they leave the device on their own, and until then a thief holds them. | They go only to the device the person chose, and that device applies its own locked mode and policy. Unpairing it cancels them, and a lifetime (proposed: 24 hours) drops the rest. Someone who has only the locked device cannot create new items, because sending needs a gesture of the person (section 5.3). |
 | Read items queued for the stolen device | The agent can decrypt while it runs. | Proposed: on Android a key that opens only on an unlocked phone, a short lifetime, and a purge on unpairing. No desktop equivalent was found. |
 | Turn the agent into an unlocker | Any process of the same Linux user can call the unlock method. | Baton never unlocks (section 5.5), and the Linux agent runs as a hardened user unit. |
 | Leak incoming content on the lock screen | Android visibility is user-controlled, GNOME hides notifications in lock mode, and KDE was not checked. | Hide content on a locked device (section 5.4). |
