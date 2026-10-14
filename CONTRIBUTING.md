@@ -16,13 +16,15 @@ cargo deny check
 
 Tests run on the loopback interface and do not need internet access.
 
+Code that parses input from the network also has fuzz targets. They are not part of the normal build and need a nightly toolchain and [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz); [crates/baton-proto/fuzz/README.md](crates/baton-proto/fuzz/README.md) says how to run them. If you change a parser, let them run for a few minutes before you open the pull request.
+
 ## Making a change
 
 1. Open an issue first for anything bigger than a small fix, so we can agree on the approach.
 2. Keep each pull request to one logical change. A reviewer should be able to hold the whole thing in their head. Large features are built as a series of pull requests.
 3. Say what changed, why, and how you tested it. The pull request template has the headings.
 4. Add tests. Changes to the protocol, pairing or the trust store need tests for the failure cases too: malformed input, wrong keys, expired or replayed tickets.
-5. Update the docs in the same pull request: `docs/protocol.md` for any wire change and [docs/security.md](docs/security.md) for any trust change.
+5. Update the docs in the same pull request: [docs/protocol.md](docs/protocol.md) for any wire change and [docs/security.md](docs/security.md) for any trust change.
 
 Commit messages: a short imperative summary (about 70 characters), a blank line, then a body that explains *why*.
 
@@ -30,7 +32,7 @@ Commit messages: a short imperative summary (about 70 characters), a blank line,
 
 - `cargo fmt` and `cargo clippy -D warnings` must be clean.
 - No `unsafe` in the core crates (`unsafe_code` is forbidden workspace-wide). If a platform layer needs it, put it in its own crate with the reason written down.
-- Input from the network is untrusted. Parsing code must not panic: return an error. Avoid `unwrap()` outside tests, and bound every length and count before allocating.
+- Input from the network is untrusted. Parsing code must not panic: return an error. Avoid `unwrap()` outside tests, do not index or slice with `[]` (`baton-proto` turns on `clippy::indexing_slicing`; use `get`, `split_first_chunk` and the like), and bound every length and count before allocating.
 - Errors in library crates use `thiserror`; the command-line app uses `anyhow`.
 - Start new source files with `// SPDX-License-Identifier: Apache-2.0`.
 

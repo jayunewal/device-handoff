@@ -11,7 +11,7 @@ A proposal, not a promise. Each milestone ends in something a person can use, an
 Scope: the Rust core, and a command-line client that hands off clipboard text, links and files between two desktop machines.
 
 - Device identity and a persistent trust store.
-- Pairing with a one-time ticket, approved on the offering device.
+- Pairing with a one-time ticket, approved on the offering device after comparing a six-digit code shown on both.
 - Discovery on the local network (mDNS) and connection by public key, with the internet relay as a fallback.
 - Handoff of links and clipboard text with per-device policies and an inbox.
 - File and folder transfer in Baton's own protocol, built to fill the link. A folder is one offer with a manifest, files move over parallel resumable streams, and hashing happens while sending. A benchmark that anyone can rerun is part of the milestone, with four cases that each hit a different limit: one large file, thousands of small files, Wi-Fi under load, and a relayed connection. Each run also measures the raw throughput of the link, so the numbers mean the same on any network. The first two cases have targets, which the benchmark will confirm or change: one large file should reach at least 90% of the raw throughput (about 100 MB/s on gigabit Ethernet), and 10,000 files of 10 KiB should take no more than twice as long as one file of the same total size. The other two cases are reported without a target until there are real measurements. There is no compatibility with other tools' protocols.
@@ -21,7 +21,7 @@ Done when: two machines on the same Wi-Fi pair with `baton`, a link sent from on
 
 ## Milestone 2: apps
 
-Flutter apps for macOS, Windows, Android, iOS and iPadOS that wrap the core. QR pairing, a device list, sending and receiving links, clipboard and files. Tray icon and notifications on desktop.
+Flutter apps for macOS, Windows, Android, iOS and iPadOS that wrap the core. QR pairing, a device list, sending and receiving links, clipboard and files. Tray icon and notifications on desktop. The apps register the `baton1:` URL scheme, which pairing tickets already start with, so scanning a ticket's QR code with the phone's own camera opens Baton on the pairing screen.
 
 ## Milestone 3: tabs and sharing
 

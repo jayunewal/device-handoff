@@ -21,8 +21,8 @@ The research behind these limits, and the ideas for working around them, is in [
 
 - **Local first.** Devices on the same network connect directly. The internet, through a relay, is the fallback.
 - **End-to-end encrypted.** Devices authenticate each other with keys that never leave them. A relay only forwards ciphertext.
-- **No account required.** You pair devices with a QR code or a one-time code. Optional, self-hostable accounts will make pairing automatic later.
-- **Open protocol.** The wire format is specified in `docs/protocol.md` (it arrives with the protocol crate), so other implementations are possible.
+- **No account required.** You pair devices with a QR code or a one-time ticket you copy across, and confirm with a six-digit code that both devices show. Optional, self-hostable accounts will make pairing automatic later.
+- **Open protocol.** The wire format is specified in [docs/protocol.md](docs/protocol.md), so other implementations are possible.
 - **Works while locked.** You hand work off so that you can walk away, so Baton is designed to keep working while the device you left is locked. What each operating system allows is still being researched; see [docs/architecture.md](docs/architecture.md#locked-devices).
 - **Fast.** File transfer is Baton's own protocol, built to fill the link, and its speed is measured by a benchmark that lives in the repository.
 - **Small trusted core.** Networking, cryptography and the protocol live in one Rust library. Each platform adds a thin layer for what only it can do, such as the clipboard or screen capture.
@@ -44,7 +44,7 @@ The order is a proposal and can change. See [docs/roadmap.md](docs/roadmap.md) f
 
 | Path | What lives there |
 | --- | --- |
-| `crates/baton-proto` | Wire protocol: message types, framing, pairing ticket format. No networking. |
+| `crates/baton-proto` | Wire protocol: message types, framing, the pairing handshake and ticket format. No networking. |
 | `docs/` | Architecture, protocol and security documents, and architecture decision records in `docs/adr/`. |
 
 More crates are added as milestone 1 lands (`baton-core`, `baton-agent`, `baton-cli`). Flutter apps will live under `apps/`.
