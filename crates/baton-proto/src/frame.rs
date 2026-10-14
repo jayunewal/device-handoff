@@ -50,20 +50,20 @@ pub enum FrameError {
 /// Validates `message` and encodes it as a complete frame, header included.
 pub fn encode<M: Message>(message: &M) -> Result<Vec<u8>, FrameError> {
     message.validate()?;
-    let mut frame = vec![0; HEADER_LEN];
-    ciborium::into_writer(message, &mut frame).map_err(|e| FrameError::Encode(e.to_string()))?;
-    let len = frame.len() - HEADER_LEN;
-    if len > M::MAX_FRAME_LEN {
-        return Err(FrameError::TooLarge {
-            len,
-            max: M::MAX_FRAME_LEN,
-        });
-    }
-    let header = u32::try_from(len).map_err(|_| FrameError::TooLarge {
+    let mut payload = Vec::new();
+    ciborium::into_writer(message, &mut payload).map_err(|e| FrameError::Encode(e.to_string()))?;
+    let len = payload.len();
+    let too_large = || FrameError::TooLarge {
         len,
         max: M::MAX_FRAME_LEN,
-    })?;
-    frame[..HEADER_LEN].copy_from_slice(&header.to_be_bytes());
+    };
+    if len > M::MAX_FRAME_LEN {
+        return Err(too_large());
+    }
+    let header = u32::try_from(len).map_err(|_| too_large())?;
+    let mut frame = Vec::with_capacity(HEADER_LEN + len);
+    frame.extend_from_slice(&header.to_be_bytes());
+    frame.extend_from_slice(&payload);
     Ok(frame)
 }
 

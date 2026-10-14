@@ -13,6 +13,12 @@
 //! - [`frame`] turns messages into length-prefixed frames and back.
 //! - [`limits`] holds the size limits every message is checked against.
 
+// This crate parses bytes from strangers. An index or a slice range that is out of bounds
+// panics, and a panic on input from the network is a remote crash, so the code spells out
+// what happens when the data is short (`get`, `split_first_chunk` and friends).
+// Tests are exempt through `clippy.toml`.
+#![warn(clippy::indexing_slicing)]
+
 pub mod device;
 pub mod frame;
 pub mod id;

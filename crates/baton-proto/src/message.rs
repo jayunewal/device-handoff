@@ -112,13 +112,85 @@ impl Item {
 }
 
 /// A web link.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Link {
     /// The address. The receiver decides which schemes it will open.
     pub url: String,
     /// The page title, if the sender knows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+}
+
+// Links carry secrets all the time: sign-in and password-reset tokens in the query,
+// credentials before the host, document ids in the path, and titles that name the
+// page. A request is logged with `{:?}` when something goes wrong, so only what is
+// needed to tell links apart in a log is printed: the scheme, the host, and sizes.
+impl std::fmt::Debug for Link {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Link")
+            .field("origin", &format_args!("{}", origin_of(&self.url)))
+            .field("url_bytes", &self.url.len())
+            .field("title_bytes", &self.title.as_ref().map(String::len))
+            .finish()
+    }
+}
+
+/// The longest host name, in bytes, that [`origin_of`] prints.
+const MAX_LOGGED_HOST_BYTES: usize = 253;
+
+/// The longest scheme, in bytes, that [`origin_of`] prints.
+const MAX_LOGGED_SCHEME_BYTES: usize = 32;
+
+/// What of a link is safe to put in a log: the scheme and the host, never anything else.
+///
+/// Returns `https://example.com` for `https://user:pw@example.com:8443/path?q#f`, and
+/// `mailto:` for `mailto:someone@example.com`. This is a log aid, not a URL parser, so it
+/// prefers printing too little to printing something odd: a scheme that is not plain ASCII
+/// letters, digits, `+`, `-` and `.`, or a host that is not plain ASCII (which also
+/// rules out control characters and text-direction tricks), is replaced by `?`.
+fn origin_of(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once(':') else {
+        return "?".to_owned();
+    };
+    let scheme_ok = scheme.len() <= MAX_LOGGED_SCHEME_BYTES
+        && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    if !scheme_ok {
+        return "?".to_owned();
+    }
+    let scheme = scheme.to_ascii_lowercase();
+    let Some(after_slashes) = rest.strip_prefix("//") else {
+        return format!("{scheme}:");
+    };
+
+    // The authority ends at the first `/`, `?` or `#`. Everything before the last `@`
+    // in it is credentials, which are never printed.
+    let authority = after_slashes
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    let host_and_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = if host_and_port.starts_with('[') {
+        // An IPv6 address in brackets, possibly followed by a port.
+        host_and_port
+            .find(']')
+            .map(|end| host_and_port.get(..=end).unwrap_or_default())
+            .unwrap_or_default()
+    } else {
+        host_and_port.split(':').next().unwrap_or_default()
+    };
+    let host_ok = !host.is_empty()
+        && host.len() <= MAX_LOGGED_HOST_BYTES
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '[' | ']' | ':'));
+    if host_ok {
+        format!("{scheme}://{}", host.to_ascii_lowercase())
+    } else {
+        format!("{scheme}://?")
+    }
 }
 
 /// Plain text from the clipboard.
@@ -371,5 +443,79 @@ mod tests {
             text: "hunter2".into(),
         };
         assert!(!format!("{clip:?}").contains("hunter2"));
+    }
+
+    #[test]
+    fn a_link_prints_only_its_scheme_host_and_sizes() {
+        let link = Link {
+            url: "https://user:hunter2@Example.com:8443/reset/abc123?token=s3cr3t#frag".into(),
+            title: Some("Reset the password for Jay".into()),
+        };
+        let shown = format!("{link:?}");
+        assert!(shown.contains("https://example.com"), "{shown}");
+        for secret in [
+            "user", "hunter2", "8443", "reset", "abc123", "token", "s3cr3t", "frag", "password",
+            "Jay",
+        ] {
+            assert!(!shown.contains(secret), "{secret} leaked in {shown}");
+        }
+
+        // The same holds when the link sits inside a request that is logged whole.
+        let request = Request::Handoff(Handoff {
+            id: ItemId::from_bytes([7; 16]),
+            item: Item::Link(link),
+        });
+        let shown = format!("{request:?}");
+        assert!(shown.contains("https://example.com"), "{shown}");
+        assert!(
+            !shown.contains("hunter2") && !shown.contains("s3cr3t"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn the_origin_of_a_link_is_only_ever_a_plain_scheme_and_host() {
+        for (url, expected) in [
+            ("https://example.com", "https://example.com"),
+            ("HTTP://EXAMPLE.com/a", "http://example.com"),
+            ("https://example.com:8443", "https://example.com"),
+            ("https://[2001:db8::1]:8443/x", "https://[2001:db8::1]"),
+            // The last `@` ends the credentials, however many come before it.
+            ("https://u:p@h1:p2@example.com/", "https://example.com"),
+            ("https://example.com?token=x", "https://example.com"),
+            ("https://example.com#frag", "https://example.com"),
+            ("mailto:someone@example.com", "mailto:"),
+            ("javascript:alert(document.cookie)", "javascript:"),
+            ("data:text/plain;base64,c2VjcmV0", "data:"),
+            ("https:\\\\example.com", "https:"),
+            // An empty host.
+            ("file:///home/jay/secret.txt", "file://?"),
+            // Hosts that are not plain ASCII are not printed: control characters could
+            // forge log lines, and look-alike letters or direction overrides could
+            // make a host read as another one.
+            ("https://exa\nmple.com", "https://?"),
+            ("https://ex\u{430}mple.com", "https://?"),
+            ("https://\u{202e}moc.elpmaxe", "https://?"),
+            ("https://[::1", "https://?"),
+            ("https://exa mple.com", "https://?"),
+            // No usable scheme.
+            ("", "?"),
+            ("no scheme here", "?"),
+            ("1http://x", "?"),
+            ("ht tp://x", "?"),
+            ("\nhttps://x", "?"),
+            (":", "?"),
+        ] {
+            assert_eq!(origin_of(url), expected, "{url:?}");
+        }
+        assert_eq!(origin_of(&format!("{}://x", "a".repeat(33))), "?");
+        assert_eq!(
+            origin_of(&format!("https://{}", "a".repeat(254))),
+            "https://?"
+        );
+        assert_eq!(
+            origin_of(&format!("https://{}", "a".repeat(253))),
+            format!("https://{}", "a".repeat(253))
+        );
     }
 }

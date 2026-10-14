@@ -14,6 +14,9 @@ const FINGERPRINT_CONTEXT: &str = "baton 2026-10-14 device fingerprint v1";
 /// Number of base32 characters shown in a fingerprint (5 bits each).
 const FINGERPRINT_CHARS: usize = 20;
 
+/// Bytes of the digest needed to fill [`FINGERPRINT_CHARS`] characters: 100 bits, rounded up.
+const FINGERPRINT_BYTES: usize = 13;
+
 /// A device's identity: its Ed25519 public key.
 ///
 /// Devices dial each other by this key, and the transport handshake proves that
@@ -36,18 +39,24 @@ impl DeviceId {
     }
 
     /// The first five bytes in hex, for logs and compact listings.
+    ///
+    /// Forty bits, taken straight from the key: enough to tell a few devices apart in a
+    /// log, and nothing a person should rely on. Use [`fingerprint`](Self::fingerprint)
+    /// wherever someone has to check that a device is the one they mean.
     pub fn short(&self) -> String {
-        HEXLOWER.encode(&self.0[..5])
+        let [b0, b1, b2, b3, b4, ..] = self.0;
+        HEXLOWER.encode(&[b0, b1, b2, b3, b4])
     }
 
     /// A short string two people can compare out loud or on two screens.
     ///
-    /// It is derived from the identity with a hash, so an attacker cannot pick
-    /// a key whose fingerprint merely starts like another one.
+    /// It is 100 bits of a hash of the identity, so an attacker cannot pick a key whose
+    /// fingerprint merely starts like another one.
     pub fn fingerprint(&self) -> Fingerprint {
         let digest = blake3::derive_key(FINGERPRINT_CONTEXT, &self.0);
-        let encoded = BASE32_NOPAD.encode(&digest[..13]).to_ascii_lowercase();
-        Fingerprint(encoded[..FINGERPRINT_CHARS].to_owned())
+        let bytes: Vec<u8> = digest.iter().copied().take(FINGERPRINT_BYTES).collect();
+        let text = BASE32_NOPAD.encode(&bytes).to_ascii_lowercase();
+        Fingerprint(text.chars().take(FINGERPRINT_CHARS).collect())
     }
 }
 
@@ -98,8 +107,13 @@ pub struct Fingerprint(String);
 
 impl Fingerprint {
     /// The first group of four characters, for places where space is tight.
+    ///
+    /// Twenty bits, which anyone can match by trying a million keys. It is for telling
+    /// entries apart in a compact list that also gives a way to see the whole
+    /// fingerprint. **Never use it where a person verifies a device**, such as a pairing
+    /// prompt: show the full [`Display`](fmt::Display) form there.
     pub fn short(&self) -> &str {
-        &self.0[..4]
+        self.0.get(..4).unwrap_or_default()
     }
 }
 
@@ -207,5 +221,31 @@ mod tests {
     #[test]
     fn fingerprints_differ_between_devices() {
         assert_ne!(id(1).fingerprint(), id(2).fingerprint());
+    }
+
+    #[test]
+    fn every_fingerprint_is_twenty_lowercase_base32_characters() {
+        for byte in 0..=u8::MAX {
+            let fp = id(byte).fingerprint();
+            let text = fp.to_string();
+            assert_eq!(
+                text.len(),
+                24,
+                "twenty characters in five groups, joined by four dashes"
+            );
+            assert_eq!(text.matches('-').count(), 4);
+            assert!(
+                text.chars()
+                    .all(|c| c == '-' || c.is_ascii_lowercase() || ('2'..='7').contains(&c)),
+                "{text}"
+            );
+            assert_eq!(fp.short().len(), 4);
+        }
+    }
+
+    #[test]
+    fn the_short_form_of_an_id_is_its_first_five_bytes() {
+        let id = DeviceId::from_bytes(std::array::from_fn(|i| u8::try_from(i).unwrap()));
+        assert_eq!(id.short(), "0001020304");
     }
 }
