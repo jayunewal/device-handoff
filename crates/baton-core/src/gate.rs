@@ -208,6 +208,12 @@ impl Gate {
 }
 
 impl EndpointHooks for Gate {
+    // Only the test hook awaits anything, so a build without it has an `async fn` with no
+    // `.await`. The trait fixes the signature.
+    #[cfg_attr(
+        not(any(test, feature = "test-support")),
+        allow(clippy::unused_async_trait_impl)
+    )]
     async fn after_handshake<'a>(&'a self, connection: &'a Connection) -> AfterHandshakeOutcome {
         let alpn = connection.alpn();
         if alpn == ALPN_PAIR {
