@@ -122,7 +122,7 @@ How far the evidence goes:
 
 | | Locked (Android 16 and 17) |
 | --- | --- |
-| Agent keeps running | **Partly** (documented, reported). Only as a foreground service of a declared type, and phone makers' background killers, Low Power Standby and a reported automatic reboot after 72 hours locked can still end it. |
+| Agent keeps running | **Partly** (documented, reported). Only as a foreground service of a declared type, and phone makers' background killers, Low Power Standby and a reported automatic reboot after 72 hours locked (A13) can still end it. |
 | Network reachable | **Partly** (reported). AOSP code lets a foreground service keep the network in Doze, but the documentation is inconsistent about it, and Low Power Standby is documented to cut the network even for such apps. Apps that target SDK 37 need the `ACCESS_LOCAL_NETWORK` permission for traffic on the local network. |
 | Clipboard: set | **Works** (reported). A comment and the code in the Android source allow a write without focus and have no check for a locked device. What the person sees when a background write happens is unknown (A6). |
 | Clipboard: read | **No** (reported). Reads return nothing when the device is locked, and background reads are refused. |
@@ -233,7 +233,7 @@ Why: on Windows a handler started while locked opens on a desktop nobody sees, a
 
 Baton has no feature that unlocks a device, no way to ask another device to do so, and no code that calls the platform's unlock function.
 
-On Linux any process of the same user can call logind `Session.Unlock` without a password, and GNOME Shell and KDE's locker both obey it (reported, to be confirmed by test L6). A compromised agent could therefore unlock the machine. KDE Connect has a remote-unlock feature that is on by default (reported). The research also found that on Windows a SYSTEM-level helper can type credentials at the lock screen. Baton will build neither. A lock is not a barrier against malware that runs as the person, and Baton does not weaken it further.
+On Linux any process of the same user can call logind `Session.Unlock` without a password, and GNOME Shell and KDE's locker both obey it (reported, to be confirmed by test L6). A compromised agent could therefore unlock the machine. KDE Connect has a remote-unlock feature that is on by default (reported; L13 checks it). The research also found that on Windows a SYSTEM-level helper can type credentials at the lock screen. Baton will build neither. A lock is not a barrier against malware that runs as the person, and Baton does not weaken it further.
 
 ### 5.6 Lock the old device after a hand-off (optional)
 
@@ -345,7 +345,7 @@ The agent holds the device key while the device is locked, and the network is up
 | Items waiting in the outbox of a stolen device | A locked agent delivers sent items, so they leave the device on their own, and until then a thief holds them. | They go only to the device the person chose, and that device applies its own locked mode and policy. Unpairing it cancels them, and a lifetime (proposed: 24 hours) drops the rest. Someone who has only the locked device cannot create new items, because sending needs a gesture of the person (section 5.3). |
 | Read items queued for the stolen device | The agent can decrypt while it runs. | Proposed: on Android a key that opens only on an unlocked phone, a short lifetime, and a purge on unpairing. No desktop equivalent was found. |
 | Turn the agent into an unlocker | Any process of the same Linux user can call the unlock method. | Baton never unlocks (section 5.5), and the Linux agent runs as a hardened user unit. |
-| Leak incoming content on the lock screen | Android visibility is user-controlled, GNOME hides notifications in lock mode, and KDE was not checked. Windows 11 and macOS have settings of the person's own that can show notifications, and previews, on the lock screen. | No content in notifications posted while locked, on any platform. On iOS the placeholder is in the push itself (section 5.4). |
+| Leak incoming content on the lock screen | Android visibility is user-controlled, GNOME hides notifications in lock mode, and KDE was not checked (L12). Windows 11 and macOS have settings of the person's own that can show notifications, and previews, on the lock screen. | No content in notifications posted while locked, on any platform. On iOS the placeholder is in the push itself (section 5.4). |
 | Act on content that arrived while locked | Opening links or saving files unseen is a drive-by risk. | Locked mode is receive and quarantine only (section 5.4). |
 | Attacks that skip the lock (boot from USB, DMA, cold boot) | Out of scope for the agent. Android's credential-protected storage stays available from the first unlock until a reboot. | Full-disk encryption on laptops, no unprotected long-term keys, and the knowledge that a phone unlocked once since boot is more exposed than a rebooted one. |
 | Compromise of the relay, or traffic analysis | Magic Wormhole's design is the precedent. | End-to-end encryption and signatures, padding, minimal retention (section 5.3). |
@@ -356,7 +356,7 @@ The agent holds the device key while the device is locked, and the network is up
 
 None of the behaviour in section 3 marked inferred or unknown should be relied on until these have been run. Record the operating system and build, the power model, AC or battery, wired or Wi-Fi, the disk-encryption mode, and whether the display was on or off.
 
-A small **probe** program does the observing, and it is part of the first milestone. It writes a line with a monotonic timestamp every second, logs the lock, unlock, sleep, resume and display events that section 6 describes, and answers a TCP and a UDP echo, while a second machine probes it once a second. Each test below is "run the probe, do this, and look for gaps".
+A small **probe** program does the observing, and it is part of the first milestone. It writes a line with a monotonic timestamp every second, logs the lock, unlock, sleep, resume and display events that section 6 describes, and answers a TCP and a UDP echo, while a second machine probes it once a second. Each test below is "run the probe, do this, and look for gaps". The research notes number their tests differently (T for Windows and Apple, V for Linux and Android). Where a test below comes from one of them, its id is given.
 
 **Windows**
 
@@ -365,37 +365,45 @@ A small **probe** program does the observing, and it is part of the first milest
 - W3. Clipboard while locked: set it from the agent and listen for changes, then unlock and paste.
 - W4. Opening a link and a file while locked, with each browser already running and not running.
 - W5. Capture while locked with Desktop Duplication, Windows.Graphics.Capture, `PrintWindow` and `BitBlt`, as the person and as SYSTEM, for a window that animates. **Decides whether streaming from a locked device is possible at all.**
-- W6. Modern Standby liveness and wake: enter sleep by the Start menu, the lid and the idle timeout, on AC and on battery, with and without a power request held, then send a Wake-on-LAN packet and see whether the agent runs while the display stays off.
+- W6. Modern Standby liveness and wake: enter sleep by the Start menu, the lid and the idle timeout, on AC and on battery, with and without a power request held, then send a Wake-on-LAN packet and see whether the agent runs while the display stays off, and whether the session comes back locked. Run a service probe (LocalSystem, started at boot) next to the per-user probe and compare how each is throttled or suspended. Hold the request once as `PowerSetRequest` and once as `SetThreadExecutionState`, and see which of them ends five minutes after the sleep timeout on battery (T06 in the notes).
 - W7. The same on an S3 machine, including how long the machine stays awake after a Wake-on-LAN packet and whether the session comes back locked.
-- W8. Before sign-in: whether a boot-start service is reachable after a restart and after a Fast Startup shutdown, with no BitLocker, TPM-only and TPM+PIN.
+- W8. Before sign-in: whether a boot-start service is reachable after a restart and after a Fast Startup shutdown, with no BitLocker, TPM-only and TPM+PIN. Also hibernate and resume (with TPM+PIN the PIN is asked first): whether the per-user agent survives and its network recovers (T17 in the notes).
 - W9. Lock detection over 20 cycles each of Win+L, Ctrl+Alt+Del then Lock, a lock from the agent, an idle lock, Dynamic Lock, a user switch, a Remote Desktop connection and sleep with resume, comparing a top-level window with a message-only one.
-- Also: reading files while locked, including OneDrive online-only files and EFS files; toasts on the lock screen; a SYSTEM helper at the lock screen; input while locked; Remote Desktop behaviour on the console; virtual displays while locked; start-up after an update restart.
+- W10. Loopback Remote Desktop: while signed in at the console with a window open, connect to the same machine's loopback address as the same user (Remote Desktop on, network level authentication off on the test machine). Record whether the existing session, with the open window, is attached to the Remote Desktop window or a new empty session is created, and what the console shows. Optionally repeat with Chrome Remote Desktop in curtain mode from another device. Decides what milestone 5 can promise on Windows (T15 in the notes).
+- W11. Virtual display while locked: on a machine with Secure Boot on and no test signing, install a signed community virtual display driver and note any warning. Move an animated test window onto the virtual monitor and run the capture harness of W5 against it through lock, sign-out and sign-in, sleep and resume, and fast user switching. Record whether the monitor persists, frames continue and the window survives. Until then it is a hypothesis only (T16 in the notes).
+- W12. Fast user switching: user A signed in with the probe, lock A, then sign in as B at the console with B's probe listening on the same port. Record A's heartbeat, port conflicts, the active console session id and the session events on both agents, and whether A's clipboard and file reads still work while A is disconnected. Decides the rule for several agents in section 5.1 (T18 in the notes).
+- W13. Lock after hand-off: from the per-user probe call `LockWorkStation` on command and record the result and the delay until `WTS_SESSION_LOCK` arrives. Call it from a service in session 0 and record the result (a failure is expected). Call it when the device is already locked. If the test machine has a credential provider that can deny the call, record what the call returns. Decides whether the confirmed-lock rule in section 5.6 can rest on the signal (T21 in the notes).
+- Also: reading files while locked, including OneDrive online-only files and EFS files; toasts on the lock screen; a SYSTEM helper at the lock screen; input while locked; start-up after an update restart; what the "Lock PC" action of Link to Windows does with the PC asleep or offline (T25 in the notes).
 
 **macOS**
 
-- M1. Liveness and network while locked: a LaunchAgent that logs a heartbeat and echoes on TCP and UDP, for 30 minutes with the display on, asleep and left to sleep, on AC and on battery, with a second account switched out, and with a screen saver and a password. Pass: no gap above two seconds and every probe answered.
+- M1. Liveness and network while locked: a LaunchAgent that logs a heartbeat and echoes on TCP and UDP, for 30 minutes with the display on, asleep and left to sleep, on AC and on battery, with a second account switched out, and with a screen saver and a password. Run it three ways to see whether App Nap throttles an agent that has no windows: holding nothing, holding a `ProcessInfo` activity, and holding a power assertion. Pass: no gap above two seconds and every probe answered (T1 in the notes).
 - M2. Local Network grant: install with SMAppService, lock before the first LAN operation, and see what is denied, whether a prompt waits for the unlock, and whether the relay works with the grant denied.
 - M3. Assertions, `caffeinate` and the lid: which assertion each creates, and which cases still sleep on AC and on battery, with the lid closed with and without an external display.
-- M4. Wake-on-LAN, Sleep Proxy and scheduled wake on Apple silicon, on Ethernet and on Wi-Fi.
+- M4. Wake-on-LAN, Sleep Proxy and scheduled wake on Apple silicon, on Ethernet and on Wi-Fi, and whether the Mac then comes back at its lock screen or only does a Dark Wake without a session.
 - M5. FileVault restart: what is reachable before the password is entered, and the SSH unlock on macOS 26 and later.
 - M6. Pasteboard from the agent while locked, set and read, on macOS 27.0, 27.1 and the 27.2 beta, and Universal Clipboard to a locked Mac.
 - M7. Opening a link and posting a notification while locked, with each preview setting.
 - M8. Capture while locked with ScreenCaptureKit and the older capture APIs, with the display on, asleep, kept awake and under a screen saver. Decides whether streaming from a locked Mac is possible.
 - M9. Input while locked through CGEvent and the Accessibility API, and whether the lock screen's password field blocks synthetic keys.
 - M10. Lock detection: log the distributed notifications, the workspace notifications and the session keys through a Control-Command-Q lock, a hot corner, the screen saver, lid close and open, Touch ID, Apple Watch unlock and a restart, on macOS 26 and 27.
+- M11. The key at a locked screen: a LaunchAgent that reads a key from the Keychain (after-first-unlock class) while the screen is locked, after the display sleeps, and after a sleep and wake, and with the login keychain set to lock after inactivity or on sleep. Decides where the device key lives on macOS (section 5.9).
 
 **Linux**
 
 - L1. Lid close against inhibitors (`sleep` block against `handle-lid-switch`) on GNOME and KDE, with and without an external monitor.
-- L2. Idle suspend while locked, and whether a `systemd --user` service may take delay and block inhibitors. With auto-suspend set to one minute, time how long a UDP echo keeps answering.
+- L2. Idle suspend while locked, and whether a `systemd --user` service may take delay and block inhibitors or arm a timer with `WakeSystem=`. With auto-suspend set to one minute, time how long a UDP echo keeps answering.
 - L3. Reachability while locked: a UDP echo as a user service, `loginctl lock-session`, screen blanking, one probe every 30 seconds for two hours on GNOME, KDE and one X11 session, with Wi-Fi power save on and off.
-- L4. Wake-on-LAN and Wake-on-WLAN from s2idle and S3, and how long KDE stays awake after a network wake.
+- L4. Wake-on-LAN and Wake-on-WLAN from s2idle and S3, how long KDE stays awake after a network wake, and whether the session comes back locked.
 - L5. What a `PrepareForSleep` hook can still send before the network goes down.
 - L6. Same-user unlock: `loginctl unlock-session` over SSH and from a user service, on GNOME and KDE. Confirms section 5.5.
 - L7. Whether `LockedHint` is set by `xdg-screensaver lock` on KDE, Xfce, Cinnamon and i3 with `xss-lock`, and by swaylock, i3lock and hyprlock.
 - L8. GNOME: confirm that screen casts and remote-control sessions are closed on lock and refused while locked. Whether a Shell extension can use the clipboard in the lock-screen session mode. What opening a URL does while locked.
 - L9. KDE: capture, input and clipboard while locked, and whether KDE's remote-access mode leaves an unlocked session reachable from a text console at the keyboard.
 - L10. X11 lockers: clipboard, synthetic input and capture while locked.
+- L11. Lock signal timing: watch the screensaver interface (GNOME or KDE), logind's `Lock` signal and `LockedHint` while locking by hotkey, by idle timeout and by lid close. Record their order and delay, the effect of GNOME's `lock-delay`, and whether property changes are emitted from the `auto` alias or only from the session's own path. Decides which signal Baton trusts (section 6; V-L8 in the notes).
+- L12. KDE: opening a URL while locked (`xdg-open`, `kioclient exec`) and a notification sent while locked; record what is visible. Decides how section 5.4 treats KDE (V-K4 in the notes).
+- L13. KDE Connect remote unlock, as a check of the tool and not of Baton: two paired Plasma machines, lock one and use the other to unlock it. Record whether a password is asked and whether the feature is on right after pairing. Confirms the claim in section 5.5 (V-T2 in the notes).
 
 **Android**
 
@@ -409,6 +417,9 @@ A small **probe** program does the observing, and it is part of the first milest
 - A8. Background killers on a Pixel, a Samsung, a Xiaomi and a OnePlus, for 24 and 72 hours, with default settings and then with the makers' recommended exemptions.
 - A9. Keystore keys that need an unlocked device: encrypt while locked, confirm that decryption fails while locked and works after unlock, on Android 12, 13, 14 and 16 or 17 and with face unlock.
 - A10. Notifications on the lock screen at each visibility level, and an action that requires authentication.
+- A11. Recovery after a kill while the phone is locked: with the foreground service running and the phone locked, stop it from the Task Manager, let a phone maker's background killer end it (a Samsung and a Xiaomi), and crash it. Record whether and when it comes back, with and without the battery-optimisation exemption and with a high-priority push. Settles the recovery rules in section 5.1.
+- A12. An accessibility service as a way to lock the device: whether its lock action works from the background, what it is allowed to see of the lock screen, and what changes with Advanced Protection on (Android 17). Decides whether the accessibility route in section 5.6 is viable. Gestures over the lock screen are deliberately not tested, because Baton never types into a lock screen (V-A10 in the notes).
+- A13. The reported automatic reboot after 72 hours locked: leave a phone with the relevant Play services version locked for 73 hours and record the reboot time, the state of the foreground service afterwards and whether the phone is in the before-first-unlock state (V-A14 in the notes).
 
 **iOS and iPadOS**
 
