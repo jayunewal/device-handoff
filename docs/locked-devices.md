@@ -4,7 +4,7 @@ Status: research summary and proposed design rules, 2026-10-14. Nothing in this 
 
 Handing work off means walking away from the first device. By the time the second device needs something, the first is usually locked and often asleep. A hand-off tool that needs the first device to stay unlocked fails at its one job, so working while locked is a requirement for every milestone and not a feature of one (see the [roadmap](roadmap.md)).
 
-This page records what each operating system allows, so that Baton promises only what it can keep, and the design rules that follow. It summarises three research passes: Windows; macOS, iOS and iPadOS; and Linux, Android and existing remote-access tools. [architecture.md](architecture.md#locked-devices) keeps the short form of the rules.
+This page records what each operating system allows, so that Baton promises only what it can keep, and the design rules that follow. It summarises three research passes: Windows; macOS, iOS and iPadOS; and Linux, Android and existing remote-access tools. The notes behind it are in [research/locked-devices/](research/locked-devices/README.md), so that the labels can be checked against their evidence. [architecture.md](architecture.md#locked-devices) keeps the short form of the rules.
 
 ## 1. The short answer
 
@@ -42,7 +42,7 @@ The states used:
 How far the evidence goes:
 
 - Nothing was run on hardware. Everything comes from documentation, source code and reports.
-- Some pages reached the researchers only through a summarising tool, and some hosts were unreachable. Every Windows source was read that way, and so were the Apple forum, support and vendor pages, so the "documented" labels that rest on them rest on model-written summaries. Re-read these before the rules that depend on them are relied on: how the Desktop Activity Moderator times its suspension and throttles services, `LockWorkStation`, automatic sign-in after an update restart, and the five-minute limit on power requests (all Windows), and every statement about what a remote-access product does on a locked Mac. Apple's developer documentation and release notes were read as raw text, which covers the 30 seconds of `willSleep` and the launchd rule on quarantined property lists.
+- Some pages reached the researchers only through a summarising tool, and some hosts were unreachable. Every Windows source was read that way, and so were the Apple forum, support and vendor pages, so the "documented" labels that rest on them rest on model-written summaries. Re-read these before the rules that depend on them are relied on: how the Desktop Activity Moderator times its suspension and throttles services, `LockWorkStation`, automatic sign-in after an update restart, and the five-minute limit on power requests (all Windows), and every statement about what a remote-access product does on a locked Mac. Apple's developer documentation and release notes were read as raw text, which covers the 30 seconds of `willSleep` and the launchd rule on quarantined property lists. The notes are in the repository and give the source of each claim.
 - The researchers ran out of search budget before they had covered everything. Section 9 lists the gaps.
 - Operating systems change. The releases that matter are named where they do: Windows 11 24H2 changed how services are suspended, macOS 15 added Local Network privacy, Android 15 QPR1 stops screen capture on lock, and Android 17 adds a local-network permission for apps that target SDK 37.
 
@@ -356,7 +356,7 @@ The agent holds the device key while the device is locked, and the network is up
 
 None of the behaviour in section 3 marked inferred or unknown should be relied on until these have been run. Record the operating system and build, the power model, AC or battery, wired or Wi-Fi, the disk-encryption mode, and whether the display was on or off.
 
-A small **probe** program does the observing, and it is part of the first milestone. It writes a line with a monotonic timestamp every second, logs the lock, unlock, sleep, resume and display events that section 6 describes, and answers a TCP and a UDP echo, while a second machine probes it once a second. Each test below is "run the probe, do this, and look for gaps". The research notes number their tests differently (T for Windows and Apple, V for Linux and Android). Where a test below comes from one of them, its id is given.
+A small **probe** program does the observing, and it is part of the first milestone. It writes a line with a monotonic timestamp every second, logs the lock, unlock, sleep, resume and display events that section 6 describes, and answers a TCP and a UDP echo, while a second machine probes it once a second. Each test below is "run the probe, do this, and look for gaps". The [research notes](research/locked-devices/README.md) number their tests differently (T for Windows and Apple, V for Linux and Android). Where a test below comes from one of them, its id is given.
 
 **Windows**
 
@@ -373,7 +373,7 @@ A small **probe** program does the observing, and it is part of the first milest
 - W11. Virtual display while locked: on a machine with Secure Boot on and no test signing, install a signed community virtual display driver and note any warning. Move an animated test window onto the virtual monitor and run the capture harness of W5 against it through lock, sign-out and sign-in, sleep and resume, and fast user switching. Record whether the monitor persists, frames continue and the window survives. Until then it is a hypothesis only (T16 in the notes).
 - W12. Fast user switching: user A signed in with the probe, lock A, then sign in as B at the console with B's probe listening on the same port. Record A's heartbeat, port conflicts, the active console session id and the session events on both agents, and whether A's clipboard and file reads still work while A is disconnected. Decides the rule for several agents in section 5.1 (T18 in the notes).
 - W13. Lock after hand-off: from the per-user probe call `LockWorkStation` on command and record the result and the delay until `WTS_SESSION_LOCK` arrives. Call it from a service in session 0 and record the result (a failure is expected). Call it when the device is already locked. If the test machine has a credential provider that can deny the call, record what the call returns. Decides whether the confirmed-lock rule in section 5.6 can rest on the signal (T21 in the notes).
-- Also: reading files while locked, including OneDrive online-only files and EFS files; toasts on the lock screen; a SYSTEM helper at the lock screen; input while locked; start-up after an update restart; what the "Lock PC" action of Link to Windows does with the PC asleep or offline (T25 in the notes).
+- Also: reading files while locked, including OneDrive online-only files and EFS files; toasts on the lock screen; input while locked (T13 in the notes); start-up after an update restart; what the "Lock PC" action of Link to Windows does with the PC asleep or offline (T25 in the notes).
 
 **macOS**
 
@@ -385,7 +385,7 @@ A small **probe** program does the observing, and it is part of the first milest
 - M6. Pasteboard from the agent while locked, set and read, on macOS 27.0, 27.1 and the 27.2 beta, and Universal Clipboard to a locked Mac.
 - M7. Opening a link and posting a notification while locked, with each preview setting.
 - M8. Capture while locked with ScreenCaptureKit and the older capture APIs, with the display on, asleep, kept awake and under a screen saver. Decides whether streaming from a locked Mac is possible.
-- M9. Input while locked through CGEvent and the Accessibility API, and whether the lock screen's password field blocks synthetic keys.
+- M9. Input while locked through CGEvent and the Accessibility API, aimed at the window of a test app. Baton never types into a lock screen, so nothing is aimed at it (T10 in the notes).
 - M10. Lock detection: log the distributed notifications, the workspace notifications and the session keys through a Control-Command-Q lock, a hot corner, the screen saver, lid close and open, Touch ID, Apple Watch unlock and a restart, on macOS 26 and 27.
 - M11. The key at a locked screen: a LaunchAgent that reads a key from the Keychain (after-first-unlock class) while the screen is locked, after the display sleeps, and after a sleep and wake, and with the login keychain set to lock after inactivity or on sleep. Decides where the device key lives on macOS (section 5.9).
 
