@@ -18,7 +18,7 @@ async fn devices_with_no_direct_path_pair_and_hand_things_over_through_a_relay()
     // Neither device has an address the other could dial: only the relay connects them.
     let a = Spec::new("Laptop").through_relay(&relay).start().await;
     let b = Spec::new("Phone").through_relay(&relay).start().await;
-    assert!(a.node.status().direct_addrs.is_empty());
+    assert_eq!(a.node.status().direct_addrs, Vec::new());
 
     let offer = a.node.offer_pairing(approve).await.unwrap();
     assert!(offer.ticket().addrs.is_empty(), "{:?}", offer.ticket());
