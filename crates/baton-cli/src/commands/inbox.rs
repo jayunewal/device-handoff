@@ -180,11 +180,12 @@ fn remove(ctx: &Context, numbers: &[u64]) -> Result<(), CliError> {
 }
 
 async fn clear(ctx: &Context, console: &Console, yes: bool) -> Result<(), CliError> {
-    let count = ctx.inbox().list()?.len();
-    if count == 0 {
+    let shown = ctx.inbox().list()?;
+    let Some(last) = shown.last().map(|entry| entry.number) else {
         println!("The inbox is already empty.");
         return Ok(());
-    }
+    };
+    let count = shown.len();
     // Kept until the result is printed, so that a pairing request that arrived meanwhile is
     // put to the person after it, not between their answer and it.
     let mut question = if yes { None } else { Some(console.ask().await) };
@@ -198,7 +199,8 @@ async fn clear(ctx: &Context, console: &Console, yes: bool) -> Result<(), CliErr
             return Ok(());
         }
     }
-    let removed = ctx.inbox().clear()?;
+    // Only what the person was told about: an item that arrived while they decided stays.
+    let removed = ctx.inbox().clear_through(last)?;
     println!(
         "Removed {removed} {}.",
         if removed == 1 { "item" } else { "items" }
