@@ -231,9 +231,11 @@ pub enum PairRejection {
     /// These cases are deliberately not told apart, so a caller who does not
     /// hold the secret learns nothing about the offer.
     Invalid,
-    /// The proof was right, but the person on the offering device said no.
+    /// The proof was right, but the person on the offering device said no, or did
+    /// not answer in time. The ticket is spent.
     Declined,
-    /// The offerer is busy with another request. Try again.
+    /// The proof was right, but the offerer is already waiting for its person to
+    /// answer another request. Only a holder of the secret ever sees this. Try again.
     Busy,
     /// Any reason this version does not know about.
     #[serde(other)]

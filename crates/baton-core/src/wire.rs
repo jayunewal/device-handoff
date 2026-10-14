@@ -1,0 +1,131 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! Sending and receiving framed messages on QUIC streams.
+//!
+//! The framing itself lives in [`baton_proto::frame`]. This module adds the
+//! I/O around it, with the two rules that matter for untrusted peers: nothing
+//! is allocated before the declared length has been checked against the
+//! message's limit, and every read has a deadline.
+
+use std::time::Duration;
+
+use baton_proto::{
+    frame::{self, FrameError, HEADER_LEN},
+    message::Message,
+};
+use iroh::endpoint::{
+    ApplicationClose, ConnectionError, ReadError, ReadExactError, RecvStream, SendStream,
+    WriteError,
+};
+
+use crate::error::Error;
+
+/// How the peer's bytes failed to become a message.
+#[derive(Debug)]
+pub(crate) enum ReadFailure {
+    /// The length prefix is unacceptable: zero or over the limit. The receiver should reset the stream.
+    BadHeader(FrameError),
+    /// The payload could not be decoded or breaks a field limit. The receiver can still answer.
+    BadPayload(FrameError),
+    /// Nothing complete arrived in time.
+    TimedOut,
+    /// The stream or connection failed.
+    Transport(Error),
+}
+
+impl From<ReadFailure> for Error {
+    fn from(failure: ReadFailure) -> Self {
+        match failure {
+            ReadFailure::BadHeader(e) | ReadFailure::BadPayload(e) => Self::protocol(&e),
+            ReadFailure::TimedOut => Self::Timeout("waiting for the other device"),
+            ReadFailure::Transport(e) => e,
+        }
+    }
+}
+
+/// Reads one message of type `M`, giving up after `deadline`.
+pub(crate) async fn read_message<M: Message>(
+    recv: &mut RecvStream,
+    deadline: Duration,
+) -> Result<M, ReadFailure> {
+    match tokio::time::timeout(deadline, read_message_inner::<M>(recv)).await {
+        Ok(result) => result,
+        Err(_) => Err(ReadFailure::TimedOut),
+    }
+}
+
+async fn read_message_inner<M: Message>(recv: &mut RecvStream) -> Result<M, ReadFailure> {
+    let mut header = [0u8; HEADER_LEN];
+    recv.read_exact(&mut header)
+        .await
+        .map_err(read_exact_failure)?;
+    let len = frame::payload_len::<M>(header).map_err(ReadFailure::BadHeader)?;
+
+    // Grow the buffer as bytes actually arrive instead of trusting the declared length.
+    let mut payload = Vec::with_capacity(len.min(16 * 1024));
+    while payload.len() < len {
+        match recv.read_chunk(len - payload.len()).await {
+            Ok(Some(chunk)) => payload.extend_from_slice(&chunk),
+            Ok(None) => {
+                return Err(ReadFailure::Transport(Error::protocol(
+                    "the stream ended in the middle of a message",
+                )));
+            }
+            Err(e) => return Err(ReadFailure::Transport(read_error(&e))),
+        }
+    }
+    frame::decode_payload(&payload).map_err(ReadFailure::BadPayload)
+}
+
+/// Encodes `message` and writes it to `send`. The stream is left open.
+pub(crate) async fn write_message<M: Message>(
+    send: &mut SendStream,
+    message: &M,
+) -> Result<(), Error> {
+    let bytes = frame::encode(message).map_err(|e| Error::protocol(&e))?;
+    send.write_all(&bytes).await.map_err(|e| write_error(&e))
+}
+
+fn read_exact_failure(error: ReadExactError) -> ReadFailure {
+    match error {
+        ReadExactError::FinishedEarly(_) => ReadFailure::Transport(Error::protocol(
+            "the stream ended before a message header arrived",
+        )),
+        ReadExactError::ReadError(e) => ReadFailure::Transport(read_error(&e)),
+    }
+}
+
+pub(crate) fn read_error(error: &ReadError) -> Error {
+    match error {
+        ReadError::ConnectionLost(e) => connection_error("reading", e),
+        ReadError::Reset(code) => Error::Protocol(format!(
+            "the other device abandoned the stream (code {})",
+            code.into_inner()
+        )),
+        other => Error::network("reading", other),
+    }
+}
+
+pub(crate) fn write_error(error: &WriteError) -> Error {
+    match error {
+        WriteError::ConnectionLost(e) => connection_error("sending", e),
+        WriteError::Stopped(code) => Error::Protocol(format!(
+            "the other device stopped the stream (code {})",
+            code.into_inner()
+        )),
+        other => Error::network("sending", other),
+    }
+}
+
+/// Turns a connection failure into an [`Error`], keeping the peer's close code if it sent one.
+pub(crate) fn connection_error(context: &'static str, error: &ConnectionError) -> Error {
+    match error {
+        ConnectionError::ApplicationClosed(ApplicationClose { error_code, reason }) => {
+            Error::Closed {
+                code: error_code.into_inner(),
+                reason: String::from_utf8_lossy(reason).into_owned(),
+            }
+        }
+        other => Error::network(context, other),
+    }
+}

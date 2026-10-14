@@ -6,8 +6,12 @@
 //! specific to an operating system: its [identity](identity::Identity), the
 //! [list of devices it trusts](trust::TrustStore), per-device
 //! [policy](policy::DevicePolicy), user [settings](config::Config), and the
-//! on-disk layout that holds them ([`DataDir`]). Networking, pairing and
-//! handoff build on these and arrive in later releases of the crate.
+//! on-disk layout that holds them ([`DataDir`]).
+//!
+//! On top of these, a [`Node`] connects the device to others: it finds paired
+//! devices, [pairs](Node::offer_pairing) new ones, and [sends](Node::send) items
+//! to them. What a device does with the items it receives is decided by a
+//! [`HandoffHandler`] that the application supplies.
 //!
 //! The wire formats live in [`baton_proto`]; security reasoning for the pieces
 //! here is in `docs/security.md` in the repository.
@@ -33,19 +37,33 @@
 //! # }
 //! ```
 
+pub mod clock;
 pub mod config;
 pub mod error;
 pub mod identity;
+pub mod link;
+pub mod node;
+pub mod pairing;
 pub mod paths;
 pub mod policy;
+pub mod session;
 pub mod trust;
+pub mod util;
 
 mod fsutil;
+mod gate;
 mod machine;
+mod ratelimit;
+mod shared;
+mod wire;
 
+pub use baton_proto::pair::ConfirmationCode;
 pub use config::Config;
 pub use error::{Error, Result};
 pub use identity::Identity;
+pub use node::{Node, NodeBuilder, NodeStatus, PingReport, Tuning};
+pub use pairing::{PairApprovalRequest, PairApprover, PairOffer};
 pub use paths::{DataDir, DirLock, HOME_ENV};
 pub use policy::{ClipboardPolicy, DevicePolicy, LinkPolicy};
+pub use session::{HandoffHandler, NoHandoff};
 pub use trust::{ContactHints, PairOutcome, PairedDevice, Provenance, TrustEvent, TrustStore};

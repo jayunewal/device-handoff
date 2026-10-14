@@ -59,7 +59,8 @@ pub mod close_code {
     pub const NOT_PAIRED: u32 = 403;
     /// The peer was too slow.
     pub const TIMEOUT: u32 = 408;
-    /// The peer is using more streams, or sending faster, than allowed.
+    /// The peer holds more connections, or more pairing attempts at once, than this
+    /// device allows.
     pub const OVERLOADED: u32 = 429;
     /// This device failed internally or is shutting down.
     pub const INTERNAL: u32 = 500;

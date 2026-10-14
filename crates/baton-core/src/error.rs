@@ -2,7 +2,9 @@
 
 //! The error type shared by the core's storage and configuration code.
 
-use std::{io, path::PathBuf};
+use std::{fmt, io, path::PathBuf};
+
+use baton_proto::{DeviceId, pair::PairRejection};
 
 /// A specialised `Result` for the core.
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -96,12 +98,114 @@ pub enum Error {
         /// The limit.
         limit: usize,
     },
+    /// Setting up or using the network failed.
+    #[error("{context}: {message}")]
+    Network {
+        /// What was being done, as a short phrase.
+        context: &'static str,
+        /// What went wrong.
+        message: String,
+    },
+    /// The other device broke the protocol.
+    #[error("the other device broke the protocol: {0}")]
+    Protocol(String),
+    /// A step took too long.
+    #[error("timed out {0}")]
+    Timeout(&'static str),
+    /// There is no paired device with this id.
+    #[error("{0} is not a paired device")]
+    NotPaired(DeviceId),
+    /// The other device closed the connection on purpose.
+    #[error(
+        "the other device closed the connection (code {code}){}",
+        reason_suffix(reason)
+    )]
+    Closed {
+        /// The application error code. See `baton_proto::close_code`.
+        code: u64,
+        /// The reason it gave, for logs.
+        reason: String,
+    },
+    /// The pairing ticket's lifetime is over.
+    #[error("this pairing ticket has expired; ask for a new one (and check this device's clock)")]
+    TicketExpired,
+    /// The pairing ticket was made by this very device.
+    #[error("this pairing ticket was made by this device; enter it on the other device")]
+    OwnTicket,
+    /// The offering device did not pair with this one.
+    #[error("pairing was not accepted: {}", rejection_text(*.0))]
+    PairingRejected(PairRejection),
+    /// An open pairing offer ended without pairing a device.
+    #[error("the pairing offer ended: {0}")]
+    OfferEnded(OfferEnd),
+    /// The other device does not accept this kind of item.
+    #[error("the other device does not support {0}")]
+    Unsupported(String),
+    /// The item to send breaks a limit.
+    #[error("cannot send this: {0}")]
+    BadItem(String),
+    /// Something that should not happen did.
+    #[error("internal error: {0}")]
+    Internal(String),
+    /// This node has been shut down.
+    #[error("Baton is shutting down")]
+    Stopped,
+}
+
+/// How a pairing offer ended without pairing anyone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OfferEnd {
+    /// It was withdrawn, or replaced by a newer offer.
+    Cancelled,
+    /// Its time ran out.
+    Expired,
+    /// The person declined the request.
+    Declined,
+}
+
+impl fmt::Display for OfferEnd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Cancelled => "it was cancelled",
+            Self::Expired => "it expired",
+            Self::Declined => "the request was declined",
+        })
+    }
+}
+
+fn reason_suffix(reason: &str) -> String {
+    if reason.is_empty() {
+        String::new()
+    } else {
+        format!(": {reason}")
+    }
+}
+
+fn rejection_text(rejection: PairRejection) -> &'static str {
+    match rejection {
+        PairRejection::Invalid => "the ticket was wrong, already used or expired",
+        PairRejection::Declined => "the person on the other device declined",
+        PairRejection::Busy => "the other device is busy with another request; try again",
+        PairRejection::Other => "the other device refused for a reason this version does not know",
+    }
 }
 
 impl Error {
     pub(crate) fn io(op: &'static str, path: impl Into<PathBuf>) -> impl FnOnce(io::Error) -> Self {
         let path = path.into();
         move |source| Self::Io { op, path, source }
+    }
+
+    pub(crate) fn network(context: &'static str, error: &(impl ToString + ?Sized)) -> Self {
+        Self::Network {
+            context,
+            message: error.to_string(),
+        }
+    }
+
+    pub(crate) fn protocol(message: &(impl ToString + ?Sized)) -> Self {
+        Self::Protocol(message.to_string())
     }
 
     pub(crate) fn invalid(path: impl Into<PathBuf>, message: &(impl ToString + ?Sized)) -> Self {
