@@ -103,6 +103,11 @@ pub struct NetworkConfig {
     /// paired devices stop finding each other after moving between networks. See
     /// `docs/security.md`.
     pub dns_discovery: bool,
+    /// Ask the router to forward a port to this device (`UPnP`, NAT-PMP, PCP), which
+    /// lets devices on other networks connect directly instead of through a relay.
+    ///
+    /// Turn it off if you do not want this device to ask your router to open a port.
+    pub port_mapping: bool,
 }
 
 /// Pairing settings.
@@ -138,6 +143,7 @@ impl Default for NetworkConfig {
             relay_urls: Vec::new(),
             lan_discovery: true,
             dns_discovery: false,
+            port_mapping: true,
         }
     }
 }
@@ -365,6 +371,7 @@ mod tests {
                 relay_urls: vec!["https://relay.example.org/".into()],
                 lan_discovery: false,
                 dns_discovery: true,
+                port_mapping: false,
             },
             pairing: PairingConfig {
                 offer_ttl_secs: 120,

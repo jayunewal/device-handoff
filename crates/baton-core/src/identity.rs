@@ -68,10 +68,6 @@ impl Identity {
     }
 
     /// The key the transport needs. Not exposed outside the crate.
-    #[expect(
-        dead_code,
-        reason = "first used by the transport, which lands in the next change"
-    )]
     pub(crate) const fn secret_key(&self) -> &SecretKey {
         &self.secret
     }
