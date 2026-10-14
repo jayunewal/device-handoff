@@ -91,6 +91,19 @@ impl HandoffHandler for Recorder {
     }
 }
 
+/// Lets a test choose the handler a device starts with.
+struct Chosen(Box<dyn HandoffHandler>);
+
+impl HandoffHandler for Chosen {
+    fn capabilities(&self) -> &'static [&'static str] {
+        self.0.capabilities()
+    }
+
+    fn handle<'a>(&'a self, from: &'a PairedDevice, handoff: Handoff) -> BoxFuture<'a, Outcome> {
+        self.0.handle(from, handoff)
+    }
+}
+
 /// The ways a test device can differ from the default.
 pub struct Spec {
     pub name: String,
@@ -102,6 +115,8 @@ pub struct Spec {
     pub relay_only: Option<String>,
     /// Waited for, for each session connection the gate is about to register.
     pub before_registering: Option<Arc<dyn Fn(DeviceId) -> BoxFuture<'static, ()> + Send + Sync>>,
+    /// Takes the place of the recorder, which then stays empty.
+    handler: Option<Box<dyn HandoffHandler>>,
 }
 
 impl Spec {
@@ -128,7 +143,14 @@ impl Spec {
             clock: Arc::new(ManualClock::new(START)),
             relay_only: None,
             before_registering: None,
+            handler: None,
         }
+    }
+
+    /// Hands what the device receives to `handler` instead of recording it.
+    pub fn with_handler(mut self, handler: impl HandoffHandler) -> Self {
+        self.handler = Some(Box::new(handler));
+        self
     }
 
     /// Reaches the world only through the relay at `url`.
@@ -154,8 +176,12 @@ impl Spec {
             accepts: self.accepts,
         };
         let relay_only = self.relay_only.is_some();
+        let handler: Box<dyn HandoffHandler> = match self.handler {
+            Some(handler) => handler,
+            None => Box::new(recorder),
+        };
         let mut builder = Node::builder(identity, trust.clone(), self.config)
-            .handoff_handler(recorder)
+            .handoff_handler(Chosen(handler))
             .clock(Arc::clone(&self.clock))
             .tuning(self.tuning);
         if let Some(hook) = self.before_registering {
