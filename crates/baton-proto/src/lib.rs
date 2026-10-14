@@ -4,7 +4,25 @@
 //!
 //! This crate is deliberately free of networking and platform code so that it
 //! can be tested and fuzzed in isolation, and so that other implementations of
-//! the protocol have a single reference to compare against.
+//! the protocol have a single reference to compare against. The protocol is
+//! specified in `docs/protocol.md`; the code here is the reference.
+//!
+//! - [`message`] holds the requests and responses between paired devices.
+//! - [`pair`] holds the pairing handshake and its proof of possession.
+//! - [`ticket`] holds the pairing ticket that is shown as a QR code or text.
+//! - [`frame`] turns messages into length-prefixed frames and back.
+//! - [`limits`] holds the size limits every message is checked against.
+
+pub mod device;
+pub mod frame;
+pub mod id;
+pub mod limits;
+pub mod message;
+pub mod pair;
+pub mod ticket;
+
+pub use device::{DeviceInfo, Platform};
+pub use id::{DeviceId, Fingerprint, ItemId};
 
 /// Major version of the Baton wire protocol.
 ///
@@ -14,11 +32,32 @@
 /// capabilities) do not change it.
 pub const PROTOCOL_MAJOR: u16 = 1;
 
+/// Minor revision within [`PROTOCOL_MAJOR`], advertised in [`message::Hello`].
+pub const PROTOCOL_MINOR: u16 = 0;
+
 /// ALPN identifier for the main session protocol between paired devices.
 pub const ALPN_SESSION: &[u8] = b"baton/1";
 
 /// ALPN identifier for the one-time pairing protocol.
 pub const ALPN_PAIR: &[u8] = b"baton-pair/1";
+
+/// Application error codes sent when closing a connection or resetting a stream.
+///
+/// They follow HTTP status numbers loosely, because people already know them.
+pub mod close_code {
+    /// Orderly close; nothing went wrong.
+    pub const NORMAL: u32 = 0;
+    /// The peer broke the protocol, for example with an oversized frame.
+    pub const PROTOCOL_VIOLATION: u32 = 400;
+    /// The peer is not paired with this device.
+    pub const NOT_PAIRED: u32 = 403;
+    /// The peer was too slow.
+    pub const TIMEOUT: u32 = 408;
+    /// The peer is using more streams, or sending faster, than allowed.
+    pub const OVERLOADED: u32 = 429;
+    /// This device failed internally or is shutting down.
+    pub const INTERNAL: u32 = 500;
+}
 
 #[cfg(test)]
 mod tests {

@@ -22,7 +22,7 @@ Tests run on the loopback interface and do not need internet access.
 2. Keep each pull request to one logical change. A reviewer should be able to hold the whole thing in their head. Large features are built as a series of pull requests.
 3. Say what changed, why, and how you tested it. The pull request template has the headings.
 4. Add tests. Changes to the protocol, pairing or the trust store need tests for the failure cases too: malformed input, wrong keys, expired or replayed tickets.
-5. Update the docs in the same pull request: `docs/protocol.md` for any wire change and [docs/security.md](docs/security.md) for any trust change.
+5. Update the docs in the same pull request: [docs/protocol.md](docs/protocol.md) for any wire change and [docs/security.md](docs/security.md) for any trust change.
 
 Commit messages: a short imperative summary (about 70 characters), a blank line, then a body that explains *why*.
 

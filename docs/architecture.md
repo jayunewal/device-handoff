@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes how Baton is put together. The trust model is in [security.md](security.md). The wire format will be specified in `protocol.md`, which arrives with the protocol crate.
+This document describes how Baton is put together. The trust model is in [security.md](security.md). The wire format is specified in [protocol.md](protocol.md).
 
 ## Layers
 
