@@ -10,6 +10,11 @@
 //! the joiner knows it reached the device named in the ticket. What the proof
 //! adds is the other direction: it shows the offerer that the joiner holds the
 //! ticket's secret, without sending the secret.
+//!
+//! A proof cannot tell the person who approves the request whether it comes
+//! from the device in their hand or from someone who got hold of the ticket.
+//! For that, both devices work out the same [`ConfirmationCode`] and show it,
+//! and the person approves only if the two codes match.
 
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteArray;
@@ -33,6 +38,9 @@ pub const CHANNEL_BINDING_LEN: usize = 32;
 
 /// Domain separation for the proof. Changing it changes every proof.
 const PROOF_CONTEXT: &[u8] = b"baton 2026-10-14 pairing proof v1";
+
+/// Domain separation for the confirmation code. Changing it changes every code.
+const CONFIRMATION_CONTEXT: &str = "baton 2026-10-14 pairing confirmation v1";
 
 /// The one-time secret inside a pairing ticket.
 ///
@@ -87,7 +95,10 @@ impl PairProof {
         hasher.update(offerer.as_bytes());
         hasher.update(joiner.as_bytes());
         hasher.update(channel_binding);
-        Self(*hasher.finalize().as_bytes())
+        let proof = Self(*hasher.finalize().as_bytes());
+        // The hasher holds a copy of the secret as its key.
+        hasher.zeroize();
+        proof
     }
 
     /// Whether this is the proof the secret and the session would produce.
@@ -124,6 +135,70 @@ impl Serialize for PairProof {
 impl<'de> Deserialize<'de> for PairProof {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         ByteArray::<{ Self::LEN }>::deserialize(deserializer).map(|bytes| Self(bytes.into_array()))
+    }
+}
+
+/// A six-digit code that both people see while a pairing request waits for approval.
+///
+/// The offering device and the joining device each work it out from the ticket's
+/// secret, both device ids and the TLS session, and show it. Nothing about it is
+/// sent. The person on the offering device approves the request only if the code
+/// on the joining device, the one in their hand, is the same.
+///
+/// That is what lets approval catch a ticket that leaked. Someone who holds a copy
+/// of the ticket can send a request with a valid proof, but their device key and
+/// their TLS session are their own, so their code differs from the one on the
+/// device the person is holding. A fingerprint of the joiner cannot do this, because
+/// it never changes and the person has nothing to compare it with. This code is new
+/// for every session, so it cannot be worked out ahead of time, and a wrong guess
+/// costs the attacker a live connection and a prompt that the person sees.
+///
+/// Six digits are enough for that: the attacker cannot see the code on the other
+/// screen, so a request has one chance in a million of matching it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ConfirmationCode(u32);
+
+impl ConfirmationCode {
+    /// Number of digits shown.
+    pub const DIGITS: usize = 6;
+
+    const MODULUS: u32 = 1_000_000;
+
+    /// Works out the code for one pairing session.
+    pub fn compute(
+        secret: &PairSecret,
+        offerer: &DeviceId,
+        joiner: &DeviceId,
+        channel_binding: &[u8; CHANNEL_BINDING_LEN],
+    ) -> Self {
+        let mut hasher = blake3::Hasher::new_derive_key(CONFIRMATION_CONTEXT);
+        hasher.update(secret.expose());
+        hasher.update(offerer.as_bytes());
+        hasher.update(joiner.as_bytes());
+        hasher.update(channel_binding);
+        let digest = hasher.finalize();
+        // The hasher holds a copy of the secret.
+        hasher.zeroize();
+        let [a, b, c, d, ..] = *digest.as_bytes();
+        Self(u32::from_be_bytes([a, b, c, d]) % Self::MODULUS)
+    }
+
+    /// The code as a number from 0 to 999,999.
+    pub const fn value(self) -> u32 {
+        self.0
+    }
+}
+
+/// Six digits in two groups of three, such as `042 917`, with leading zeros kept.
+impl std::fmt::Display for ConfirmationCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:03} {:03}", self.0 / 1000, self.0 % 1000)
+    }
+}
+
+impl std::fmt::Debug for ConfirmationCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ConfirmationCode({self})")
     }
 }
 
@@ -232,6 +307,56 @@ mod tests {
         assert_eq!(
             data_encoding::HEXLOWER.encode(proof.as_bytes()),
             "fd5eaa8f3cbf99c3fca24b23d171929262050317c44c1b8a41356dae1616ece5"
+        );
+    }
+
+    #[test]
+    fn confirmation_code_has_known_answers() {
+        // Computed independently with the reference BLAKE3 implementation (Python `blake3`):
+        // derive_key(CONFIRMATION_CONTEXT, secret || offerer || joiner || binding), first four
+        // bytes as a big-endian u32, modulo 1,000,000.
+        let code = ConfirmationCode::compute(&secret(1), &id(2), &id(3), &[9; 32]);
+        assert_eq!(code.value(), 196_465);
+        assert_eq!(code.to_string(), "196 465");
+        let other_joiner = ConfirmationCode::compute(&secret(1), &id(2), &id(4), &[9; 32]);
+        assert_eq!(other_joiner.to_string(), "213 543");
+        // Leading zeros are kept.
+        let padded = ConfirmationCode::compute(&secret(43), &id(2), &id(3), &[251; 32]);
+        assert_eq!(padded.value(), 45);
+        assert_eq!(padded.to_string(), "000 045");
+    }
+
+    #[test]
+    fn confirmation_code_depends_on_every_input() {
+        let base = ConfirmationCode::compute(&secret(1), &id(2), &id(3), &[9; 32]);
+        for (what, changed) in [
+            (
+                "secret",
+                ConfirmationCode::compute(&secret(0), &id(2), &id(3), &[9; 32]),
+            ),
+            (
+                "offerer",
+                ConfirmationCode::compute(&secret(1), &id(4), &id(3), &[9; 32]),
+            ),
+            (
+                "joiner",
+                ConfirmationCode::compute(&secret(1), &id(2), &id(4), &[9; 32]),
+            ),
+            (
+                "session",
+                ConfirmationCode::compute(&secret(1), &id(2), &id(3), &[8; 32]),
+            ),
+            (
+                "roles",
+                ConfirmationCode::compute(&secret(1), &id(3), &id(2), &[9; 32]),
+            ),
+        ] {
+            assert_ne!(base, changed, "the code ignores the {what}");
+        }
+        // Both devices get the same code from the same inputs.
+        assert_eq!(
+            base,
+            ConfirmationCode::compute(&secret(1), &id(2), &id(3), &[9; 32])
         );
     }
 
