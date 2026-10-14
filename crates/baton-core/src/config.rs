@@ -491,7 +491,7 @@ mod tests {
     #[test]
     fn the_default_name_is_never_empty() {
         let name = Config::default().device_name();
-        assert!(!name.is_empty());
+        assert_ne!(name, "");
         assert!(name.chars().count() <= baton_proto::device::MAX_DISPLAY_NAME_CHARS);
     }
 
