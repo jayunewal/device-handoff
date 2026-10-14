@@ -155,6 +155,8 @@ Cell format: **Works / Partly / No / Unknown**, one-line reason, confidence in b
 
 Practical recommendation: subscribe to the logind session `LockedHint` property (via `/org/freedesktop/login1/session/auto`, which KDE Connect and KRdp both use) and to `PrepareForSleep`, and treat a missing hint as "unknown" rather than "unlocked". [INFER]
 
+Correction (review, 2026-10-14): logind has no missing hint to see. The property is a boolean that starts false, so a locker that never writes it reads as unlocked while it is locked. The page decides the unknown state in the agent instead. See review-additions.md, which gives the pages.
+
 ### Part B: Android (16 and 17)
 
 Scope note: Android 17 (API 37) is the current release at the research date. The `developer.android.com` pages below were fetched on 2026-10-14 (they show "last updated" dates between 2026-09-16 and 2026-10-09). "AOSP main" means the `main` branch of https://github.com/aosp-mirror/platform_frameworks_base, which can differ from what a given OEM ships. Hidden-API code read from AOSP is labelled **undocumented platform behaviour**: it can change without notice.
