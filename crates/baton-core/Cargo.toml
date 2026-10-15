@@ -23,6 +23,7 @@ data-encoding.workspace = true
 directories.workspace = true
 getrandom.workspace = true
 gethostname.workspace = true
+icu_normalizer.workspace = true
 iroh.workspace = true
 iroh-base.workspace = true
 iroh-mdns-address-lookup.workspace = true
@@ -44,5 +45,6 @@ zeroize.workspace = true
 # The crate's own tests use the test helpers.
 baton-core = { path = ".", features = ["test-support"] }
 ciborium.workspace = true
+proptest.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net"] }
 

@@ -48,6 +48,7 @@ pub mod pairing;
 pub mod paths;
 pub mod policy;
 pub mod session;
+pub mod transfer;
 pub mod trust;
 pub mod util;
 

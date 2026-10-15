@@ -113,6 +113,7 @@ What a device knows about how to reach another is kept with the pairing: the tic
 | `pairing` | Offers, tickets, approval, and joining another device's offer. |
 | `session` | The `baton/1` protocol: serving requests, the pool of outgoing connections, and `Intake`, which checks every incoming item before the application sees it. |
 | `transport` | The QUIC settings every connection uses: how many streams a peer may open, keep-alives, and the flow-control windows that set how fast one stream can go and how much unread data a peer can make a device hold. Connections start with a small window and the gate raises it for paired devices. |
+| `transfer` | The engine of a file transfer ([ADR 0008](adr/0008-file-transfer.md)), built in pieces that the session does not use yet. `names` chooses what every entry of a received transfer is called: it replaces what a file system cannot hold and what only disguises a name, and numbers names that the destination takes for one. |
 | `ratelimit`, `wire`, `link`, `clock`, `util` | Small shared parts: a sliding-window limiter, reading and writing frames with deadlines, describing which path a connection took, a clock that tests can control, and helpers that keep one failing task from taking others down. |
 
 An incoming connection passes through these checks, in this order:
