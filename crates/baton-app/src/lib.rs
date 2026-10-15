@@ -53,7 +53,7 @@ pub use error::{Error, ErrorKind};
 pub use events::{Event, Events};
 pub use model::{
     Device, Me, Network, Offer, OfferOutcome, PairingRequest, Platform, Reach, Received,
-    ReceivedItem, Route,
+    ReceivedItem, Route, is_web_link,
 };
 
 /// What the calls in this crate return.

@@ -179,6 +179,26 @@ pub enum ReceivedItem {
     },
 }
 
+impl ReceivedItem {
+    /// Whether this is a link that a screen may open in the web browser. See
+    /// [`is_web_link`].
+    pub fn is_web_link(&self) -> bool {
+        matches!(self, Self::Link { url, .. } if is_web_link(url))
+    }
+}
+
+/// Whether `url` is a web address, one that starts with `http` or `https`.
+///
+/// The address of a received link was chosen by another device, and the protocol leaves it
+/// to the receiver to decide which kinds to open. `file:`, `smb:`, `tel:`, `sms:` and the
+/// schemes that other apps register can start programs, reach files, dial a number or send
+/// a message, and a person who tapped "open" on an item in a list has not agreed to that.
+/// So a screen opens a received link only if this says yes, and offers to copy it
+/// otherwise. The `baton` command follows the same rule.
+pub fn is_web_link(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+}
+
 // What was received may be a password or a link with a sign-in token in it, and values
 // like this one end up in logs. Only sizes are printed.
 impl fmt::Debug for ReceivedItem {
@@ -304,6 +324,45 @@ mod tests {
             assert!(!shown.contains("token"), "{shown}");
             assert!(!shown.contains("Reset"), "{shown}");
         }
+    }
+
+    #[test]
+    fn only_web_links_may_be_opened() {
+        for url in [
+            "https://example.com/a?b=c",
+            "http://example.com",
+            "HTTPS://EXAMPLE.COM/",
+        ] {
+            assert!(is_web_link(url), "{url}");
+        }
+        for url in [
+            "file:///etc/passwd",
+            "smb://server/share",
+            "tel:+15555550100",
+            "sms:+15555550100?body=hi",
+            "mailto:a@example.com",
+            "javascript:alert(1)",
+            "obsidian://open?vault=x",
+            "example.com",
+            "",
+            "not a link",
+        ] {
+            assert!(!is_web_link(url), "{url}");
+        }
+        let web = ReceivedItem::Link {
+            url: "https://example.com/".to_owned(),
+            title: None,
+        };
+        let phone = ReceivedItem::Link {
+            url: "tel:+15555550100".to_owned(),
+            title: Some("Call me".to_owned()),
+        };
+        let text = ReceivedItem::Text {
+            text: "https://example.com/".to_owned(),
+        };
+        assert!(web.is_web_link());
+        assert!(!phone.is_web_link());
+        assert!(!text.is_web_link(), "text is not a link, whatever it holds");
     }
 
     #[test]
