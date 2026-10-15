@@ -1,6 +1,6 @@
 [package]
 name = "baton-stream"
-description = "Window streaming for Baton: the start of a stream and the header of a frame of video. No input or output."
+description = "Window streaming for Baton: the header of a frame of video and the rules for frames in flight. No input or output."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

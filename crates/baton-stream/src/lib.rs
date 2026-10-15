@@ -9,9 +9,11 @@
 //!
 //! This crate has no platform code, no network code and no clock of its own. What it will hold
 //! is state machines that are told what happened and say what to do, so that they can be tested
-//! with a simulated link in continuous integration. So far it holds the start of a stream:
+//! with a simulated link in continuous integration. So far it holds the start of a stream and
+//! the source's side of the frames in flight:
 //!
 //! - [`header`] holds the first bytes of a stream and the header of a frame of video.
+//! - [`sender`] holds the source's accounting of frames in flight, and when to give up on one.
 
 // This crate reads bytes that a paired device wrote. An index that is out of bounds panics, and
 // a panic on input from the network is a remote crash, so the code spells out what happens when
@@ -19,6 +21,7 @@
 #![warn(clippy::indexing_slicing)]
 
 pub mod header;
+pub mod sender;
 
 pub use baton_proto::id::SessionId;
 
