@@ -46,6 +46,7 @@ The order is a proposal and can change. See [docs/roadmap.md](docs/roadmap.md) f
 | --- | --- |
 | `crates/baton-proto` | Wire protocol: message types, framing, the pairing handshake and ticket format. No networking. |
 | `crates/baton-core` | Device identity, the trust store, per-device policy and settings, the state directory, and the encrypted transport: discovery, pairing, admission control and the session protocol between paired devices. |
+| `crates/baton-app` | What a graphical app calls: start Baton, pair devices, send, read the inbox and hear what happens, all as plain values. No protocol logic of its own. |
 | `crates/baton-cli` | The `baton` command-line program: pair devices, send links and text, read the inbox, and listen for what other devices send. |
 | `docs/` | Architecture, protocol and security documents, the locked-device page, and architecture decision records in `docs/adr/`. The research notes behind the locked-device page are in `docs/research/`. |
 

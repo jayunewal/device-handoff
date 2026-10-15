@@ -25,7 +25,7 @@ Done when: two machines on the same Wi-Fi pair with `baton`, a link sent from on
 
 ## Milestone 2: apps
 
-Flutter apps for macOS, Windows, Android, iOS and iPadOS that wrap the core. QR pairing, a device list, sending and receiving links, clipboard and files. Tray icon and notifications on desktop. The apps register the `baton1:` URL scheme, which pairing tickets already start with, so scanning a ticket's QR code with the phone's own camera opens Baton on the pairing screen.
+Flutter apps for macOS, Windows, Android, iOS and iPadOS that wrap the core. QR pairing, a device list, sending and receiving links, clipboard and files. Tray icon and notifications on desktop. The apps register the `baton1:` URL scheme, which pairing tickets already start with, so scanning a ticket's QR code with the phone's own camera opens Baton on the pairing screen. The first apps are for iPhone, iPad and Mac, installed from Xcode with a free Apple ID, and Android follows. They are written against `baton-app` (see [architecture.md](architecture.md#the-app-layer)).
 
 ## Milestone 3: tabs and sharing
 
