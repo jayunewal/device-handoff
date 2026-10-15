@@ -133,7 +133,7 @@ jobs:
         run: |
           set -eu
           flutter analyze
-          dart format --output=none --set-exit-if-changed lib/main.dart test
+          dart format --output=none --set-exit-if-changed lib/main.dart lib/src/*.dart lib/src/screens test integration_test
       - name: Build the library that the tests load
         run: cargo build -p baton-ffi --locked
       - name: Test
@@ -141,6 +141,115 @@ jobs:
         env:
           BATON_FFI_LIB: ${{ github.workspace }}/target/debug/libbaton_ffi.so
         run: flutter test
+
+  # The two jobs below build the app for the Mac and for the iPhone and iPad, and start it. They
+  # are the only place where the build settings of apps/baton/ios and apps/baton/macos, and the
+  # way Cargokit builds the Rust library into them, meet a real Xcode.
+  app-mac:
+    name: App (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # The app is built for both kinds of Mac, and Cargokit makes one library of the two.
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.7
+          channel: stable
+          cache: true
+      - name: Fetch the app's packages
+        working-directory: apps/baton
+        run: flutter pub get --enforce-lockfile
+      - name: Build the app
+        working-directory: apps/baton
+        run: flutter build macos --release
+      - name: Check that the library is in the app, with the functions that the app looks up
+        run: |
+          set -eu
+          lib=apps/baton/build/macos/Build/Products/Release/Baton.app/Contents/Frameworks/baton_ffi.framework/Versions/A/baton_ffi
+          lipo -archs "$lib"
+          for symbol in frb_get_rust_content_hash frb_pde_ffi_dispatcher_primary frb_init_frb_dart_api_dl; do
+            nm -gU "$lib" | grep -q " _$symbol\$" || { echo "$symbol is missing from $lib" >&2; exit 1; }
+          done
+      - name: Check that the app is sandboxed, and may use the network both ways
+        run: |
+          set -eu
+          app=apps/baton/build/macos/Build/Products/Release/Baton.app
+          codesign -d --entitlements - "$app" > entitlements.txt 2>&1
+          for key in com.apple.security.app-sandbox com.apple.security.network.client com.apple.security.network.server; do
+            grep -q "$key" entitlements.txt || { cat entitlements.txt; echo "$key is missing from the entitlements of $app" >&2; exit 1; }
+          done
+      - name: Start the app on this Mac
+        timeout-minutes: 25
+        working-directory: apps/baton
+        run: flutter test integration_test -d macos
+      - name: Package the app
+        run: ditto -c -k --keepParent apps/baton/build/macos/Build/Products/Release/Baton.app Baton-macos-app.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: baton-app-macos
+          path: Baton-macos-app.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  app-iphone:
+    name: App (iPhone)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # An iPhone or iPad, and a simulator on either kind of Mac.
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.7
+          channel: stable
+          cache: true
+      - name: Fetch the app's packages
+        working-directory: apps/baton
+        run: flutter pub get --enforce-lockfile
+      - name: Build the app for an iPhone
+        # Nothing signs it, so it cannot be installed from here. Whoever installs it builds it
+        # on their own Mac, with their own Apple ID; docs/install-the-app.md says how.
+        working-directory: apps/baton
+        run: flutter build ios --release --no-codesign
+      - name: Check that the library is in the app, with the functions that the app looks up
+        run: |
+          set -eu
+          lib=apps/baton/build/ios/iphoneos/Runner.app/Frameworks/baton_ffi.framework/baton_ffi
+          lipo -archs "$lib"
+          for symbol in frb_get_rust_content_hash frb_pde_ffi_dispatcher_primary frb_init_frb_dart_api_dl; do
+            nm -gU "$lib" | grep -q " _$symbol\$" || { echo "$symbol is missing from $lib" >&2; exit 1; }
+          done
+      - name: Start an iPhone simulator
+        # A simulator that does not come up should fail here, not use up the job's hour.
+        timeout-minutes: 10
+        run: |
+          set -eu
+          udid=$(xcrun simctl list devices available | grep 'iPhone' | tail -n 1 | grep -oE '[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}')
+          echo "Simulator: $udid"
+          echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
+          xcrun simctl bootstatus "$udid" -b
+      - name: Start the app in the simulator
+        timeout-minutes: 25
+        working-directory: apps/baton
+        run: flutter test integration_test -d "$SIMULATOR_UDID" -v
+      - name: Show what the simulator logged about the app
+        # An app that closes as it opens leaves the test waiting for a window that never
+        # comes. Its crash report and its log say why.
+        if: failure()
+        run: |
+          xcrun simctl list devices booted || true
+          ls -l ~/Library/Logs/DiagnosticReports || true
+          for report in ~/Library/Logs/DiagnosticReports/Runner*; do
+            if [ -f "$report" ]; then echo "== $report"; head -c 8000 "$report"; fi
+          done
+          xcrun simctl spawn "$SIMULATOR_UDID" log show --last 30m --style compact --predicate 'process == "Runner"' | tail -n 100 || true
 
   build:
     name: Build (${{ matrix.name }})

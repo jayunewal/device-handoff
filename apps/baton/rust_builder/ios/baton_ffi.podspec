@@ -20,7 +20,7 @@ Builds the Rust library of the Baton app and links it into the app.
   s.source           = { :path => '.' }
   s.source_files     = 'Classes/**/*'
   s.dependency 'Flutter'
-  s.platform = :ios, '13.0'
+  s.platform = :ios, '15.0'
   s.swift_version = '5.0'
 
   s.script_phase = {
@@ -38,5 +38,14 @@ Builds the Rust library of the Baton app and links it into the app.
     # Flutter.framework does not contain a i386 slice.
     'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386',
     'OTHER_LDFLAGS' => '-force_load ${BUILT_PRODUCTS_DIR}/libbaton_ffi.a',
+    # The app finds the library's functions by name, so the global symbols must survive when
+    # Xcode strips a build.
+    'STRIP_STYLE' => 'non-global',
   }
+
+  # What the Rust library uses from the system, found by what its dependencies link:
+  # SystemConfiguration to list the network interfaces, and Network to watch for changes in
+  # them. A static library does not bring these with it, so the framework it is linked into
+  # names them. When a new dependency needs another, the linker says "Undefined symbol".
+  s.frameworks = 'Network', 'SystemConfiguration'
 end
