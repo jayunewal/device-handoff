@@ -12,6 +12,7 @@
 
 pub mod api;
 mod convert;
+mod logbuf;
 // The glue that `flutter_rust_bridge_codegen` writes. It is full of `unsafe` code, which is
 // the only reason this crate is not under the workspace's `forbid(unsafe_code)`, and it is
 // not written to the standard of the rest.

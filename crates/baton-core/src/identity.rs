@@ -115,7 +115,7 @@ impl Identity {
         }
         let identity = Self::generate();
         identity.save(path, here)?;
-        tracing::info!(device_id = %identity.id, "created a new device identity");
+        tracing::info!(device_id = %identity.id.short(), "created a new device identity");
         Ok(identity)
     }
 

@@ -6,6 +6,7 @@
 import 'api/baton.dart';
 import 'api/error.dart';
 import 'api/model.dart';
+import 'api/startup.dart';
 
 import 'dart:async';
 import 'dart:convert';
