@@ -34,5 +34,5 @@ body:
     id: logs
     attributes:
       label: Logs
-      description: Run with `RUST_LOG=baton=debug`. Remove anything private before pasting.
+      description: In the app, tap the three dots on the Devices tab, choose Diagnostics, tap Copy and paste it here. For the command-line program, run with `RUST_LOG=baton=debug`. Remove anything private before pasting.
       render: text
