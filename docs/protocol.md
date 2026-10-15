@@ -225,7 +225,7 @@ An offerer MUST:
 
 A wrong proof does not close the offer, and wrong proofs are not counted. The secret has 256 bits, so guessing it is not a realistic attack, while letting a few wrong proofs void the offer would hand a cheap trick to anyone who knows the offerer's device id, which a device announces on its network: they could cancel every pairing as it starts.
 
-What an offerer SHOULD limit is its own load: how many pairing connections it serves at once, how long each may last, and how often one peer key or address may ask. These limits protect the device and say nothing about the secret. The reference implementation serves 8 pairing connections at once. When all 8 places are taken, a new connection takes the place of the oldest one that has not shown a valid proof, which is closed with code 429; a new connection is refused with 429 only when every place holds a connection that has. A connection that has not delivered its request within 10 seconds of being made, which includes opening the stream, is closed with 408 whether or not any other connection is waiting. It closes a pairing connection with code 0 once the answer has been delivered, and with 400 if the frame header breaks the limits. Both sides SHOULD turn on QUIC keep-alives, because the exchange can sit idle for as long as a person takes to decide. A future way of pairing with a short code that a person types would be guessable, so it would need a password-authenticated key exchange and strict limits on attempts. It would be a new protocol (section 9), not a change to this one.
+What an offerer SHOULD limit is its own load: how many pairing connections it serves at once, how long each may last, and how often one peer key or address may ask. These limits protect the device and say nothing about the secret. The reference implementation serves 8 pairing connections at once. When all 8 places are taken, a new connection takes the place of the oldest one that has not shown a valid proof, which is closed with code 429; a new connection is refused with 429 only when every place holds a connection that has. A connection that has not delivered its request within 10 seconds of being made, which includes opening the stream, is closed with 408 whether or not any other connection is waiting. It closes a pairing connection with code 0 once the answer has been delivered, and with 400 if the frame header breaks the limits. Both sides SHOULD turn on QUIC keep-alives, because the exchange can sit idle for as long as a person takes to decide. A future way of pairing with a short code that a person types would be guessable, so it would need a password-authenticated key exchange and strict limits on attempts. It would be a new protocol (planned in section 10), not a change to this one.
 
 `Rejected(Declined)` is sent only after a valid proof, when the person said no or did not answer in time.
 
@@ -273,6 +273,7 @@ Anything else, including a new variant of a non-extensible enum without a capabi
 | Path in a transfer | 1024 bytes and 64 names |
 | One file in a transfer | 2^50 bytes (1 PiB) |
 | Lanes of one transfer | 8 |
+| The picture of one frame of video, header excluded | 8 MiB |
 | Files that `Done` names | the first 256 that failed, and a count of the rest |
 | Ticket text | 2048 characters |
 | Ticket relay hint | 255 bytes |
@@ -370,6 +371,14 @@ The list hash of four entries: the folder `Holiday`, the file `Holiday/a.txt` of
 
 Their hash, BLAKE3 in its key derivation mode with the context `baton 2026-10-15 transfer list v1`: `995bf65ca3365c2cfb21667b2099730a378325363410779c479a102f69eefb99`.
 
+### Window streaming
+
+| Item | Value |
+| --- | --- |
+| Start of a frame stream for session `a0 a1 … af` | `02a0a1a2a3a4a5a6a7a8a9aaabacadaeaf` |
+| Header of key frame 5 (depends on itself), chain 1, epoch 0, captured at 200000 µs, flags `05` (key frame, referenced), for that session | the start above, then `0000000000000005` `0000000000000005` `00000001` `00000000` `0000000000030d40` `05` |
+| Header of frame `0102030405060708`, depends on `0102030405060707`, chain `0a0b0c0d`, epoch `11121314`, captured at `2122232425262728` µs, flags `04` (referenced), for that session | the start above, then `0102030405060708` `0102030405060707` `0a0b0c0d` `11121314` `2122232425262728` `04` |
+
 ## 8. File transfer
 
 A device sends files and folders to a paired device as one **transfer**: a single offer that the receiver decides once, and then the data, which travels on streams of their own called **lanes**. [ADR 0008](adr/0008-file-transfer.md) records why it is shaped this way. A device that takes part advertises the capability `transfer.files` (section 3). A sender MUST NOT make an offer to a device that did not advertise it, and MUST NOT open a lane to one.
@@ -446,7 +455,7 @@ tag 3  End   head: file u32 | hash [32]    bytes: none
 tag 4  Skip  head: file u32 | reason u8    bytes: none
 ```
 
-Numbers are big-endian. The `kind` byte says what a unidirectional stream carries, and 1, a lane of a transfer, is the only kind. `lane` is the number of this lane, below the `lanes` that were accepted. The receiver sends nothing back along a lane. A receiver that wants no more data stops a lane (QUIC's `STOP_SENDING`) with a code of the table in section 3, and QUIC delivers the bytes of a lane reliably and in order, so there is nothing to acknowledge.
+Numbers are big-endian. The `kind` byte says what a unidirectional stream carries: 1 is a lane of a transfer, and 2 and 3 are the streams of window streaming (section 9). `lane` is the number of this lane, below the `lanes` that were accepted. The receiver sends nothing back along a lane. A receiver that wants no more data stops a lane (QUIC's `STOP_SENDING`) with a code of the table in section 3, and QUIC delivers the bytes of a lane reliably and in order, so there is nothing to acknowledge.
 
 **Spans.** A file is cut into spans of 1 MiB (2^20 bytes), the last one shorter. A file of 0 bytes has no span, and a file of 1 byte up to 1 MiB has one. `Span` carries the bytes of span `span` of the file at position `file`: exactly as many as the size of that file says (1 MiB, or what is left for the last span), and nothing else, no CBOR around the data. `file` MUST be the position of a file, not of a folder, and `span` MUST be below the number of spans of the file. The spans of one large file may go on different lanes, which is how a long path gets more than one window, and the spans of many small files go back to back on one lane. Nothing waits per file or per span. The receiver writes each span at its offset in a file whose size it knows from the list.
 
@@ -483,7 +492,7 @@ It answers with `Done` when every file of the list has been settled: checked and
 ### Rules for the receiver
 
 - **Who and how many.** A receiver MUST check that the peer is still paired when it reads each transfer request and when it takes a lane, as section 3 asks for each request. A device may keep several connections to the same peer (section 6), and the budget of streams is per connection, so a receiver counts the transfers a peer has going itself, across the connections (an offer that waits for a person is going), and answers an offer beyond its limit with `Declined(RateLimited)`. The lanes that it grants to the transfers that a peer may have going at once add up to no more than the limit on unidirectional streams that it announces (the reference implementation is built to allow 2 at once and to grant 4 lanes each, which comes to the 8 of its limit). A stranger has no unidirectional stream: the receiver announces a limit of 0 for them, and raises it for a peer only once it knows the peer is paired.
-- **Which lanes.** A stream of a kind other than 1 is stopped with 400. A lane belongs to the transfer that has its id and that this peer offered, never to one found by the id alone, so that another paired device that learned an id cannot add to someone else's transfer. A lane for a transfer that this peer did not offer, or that is not going because it was declined, cancelled, finished or forgotten, is stopped with 499: it can arrive late, and that is not a fault. A lane whose number is not below the number granted, or that repeats a number already used on its connection, is a violation of the transfer.
+- **Which lanes.** A stream of a kind other than 1 is stopped with 400, unless the receiver takes part in window streaming and the kind is one of section 9. A lane belongs to the transfer that has its id and that this peer offered, never to one found by the id alone, so that another paired device that learned an id cannot add to someone else's transfer. A lane for a transfer that this peer did not offer, or that is not going because it was declined, cancelled, finished or forgotten, is stopped with 499: it can arrive late, and that is not a fault. A lane whose number is not below the number granted, or that repeats a number already used on its connection, is a violation of the transfer.
 - **A violation of a transfer** is a list that is not valid, is not in order, has an entry that is not inside a listed folder, has other counts or sizes than the summary, does not show the top-level items of the preview with the sizes the preview gave, or does not have the hash of the offer; a frame with a tag that is not known; a `Span` that names a folder, a file that is not in the list, or a span that is not in the file; an `End` or a `Skip` for a folder or for a position that is not in the list; a second `End` or `Skip` for a file within one attempt (see Resuming); a `List` frame where none may come. The receiver stops every lane of the transfer with code 400, drops the transfer, and keeps the connection (it MAY close the connection if a peer does it again). A list that takes more than 16 MiB in the form that is hashed is stopped with 413 in the same way. A duplicate is not a violation: a span that the receiver already holds (it was sent again after a reconnection, see below) or one of a file that was skipped is read to its end and dropped, and the first value is kept.
 - **Nothing is written before the list is checked.** The receiver compares the counts and sizes of the list with the summary, the quota and the free space before the first byte is written. If it runs out of room later, it stops the lanes with 507, and files that were not placed are `NoSpace` in `Done`.
 - **Staging.** It writes into a staging folder that it makes on the same volume as the destination, and it moves each top-level item into place once the transfer has ended (`Finish`) and the files in it have been checked, leaving out any file that failed. A person never finds a folder that is still being received. The staging files are made with `create_new`, so that a clash that slips through fails the file and never mixes the bytes of two.
@@ -507,10 +516,46 @@ A transfer outlives a connection. If the connection drops, or an attempt ends in
 
 This revision has no way to say which spans the receiver holds, so a transfer that is resumed is sent again in full, which is correct and not fast. A later revision adds an optional field to `Accepted` that names the spans the receiver holds. A sender that ignores it keeps sending everything, which stays correct, so the field needs no new capability. The sender then reads those spans again and hashes them without sending them, so that the hash it sends is still that of the bytes as they are now and never a merge of old and new values.
 
-## 9. Planned extensions
+## 9. Window streaming
+
+A device can show one of its windows to a paired device. The **source** (a Mac) sends the picture of the window as a run of encoded **frames**, one unidirectional stream for each frame, and the **viewer** (an iPhone or an iPad) decodes them and shows the newest. A frame that is late is reset and replaced, and never sent again. [ADR 0009](adr/0009-window-streaming.md) records the design and why it is shaped this way. This section specifies the start of every stream of a session and the header of a frame of video. The offer, the control streams and the rules for a receiver that takes part are specified when the types that carry them are added. Until then no version takes part, and a receiver stops a stream of kind 2 or 3 with code 400, like a stream of any other kind it does not know (section 8).
+
+### The start of a stream
+
+Every unidirectional stream of a session starts with 17 bytes:
+
+```
+start = kind u8 | session [16]
+
+kind 2  a frame of video   start | rest of the frame header | the encoded picture
+kind 3  a control stream   start | messages (not specified yet)
+```
+
+Numbers are big-endian. `kind` is the first byte of the stream, as in section 8, where kind 1 is a lane of a transfer. `session` is 16 random bytes chosen by the source when it makes the offer. Every stream of the session carries it, so that a receiver can recognise a stream of a session that is not running, which can arrive late, after the session has ended.
+
+### Frames
+
+A frame of video is one unidirectional stream: a header of 50 bytes, the start included, and then the encoded picture up to the end of the stream.
+
+```
+header = start (kind 2) | number u64 | depends on u64 | chain u32 | epoch u32 | capture time u64 | flags u8
+```
+
+| Field | Meaning |
+| --- | --- |
+| `number` | Counts the frames of a session from 0, one for each frame that the encoder made, including those that were given up on later. |
+| `depends on` | The newest frame that the viewer must have decoded before this one. For a key frame it is the frame's own number. For any other frame it is the newest earlier frame that something may refer to, so that a frame that nothing refers to can be skipped. For a recovery frame it is the newest such frame that the source knows the viewer holds, and it can be in an earlier chain. |
+| `chain` | Counts the chains of a session. A chain is a run of frames that are decoded one after the other. It begins at a key frame or at a recovery frame. |
+| `epoch` | Counts the sizes of the picture. It changes, with a key frame, when the size changes. |
+| `capture time` | When the picture was captured, in microseconds since the session began, on the source's clock. |
+| `flags` | Bit 0 (value 1): a key frame, which can be decoded alone and makes the decoder forget everything before it. Bit 1 (value 2): a recovery frame, which refers to a long-term reference that the viewer is known to hold and begins a new chain without a key frame. Bit 2 (value 4): another frame may refer to this one, so it cannot be skipped. |
+
+A receiver MUST treat a header as a violation (code 400) if it is cut short, if a bit of `flags` other than these three is set, if bits 0 and 1 are both set, if a key frame does not depend on itself, or if another frame depends on a frame whose number is not lower than its own. The picture is at most the limit of section 6. What the picture holds is what the session agreed on: the first version carries H.264 in Annex B form, with the parameter sets in front of every key frame.
+
+## 10. Planned extensions
 
 Nothing in this section is part of the protocol yet. It is written down so that the rules above leave room for it, and so that the reasons are on record before any of it is built.
 
 - **Pull.** Besides pushing an item to a device, a device can ask a paired device what it has ready to continue (`ListActivities`) and fetch one of them (`Fetch`). That lets a device that was asleep or locked when something was sent catch up when it wakes, and lets a phone pick up what was on a laptop without the laptop pushing it. Both requests are guarded by a capability, so older peers never see them. A device answers them while it is locked with the items that were sent to the asking device, and with staged items only if the person has turned that on for the asking device, which is off by default. See [Locked devices](architecture.md#locked-devices).
 - **A short code that a person types**, for pairing devices that can neither show nor scan a QR code. As explained in section 4, that needs a password-authenticated key exchange and a new ALPN.
-- **Window streaming** (milestone 5). A Mac offers one window to a paired iPhone or iPad with a single request that the viewer answers once, and the picture then moves as one unidirectional stream for each frame of video, at a priority between requests and the lanes of a file transfer. Two small control streams stay open, one in each direction, and carry the viewer's reports and, when the person at the Mac granted control with the offer, its input. A frame that is late is reset and replaced, and never sent again. Every unidirectional stream begins with a byte that says what it is, which also tells a lane from a frame. It is guarded by the capabilities `stream.share`, `stream.view` and `stream.control`. [ADR 0009](adr/0009-window-streaming.md) records the design. This section becomes a specification, with the messages, limits and rules for the receiver, when the types that carry them are added.
+- **Window streaming** (milestone 5). A Mac offers one window to a paired iPhone or iPad with a single request that the viewer answers once, and the picture then moves as one unidirectional stream for each frame of video, at a priority between requests and the lanes of a file transfer. Two small control streams stay open, one in each direction, and carry the viewer's reports and, when the person at the Mac granted control with the offer, its input. A frame that is late is reset and replaced, and never sent again. Every unidirectional stream begins with a byte that says what it is, which also tells a lane from a frame. It is guarded by the capabilities `stream.share`, `stream.view` and `stream.control`. [ADR 0009](adr/0009-window-streaming.md) records the design. Section 9 specifies the start of a stream and the header of a frame so far, and the rest of this becomes a specification there, with the messages, limits and rules for the receiver, when the types that carry them are added.
