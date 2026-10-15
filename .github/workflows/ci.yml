@@ -22,7 +22,7 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -32,12 +32,15 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      # What people build has only the default features, and code that is compiled in one set
+      # and not the other can hide a warning, so lint that set as well.
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   test:
     name: Test (${{ matrix.os }})
@@ -47,7 +50,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --all-features --locked
@@ -56,7 +59,7 @@ jobs:
     name: Minimum supported Rust version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Read rust-version from Cargo.toml
         id: msrv
         run: echo "version=$(grep -m1 '^rust-version' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
@@ -76,7 +79,7 @@ jobs:
     env:
       RUSTDOCFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --workspace --no-deps --all-features --locked
@@ -85,5 +88,96 @@ jobs:
     name: Licenses and advisories
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
+
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+            artifact: baton-macos
+          - name: Windows
+            os: windows-latest
+            artifact: baton-windows
+          # An older Ubuntu, so that the program runs on any distribution with a glibc this
+          # old or newer.
+          - name: Linux
+            os: ubuntu-22.04
+            artifact: baton-linux
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Both kinds of Mac, joined into one program below.
+          targets: ${{ matrix.name == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build and test (macOS)
+        if: matrix.name == 'macOS'
+        run: |
+          set -eu
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --locked -p baton-cli --target "$target"
+          done
+          # The end-to-end tests run the program that was just built, on this Mac's own
+          # processor.
+          cargo test --release --locked -p baton-cli --test e2e --target aarch64-apple-darwin
+          mkdir dist
+          lipo -create -output dist/baton \
+            target/aarch64-apple-darwin/release/baton target/x86_64-apple-darwin/release/baton
+          # Apple Silicon will not run code that has no signature at all. This one is not
+          # signed by anyone, which is enough to run it but not to be trusted by default.
+          codesign --force --sign - dist/baton
+      - name: Build and test (Windows)
+        if: matrix.name == 'Windows'
+        shell: bash
+        env:
+          # Link the C runtime into the program, so that it needs nothing installed.
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: |
+          set -eu
+          cargo build --release --locked -p baton-cli
+          cargo test --release --locked -p baton-cli --test e2e
+          mkdir dist
+          cp target/release/baton.exe dist/
+      - name: Build and test (Linux)
+        if: matrix.name == 'Linux'
+        run: |
+          set -eu
+          cargo build --release --locked -p baton-cli
+          cargo test --release --locked -p baton-cli --test e2e
+          mkdir dist
+          cp target/release/baton dist/
+      - name: Check that the program starts
+        shell: bash
+        run: |
+          set -eu
+          exe=dist/baton
+          if [ "${{ matrix.name }}" = Windows ]; then exe=dist/baton.exe; fi
+          "$exe" --version
+          "$exe" --help > /dev/null
+          file "$exe" || true
+      - name: Package
+        shell: bash
+        run: |
+          set -eu
+          cp docs/try-it.md dist/TRY-IT.md
+          cp LICENSE dist/LICENSE
+          if [ "${{ matrix.name }}" = Windows ]; then
+            # A zip is what Windows opens without help, and GitHub zips the artifact itself.
+            echo "UPLOAD_PATH=dist" >> "$GITHUB_ENV"
+          else
+            # A tar file keeps the program's executable bit, which an artifact's zip would drop.
+            tar -czf "${{ matrix.artifact }}.tar.gz" -C dist baton TRY-IT.md LICENSE
+            echo "UPLOAD_PATH=${{ matrix.artifact }}.tar.gz" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ env.UPLOAD_PATH }}
+          if-no-files-found: error
+          retention-days: 30

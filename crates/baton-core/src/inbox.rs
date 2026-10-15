@@ -352,11 +352,24 @@ impl Inbox {
     /// If the file cannot be read, is not a valid inbox, cannot be written, or stays locked by
     /// another process for several seconds.
     pub fn clear(&self) -> Result<usize> {
+        self.clear_through(u64::MAX)
+    }
+
+    /// Removes every item numbered `last` or lower and returns how many that was. Items that
+    /// arrived after `last` stay, which is what a person who was shown the inbox up to `last`
+    /// and asked to remove it has agreed to. Numbers are not reused.
+    ///
+    /// # Errors
+    ///
+    /// If the file cannot be read, is not a valid inbox, cannot be written, or stays locked by
+    /// another process for several seconds.
+    pub fn clear_through(&self, last: u64) -> Result<usize> {
         let _held = self.lock()?;
         let mut state = read_state(&self.inner.path)?;
-        let removed = state.entries.len();
+        let before = state.entries.len();
+        state.entries.retain(|entry| entry.number > last);
+        let removed = before - state.entries.len();
         if removed > 0 {
-            state.entries.clear();
             self.save(&state)?;
         }
         Ok(removed)
@@ -797,6 +810,33 @@ mod tests {
         assert_eq!(inbox.clear().unwrap(), 2);
         assert_eq!(inbox.list().unwrap(), Vec::new());
         assert_eq!(inbox.clear().unwrap(), 0);
+    }
+
+    #[test]
+    fn clearing_through_a_number_keeps_what_came_after() {
+        let (dir, inbox) = inbox(10);
+        for _ in 0..4 {
+            inbox.add(&laptop(), text("x"), NOW).unwrap();
+        }
+        inbox.remove(2).unwrap();
+
+        // Items 1 and 3 were counted; 4 arrived afterwards and is not part of the answer.
+        assert_eq!(inbox.clear_through(3).unwrap(), 2);
+        assert_eq!(numbers(&inbox), [4]);
+
+        // Nothing at or below the number, nothing to write.
+        let before = fs::read(dir.path().join("inbox.json")).unwrap();
+        assert_eq!(inbox.clear_through(3).unwrap(), 0);
+        assert_eq!(inbox.clear_through(0).unwrap(), 0);
+        assert_eq!(fs::read(dir.path().join("inbox.json")).unwrap(), before);
+
+        // Numbers are not reused.
+        assert_eq!(
+            stored(inbox.add(&laptop(), text("x"), NOW).unwrap()).number,
+            5
+        );
+        assert_eq!(inbox.clear_through(u64::MAX).unwrap(), 2);
+        assert_eq!(inbox.list().unwrap(), Vec::new());
     }
 
     #[cfg(unix)]

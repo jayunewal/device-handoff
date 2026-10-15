@@ -1,0 +1,30 @@
+[package]
+name = "baton-cli"
+description = "The `baton` command-line program: pair devices, send links and text, read the inbox."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "baton"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+arboard.workspace = true
+baton-core.workspace = true
+baton-proto.workspace = true
+clap.workspace = true
+open.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
