@@ -469,6 +469,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "baton-fs"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "baton-proto"
 version = "0.1.0"
 dependencies = [
@@ -480,6 +489,15 @@ dependencies = [
  "serde_bytes",
  "thiserror 2.0.21",
  "zeroize",
+]
+
+[[package]]
+name = "baton-stream"
+version = "0.1.0"
+dependencies = [
+ "baton-proto",
+ "proptest",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

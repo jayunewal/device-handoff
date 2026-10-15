@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Identifiers: devices, handoff items and transfers.
+//! Identifiers: devices, handoff items, transfers and streaming sessions.
 
 use std::{fmt, str::FromStr};
 
@@ -227,6 +227,52 @@ impl<'de> Deserialize<'de> for TransferId {
     }
 }
 
+/// Identifies one streaming session between a source and a viewer.
+///
+/// Chosen at random by the device that offers the session, and carried by every stream that
+/// belongs to it so that a stream for a session that is not running can be refused.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SessionId([u8; Self::LEN]);
+
+impl SessionId {
+    /// Length of a session id in bytes.
+    pub const LEN: usize = 16;
+
+    /// Wraps raw bytes, which the caller must have drawn from a random source.
+    pub const fn from_bytes(bytes: [u8; Self::LEN]) -> Self {
+        Self(bytes)
+    }
+
+    /// The raw bytes.
+    pub const fn as_bytes(&self) -> &[u8; Self::LEN] {
+        &self.0
+    }
+}
+
+impl fmt::Display for SessionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&HEXLOWER.encode(&self.0))
+    }
+}
+
+impl fmt::Debug for SessionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SessionId({self})")
+    }
+}
+
+impl Serialize for SessionId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        ByteArray::new(self.0).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SessionId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        ByteArray::<{ Self::LEN }>::deserialize(deserializer).map(|bytes| Self(bytes.into_array()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,5 +347,36 @@ mod tests {
     fn the_short_form_of_an_id_is_its_first_five_bytes() {
         let id = DeviceId::from_bytes(std::array::from_fn(|i| u8::try_from(i).unwrap()));
         assert_eq!(id.short(), "0001020304");
+    }
+
+    #[test]
+    fn session_id_is_sixteen_bytes_in_cbor_and_shows_as_hex() {
+        let id = SessionId::from_bytes(std::array::from_fn(|i| u8::try_from(i).unwrap()));
+        assert_eq!(id.to_string(), "000102030405060708090a0b0c0d0e0f");
+        assert_eq!(
+            format!("{id:?}"),
+            "SessionId(000102030405060708090a0b0c0d0e0f)"
+        );
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&id, &mut bytes).unwrap();
+        // A byte string of 16 bytes: major type 2, length 16.
+        assert_eq!(bytes.first(), Some(&0x50));
+        assert_eq!(bytes.len(), 17);
+        assert_eq!(
+            ciborium::from_reader::<SessionId, _>(&bytes[..]).unwrap(),
+            id
+        );
+    }
+
+    #[test]
+    fn session_id_rejects_a_byte_string_of_the_wrong_length() {
+        for len in [0_usize, 15, 17, 32] {
+            let mut bytes = Vec::new();
+            ciborium::into_writer(&serde_bytes::ByteBuf::from(vec![7; len]), &mut bytes).unwrap();
+            assert!(
+                ciborium::from_reader::<SessionId, _>(&bytes[..]).is_err(),
+                "{len} bytes"
+            );
+        }
     }
 }

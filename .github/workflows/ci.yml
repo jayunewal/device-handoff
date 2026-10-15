@@ -90,11 +90,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+          # For the last step only.
+          targets: x86_64-pc-windows-msvc,aarch64-apple-darwin,aarch64-apple-ios,aarch64-linux-android
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       # What people build has only the default features, and code that is compiled in one set
       # and not the other can hide a warning, so lint that set as well.
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The Windows, Apple and Android code of `baton-fs` is not compiled on Linux, and the Mac and
+      # Windows jobs below do not deny warnings, so nothing else would lint it. Linting for another
+      # target needs no linker and no SDK.
+      - run: |
+          for target in x86_64-pc-windows-msvc aarch64-apple-darwin aarch64-apple-ios aarch64-linux-android; do
+            cargo clippy -p baton-fs --all-targets --locked --target "$target" -- -D warnings
+          done
 
   test:
     name: Test (${{ matrix.os }})
