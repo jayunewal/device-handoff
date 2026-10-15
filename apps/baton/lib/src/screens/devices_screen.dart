@@ -7,6 +7,8 @@ import 'package:flutter/material.dart';
 import '../backend.dart';
 import '../controller.dart';
 import '../format.dart';
+import '../scanner.dart';
+import 'add_device_screen.dart';
 import 'content_box.dart';
 
 /// The home screen: this device, and the devices it is paired with.
@@ -14,6 +16,7 @@ class DevicesScreen extends StatefulWidget {
   const DevicesScreen({
     required this.session,
     this.now = DateTime.now,
+    this.scanner = cameraScanner,
     super.key,
   });
 
@@ -21,6 +24,9 @@ class DevicesScreen extends StatefulWidget {
 
   /// The time to measure "seen 5 minutes ago" from. Tests give it a clock of their own.
   final DateTime Function() now;
+
+  /// Reads QR codes with the camera, for pairing. Tests give it one of their own.
+  final ScannerBuilder scanner;
 
   @override
   State<DevicesScreen> createState() => _DevicesScreenState();
@@ -41,16 +47,65 @@ class _DevicesScreenState extends State<DevicesScreen> {
     super.dispose();
   }
 
+  void _add() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => AddDeviceScreen(
+          session: widget.session,
+          now: widget.now,
+          scanner: widget.scanner,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _forget(Device device) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final sure = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Forget ${device.name}?'),
+        content: const Text(
+          'The two devices will no longer be able to send each other anything. '
+          'You can pair them again later.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Forget'),
+          ),
+        ],
+      ),
+    );
+    if (sure != true) return;
+    final problem = await _controller.forget(device);
+    if (problem != null) {
+      messenger.showSnackBar(SnackBar(content: Text(problem)));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Baton')),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _add,
+        icon: const Icon(Icons.add),
+        label: const Text('Add a device'),
+      ),
       body: SafeArea(
         child: ContentBox(
           child: ListenableBuilder(
             listenable: _controller,
-            builder: (context, _) =>
-                _Devices(controller: _controller, now: widget.now()),
+            builder: (context, _) => _Devices(
+              controller: _controller,
+              now: widget.now(),
+              onForget: _forget,
+            ),
           ),
         ),
       ),
@@ -59,16 +114,22 @@ class _DevicesScreenState extends State<DevicesScreen> {
 }
 
 class _Devices extends StatelessWidget {
-  const _Devices({required this.controller, required this.now});
+  const _Devices({
+    required this.controller,
+    required this.now,
+    required this.onForget,
+  });
 
   final DevicesController controller;
   final DateTime now;
+  final void Function(Device device) onForget;
 
   @override
   Widget build(BuildContext context) {
     final devices = controller.devices;
     return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+      // Room under the last device for the button that floats above it.
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
       children: [
         _ThisDevice(me: controller.me, network: controller.network),
         const SizedBox(height: 24),
@@ -88,7 +149,8 @@ class _Devices extends StatelessWidget {
         else if (devices.isEmpty)
           const _NoDevices()
         else
-          for (final device in devices) _DeviceTile(device: device, now: now),
+          for (final device in devices)
+            _DeviceTile(device: device, now: now, onForget: onForget),
       ],
     );
   }
@@ -181,7 +243,8 @@ class _NoDevices extends StatelessWidget {
           Text('No other devices yet', style: theme.textTheme.titleMedium),
           const SizedBox(height: 4),
           Text(
-            'Devices you pair with this one will show up here.',
+            'Tap Add a device to pair this one with another. They will show '
+            'up here.',
             textAlign: TextAlign.center,
             style: theme.textTheme.bodyMedium,
           ),
@@ -191,11 +254,19 @@ class _NoDevices extends StatelessWidget {
   }
 }
 
+/// What a device's menu offers.
+enum _DeviceAction { forget }
+
 class _DeviceTile extends StatelessWidget {
-  const _DeviceTile({required this.device, required this.now});
+  const _DeviceTile({
+    required this.device,
+    required this.now,
+    required this.onForget,
+  });
 
   final Device device;
   final DateTime now;
+  final void Function(Device device) onForget;
 
   @override
   Widget build(BuildContext context) {
@@ -206,6 +277,16 @@ class _DeviceTile extends StatelessWidget {
         leading: Icon(platformIcon(device.platform), size: 32),
         title: Text(device.name),
         subtitle: Text('${platformName(device.platform)} · $seen'),
+        trailing: PopupMenuButton<_DeviceAction>(
+          tooltip: 'More about ${device.name}',
+          onSelected: (_) => onForget(device),
+          itemBuilder: (context) => const [
+            PopupMenuItem(
+              value: _DeviceAction.forget,
+              child: Text('Forget this device'),
+            ),
+          ],
+        ),
       ),
     );
   }

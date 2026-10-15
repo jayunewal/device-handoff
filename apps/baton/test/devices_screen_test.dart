@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import 'package:baton/src/backend.dart';
+import 'package:baton/src/qr.dart';
 import 'package:baton/src/screens/devices_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -32,7 +33,12 @@ FakeSession _session({List<Device> devices = const []}) => FakeSession(
 );
 
 Widget _screen(FakeSession session) => MaterialApp(
-  home: DevicesScreen(session: session, now: () => _now),
+  home: DevicesScreen(
+    session: session,
+    now: () => _now,
+    // No camera here: the pairing screens get a stand-in.
+    scanner: (context, onCode) => const Text('(camera)'),
+  ),
 );
 
 Future<void> _show(WidgetTester tester, FakeSession session) async {
@@ -144,5 +150,157 @@ void main() {
     await tester.pump();
     expect(session.listens, 1, reason: 'a stream is told to stop by a cancel');
     expect(session.listening, isFalse);
+  });
+
+  testWidgets('offers the two ways to add a device', (tester) async {
+    tester.view
+      ..physicalSize = const Size(900, 1600)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final session = _session();
+    await _show(tester, session);
+
+    await tester.tap(find.text('Add a device'));
+    await tester.pumpAndSettle();
+    expect(find.text('Show a code'), findsOneWidget);
+    expect(find.text('Scan or enter a code'), findsOneWidget);
+
+    await tester.tap(find.text('Show a code'));
+    await tester.pumpAndSettle();
+    expect(find.byType(QrView), findsOneWidget);
+    expect(session.offersMade, 1);
+
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    expect(session.offersCancelled, 1);
+    await tester.tap(find.text('Scan or enter a code'));
+    await tester.pumpAndSettle();
+    expect(find.text('(camera)'), findsOneWidget);
+    expect(find.text('Connect'), findsOneWidget);
+  });
+
+  testWidgets('shows a device that was paired, once the pairing is done', (
+    tester,
+  ) async {
+    final session = _session();
+    await _show(tester, session);
+    await tester.tap(find.text('Add a device'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Show a code'));
+    await tester.pumpAndSettle();
+
+    session.emit(const Event.pairingRequested(request: sampleRequest));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Yes, they match'));
+    await tester.pump();
+    final anna = _device('Anna’s iPhone', Platform.ios);
+    session.pairedDevices = [anna];
+    session.emit(Event.offerEnded(outcome: OfferOutcome.paired(device: anna)));
+    session.emit(const Event.devicesChanged());
+    await tester.pump();
+    await tester.tap(find.text('Done'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Anna’s iPhone'), findsOneWidget);
+    expect(find.text('No other devices yet'), findsNothing);
+  });
+
+  testWidgets('forgets a device when the person agrees', (tester) async {
+    final session = _session(
+      devices: [
+        _device('Laptop', Platform.windows),
+        _device('Phone', Platform.android),
+      ],
+    );
+    await _show(tester, session);
+
+    await tester.tap(find.byTooltip('More about Laptop'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Forget this device'));
+    await tester.pumpAndSettle();
+    expect(find.text('Forget Laptop?'), findsOneWidget);
+    expect(session.unpaired, isEmpty, reason: 'not before the person agrees');
+    await tester.tap(find.text('Forget'));
+    await tester.pumpAndSettle();
+
+    expect(session.unpaired, [_device('Laptop', Platform.windows).id]);
+    expect(find.text('Laptop'), findsNothing);
+    expect(find.text('Phone'), findsOneWidget);
+  });
+
+  testWidgets('keeps a device when the person says no', (tester) async {
+    final session = _session(devices: [_device('Laptop', Platform.windows)]);
+    await _show(tester, session);
+
+    await tester.tap(find.byTooltip('More about Laptop'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Forget this device'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+
+    expect(session.unpaired, isEmpty);
+    expect(find.text('Laptop'), findsOneWidget);
+  });
+
+  testWidgets('does not mind a device that is gone already', (tester) async {
+    final session = _session(devices: [_device('Laptop', Platform.windows)])
+      ..unpairFailure = const BatonError(
+        kind: ErrorKind.notPaired,
+        message: 'That device is not paired.',
+      );
+    await _show(tester, session);
+    // The other device forgot this one first; the list that is read next shows it.
+    session.pairedDevices = [];
+
+    await tester.tap(find.byTooltip('More about Laptop'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Forget this device'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Forget'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('That device is not paired.'), findsNothing);
+    expect(find.text('Laptop'), findsNothing);
+  });
+
+  testWidgets('says when a device could not be forgotten', (tester) async {
+    final session = _session(devices: [_device('Laptop', Platform.windows)])
+      ..unpairFailure = const BatonError(
+        kind: ErrorKind.storage,
+        message: 'Baton could not save its list of devices.',
+      );
+    await _show(tester, session);
+
+    await tester.tap(find.byTooltip('More about Laptop'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Forget this device'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Forget'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('Baton could not save its list of devices.'),
+      findsOneWidget,
+    );
+    expect(find.text('Laptop'), findsOneWidget);
+  });
+
+  testWidgets('reads the devices again if they change while it reads', (
+    tester,
+  ) async {
+    final session = _session()..holdDevices();
+    await tester.pumpWidget(_screen(session));
+    await tester.pump();
+
+    // A device is paired after the first read began, and its event comes before that read
+    // is over: what the read finds is out of date.
+    session.pairedDevices = [_device('Laptop', Platform.windows)];
+    session.emit(const Event.devicesChanged());
+    await tester.pump();
+    session.releaseDevices();
+    await tester.pumpAndSettle();
+
+    expect(find.text('Laptop'), findsOneWidget);
   });
 }
