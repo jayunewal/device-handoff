@@ -2,7 +2,7 @@
 
 Baton is pre-alpha and is not in the App Store. You build the app on your Mac, and put it on an iPhone or iPad with a cable. A free Apple ID is enough: you do not need to join the Apple Developer Program. The price of the free Apple ID is that an app you install this way stops opening after seven days, and you install it again with the same command ([Every seven days](#every-seven-days)).
 
-This version asks for a name for the device and shows the devices paired with it, which is none yet. The screens that pair devices and send links come next. Until then the [`baton` program](try-it.md) is the way to pair and send.
+This version asks for a name for the device, shows the devices paired with it, and pairs two devices: one shows a QR code and the other scans it, or has it pasted in ([Pair two devices](#pair-two-devices)). The screens that send links come next. Until then the [`baton` program](try-it.md) is the way to send.
 
 Everything below is typed in Terminal, which is a zsh shell on a Mac. Each command block can be pasted whole.
 
@@ -124,11 +124,26 @@ The first time, the command ends with an error, because the phone does not yet t
 ### What you should see
 
 1. The first time, a screen called **Name this device**. Choose a name you will recognise, such as "Kitchen iPad", and tap **Continue**.
-2. A screen with your device's name, **Online**, a **Fingerprint** of five groups of four letters and digits, and **No other devices yet**. **Online** can take a few seconds to replace **Connecting…**.
+2. A screen with your device's name, **Online**, a **Fingerprint** of five groups of four letters and digits, **No other devices yet**, and an **Add a device** button. **Online** can take a few seconds to replace **Connecting…**.
 
 If your Mac or phone asks whether Baton may find devices on your local network, choose **Allow**. Baton finds your other devices that way. If you chose **Don't Allow**, change it in **Settings** (**System Settings** on the Mac), then **Privacy & Security**, then **Local Network**.
 
 If you see **Baton could not start** instead, the message under it says why. Open an [issue](https://github.com/jayunewal/device-handoff/issues) and paste that sentence into it.
+
+## Pair two devices
+
+You need Baton on two devices, for example the Mac and the phone, and open on both. Put them on the same Wi-Fi network. Baton can also reach a device on another network by way of a relay, but that has not been tried from the app yet.
+
+1. On the first device, tap **Add a device**, then **Show a code**. It shows a QR code, and for how long the code works: a few minutes.
+2. On the second device, tap **Add a device**, then **Scan or enter a code**. The first time, it asks whether Baton may use the camera: choose **OK**. Point the camera at the QR code on the first device.
+3. The second device now shows six digits, and the first one shows the same six, with the name of the second device. If the digits are the same, tap **Yes, they match** on the first device. If they are not, tap **No, cancel**: someone else may be trying to pair.
+4. Both devices say **Paired with** and the name of the other. Tap **Done**. Each now lists the other.
+
+A code pairs one device, once. If it ran out, or it did not work, tap **Show a new code**.
+
+If the second device cannot scan the code, for example a Mac with no camera or a phone that was not allowed to use it, tap **Copy the code as text** on the first device, and paste the text into the box under **Or paste the code** on the second, and tap **Connect**. A Mac and an iPhone that use the same Apple ID share their clipboard, so you copy on one and paste on the other. Otherwise send the text to yourself in Messages or Notes.
+
+To forget a device, tap the three dots at the end of its row, then **Forget this device**, then **Forget**. That is done on one device: the other can no longer reach it, but still lists it until you forget it there too.
 
 ## Every seven days
 
@@ -161,4 +176,7 @@ Choose your team again as above (and your own bundle identifier, if you changed 
 - **`Untrusted Developer` when you open Baton, or Baton closes at once**: trust yourself as above. If it was working and stopped, seven days have passed: install it again as above.
 - **`cargo` or `rustup` not found**: Xcode does not use your shell's search path when you build from its window. Build with `flutter run --release --no-resident` in Terminal, as above, and if it still happens, check that `rustup --version` works in the same Terminal.
 - **`Unable to install` or `The code signature is invalid`**: unlock the phone, plug it in again and try once more. If it repeats, delete the Baton app from the phone and run `flutter run --release --no-resident` again. That also deletes what the app had stored.
+- **The camera does not start, or the picture stays black**: check that Baton may use the camera, in **Settings** on the phone, or **System Settings**, **Privacy & Security**, **Camera** on the Mac. The iPhone simulator has no camera. You can always paste the code instead.
+- **`Pairing did not work`**: the sentence under it says why. The usual causes are a code that ran out or was used already (show a new one), and a second device that is not open, or is on another network.
+- **The two devices show different six digits**: tap **No, cancel** on the first device, and start again.
 - **Anything else**: open an [issue](https://github.com/jayunewal/device-handoff/issues) and paste the last 30 lines that Terminal printed.

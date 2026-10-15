@@ -16,6 +16,8 @@ dependencies:
   # The same version as the code generator and as the crate in crates/baton-ffi.
   flutter_rust_bridge: 2.13.0
   freezed_annotation: ^3.1.0
+  qr: ^4.0.0
+  mobile_scanner: ^7.4.2
 
 dev_dependencies:
   flutter_test:
@@ -25,6 +27,7 @@ dev_dependencies:
   flutter_lints: ^6.0.0
   freezed: ^4.0.2
   build_runner: ^2.16.2
+  zxing2: ^0.2.4
 
 flutter:
   uses-material-design: true

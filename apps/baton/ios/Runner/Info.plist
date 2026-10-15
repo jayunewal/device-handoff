@@ -26,6 +26,8 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Baton uses the camera to read the QR code that your other device shows, so that the two can be paired. Nothing is recorded.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Baton connects directly to your other devices on this network, so that what you send arrives quickly.</string>
 	<key>UIApplicationSceneManifest</key>

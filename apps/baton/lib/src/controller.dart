@@ -135,6 +135,7 @@ class DevicesController extends ChangeNotifier {
   Timer? _timer;
   bool _disposed = false;
   bool _readingDevices = false;
+  bool _readDevicesAgain = false;
   bool _readingNetwork = false;
   List<Device>? _devices;
   Network? _network;
@@ -177,14 +178,35 @@ class DevicesController extends ChangeNotifier {
     }
   }
 
+  /// Forgets [device]. Returns what to tell the person if that did not work, and `null` if it
+  /// did.
+  Future<String?> forget(Device device) async {
+    try {
+      await _session.unpair(device.id);
+    } on BatonError catch (e) {
+      // Gone already, say because the other device forgot this one first: that is what
+      // was wanted.
+      if (e.kind != ErrorKind.notPaired) return e.message;
+    }
+    unawaited(_readDevices());
+    return null;
+  }
+
   Future<void> _readDevices() async {
-    if (_readingDevices) return;
+    if (_readingDevices) {
+      // Something changed after the read that is going on began, so read again after it.
+      _readDevicesAgain = true;
+      return;
+    }
     _readingDevices = true;
     try {
-      final devices = await _session.devices();
-      if (_disposed) return;
-      _devices = devices;
-      notifyListeners();
+      do {
+        _readDevicesAgain = false;
+        final devices = await _session.devices();
+        if (_disposed) return;
+        _devices = devices;
+        notifyListeners();
+      } while (_readDevicesAgain);
     } on BatonError catch (e) {
       // Baton has stopped, which only happens as the app closes.
       debugPrint('Baton: devices: ${e.message}');
