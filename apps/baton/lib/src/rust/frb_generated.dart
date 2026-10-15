@@ -97,7 +97,7 @@ abstract class RustLibApi extends BaseApi {
 
   Future<List<Device>> crateApiBatonBatonDevices({required Baton that});
 
-  Stream<Event> crateApiBatonBatonEvents({required Baton that});
+  Future<Stream<Event>> crateApiBatonBatonEvents({required Baton that});
 
   Future<List<Received>> crateApiBatonBatonInbox({required Baton that});
 
@@ -324,33 +324,31 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "Baton_devices", argNames: ["that"]);
 
   @override
-  Stream<Event> crateApiBatonBatonEvents({required Baton that}) {
+  Future<Stream<Event>> crateApiBatonBatonEvents({required Baton that}) async {
     final sink = RustStreamSink<Event>();
-    unawaited(
-      handler.executeNormal(
-        NormalTask(
-          callFfi: (port_) {
-            final serializer = SseSerializer(generalizedFrbRustBinding);
-            sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBaton(
-              that,
-              serializer,
-            );
-            sse_encode_StreamSink_event_Sse(sink, serializer);
-            pdeCallFfi(
-              generalizedFrbRustBinding,
-              serializer,
-              funcId: 6,
-              port: port_,
-            );
-          },
-          codec: SseCodec(
-            decodeSuccessData: sse_decode_unit,
-            decodeErrorData: null,
-          ),
-          constMeta: kCrateApiBatonBatonEventsConstMeta,
-          argValues: [that, sink],
-          apiImpl: this,
+    await handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBaton(
+            that,
+            serializer,
+          );
+          sse_encode_StreamSink_event_Sse(sink, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 6,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
         ),
+        constMeta: kCrateApiBatonBatonEventsConstMeta,
+        argValues: [that, sink],
+        apiImpl: this,
       ),
     );
     return sink.stream;
@@ -2204,9 +2202,13 @@ class BatonImpl extends RustOpaque implements Baton {
   Future<List<Device>> devices() =>
       RustLib.instance.api.crateApiBatonBatonDevices(that: this);
 
-  /// Events from now on, as a stream that ends when the app stops. Take it before reading
-  /// `devices` or `inbox`, so that nothing that happens while reading is lost.
-  Stream<Event> events() =>
+  /// Events from now on, as a stream that ends when the app stops. The call returns once
+  /// the subscription is made, so `await` it before reading `devices` or `inbox`: nothing
+  /// that happens after that is lost, even if the stream is not being listened to yet.
+  ///
+  /// The stream does not keep this `Baton` alive. One that is let go of without `stop` ends
+  /// it and lets go of the folder, as the app layer does when it is dropped.
+  Future<Stream<Event>> events() =>
       RustLib.instance.api.crateApiBatonBatonEvents(that: this);
 
   /// What other devices have sent, newest first.

@@ -52,9 +52,13 @@ abstract class Baton implements RustOpaqueInterface {
   /// The devices paired with this one.
   Future<List<Device>> devices();
 
-  /// Events from now on, as a stream that ends when the app stops. Take it before reading
-  /// `devices` or `inbox`, so that nothing that happens while reading is lost.
-  Stream<Event> events();
+  /// Events from now on, as a stream that ends when the app stops. The call returns once
+  /// the subscription is made, so `await` it before reading `devices` or `inbox`: nothing
+  /// that happens after that is lost, even if the stream is not being listened to yet.
+  ///
+  /// The stream does not keep this `Baton` alive. One that is let go of without `stop` ends
+  /// it and lets go of the folder, as the app layer does when it is dropped.
+  Future<Stream<Event>> events();
 
   /// What other devices have sent, newest first.
   Future<List<Received>> inbox();

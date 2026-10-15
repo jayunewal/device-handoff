@@ -12,7 +12,7 @@
 use std::path::Path;
 
 use baton_app::{App, Options};
-use flutter_rust_bridge::frb;
+use flutter_rust_bridge::{frb, spawn};
 
 use super::{
     error::BatonError,
@@ -79,16 +79,26 @@ impl Baton {
         Ok(self.app.unpair(&id)?)
     }
 
-    /// Events from now on, as a stream that ends when the app stops. Take it before reading
-    /// `devices` or `inbox`, so that nothing that happens while reading is lost.
+    /// Events from now on, as a stream that ends when the app stops. The call returns once
+    /// the subscription is made, so `await` it before reading `devices` or `inbox`: nothing
+    /// that happens after that is lost, even if the stream is not being listened to yet.
+    ///
+    /// The stream does not keep this `Baton` alive. One that is let go of without `stop` ends
+    /// it and lets go of the folder, as the app layer does when it is dropped.
+    #[frb(stream_dart_await)]
     pub async fn events(&self, sink: StreamSink<Event>) {
         let mut events = self.app.events();
-        while let Some(event) = events.next().await {
-            if sink.add(event.into()).is_err() {
-                // Dart stopped listening.
-                break;
+        // The loop runs on its own, because a call that lasted as long as the stream would
+        // hold on to this `Baton`, and only the end of the app or an event after Dart had
+        // gone would let it go.
+        spawn(async move {
+            while let Some(event) = events.next().await {
+                if sink.add(event.into()).is_err() {
+                    // Dart stopped listening.
+                    break;
+                }
             }
-        }
+        });
     }
 
     /// Opens an invitation to pair and returns it. Show `Offer.ticket` as a QR code and as

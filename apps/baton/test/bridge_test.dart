@@ -57,7 +57,7 @@ void main() {
     final a = await _start(await _folder(name: 'Device A'));
     final b = await _start(await _folder(name: 'Device B'));
     expect(await a.devices(), isEmpty, reason: 'a new Baton has no devices');
-    final aEvents = _Feed(a.events());
+    final aEvents = _Feed(await a.events());
     addTearDown(aEvents.close);
 
     final offer = await a.offerPairing();
@@ -165,7 +165,7 @@ void main() {
       await notATicket.ended;
 
       // A device that is turned down is told so, and nothing is kept.
-      final events = _Feed(a.events());
+      final events = _Feed(await a.events());
       addTearDown(events.close);
       final offer = await a.offerPairing();
       final join = _Feed(b.joinPairing(ticket: offer.ticket));
@@ -183,7 +183,7 @@ void main() {
 
   test('an offer can be withdrawn, and the screen hears that it was', () async {
     final a = await _start(await _folder(name: 'Device A'));
-    final events = _Feed(a.events());
+    final events = _Feed(await a.events());
     addTearDown(events.close);
     await a.offerPairing();
     a.cancelOffer();
@@ -218,7 +218,7 @@ void main() {
     final folder = await _folder(name: 'Device A');
     final first = await _start(folder);
     final id = first.me().id;
-    final events = _Feed(first.events());
+    final events = _Feed(await first.events());
     addTearDown(events.close);
 
     // One folder, one running Baton.
@@ -240,6 +240,38 @@ void main() {
     // The same device starts again with the same identity.
     final again = await _start(folder);
     expect(again.me().id, id);
+  });
+
+  test('a Baton that is let go of without being stopped frees its folder', () async {
+    final folder = await _folder(name: 'Device A');
+    // Not through _start, which would stop it again.
+    final first = await Baton.start(
+      dataDir: folder.path,
+      lanDiscovery: false,
+      portMapping: false,
+    );
+    final events = _Feed(await first.events());
+    addTearDown(events.close);
+
+    // This is what an app does when it is closed or restarted without calling stop. The
+    // stream of events must not keep the Baton, and with it the folder, alive.
+    first.dispose();
+
+    // What runs in the background ends a moment after the last reference is dropped.
+    final limit = DateTime.now().add(const Duration(seconds: 10));
+    while (true) {
+      try {
+        await _start(folder);
+        break;
+      } on BatonError catch (error) {
+        if (error.kind != ErrorKind.alreadyRunning ||
+            DateTime.now().isAfter(limit)) {
+          rethrow;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+    }
+    await events.ended;
   });
 
   test('only web links are opened, and as they were checked', () {

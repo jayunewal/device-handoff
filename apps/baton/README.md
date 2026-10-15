@@ -46,7 +46,9 @@ cargo install flutter_rust_bridge_codegen --version 2.13.0 --locked
 cd apps/baton
 flutter pub get
 flutter_rust_bridge_codegen generate
+cargo fmt --all
 ```
 
-That rewrites `lib/src/rust` and `crates/baton-ffi/src/frb_generated.rs`. Commit both. CI runs
-the same command and fails when it changes anything.
+That rewrites `lib/src/rust` and `crates/baton-ffi/src/frb_generated.rs`; the last command puts
+the Rust in the form the rest of the repository has. Commit both. CI runs the same commands and
+fails when they change anything.
