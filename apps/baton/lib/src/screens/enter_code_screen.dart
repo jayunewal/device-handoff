@@ -5,6 +5,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../awake.dart';
 import '../backend.dart';
 import '../format.dart';
 import '../pairing_controller.dart';
@@ -19,6 +20,7 @@ class EnterCodeScreen extends StatefulWidget {
   const EnterCodeScreen({
     required this.session,
     this.scanner = cameraScanner,
+    this.screen = const PlatformScreenKeeper(),
     super.key,
   });
 
@@ -27,12 +29,19 @@ class EnterCodeScreen extends StatefulWidget {
   /// Reads QR codes with the camera. Tests give it one of their own.
   final ScannerBuilder scanner;
 
+  /// Keeps the screen of the device on while this screen waits for a code and pairs. Tests give
+  /// it one of their own.
+  final ScreenKeeper screen;
+
   @override
   State<EnterCodeScreen> createState() => _EnterCodeScreenState();
 }
 
 class _EnterCodeScreenState extends State<EnterCodeScreen> {
-  late final JoinController _controller = JoinController(widget.session);
+  late final JoinController _controller = JoinController(
+    widget.session,
+    screen: widget.screen,
+  );
   final TextEditingController _text = TextEditingController();
 
   @override
