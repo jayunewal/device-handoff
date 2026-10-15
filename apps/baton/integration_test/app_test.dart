@@ -51,67 +51,119 @@ void main() {
   testWidgets('pairs with another Baton, by the code pasted in', (
     tester,
   ) async {
-    // This device, and a second Baton in this process that plays the device with the code.
-    // The camera is the one thing left out: CI has none, so the code is pasted.
-    final mine = await _folder();
-    await RustBackend(dataDir: mine.path).setDeviceName('Test device');
-    final theirs = RustBackend(dataDir: (await _folder()).path);
-    await theirs.setDeviceName('Second device');
-    final second = await theirs.start();
-    addTearDown(second.stop);
-    final asked = Completer<PairingRequest>();
-    final events = (await second.events()).listen((event) {
-      if (event is Event_PairingRequested && !asked.isCompleted) {
-        asked.complete(event.request);
-      }
-    });
-    addTearDown(() => unawaited(events.cancel()));
-    final offer = await second.offerPairing();
-
-    await tester.pumpWidget(BatonApp(backend: RustBackend(dataDir: mine.path)));
-    await _see(tester, find.text('No other devices yet'));
-    await tester.tap(find.text('Add a device'));
-    await _see(tester, find.text('Scan or enter a code'));
-    await tester.tap(find.text('Scan or enter a code'));
-    await _see(tester, find.text('Or paste the code', skipOffstage: false));
-
-    // The camera is on the screen and sees what it sees. Nothing here depends on it, except
-    // that it must not take the app down. The screen can be longer than a small window, so
-    // scroll to what is wanted.
-    final list = find.byType(Scrollable).first;
-    await tester.scrollUntilVisible(
-      find.byType(TextField),
-      200,
-      scrollable: list,
-    );
-    await tester.enterText(find.byType(TextField), offer.ticket);
-    await tester.scrollUntilVisible(
-      find.text('Connect'),
-      200,
-      scrollable: list,
-    );
-    await tester.tap(find.text('Connect'));
-
-    // This device shows six digits, and the second one is asked about the same ones.
-    await _see(tester, find.text('Check the other device'));
-    final request = await asked.future.timeout(const Duration(seconds: 60));
-    expect(request.name, 'Test device');
-    expect(find.text(request.code), findsOneWidget);
-
-    expect(second.answerPairing(request.id, accept: true), isTrue);
-    await _see(tester, find.text('Paired with Second device'));
-    await tester.tap(find.text('Done'));
-    await _see(tester, find.text('Second device'));
-    expect(find.text('No other devices yet'), findsNothing);
-    await _until(
-      tester,
-      () async => (await second.devices()).isNotEmpty,
-      'the second device to keep this one',
-    );
-    expect((await second.devices()).single.name, 'Test device');
+    await _pairThroughTheScreens(tester);
 
     await tester.pumpWidget(const SizedBox());
   });
+
+  testWidgets('shows what another Baton sends, and sends to it', (
+    tester,
+  ) async {
+    final second = await _pairThroughTheScreens(tester);
+    final firstId = (await second.devices()).single.id;
+
+    // The second device sends some text. The person is told who sent what kind of thing, but
+    // not what it says, and the inbox has it.
+    await second.sendText(firstId, 'The door code is 4711');
+    await _see(tester, find.text('Second device sent you some text.'));
+    expect(find.textContaining('4711'), findsNothing);
+    await tester.tap(find.text('View'));
+    await _see(tester, find.text('The door code is 4711'));
+    expect(find.text('Second device · just now'), findsOneWidget);
+
+    // Back on the devices, this device sends the second one a link, through the send screen.
+    await tester.tap(find.text('Devices'));
+    await _see(tester, find.text('Second device'));
+    await tester.tap(find.text('Second device'));
+    await _see(tester, find.text('Send to Second device'));
+    await tester.enterText(
+      find.byType(TextField),
+      ' HTTPS://Example.com/plan ',
+    );
+    await tester.scrollUntilVisible(
+      find.text('Send link'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('Send link'));
+    await _see(tester, find.text('Sent the link to Second device.'));
+
+    await _until(
+      tester,
+      () async => (await second.inbox()).isNotEmpty,
+      'the link to reach the second device',
+    );
+    final got = (await second.inbox()).single;
+    expect(got.fromName, 'Test device');
+    expect(got.item, isA<ReceivedItem_Link>());
+    expect((got.item as ReceivedItem_Link).url, 'https://example.com/plan');
+
+    await tester.pumpWidget(const SizedBox());
+  });
+}
+
+/// Starts the app with a new device and pairs it with a second Baton in this process, through
+/// the screens: the second Baton shows a code, the app has it pasted in, both show six digits
+/// and the second says yes. Returns the second Baton, which stops when the test ends. The app
+/// is left on its devices, where the second one is listed.
+///
+/// The camera is the one thing left out: CI has none, so the code is pasted.
+Future<Session> _pairThroughTheScreens(WidgetTester tester) async {
+  // This device, and a second Baton in this process that plays the device with the code.
+  final mine = await _folder();
+  await RustBackend(dataDir: mine.path).setDeviceName('Test device');
+  final theirs = RustBackend(dataDir: (await _folder()).path);
+  await theirs.setDeviceName('Second device');
+  final second = await theirs.start();
+  addTearDown(second.stop);
+  final asked = Completer<PairingRequest>();
+  final events = (await second.events()).listen((event) {
+    if (event is Event_PairingRequested && !asked.isCompleted) {
+      asked.complete(event.request);
+    }
+  });
+  addTearDown(() => unawaited(events.cancel()));
+  final offer = await second.offerPairing();
+
+  await tester.pumpWidget(BatonApp(backend: RustBackend(dataDir: mine.path)));
+  await _see(tester, find.text('No other devices yet'));
+  await tester.tap(find.text('Add a device'));
+  await _see(tester, find.text('Scan or enter a code'));
+  await tester.tap(find.text('Scan or enter a code'));
+  await _see(tester, find.text('Or paste the code', skipOffstage: false));
+
+  // The camera is on the screen and sees what it sees. Nothing here depends on it, except
+  // that it must not take the app down. The screen can be longer than a small window, so
+  // scroll to what is wanted.
+  final list = find.byType(Scrollable).first;
+  await tester.scrollUntilVisible(
+    find.byType(TextField),
+    200,
+    scrollable: list,
+  );
+  await tester.enterText(find.byType(TextField), offer.ticket);
+  await tester.scrollUntilVisible(find.text('Connect'), 200, scrollable: list);
+  await tester.tap(find.text('Connect'));
+
+  // This device shows six digits, and the second one is asked about the same ones.
+  await _see(tester, find.text('Check the other device'));
+  final request = await asked.future.timeout(const Duration(seconds: 60));
+  expect(request.name, 'Test device');
+  expect(find.text(request.code), findsOneWidget);
+
+  expect(second.answerPairing(request.id, accept: true), isTrue);
+  await _see(tester, find.text('Paired with Second device'));
+  await tester.tap(find.text('Done'));
+  await _see(tester, find.text('Second device'));
+  expect(find.text('No other devices yet'), findsNothing);
+  await _until(
+    tester,
+    () async => (await second.devices()).isNotEmpty,
+    'the second device to keep this one',
+  );
+  expect((await second.devices()).single.name, 'Test device');
+
+  return second;
 }
 
 /// A folder for one device, with settings that keep it to this computer: no relay, no
