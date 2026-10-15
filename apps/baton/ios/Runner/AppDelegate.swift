@@ -17,7 +17,36 @@ import UIKit
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     screenKeeper = ScreenKeeper(messenger: engineBridge.applicationRegistrar.messenger())
+    answerWhereTheAppKeepsItsFiles(messenger: engineBridge.applicationRegistrar.messenger())
   }
+}
+
+/// Tells the app where its Library/Application Support is, which is where Baton makes its folder.
+/// The app asks and does not look in its environment: iOS 27 starts an app without HOME in it, and
+/// a Baton that looked for HOME did not start. The names of the channel and of the question must be
+/// the ones in lib/src/support_folder.dart.
+private func answerWhereTheAppKeepsItsFiles(messenger: FlutterBinaryMessenger) {
+  let channel = FlutterMethodChannel(
+    name: "io.github.jayunewal.baton/folder", binaryMessenger: messenger)
+  channel.setMethodCallHandler { call, result in
+    switch call.method {
+    case "applicationSupport":
+      do {
+        let folder = try applicationSupportFolder().path
+        result(folder)
+      } catch {
+        result(FlutterError(code: "no_folder", message: "\(error)", details: nil))
+      }
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+}
+
+/// The folder that the system gives the app for the files that are not the person's documents.
+private func applicationSupportFolder() throws -> URL {
+  try FileManager.default.url(
+    for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
 }
 
 /// Keeps the screen on while the app asks for it, which it does only while two devices pair. A
@@ -93,8 +122,7 @@ private let batonFolderName = "baton-app"
 
 private func keepBatonFolderOutOfBackups() {
   do {
-    let support = try FileManager.default.url(
-      for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+    let support = try applicationSupportFolder()
     var folder = support.appendingPathComponent(batonFolderName, isDirectory: true)
     // Private to this app, as Baton makes it itself. An existing folder is left as it is.
     try FileManager.default.createDirectory(
