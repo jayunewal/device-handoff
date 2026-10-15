@@ -125,5 +125,25 @@ class _RustSession implements Session {
   Future<Network> network() => _baton.network();
 
   @override
+  Future<void> unpair(String id) => _baton.unpair(id: id);
+
+  @override
+  Future<Offer> offerPairing() => _baton.offerPairing();
+
+  @override
+  void cancelOffer() => _baton.cancelOffer();
+
+  @override
+  bool answerPairing(int request, {required bool accept}) =>
+      _baton.answerPairing(request: request, accept: accept);
+
+  @override
+  Stream<JoinProgress> joinPairing(String ticket) =>
+      _baton.joinPairing(ticket: ticket);
+
+  @override
+  void cancelJoin() => _baton.cancelJoin();
+
+  @override
   Future<void> stop() => _baton.stop();
 }

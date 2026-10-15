@@ -53,4 +53,42 @@ void main() {
       expect(platformIcon(platform).codePoint, isNonZero);
     }
   });
+
+  test('the time left is counted down in minutes and seconds', () {
+    final start = DateTime.fromMillisecondsSinceEpoch(1760529600 * 1000);
+    int expiresAfter(int seconds) => 1760529600 + seconds;
+    expect(timeLeft(expiresAfter(300), start), '5:00');
+    expect(timeLeft(expiresAfter(299), start), '4:59');
+    expect(timeLeft(expiresAfter(61), start), '1:01');
+    expect(timeLeft(expiresAfter(9), start), '0:09');
+    expect(timeLeft(expiresAfter(0), start), '0:00');
+    expect(
+      timeLeft(expiresAfter(-30), start),
+      '0:00',
+      reason: 'not below zero',
+    );
+    // A part of a second still counts as the second it is in.
+    final late = start.add(const Duration(milliseconds: 400));
+    expect(timeLeft(expiresAfter(300), late), '5:00');
+    expect(
+      timeLeft(expiresAfter(300), late.add(const Duration(milliseconds: 700))),
+      '4:59',
+    );
+  });
+
+  test('a message from the library is made to read as a sentence', () {
+    expect(
+      sentence('pairing was not accepted: the other device declined'),
+      'Pairing was not accepted: the other device declined.',
+    );
+    expect(sentence('Already a sentence.'), 'Already a sentence.');
+    expect(sentence('Is it?'), 'Is it?');
+    expect(sentence('  spaces around  '), 'Spaces around.');
+    expect(
+      sentence('ends with a bracket (like this)'),
+      'Ends with a bracket (like this).',
+    );
+    expect(sentence(''), '');
+    expect(sentence('   '), '');
+  });
 }

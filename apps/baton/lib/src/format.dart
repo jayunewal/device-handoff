@@ -57,3 +57,20 @@ String lastSeen(int? seconds, DateTime now) {
 }
 
 String _count(int n, String unit) => n == 1 ? '1 $unit' : '$n ${unit}s';
+
+/// How long is left until [expiresAt], counted in seconds from the Unix epoch as the app layer
+/// gives it: "4:32", and "0:00" once it has passed.
+String timeLeft(int expiresAt, DateTime now) {
+  final milliseconds = expiresAt * 1000 - now.millisecondsSinceEpoch;
+  final seconds = milliseconds <= 0 ? 0 : (milliseconds / 1000).ceil();
+  return '${seconds ~/ 60}:${(seconds % 60).toString().padLeft(2, '0')}';
+}
+
+/// Makes a message from the library read as a sentence to the person: a capital letter at the
+/// start, and a full stop at the end unless there is a mark there.
+String sentence(String message) {
+  final text = message.trim();
+  if (text.isEmpty) return text;
+  final capital = text[0].toUpperCase() + text.substring(1);
+  return '.!?'.contains(capital[capital.length - 1]) ? capital : '$capital.';
+}

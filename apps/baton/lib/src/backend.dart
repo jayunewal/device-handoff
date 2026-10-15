@@ -12,9 +12,25 @@ export 'rust/api/model.dart'
         Device,
         Event,
         Event_DevicesChanged,
+        Event_OfferEnded,
+        Event_PairingRequestEnded,
+        Event_PairingRequested,
         Event_Resync,
+        JoinProgress,
+        JoinProgress_Code,
+        JoinProgress_Failed,
+        JoinProgress_Paired,
         Me,
         Network,
+        Offer,
+        OfferOutcome,
+        OfferOutcome_Abandoned,
+        OfferOutcome_Cancelled,
+        OfferOutcome_Declined,
+        OfferOutcome_Expired,
+        OfferOutcome_Failed,
+        OfferOutcome_Paired,
+        PairingRequest,
         Platform;
 
 /// Opens the folder where Baton keeps its files and starts Baton in it.
@@ -48,6 +64,35 @@ abstract interface class Session {
 
   /// Where this device can be reached right now.
   Future<Network> network();
+
+  /// Forgets a paired device. It can no longer reach this one until they are paired again.
+  /// Throws a `BatonError` of kind `notPaired` if it is not paired (any more).
+  Future<void> unpair(String id);
+
+  /// Opens an invitation to pair and returns it. It can take a few seconds, because Baton
+  /// gives the relay a moment to answer so that the code works from other networks. Show the
+  /// ticket as a QR code and as text, and listen to [events] for the requests to pair and for
+  /// the end of the offer. An offer that is already showing is withdrawn.
+  Future<Offer> offerPairing();
+
+  /// Withdraws the offer that is showing, if there is one. `Event_OfferEnded` follows.
+  ///
+  /// Do not call this just after saying yes to a request: the offer ends by itself then, and
+  /// a withdrawal that gets there first wins.
+  void cancelOffer();
+
+  /// Answers a request to pair. Returns `false` if it is not waiting any more, because it was
+  /// answered already or the offer ended; `true` does not yet mean that the devices are
+  /// paired, the end of the offer says that.
+  bool answerPairing(int request, {required bool accept});
+
+  /// Pairs with the device that made [ticket]: text from the other device, or what a camera
+  /// read from its QR code. The stream gives the code to compare, then the device or the
+  /// reason, and ends. Failures come as items, never as errors.
+  Stream<JoinProgress> joinPairing(String ticket);
+
+  /// Gives up on a [joinPairing] that is still waiting.
+  void cancelJoin();
 
   /// Stops Baton and lets go of its folder.
   Future<void> stop();
