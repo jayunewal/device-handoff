@@ -15,6 +15,7 @@
 //! ```no_run
 //! use baton_app::{App, Event, Options};
 //!
+//! # async fn ask_the_person(_request: &baton_app::PairingRequest) -> bool { true }
 //! # async fn demo() -> baton_app::Result<()> {
 //! // A phone cannot tell its own name, so the screen asks for one first.
 //! let folder = std::path::Path::new("/path/to/the/app/folder");
@@ -30,8 +31,10 @@
 //! while let Some(event) = events.next().await {
 //!     match event {
 //!         Event::PairingRequested(request) => {
-//!             println!("{} shows {}: is that what this screen says?", request.name, request.code);
-//!             app.answer_pairing(request.id, true);
+//!             // Show all of it, with the code, and say what the code is to be compared with:
+//!             // the one the other device shows. Only the person can say whether they match.
+//!             let same = ask_the_person(&request).await;
+//!             app.answer_pairing(request.id, same);
 //!         }
 //!         Event::Received(item) => println!("{:?}", item),
 //!         _ => {}
