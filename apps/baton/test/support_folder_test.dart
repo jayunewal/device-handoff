@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Where the app keeps its files. An iPhone that runs iOS 27 starts an app without HOME in its
-// environment, and Baton, which looked for HOME, did not start on it. A Mac and a simulator do
-// give HOME, so the tests give the app an environment of their own, and a system that answers.
+// environment, and Baton, which looked for HOME, did not start on it. A Mac gives HOME and the
+// computer that runs these tests may or may not, so the tests give the app an environment of
+// their own, and a system that answers.
 // The tests of the folder itself need the library built for this computer; see bridge_test.dart.
 
 import 'dart:io';

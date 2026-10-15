@@ -16,8 +16,8 @@ import 'package:flutter/services.dart';
 /// folder of its sandbox, and which is always there.
 class SupportFolder {
   /// [environment] is what the system told the app about its surroundings. Without it, that is
-  /// the environment of the process. A test gives its own, to see what the app does when there
-  /// is no `HOME`, which a simulator and a Mac both have.
+  /// the environment of the process. A test gives its own, so that what the app does with a
+  /// `HOME` of any kind, or with none, does not depend on the computer that runs the test.
   const SupportFolder({this._environment});
 
   /// The channel that the iOS app answers on. The name, and the one of the question, must be the

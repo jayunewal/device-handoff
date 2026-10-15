@@ -11,7 +11,6 @@
 
 import 'dart:async';
 import 'dart:io' show Directory, File;
-import 'dart:io' as io show Platform;
 
 import 'package:baton/src/app.dart';
 import 'package:baton/src/awake.dart';
@@ -54,27 +53,19 @@ void main() {
   });
 
   testWidgets(
-    'finds the folder for its files from the system, with no HOME to go by',
+    'finds the folder for its files from the system, and the library opens it',
     (tester) async {
-      // An iPhone with iOS 27 starts an app without HOME in its environment, and a Baton that
-      // looked for HOME did not start. A simulator does give HOME, so this app is told that it
-      // has none: a folder that came from HOME would be missing here too. Every other test in
-      // this file is given a folder, so none of them would have noticed.
-      const support = SupportFolder(environment: <String, String>{});
-      final path = await support.path();
+      // An iPhone with iOS 27 starts an app without HOME in its environment, and so does the
+      // simulator that CI starts, and a Baton that looked for HOME did not start. Every other
+      // test in this file is given a folder, so none of them would have noticed.
+      final path = await const SupportFolder().path();
 
       expect(path, startsWith('/'));
       expect(path, endsWith('/Library/Application Support'));
-      // It is the folder that every earlier build used. They found it from HOME, which for an app
-      // is the folder of the app. A phone that is set up already keeps its key and its devices
-      // only if the two are the same folder, whichever way a link in the path is written.
-      final home = io.Platform.environment['HOME'];
-      expect(home, isNotNull, reason: 'a simulator gives HOME');
       expect(
-        Directory(path).resolveSymbolicLinksSync(),
-        Directory('$home/Library/Application Support')
-            .resolveSymbolicLinksSync(),
-        reason: 'the folder that HOME names',
+        Directory(path).existsSync(),
+        isTrue,
+        reason: 'the system made it',
       );
       // The iOS app makes Baton's folder there when it opens, and leaves it out of backups.
       expect(
@@ -82,8 +73,9 @@ void main() {
         isTrue,
         reason: 'the folder that the app made for Baton',
       );
-      // And the library opens it. Asking for the name reads it and changes nothing.
-      await RustBackend(supportFolder: support).deviceName();
+      // The app looks for the folder the way it does when a person opens it, and the library
+      // opens it. Asking for the name reads it and changes nothing.
+      await RustBackend().deviceName();
     },
     skip: defaultTargetPlatform != TargetPlatform.iOS,
   );
