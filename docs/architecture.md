@@ -27,6 +27,7 @@ This document describes how Baton is put together. The trust model is in [securi
 | --- | --- | --- |
 | `baton-proto` | Message types, framing and the pairing ticket format. No I/O, so it can be tested and fuzzed on its own. | No |
 | `baton-core` | Device identity, the trust store, pairing, discovery, the encrypted transport, the handoff service and the inbox where received items rest. Everything that must behave identically on every platform. | No |
+| `baton-fs` | File system calls that the standard library does not have. So far there is one: move a file or a folder to a new name, and refuse if the name is taken, so that a file that was received never replaces one that the person has. The calls need `unsafe` code, which is why they have a crate of their own. | Yes (one call for each system) |
 | `baton-agent` | The parts that touch the desktop: reading and writing the clipboard, opening links, and acting on the per-device policies that open or apply what arrives instead of leaving it in the inbox. | Yes (desktop) |
 | `baton-app` | What a graphical front end calls: start the node, pair, send, read the inbox and hear what happens, as plain values and a stream of events. It puts the core's parts in the order a screen needs them and holds no protocol logic. | No |
 | `baton-ffi` | The bridge to Dart: Dart-friendly copies of `baton-app`'s values and calls, and the glue that `flutter_rust_bridge` generates around them. It decides nothing. | Generated glue only |
@@ -34,7 +35,7 @@ This document describes how Baton is put together. The trust model is in [securi
 | `baton-stream-abi` | Planned: the small C interface through which the Apple code in the app (capture, encoding, decoding) hands frames to `baton-stream` and takes them from it. When it exists it holds its hand-written `unsafe`, in a crate of its own as CONTRIBUTING.md asks. | Only the interface |
 | UI | Presents devices, pairing and received items. The command-line program (`baton-cli`, the `baton` binary) came first; the Flutter app in `apps/baton`, starting with iPhone, iPad and Mac, calls `baton-app` through `baton-ffi`. | Yes |
 
-The Flutter app reaches `baton-app` through `baton-ffi` (see [The bridge](#the-bridge)), the only crate in the repository that holds `unsafe` code, and only in the glue it generates. On mobile the app implements the equivalent of `baton-agent` natively (share sheet, Shortcuts, Android intents), because those platforms do not let a background process read the clipboard or open links the way a desktop agent does.
+The Flutter app reaches `baton-app` through `baton-ffi` (see [The bridge](#the-bridge)), which holds `unsafe` code only in the glue it generates. The only other `unsafe` code in the repository is in `baton-fs`, in the module that makes its system calls. On mobile the app implements the equivalent of `baton-agent` natively (share sheet, Shortcuts, Android intents), because those platforms do not let a background process read the clipboard or open links the way a desktop agent does.
 
 ## The command-line program
 
