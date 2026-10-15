@@ -20,7 +20,7 @@ Builds the Rust library of the Baton app and links it into the app.
   s.source           = { :path => '.' }
   s.source_files     = 'Classes/**/*'
   s.dependency 'FlutterMacOS'
-  s.platform = :osx, '11.0'
+  s.platform = :osx, '12.0'
   s.swift_version = '5.0'
 
   s.script_phase = {
@@ -38,5 +38,8 @@ Builds the Rust library of the Baton app and links it into the app.
     # Flutter.framework does not contain a i386 slice.
     'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386',
     'OTHER_LDFLAGS' => '-force_load ${BUILT_PRODUCTS_DIR}/libbaton_ffi.a',
+    # The app finds the library's functions by name, so the global symbols must survive when
+    # Xcode strips a build.
+    'STRIP_STYLE' => 'non-global',
   }
 end
