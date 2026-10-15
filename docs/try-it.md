@@ -4,7 +4,7 @@ Baton is pre-alpha. This page gets two computers handing links and text to each 
 
 ## Get the program
 
-**Download a build.** The repository builds the program for macOS, Windows and Linux on every change. Open the [CI runs](https://github.com/jayunewal/device-handoff/actions/workflows/ci.yml), pick the latest run on `main` with a green tick and, under **Artifacts** at the bottom of the page, download `baton-macos`, `baton-windows` or `baton-linux`. GitHub asks you to sign in to download.
+**Download a build.** The repository builds the program for macOS, Windows and Linux for every change that is merged into `main`. Open the [CI runs](https://github.com/jayunewal/device-handoff/actions/workflows/ci.yml), pick the latest run on `main` with a green tick and, under **Artifacts** at the bottom of the page, download `baton-macos`, `baton-windows` or `baton-linux`. GitHub asks you to sign in to download.
 
 - **macOS** (Apple Silicon and Intel): the download is a zip with `baton-macos.tar.gz` inside. Unzip it first (Safari does that by itself; Chrome and Firefox do not). In Terminal, in the folder it is in, run `tar xzf baton-macos.tar.gz`, then `./baton --help`. The program is not signed by a developer, so macOS may block it. The dialog offers "Done" and "Move to Trash": click **Done**, run `xattr -d com.apple.quarantine ./baton` once and try again.
 - **Windows**: unzip `baton-windows.zip`, open PowerShell in that folder and run `.\baton.exe --help`. If Windows says it protected your PC, run `Unblock-File .\baton.exe` first. A Windows 11 PC with **Smart App Control** switched on (Windows Security, App & browser control) blocks every program that is not signed, and `Unblock-File` does not change that; if that is yours, try on a Mac or Linux first.
