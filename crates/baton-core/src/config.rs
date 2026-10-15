@@ -194,11 +194,17 @@ impl Config {
         toml::to_string_pretty(self).map_err(|e| Error::Config(e.to_string()))
     }
 
+    /// Whether `name` can be this device's name: something visible is left of it once it is
+    /// cleaned for display. A name made of spaces, or of characters that draw nothing, is
+    /// not usable.
+    pub fn is_usable_device_name(name: &str) -> bool {
+        sanitize_display_name(name) != FALLBACK_NAME || name.trim() == FALLBACK_NAME
+    }
+
     /// Checks that the settings make sense together.
     pub fn validate(&self) -> Result<()> {
         if let Some(name) = &self.device_name
-            && sanitize_display_name(name) == FALLBACK_NAME
-            && name.trim() != FALLBACK_NAME
+            && !Self::is_usable_device_name(name)
         {
             return Err(config_error(
                 "device_name must contain at least one visible character",
@@ -410,6 +416,22 @@ mod tests {
             std::fs::read_to_string(&path).unwrap(),
             "device_name = \"Old\"\n"
         );
+    }
+
+    #[test]
+    fn what_makes_a_name_usable_is_what_the_settings_file_accepts() {
+        for name in [
+            "Kitchen iPad",
+            " Mac ",
+            "Jay's phone",
+            "電話",
+            "unnamed device",
+        ] {
+            assert!(Config::is_usable_device_name(name), "{name:?}");
+        }
+        for name in ["", "   ", "\u{200b}\u{7}", "\u{2800}"] {
+            assert!(!Config::is_usable_device_name(name), "{name:?}");
+        }
     }
 
     #[test]
