@@ -24,7 +24,7 @@
 
 use blake3::Hash;
 
-use crate::{id::TransferId, limits::MAX_LANES};
+use crate::id::TransferId;
 
 /// The first byte of a unidirectional stream says what the stream carries. This is the only
 /// kind there is: a lane of a transfer.
@@ -45,9 +45,6 @@ pub enum LaneError {
     /// The stream is of a kind this version does not know.
     #[error("a stream of kind {0} is not a lane")]
     BadKind(u8),
-    /// The lane number is more than a transfer may use.
-    #[error("lane {0} is more than a transfer may use")]
-    BadLane(u8),
     /// The tag is not that of a frame this version knows.
     #[error("{0} is not the tag of a frame")]
     BadTag(u8),
@@ -68,8 +65,8 @@ pub enum LaneError {
 pub struct LaneHeader {
     /// The transfer whose offer was accepted.
     pub transfer: TransferId,
-    /// Number of the lane, below the number of lanes the receiver allowed. Lane 0 carries the
-    /// list of files.
+    /// Number of the lane, below the number of lanes the receiver allowed (which the receiver
+    /// checks, see [`from_bytes`](Self::from_bytes)). Lane 0 carries the list of files.
     pub lane: u8,
 }
 
@@ -88,13 +85,14 @@ impl LaneHeader {
     }
 
     /// Reads the header from the first bytes of a stream.
+    ///
+    /// The lane number is not checked here. The receiver compares it with the number of lanes
+    /// it granted to this transfer, and a lane beyond that is a violation of the transfer, so
+    /// what it needs from a header like that is the id of the transfer.
     pub fn from_bytes(bytes: &[u8; Self::LEN]) -> Result<Self, LaneError> {
         let [kind, transfer @ .., lane] = *bytes;
         if kind != KIND_LANE {
             return Err(LaneError::BadKind(kind));
-        }
-        if lane >= MAX_LANES {
-            return Err(LaneError::BadLane(lane));
         }
         Ok(Self {
             transfer: TransferId::from_bytes(transfer),
@@ -287,12 +285,9 @@ mod tests {
     }
 
     #[test]
-    fn a_lane_header_of_another_kind_or_beyond_the_lanes_is_refused() {
-        let good = LaneHeader {
-            transfer: TransferId::from_bytes([7; 16]),
-            lane: MAX_LANES - 1,
-        }
-        .to_bytes();
+    fn a_lane_header_of_another_kind_is_refused_and_every_lane_number_is_read() {
+        let transfer = TransferId::from_bytes([7; 16]);
+        let good = LaneHeader { transfer, lane: 7 }.to_bytes();
         assert!(LaneHeader::from_bytes(&good).is_ok());
 
         for kind in [0, 2, 0x80, 0xff] {
@@ -303,12 +298,14 @@ mod tests {
                 Err(LaneError::BadKind(kind))
             );
         }
-        for lane in [MAX_LANES, MAX_LANES + 1, 255] {
+        // The lane number is the receiver's to check against what it granted, and for a lane
+        // beyond that it needs the id, so every number comes back with it.
+        for lane in [0, 7, 8, 9, 255] {
             let mut other = good;
             other[LaneHeader::LEN - 1] = lane;
             assert_eq!(
                 LaneHeader::from_bytes(&other),
-                Err(LaneError::BadLane(lane))
+                Ok(LaneHeader { transfer, lane })
             );
         }
     }

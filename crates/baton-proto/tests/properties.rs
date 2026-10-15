@@ -11,7 +11,9 @@ use std::{cmp::Ordering, collections::BTreeMap};
 
 use baton_proto::{
     DeviceId, DeviceInfo, ItemId, Platform, TransferId, frame,
-    limits::{MAX_FILE_BYTES, MAX_LANES, MAX_LIST_FRAME_ENTRIES, MAX_PREVIEW_ITEMS},
+    limits::{
+        MAX_FAILURES_LISTED, MAX_FILE_BYTES, MAX_LANES, MAX_LIST_FRAME_ENTRIES, MAX_PREVIEW_ITEMS,
+    },
     message::{
         ClipboardText, DeclineReason, ErrorCode, ErrorReply, Handoff, HandoffReply, Hello, Item,
         Link, Outcome, Ping, Request, Response,
@@ -289,25 +291,42 @@ fn fail_reason() -> impl Strategy<Value = FailReason> {
     ]
 }
 
+fn failures(failed: impl Iterator<Item = (u32, FailReason)>) -> Vec<Failure> {
+    failed
+        .map(|(file, reason)| Failure { file, reason })
+        .collect()
+}
+
 fn transfer_reply() -> impl Strategy<Value = TransferReply> {
     prop_oneof![
         (transfer_id(), 1..=MAX_LANES)
             .prop_map(|(id, lanes)| TransferReply::Accepted(Accepted { id, lanes })),
         (transfer_id(), decline_reason())
             .prop_map(|(id, reason)| TransferReply::Declined(Declined { id, reason })),
+        // A `Done` names the files that failed in the order of the list, which is what a map
+        // gives, and counts more of them only when it names as many as it may.
         (
             transfer_id(),
-            proptest::collection::vec(
-                (any::<u32>(), fail_reason()).prop_map(|(file, reason)| Failure { file, reason }),
-                0..6
-            ),
-            any::<u32>()
+            proptest::collection::btree_map(any::<u32>(), fail_reason(), 0..6)
         )
-            .prop_map(|(id, failed, more_failed)| TransferReply::Done(Done {
+            .prop_map(|(id, failed)| TransferReply::Done(Done {
                 id,
-                failed,
-                more_failed
+                failed: failures(failed.into_iter()),
+                more_failed: 0
             })),
+        (
+            transfer_id(),
+            0..1_000_000_u32,
+            proptest::collection::vec(fail_reason(), MAX_FAILURES_LISTED),
+            1..=100_000_u32
+        )
+            .prop_map(
+                |(id, first, reasons, more_failed)| TransferReply::Done(Done {
+                    id,
+                    failed: failures((first..).zip(reasons)),
+                    more_failed
+                })
+            ),
         transfer_id().prop_map(|id| TransferReply::Cancelled(Cancelled { id })),
     ]
 }
@@ -646,7 +665,7 @@ proptest! {
     }
 
     #[test]
-    fn lane_headers_round_trip(transfer in transfer_id(), lane in 0..MAX_LANES) {
+    fn lane_headers_round_trip(transfer in transfer_id(), lane in any::<u8>()) {
         let header = LaneHeader { transfer, lane };
         prop_assert_eq!(LaneHeader::from_bytes(&header.to_bytes()), Ok(header));
     }
@@ -657,7 +676,7 @@ proptest! {
         rest in proptest::collection::vec(any::<u8>(), 0..64),
         kind in prop_oneof![Just(1_u8), any::<u8>()],
         transfer in any::<[u8; 16]>(),
-        lane in prop_oneof![0..MAX_LANES, any::<u8>()],
+        lane in any::<u8>(),
     ) {
         let _ = FrameHead::rest_len(tag);
         let _ = FrameHead::decode(tag, &rest);

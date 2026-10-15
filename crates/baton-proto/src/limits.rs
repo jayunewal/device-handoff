@@ -66,9 +66,9 @@ pub const MAX_FILE_BYTES: u64 = 1 << 50;
 pub const MAX_LIST_FRAME_ENTRIES: usize = 1024;
 
 /// Most bytes the whole list of files of one transfer may take in the form that is hashed (an
-/// entry is 19 bytes and its path). It is the connection's receive window, so the list of an
-/// accepted transfer always fits in what a connection can hold before a span can be read.
-/// A transfer with a longer list is offered as several transfers.
+/// entry is 19 bytes and its path). A receiver holds the whole list before it writes anything,
+/// so the list has a cap of its own. A transfer with a longer list is offered as several
+/// transfers.
 pub const MAX_LIST_BYTES: usize = 16 * 1024 * 1024;
 
 /// Most lanes (unidirectional streams) one transfer may use.

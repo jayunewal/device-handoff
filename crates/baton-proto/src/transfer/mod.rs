@@ -187,10 +187,14 @@ pub struct Finish {
 pub struct Done {
     /// The transfer that ended.
     pub id: TransferId,
-    /// Files that were not put in place, at most [`MAX_FAILURES_LISTED`] of them. The files
-    /// that are not named here are in place.
+    /// The files that were not put in place, in the order of the list: the first
+    /// [`MAX_FAILURES_LISTED`] of them at most. A file that is not named here is in place if
+    /// [`more_failed`](Self::more_failed) is 0, or if it comes before the last one named.
     pub failed: Vec<Failure>,
-    /// How many more files failed than are named in `failed`.
+    /// How many more files failed than are named in `failed`. They all come after the last
+    /// one named, and there are none unless [`MAX_FAILURES_LISTED`] are named. Which of the
+    /// files after the last one named are in place cannot be told, so a sender treats them
+    /// all as not in place.
     #[serde(default, skip_serializing_if = "is_default")]
     pub more_failed: u32,
 }
@@ -295,8 +299,16 @@ impl Offer {
             return Err(invalid("preview", "is not the first top-level items"));
         }
         let (mut in_files, mut in_folders, mut in_bytes) = (0_u64, 0_u64, 0_u128);
+        let mut before: Option<&str> = None;
         for item in &self.preview {
             item.validate()?;
+            // The list is in the order of its names, and so is the preview, with no name twice.
+            // An offer that shows `a.txt` twice could never match a list, and a person would be
+            // asked about it all the same.
+            if before.is_some_and(|name| name >= item.name.as_str()) {
+                return Err(invalid("preview", "is not in the order of the list"));
+            }
+            before = Some(item.name.as_str());
             if item.folder {
                 in_folders += 1;
                 in_files += u64::from(item.files);
@@ -354,6 +366,19 @@ impl TransferReply {
                         count: done.failed.len(),
                         max: MAX_FAILURES_LISTED,
                     });
+                }
+                // The files are named in the order of the list, so that a file that is not
+                // named is known to be in place when it comes before the last one that is.
+                if !done.failed.is_sorted_by(|a, b| a.file < b.file) {
+                    return Err(invalid("failed files", "are not in the order of the list"));
+                }
+                // The rest are counted only once the names have run out, so that all of them
+                // come after the last one named.
+                if done.more_failed > 0 && done.failed.len() < MAX_FAILURES_LISTED {
+                    return Err(invalid(
+                        "more failed files",
+                        "are counted before the names have run out",
+                    ));
                 }
                 Ok(())
             }
@@ -442,7 +467,7 @@ mod tests {
                         reason: FailReason::Other,
                     },
                 ],
-                more_failed: 5,
+                more_failed: 0,
             }),
             TransferReply::Done(Done {
                 id: id(4),
@@ -450,7 +475,23 @@ mod tests {
                 more_failed: 0,
             }),
             TransferReply::Cancelled(Cancelled { id: id(5) }),
+            // As many failures as a `Done` names, and more that it only counts.
+            TransferReply::Done(Done {
+                id: id(6),
+                failed: failures(MAX_FAILURES_LISTED),
+                more_failed: 5,
+            }),
         ]
+    }
+
+    /// Files 0, 2, 4 and so on, which failed, in the order of the list.
+    fn failures(count: usize) -> Vec<Failure> {
+        (0..count)
+            .map(|i| Failure {
+                file: u32::try_from(i).unwrap() * 2,
+                reason: FailReason::Incomplete,
+            })
+            .collect()
     }
 
     #[test]
@@ -472,7 +513,7 @@ mod tests {
         let ids: Vec<TransferId> = all_requests().iter().map(TransferRequest::id).collect();
         assert_eq!(ids, [id(0x42), id(1), id(2)]);
         let ids: Vec<TransferId> = all_replies().iter().map(TransferReply::id).collect();
-        assert_eq!(ids, [id(1), id(2), id(3), id(4), id(5)]);
+        assert_eq!(ids, [id(1), id(2), id(3), id(4), id(5), id(6)]);
     }
 
     #[test]
@@ -602,7 +643,7 @@ mod tests {
             },
             preview: (0..16)
                 .map(|i| PreviewItem {
-                    name: format!("f{i}"),
+                    name: format!("f{i:02}"),
                     folder: false,
                     files: 0,
                     bytes: 1,
@@ -679,6 +720,13 @@ mod tests {
             .is_err()
         );
         assert!(bad(|o| o.preview.push(o.preview[0].clone())).is_err());
+        // A preview that is not in the order of the list, or that shows a name twice.
+        let order = Err(invalid("preview", "is not in the order of the list"));
+        assert_eq!(bad(|o| o.preview.swap(0, 1)), order);
+        assert_eq!(
+            bad(|o| o.preview[1].name = o.preview[0].name.clone()),
+            order
+        );
         // A preview that shows more than the transfer holds.
         assert!(bad(|o| o.preview[0].files = 3).is_err());
         assert!(bad(|o| o.preview[1].bytes = 1_300).is_err());
@@ -732,19 +780,82 @@ mod tests {
         let failed = |count| {
             TransferReply::Done(Done {
                 id: id(1),
-                failed: vec![
-                    Failure {
-                        file: 0,
-                        reason: FailReason::Other
-                    };
-                    count
-                ],
+                failed: failures(count),
                 more_failed: 0,
             })
             .validate()
         };
         assert_eq!(failed(MAX_FAILURES_LISTED), Ok(()));
         assert!(failed(MAX_FAILURES_LISTED + 1).is_err());
+    }
+
+    // The files that a `Done` does not name are in place only if it can be told which they
+    // are: the named ones are the first to fail, in the order of the list, and the rest, which
+    // are only counted, all come after them.
+    #[test]
+    fn a_done_names_the_first_failures_in_order_and_counts_the_rest() {
+        let done = |failed: Vec<Failure>, more_failed| {
+            TransferReply::Done(Done {
+                id: id(1),
+                failed,
+                more_failed,
+            })
+            .validate()
+        };
+        let at = |files: &[u32]| {
+            files
+                .iter()
+                .map(|&file| Failure {
+                    file,
+                    reason: FailReason::Other,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(done(at(&[]), 0), Ok(()));
+        assert_eq!(done(at(&[3, 9, 10]), 0), Ok(()));
+
+        let order = Err(invalid("failed files", "are not in the order of the list"));
+        assert_eq!(done(at(&[9, 3]), 0), order);
+        assert_eq!(done(at(&[3, 3]), 0), order);
+        assert_eq!(done(at(&[1, 2, 2]), 0), order);
+
+        // More failures than are named: only once the names have run out.
+        let early = Err(invalid(
+            "more failed files",
+            "are counted before the names have run out",
+        ));
+        assert_eq!(done(at(&[]), 1), early);
+        assert_eq!(done(at(&[3]), 1), early);
+        assert_eq!(done(failures(MAX_FAILURES_LISTED - 1), 1), early);
+        assert_eq!(done(failures(MAX_FAILURES_LISTED), 1), Ok(()));
+        assert_eq!(done(failures(MAX_FAILURES_LISTED), 5_000), Ok(()));
+        // The order is checked on a full `Done` too.
+        let mut full = failures(MAX_FAILURES_LISTED);
+        full.swap(10, 11);
+        assert_eq!(done(full, 5), order);
+    }
+
+    #[test]
+    fn a_done_that_breaks_the_rules_is_refused_when_it_is_read() {
+        let decode = |failed: Value, more_failed: u32| {
+            let payload = cbor!({ "Transfer" => { "Done" => {
+                "id" => Value::Bytes(vec![7; 16]),
+                "failed" => failed,
+                "more_failed" => more_failed,
+            } } })
+            .unwrap();
+            let mut bytes = Vec::new();
+            ciborium::into_writer(&payload, &mut bytes).unwrap();
+            frame::decode_payload::<Response>(&bytes)
+        };
+        let two = |first: u32, second: u32| {
+            cbor!([{ "file" => first, "reason" => "Other" }, { "file" => second, "reason" => "Other" }])
+                .unwrap()
+        };
+        assert!(decode(two(1, 2), 0).is_ok());
+        assert!(matches!(decode(two(2, 1), 0), Err(FrameError::Limit(_))));
+        assert!(matches!(decode(two(2, 2), 0), Err(FrameError::Limit(_))));
+        assert!(matches!(decode(two(1, 2), 3), Err(FrameError::Limit(_))));
     }
 
     #[test]

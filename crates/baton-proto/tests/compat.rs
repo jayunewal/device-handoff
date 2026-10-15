@@ -16,7 +16,7 @@
 use baton_proto::{
     Platform, TransferId, frame,
     message::{DeclineReason, ErrorCode, Hello, Outcome, Ping, Request, Response, capability},
-    pair::{PairRejection, PairResponse},
+    pair::{PairRejection, PairRequest, PairResponse},
     transfer::{FailReason, TransferReply, TransferRequest, list::ListChunk},
 };
 use ciborium::{Value, cbor};
@@ -338,4 +338,40 @@ fn a_kind_of_transfer_request_this_version_does_not_know_is_an_error() {
     let later =
         encode(&cbor!({ "Transfer" => { "Paused" => { "id" => transfer_id() } } }).unwrap());
     assert!(frame::decode_payload::<Response>(&later).is_err());
+}
+
+// The fuzz targets start from the seeds in `fuzz/seeds/decode_payload`, and a seed that is no
+// longer a message (a rule was added that it breaks, a field was renamed) quietly stops the
+// fuzzer from starting deep inside the decoders. The name of a seed says what it must be.
+#[test]
+fn the_committed_fuzz_seeds_are_still_the_messages_they_are_named_for() {
+    let seeds = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/seeds/decode_payload");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&seeds).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_str().unwrap().to_owned();
+        let bytes = std::fs::read(&path).unwrap();
+        let decodes = if name.starts_with("request-") {
+            frame::decode_payload::<Request>(&bytes).is_ok()
+        } else if name.starts_with("response-") {
+            frame::decode_payload::<Response>(&bytes).is_ok()
+        } else if name == "pair-request" {
+            frame::decode_payload::<PairRequest>(&bytes).is_ok()
+        } else if name.starts_with("pair-") {
+            frame::decode_payload::<PairResponse>(&bytes).is_ok()
+        } else if name == "list-chunk" {
+            frame::decode_payload::<ListChunk>(&bytes).is_ok()
+        } else if name.starts_with("malformed-") {
+            // Made to be refused, to show the fuzzer what a near miss looks like.
+            continue;
+        } else {
+            panic!("the seed {name} has a name that says nothing about what it is");
+        };
+        assert!(
+            decodes,
+            "the seed {name} is not the message it is named for"
+        );
+        checked += 1;
+    }
+    assert!(checked >= 15, "only {checked} seeds were checked");
 }

@@ -207,13 +207,16 @@ fn transfer_payloads() -> Vec<(&'static str, Vec<u8>)> {
         ),
         (
             "response done",
+            // One failure and nothing more to count, so the key for the count is left out. A
+            // `Done` that counts more must name 256 files, and a payload that long makes the
+            // damage below take minutes; the round trips in `properties.rs` have one.
             payload(&Response::Transfer(TransferReply::Done(Done {
                 id,
                 failed: vec![Failure {
                     file: 2,
                     reason: FailReason::Mismatch,
                 }],
-                more_failed: 1,
+                more_failed: 0,
             }))),
         ),
         (
