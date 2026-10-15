@@ -55,7 +55,9 @@ class BuildPod {
         .where((element) => element.type == AritifactType.dylib)
         .toList();
 
-    final libName = environment.crateInfo.packageName;
+    // Changed from the template (see ../../../../README.md): the name of the library the
+    // pod links is the one Cargo gives it, with each '-' of the package name turned into '_'.
+    final libName = environment.crateInfo.packageName.replaceAll('-', '_');
 
     // If there is static lib, use it and link it with pod
     if (staticLibs.isNotEmpty) {

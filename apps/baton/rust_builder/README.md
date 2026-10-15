@@ -8,11 +8,12 @@ Android is added here when the Android app is.
 
 `cargokit/` is copied from [Cargokit](https://github.com/irondash/cargokit) by Matej Knopp
 (MIT, see `cargokit/LICENSE`) as the `flutter_rust_bridge` integration template ships it,
-with one change. To update it, run the code generator's `integrate` command in a scratch
+with two small changes. To update it, run the code generator's `integrate` command in a scratch
 project, copy the folder and make the change again.
 
-The change is in `getArtifactNames` in `cargokit/build_tool/lib/src/artifacts_provider.dart`:
-the library name has each `-` turned into `_`, because Cargo names the library of the package
-`baton-ffi` `libbaton_ffi.a`, and the template looks for `libbaton-ffi.a`. The crate in the
-template is called `rust_lib_` followed by the name of the app, so it has no `-` to trip over.
-`test/cargokit_test.dart` fails if the line is lost.
+The changes are one line each, in `cargokit/build_tool/lib/src`: `getArtifactNames` in
+`artifacts_provider.dart`, and `libName` in `build_pod.dart`. Both turn each `-` of the package
+name into `_`, because Cargo names the library of the package `baton-ffi` `libbaton_ffi.a`, and
+the template looks for, and writes, `libbaton-ffi.a`. The crate in the template is called
+`rust_lib_` followed by the name of the app, so it has no `-` to trip over.
+`test/cargokit_test.dart` fails if either line is lost.
