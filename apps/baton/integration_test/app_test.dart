@@ -11,6 +11,7 @@
 
 import 'dart:async';
 import 'dart:io' show Directory, File;
+import 'dart:io' as io show Platform;
 
 import 'package:baton/src/app.dart';
 import 'package:baton/src/awake.dart';
@@ -64,6 +65,17 @@ void main() {
 
       expect(path, startsWith('/'));
       expect(path, endsWith('/Library/Application Support'));
+      // It is the folder that every earlier build used. They found it from HOME, which for an app
+      // is the folder of the app. A phone that is set up already keeps its key and its devices
+      // only if the two are the same folder, whichever way a link in the path is written.
+      final home = io.Platform.environment['HOME'];
+      expect(home, isNotNull, reason: 'a simulator gives HOME');
+      expect(
+        Directory(path).resolveSymbolicLinksSync(),
+        Directory('$home/Library/Application Support')
+            .resolveSymbolicLinksSync(),
+        reason: 'the folder that HOME names',
+      );
       // The iOS app makes Baton's folder there when it opens, and leaves it out of backups.
       expect(
         Directory('$path/${RustBackend.folderName}').existsSync(),
