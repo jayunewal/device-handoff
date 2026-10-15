@@ -30,6 +30,8 @@ This document describes how Baton is put together. The trust model is in [securi
 | `baton-agent` | The parts that touch the desktop: reading and writing the clipboard, opening links, and acting on the per-device policies that open or apply what arrives instead of leaving it in the inbox. | Yes (desktop) |
 | `baton-app` | What a graphical front end calls: start the node, pair, send, read the inbox and hear what happens, as plain values and a stream of events. It puts the core's parts in the order a screen needs them and holds no protocol logic. | No |
 | `baton-ffi` | The bridge to Dart: Dart-friendly copies of `baton-app`'s values and calls, and the glue that `flutter_rust_bridge` generates around them. It decides nothing. | Generated glue only |
+| `baton-stream` | Window streaming (milestone 5), not built yet: the messages and the frame header, the rules for frames in flight, recovery and rate, the viewer's reordering, and the checks that confine input to the shared window. No I/O and no platform code, so all of it can be tested on any computer. See [ADR 0009](adr/0009-window-streaming.md). | No |
+| `baton-stream-abi` | Planned: the small C interface through which the Apple code in the app (capture, encoding, decoding) hands frames to `baton-stream` and takes them from it. When it exists it holds the only hand-written `unsafe` in the repository, in a crate of its own as CONTRIBUTING.md asks. | Only the interface |
 | UI | Presents devices, pairing and received items. The command-line program (`baton-cli`, the `baton` binary) came first; the Flutter app in `apps/baton`, starting with iPhone, iPad and Mac, calls `baton-app` through `baton-ffi`. | Yes |
 
 The Flutter app reaches `baton-app` through `baton-ffi` (see [The bridge](#the-bridge)), the only crate in the repository that holds `unsafe` code, and only in the glue it generates. On mobile the app implements the equivalent of `baton-agent` natively (share sheet, Shortcuts, Android intents), because those platforms do not let a background process read the clipboard or open links the way a desktop agent does.
@@ -194,6 +196,8 @@ Some things only native code can do, and they are kept out of the core:
 | Clipboard | Pasteboard | Win32 clipboard | X11 or Wayland | ClipboardManager (foreground only) | UIPasteboard (foreground only, paste banner) |
 | Open a link | Launch Services | ShellExecute | xdg-open | Intents | UIApplication |
 | Window capture (milestone 5) | ScreenCaptureKit | Windows.Graphics.Capture | PipeWire | MediaProjection | ReplayKit (view only) |
+| Video encoder and decoder (milestone 5) | VideoToolbox | Later | Later | Later | VideoToolbox (decode first) |
+| Input from a viewer (milestone 5) | CGEvent, with the person's consent | Later | Later | Later | Not applicable |
 | Background connection | Yes | Yes | Yes | Foreground service | No; push notification wakes the app |
 
 ## Non-goals
