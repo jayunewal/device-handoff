@@ -30,5 +30,12 @@ pub const KIND_VIDEO: u8 = 2;
 /// First byte of a unidirectional stream that carries control messages.
 pub const KIND_CONTROL: u8 = 3;
 
-/// Largest encoded frame, header excluded, in bytes.
-pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
+// A receiver tells the kinds apart by this byte alone, and stops a stream whose kind it does not
+// know (docs/protocol.md section 8). The kinds live in two crates, so the check that no two of
+// them are the same is here, where all three can be seen, and fails to compile when a kind is
+// added with a value that is taken.
+const _: () = {
+    assert!(baton_proto::transfer::lane::KIND_LANE != KIND_VIDEO);
+    assert!(baton_proto::transfer::lane::KIND_LANE != KIND_CONTROL);
+    assert!(KIND_VIDEO != KIND_CONTROL);
+};

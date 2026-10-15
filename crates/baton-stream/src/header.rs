@@ -137,10 +137,10 @@ pub struct FrameHeader {
     /// those that were abandoned later.
     pub number: u64,
     /// The newest frame that the viewer must have decoded before this one. It is the frame's own
-    /// number for a key frame. For any other frame it is the newest frame before this one that
-    /// something may refer to, so frames that nothing refers to can be skipped. For a recovery
-    /// frame it is the newest such frame that the source knows the viewer holds, and it can be
-    /// in an earlier chain.
+    /// number for a key frame, which means that a key frame needs no other frame. For any other
+    /// frame it is the newest frame before this one that something may refer to, so frames that
+    /// nothing refers to can be skipped. For a recovery frame it is the newest such frame that
+    /// the source knows the viewer holds, and it can be in an earlier chain.
     pub depends_on: u64,
     /// Counts the chains of a session. A chain is a run of frames that are decoded one after the
     /// other, and it begins at a key frame or at a recovery frame.
@@ -532,6 +532,34 @@ mod tests {
                 let again = header.encode().unwrap();
                 prop_assert_eq!(bytes.get(..FrameHeader::LEN), Some(&again[..]));
                 prop_assert_eq!(rest.len(), bytes.len() - FrameHeader::LEN);
+            }
+        }
+
+        // Random bytes start with the kind of a frame of video once in 256 cases and almost
+        // never end in defined flags, so the property above rarely gets past the first byte.
+        // This one starts with the kind, makes the flags mostly defined and the length mostly
+        // whole, which puts the cut, the flag and the dependency checks, and the writing back of
+        // what is accepted, under a property too.
+        #[test]
+        fn bytes_that_start_like_a_header_are_read_or_refused_and_never_a_panic(
+            body in any::<[u8; 48]>(),
+            flags in prop_oneof![any::<u8>(), 0_u8..8],
+            tail in proptest::collection::vec(any::<u8>(), 0..8),
+            len in prop_oneof![Just(FrameHeader::LEN), 0..=FrameHeader::LEN + 8],
+        ) {
+            let mut bytes = vec![crate::KIND_VIDEO];
+            bytes.extend_from_slice(&body);
+            bytes.push(flags);
+            bytes.extend_from_slice(&tail);
+            bytes.truncate(len);
+            match FrameHeader::parse(&bytes) {
+                Ok((header, rest)) => {
+                    let again = header.encode().unwrap();
+                    prop_assert_eq!(bytes.get(..FrameHeader::LEN), Some(&again[..]));
+                    prop_assert_eq!(rest.len(), bytes.len() - FrameHeader::LEN);
+                }
+                Err(HeaderError::Truncated) => prop_assert!(bytes.len() < FrameHeader::LEN),
+                Err(_) => prop_assert!(bytes.len() >= FrameHeader::LEN),
             }
         }
     }
