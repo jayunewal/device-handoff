@@ -17,6 +17,11 @@ use baton_proto::{device::sanitize_text, message::DeclineReason};
 /// The longest message kept, in characters.
 const MAX_MESSAGE_CHARS: usize = 300;
 
+/// The longest part of what the core said that is repeated inside a longer sentence, in
+/// characters. The sentence is cut at [`MAX_MESSAGE_CHARS`], and what is cut must not be the
+/// advice at its end.
+const MAX_DETAIL_CHARS: usize = 120;
+
 /// What kind of thing went wrong, so that a screen can decide what to offer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorKind {
@@ -98,7 +103,10 @@ impl Error {
         match error {
             Core::Network { .. } | Core::Timeout(_) => Self::new(
                 ErrorKind::Network,
-                format!("Baton could not start its network connection ({error})."),
+                format!(
+                    "Baton could not start its network connection ({}).",
+                    detail(error)
+                ),
             ),
             other => Self::local(other),
         }
@@ -126,13 +134,19 @@ impl Error {
                     file_name(path)
                 ),
             ),
-            Core::WritableByOthers { path, .. } => Self::new(
-                ErrorKind::Storage,
-                format!(
-                    "Other users of this device can change {}, so Baton will not use it.",
+            Core::WritableByOthers { path, .. } => {
+                let what = if path.is_dir() {
+                    "the folder Baton keeps its files in".to_owned()
+                } else {
                     file_name(path)
-                ),
-            ),
+                };
+                Self::new(
+                    ErrorKind::Storage,
+                    format!(
+                        "Other users of this device can change {what}, so Baton will not use it."
+                    ),
+                )
+            }
             Core::Io { .. }
             | Core::Invalid { .. }
             | Core::UnsupportedVersion { .. }
@@ -156,8 +170,9 @@ impl Error {
                 Self::new(
                     ErrorKind::Unreachable,
                     format!(
-                        "Could not reach the other device ({error}). Baton has to be open on \
-                         it, and both devices need to be online."
+                        "Could not reach the other device ({}). Baton has to be open on \
+                         it, and both devices need to be online.",
+                        detail(error)
                     ),
                 )
             }
@@ -172,8 +187,9 @@ impl Error {
                 Self::new(
                     ErrorKind::Unreachable,
                     format!(
-                        "Could not reach {device} ({error}). Baton has to be open on it, and \
-                         both devices need to be online."
+                        "Could not reach {device} ({}). Baton has to be open on it, and \
+                         both devices need to be online.",
+                        detail(error)
                     ),
                 )
             }
@@ -233,6 +249,19 @@ fn one_line(text: &str) -> String {
     sanitize_text(text, MAX_MESSAGE_CHARS).unwrap_or_default()
 }
 
+/// What the core said about `error`, short enough to sit inside a sentence of ours: when it
+/// has to be cut, it is cut here and marked, so that the words after it survive.
+fn detail(error: &Core) -> String {
+    let said = error.to_string();
+    let whole = sanitize_text(&said, usize::MAX).unwrap_or_default();
+    if whole.chars().count() <= MAX_DETAIL_CHARS {
+        return whole;
+    }
+    let mut kept = sanitize_text(&said, MAX_DETAIL_CHARS - 1).unwrap_or_default();
+    kept.push('…');
+    kept
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,6 +285,56 @@ mod tests {
         assert_eq!(error.kind(), ErrorKind::Unreachable);
         assert!(!error.message().contains(['\n', '\u{1b}']), "{error}");
         assert!(error.message().contains("Kitchen iPad"));
+    }
+
+    #[test]
+    fn a_long_reason_from_the_core_does_not_push_the_advice_out() {
+        let long = Core::Closed {
+            code: 7,
+            reason: "x ".repeat(400),
+        };
+        for error in [
+            Error::reaching(&long, "Kitchen iPad"),
+            Error::pairing(&long),
+        ] {
+            assert_eq!(error.kind(), ErrorKind::Unreachable);
+            assert!(
+                error.message().contains("Baton has to be open on"),
+                "{error}"
+            );
+            assert!(error.message().ends_with("online."), "{error}");
+            assert!(error.message().chars().count() <= MAX_MESSAGE_CHARS);
+            assert!(error.message().contains('…'), "{error}");
+        }
+        let short = Core::Closed {
+            code: 7,
+            reason: "no".to_owned(),
+        };
+        assert!(!Error::reaching(&short, "Mac").message().contains('…'));
+    }
+
+    #[test]
+    fn a_folder_that_others_can_change_is_called_a_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = Core::WritableByOthers {
+            path: dir.path().to_owned(),
+            mode: 0o777,
+        };
+        let message = Error::local(&folder).message().to_owned();
+        assert!(
+            message.contains("the folder Baton keeps its files in"),
+            "{message}"
+        );
+        assert!(
+            !message.contains(&*dir.path().file_name().unwrap().to_string_lossy()),
+            "{message}"
+        );
+
+        let file = Core::WritableByOthers {
+            path: dir.path().join("config.toml"),
+            mode: 0o666,
+        };
+        assert!(Error::local(&file).message().contains("config.toml"));
     }
 
     #[test]
