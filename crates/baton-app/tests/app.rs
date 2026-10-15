@@ -491,8 +491,9 @@ async fn a_folder_that_cannot_be_used_is_reported_as_storage() {
 #[tokio::test]
 async fn withdrawing_an_offer_just_after_a_yes_reports_what_happened() {
     // A sheet that closes as the person taps Yes withdraws the offer in the same breath.
-    // Whichever of the two the devices went by, the screen must be told what happened to
-    // them: a yes cannot be taken back, and a withdrawal that came first is not a pairing.
+    // Whichever of the two reached the node first, the screen must be told what happened to
+    // the devices: a yes that was claimed cannot be taken back, and a withdrawal that came
+    // first is not a pairing.
     for _ in 0..3 {
         let a = Dev::start("Device A").await;
         let b = Dev::start("Device B").await;

@@ -319,7 +319,9 @@ impl App {
         let weak = Arc::downgrade(&self.inner);
         tokio::spawn(async move {
             // What the node decided is what is reported. A withdrawal that comes just after
-            // the person said yes is too late, and the pairing is reported as it happened.
+            // the person said yes is too late if the node had claimed the yes by then, and
+            // the pairing is reported as it happened. If the withdrawal got there first,
+            // the yes is lost, and the offer is reported as withdrawn.
             let outcome = outcome_of(offer.wait_or_withdraw(cancel.cancelled_owned()).await);
             if let Some(inner) = weak.upgrade() {
                 inner.finish_offer(generation, outcome);
@@ -329,6 +331,10 @@ impl App {
     }
 
     /// Withdraws the offer that is showing, if there is one. [`Event::OfferEnded`] follows.
+    ///
+    /// Do not call this just after [`answer_pairing`](Self::answer_pairing) with a yes: the
+    /// offer ends by itself then, and a withdrawal that reaches the node before the yes
+    /// does wins. [`Event::OfferEnded`] says which it was.
     pub fn cancel_offer(&self) {
         if let Some(open) = locked(&self.inner.offer).as_ref() {
             open.cancel.cancel();
@@ -337,6 +343,9 @@ impl App {
 
     /// Answers a [`PairingRequest`]. Returns `false` if it is not waiting any more, because
     /// it was answered already or the offer ended.
+    ///
+    /// `true` means the answer was passed on, not that the devices paired: the pairing is
+    /// saved a moment later, and [`Event::OfferEnded`] reports how it went.
     pub fn answer_pairing(&self, request: u64, accept: bool) -> bool {
         let waiting = locked(&self.inner.questions.waiting).remove(&request);
         waiting.is_some_and(|answer| answer.send(accept).is_ok())

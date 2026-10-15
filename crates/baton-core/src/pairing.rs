@@ -369,8 +369,10 @@ impl PairOffer {
 
     /// Withdraws the offer. A request already waiting for the person is abandoned.
     ///
-    /// This has no effect on an offer that a "yes" has claimed: the person's answer is
-    /// final. Whoever waits for the offer is told how it ended either way.
+    /// This has no effect on an offer that a "yes" has claimed: from then on the person's
+    /// answer is final. A "yes" that has been given but not claimed yet can lose to this,
+    /// because whichever of the two reaches the offer first decides. Whoever waits for the
+    /// offer is told how it ended either way.
     pub fn cancel(&self) {
         self.shared.offers.end(self.id, OfferEnd::Cancelled);
     }
@@ -389,11 +391,14 @@ impl PairOffer {
     /// Waits as [`wait`](Self::wait) does, and withdraws the offer if `withdraw` finishes
     /// first.
     ///
-    /// What comes back is what the offer came to, not what `withdraw` asked for. If a
-    /// "yes" had been given before the offer was withdrawn, the device is paired and
-    /// that is what this returns, because a "yes" cannot be taken back. A screen that
-    /// withdraws its offer when a sheet closes, just after the person said yes, is
-    /// therefore told the truth.
+    /// What comes back is what the offer came to, not what `withdraw` asked for. If the
+    /// offer had claimed a "yes" before it was withdrawn, the device is paired and that is
+    /// what this returns, because a claimed "yes" cannot be taken back. If the withdrawal
+    /// got there first, the "yes" is lost: the offer ends with [`OfferEnd::Cancelled`] and
+    /// the device that asked is turned away. Either way the result says what happened to
+    /// the devices, so a screen that withdraws its offer when a sheet closes, just after
+    /// the person said yes, is told the truth. It is better not to withdraw after a "yes"
+    /// at all, since the offer then ends by itself.
     ///
     /// # Errors
     ///
