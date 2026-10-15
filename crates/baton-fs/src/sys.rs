@@ -2,15 +2,24 @@
 
 //! The system calls: one short function for each platform.
 //!
-//! Each function hands two paths to one system call and turns the answer into an `io::Error`.
-//! That is all that `unsafe` is used for in this crate, and each block says why it is sound.
+//! Each function hands a path (two, for a move) to one system call and turns the answer into an
+//! `io::Error`. That is all that `unsafe` is used for in this crate, and each block says why it
+//! is sound. The move is in this file. The other calls have a module each, next to it: `hide`,
+//! `mark` and `space`.
 
 use std::{
     io::{Error, ErrorKind, Result},
     path::Path,
 };
 
+mod hide;
+mod mark;
+mod space;
+
+pub(crate) use hide::hide;
 pub(crate) use imp::rename_noreplace;
+pub(crate) use mark::mark_received;
+pub(crate) use space::free_space;
 
 /// What a caller is told when the system or the volume cannot move without replacing. `why` is
 /// what the system said, so that a log can tell the causes apart.
@@ -277,7 +286,9 @@ mod imp {
     /// A path that is long gets the `\\?\` prefix, as the standard library gives one to the
     /// paths that it uses. Win32 takes a path with that prefix literally, so it is made
     /// absolute first, which also takes `.` and `..` out of it.
-    fn wide(path: &Path) -> Result<Vec<u16>> {
+    ///
+    /// The other calls of this crate that take a path on Windows use it too.
+    pub(super) fn wide(path: &Path) -> Result<Vec<u16>> {
         let path = std::path::absolute(path)?;
         let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
         if wide.contains(&0) {

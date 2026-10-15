@@ -1,39 +1,55 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! File system calls that Baton needs and the standard library does not have.
+//! File system calls that Baton needs and the standard library does not have. A file transfer
+//! (see `docs/adr/0008-file-transfer.md`) uses them to put what it received where the person
+//! looks.
 //!
-//! There is one so far, [`rename_noreplace`]: move a file or a folder to a new name, and refuse
-//! if something already has that name.
+//! - [`rename_noreplace`]: move a file or a folder to a new name, and refuse if something
+//!   already has that name.
+//! - [`mark_received`]: mark a file as one that came from elsewhere, the way a web browser marks
+//!   what it downloaded.
+//! - [`hide`]: hide a file or a folder from the person who looks in the folder it is in.
+//! - [`free_space`]: how many bytes can still be written to the volume that a folder is on.
+//!
+//! # Moving without replacing
 //!
 //! `std::fs::rename` replaces what it finds: a file, and a folder that is empty (on Windows, from
 //! Windows 10 on a file system such as NTFS). Looking first and renaming after leaves a gap in
 //! which something else can take the name, and then what the person already had is lost. A file
-//! transfer puts what it received in place with this call, so that nothing the person has is
-//! overwritten and two transfers cannot end up under one name (see
-//! `docs/adr/0008-file-transfer.md`).
+//! transfer puts what it received in place with [`rename_noreplace`], so that nothing the person
+//! has is overwritten and two transfers cannot end up under one name.
 //!
 //! # Why this crate has `unsafe` code
 //!
-//! The standard library has no safe form of the three system calls that do this, and
+//! The standard library has no safe form of the system calls that do these things, and
 //! `CONTRIBUTING.md` asks for `unsafe` code to live in a crate of its own, with the reason
 //! written down. This is that crate. `unsafe` is denied everywhere in it except in the module
-//! `sys`, which holds one short function for each platform:
+//! `sys`, which holds one short function for each call and platform:
 //!
-//! - Linux and Android: `renameat2` with `RENAME_NOREPLACE`. It is made through `syscall`, so
-//!   it does not depend on the C library having the function (glibc before 2.28 and Android
-//!   before API 30 do not).
-//! - macOS, iOS and iPadOS: `renamex_np` with `RENAME_EXCL`.
-//! - Windows: `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`.
-//! - Any other system: [`rename_noreplace`] reports [`ErrorKind::Unsupported`].
+//! - **Moving.** Linux and Android: `renameat2` with `RENAME_NOREPLACE`. It is made through
+//!   `syscall`, so it does not depend on the C library having the function (glibc before 2.28
+//!   and Android before API 30 do not). macOS, iOS and iPadOS: `renamex_np` with `RENAME_EXCL`.
+//!   Windows: `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`. Any other system:
+//!   [`rename_noreplace`] reports [`ErrorKind::Unsupported`].
+//! - **Marking.** macOS: `setxattr` for the attribute `com.apple.quarantine`. Windows needs no
+//!   `unsafe` code: the mark is a stream of the file, which the standard library can write. The
+//!   other systems have no such mark, and [`mark_received`] does nothing there.
+//! - **Hiding.** Windows: `GetFileAttributesW` and `SetFileAttributesW`. The other systems hide
+//!   a name that starts with a dot already, and [`hide`] does nothing there.
+//! - **Free space.** Linux and Android: `statvfs`. macOS, iOS and iPadOS: `statfs`. Windows:
+//!   `GetDiskFreeSpaceExW`. Any other system: [`free_space`] reports [`ErrorKind::Unsupported`].
 //!
-//! A volume that cannot do the call (some network and removable file systems) gives the same
-//! answer. This crate does not work around that on purpose. Checking first and renaming after
-//! would bring back the gap that the call exists to close, so the caller decides what to do.
+//! A volume that cannot move without replacing (some network and removable file systems) gives
+//! the same answer as a system that cannot. This crate does not work around that on purpose.
+//! Checking first and renaming after would bring back the gap that the call exists to close, so
+//! the caller decides what to do. A volume that cannot hold a mark (FAT and exFAT, most network
+//! shares) is the same for [`mark_received`]: the error says so, and the caller decides whether
+//! that matters.
 //!
 //! # What has not been run yet
 //!
-//! The tests run on Linux, macOS and Windows, in CI. The call for iPhone and iPad is the Mac's,
-//! and has not been run on a device. Android has not been run at all, and two things need a check
+//! The tests run on Linux, macOS and Windows, in CI. The calls for iPhone and iPad are the Mac's,
+//! and have not been run on a device. Android has not been run at all, and two things need a check
 //! on an emulator before the receiver is built for it. Apps on Android 8 to 10 run under a filter
 //! that may not allow `renameat2` made through `syscall`; the app would then be ended, and
 //! `ENOSYS` would not be the answer. The shared storage of Android 11 and later (the Download
@@ -97,4 +113,115 @@ mod sys;
 /// ```
 pub fn rename_noreplace(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<()> {
     sys::rename_noreplace(from.as_ref(), to.as_ref())
+}
+
+/// Marks `file` as one that came from elsewhere, the way a web browser marks what it downloaded,
+/// so that the system is careful with it the first time the person opens it.
+///
+/// - **macOS** sets the extended attribute `com.apple.quarantine` to `0083;<time>;Baton;`.
+///   Gatekeeper checks a program that has it and asks the person before it first runs, and other
+///   programs read it as "downloaded". It makes no entry in the system's record of downloads.
+/// - **Windows** writes the stream `Zone.Identifier` of the file, with `ZoneId=3`, which is the
+///   Internet zone. It is the "mark of the web" that `SmartScreen` and Office look for, and it
+///   stays with the file when it is moved or copied to another NTFS volume. There is no address
+///   in it, since a file from another device has none.
+/// - **Other systems** have no such mark (iOS and iPadOS do not quarantine what an app writes, and
+///   Linux and Android have nothing that other programs look at). The call checks that the file
+///   is there, and does nothing else.
+///
+/// The mark is meant to be put on once, when a file has been received and checked. Putting it on
+/// again replaces it.
+///
+/// # Errors
+///
+/// - [`ErrorKind::NotFound`]: there is nothing at `file`. Nothing is made.
+/// - [`ErrorKind::InvalidInput`]: the path has a NUL character in it.
+/// - Anything else the system says. The usual cause is a volume that cannot hold the mark: FAT
+///   and exFAT, and most network shares, have no extended attributes and no streams. The file is
+///   then not marked, and it is for the caller to decide whether that stops it from being handed
+///   to the person. For a file that was received and checked, it should not.
+///
+/// # Examples
+///
+/// ```
+/// # let dir = tempfile::tempdir()?;
+/// let received = dir.path().join("photo.jpg");
+/// std::fs::write(&received, "the bytes")?;
+///
+/// // A volume that cannot hold a mark is an error, and the file stays as it is.
+/// let _marked = baton_fs::mark_received(&received).is_ok();
+/// assert_eq!(std::fs::read_to_string(&received)?, "the bytes");
+/// # Ok::<(), std::io::Error>(())
+/// ```
+pub fn mark_received(file: impl AsRef<Path>) -> Result<()> {
+    sys::mark_received(file.as_ref())
+}
+
+/// Hides `path`, a file or a folder, from the person who looks in the folder it is in.
+///
+/// - **Windows** adds the attribute `FILE_ATTRIBUTE_HIDDEN`, which Explorer honours unless the
+///   person has asked to see hidden files. The other attributes are kept.
+/// - **Other systems** hide a name that starts with a dot already (the Finder, the Files app and
+///   the file managers of Linux and Android do), so the call checks that something is there and
+///   does nothing else. The name of the staging folder of a transfer starts with a dot.
+///
+/// Hiding is for tidiness and not for secrecy: anyone who types the name, or looks at hidden
+/// files, finds it.
+///
+/// # Errors
+///
+/// - [`ErrorKind::NotFound`]: there is nothing at `path`.
+/// - [`ErrorKind::InvalidInput`]: the path has a NUL character in it.
+/// - Anything else the system says, such as `PermissionDenied` for a folder whose attributes the
+///   person cannot change, or a volume that has no such attribute.
+///
+/// # Examples
+///
+/// ```
+/// # let dir = tempfile::tempdir()?;
+/// let staging = dir.path().join(".baton-incoming");
+/// std::fs::create_dir(&staging)?;
+/// baton_fs::hide(&staging)?;
+///
+/// // It is hidden, and nothing else about it changed.
+/// std::fs::write(staging.join("part"), "still writable")?;
+/// # Ok::<(), std::io::Error>(())
+/// ```
+pub fn hide(path: impl AsRef<Path>) -> Result<()> {
+    sys::hide(path.as_ref())
+}
+
+/// How many bytes can still be written to the volume that the folder `dir` is on, by the user
+/// who runs the program.
+///
+/// It is what the system says is free to this user: space reserved for the system's own use is
+/// not counted, and where there is a quota, the quota is. It is an answer for this moment, and
+/// other programs write too, so it is a check to refuse a transfer that cannot fit before the
+/// first byte is written, and not a promise that the last byte will fit. A volume that is full
+/// later still gives `NoSpace` from the write.
+///
+/// - Linux and Android: `statvfs`, in blocks that a user can use (`f_bavail`).
+/// - macOS, iOS and iPadOS: `statfs`. This does not count space that the system would make free
+///   when it is needed (purgeable space), so it is a little less than the Settings app shows.
+/// - Windows: `GetDiskFreeSpaceExW`, the free bytes available to the user who calls it.
+/// - Any other system: [`ErrorKind::Unsupported`].
+///
+/// # Errors
+///
+/// - [`ErrorKind::NotFound`]: there is no folder at `dir`.
+/// - [`ErrorKind::InvalidInput`]: the path has a NUL character in it.
+/// - Anything else the system says.
+///
+/// # Examples
+///
+/// ```
+/// # let dir = tempfile::tempdir()?;
+/// // A transfer of 3 GiB, and 1 GiB that the person keeps for themselves.
+/// let (needed, reserve) = (3_u64 << 30, 1_u64 << 30);
+/// let fits = baton_fs::free_space(dir.path())? >= needed + reserve;
+/// # let _ = fits;
+/// # Ok::<(), std::io::Error>(())
+/// ```
+pub fn free_space(dir: impl AsRef<Path>) -> Result<u64> {
+    sys::free_space(dir.as_ref())
 }

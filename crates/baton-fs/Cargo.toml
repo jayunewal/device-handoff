@@ -1,6 +1,6 @@
 [package]
 name = "baton-fs"
-description = "File system calls that Baton needs and the standard library does not have: moving a file or a folder without replacing."
+description = "File system calls that Baton needs and the standard library does not have: moving a file or a folder without replacing, marking a received file, hiding a folder, and asking how much room a volume has."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
