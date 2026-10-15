@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -154,6 +155,29 @@ class _Empty extends StatelessWidget {
 /// How long text can be before a card shows only the start of it.
 const _collapsedLines = 6;
 
+/// The space to the right of what an item holds, between it and the edge of the card.
+const _bodyInset = 8.0;
+
+/// Whether [text] takes more than [_collapsedLines] lines when it is set the way a card sets
+/// it, in [width]. How lines wrap depends on the width and on the size of the letters, which
+/// the person can change for the whole system, so this asks the layout and does not count
+/// characters or line ends.
+bool _isCut(BuildContext context, String text, TextStyle? style, double width) {
+  final painter = TextPainter(
+    text: TextSpan(
+      text: text,
+      style: DefaultTextStyle.of(context).style.merge(style),
+    ),
+    maxLines: _collapsedLines,
+    textDirection: Directionality.of(context),
+    textScaler: MediaQuery.textScalerOf(context),
+    locale: Localizations.maybeLocaleOf(context),
+  )..layout(maxWidth: math.max(0, width));
+  final cut = painter.didExceedMaxLines;
+  painter.dispose();
+  return cut;
+}
+
 class _ItemCard extends StatefulWidget {
   const _ItemCard({
     required this.received,
@@ -235,69 +259,83 @@ class _ItemCardState extends State<_ItemCard> {
       ReceivedItem_Text(:final text) => (
         Icons.notes,
         text,
-        [_TextBody(text: text, expanded: _expanded)],
+        [
+          _TextBody(
+            text: text,
+            style: theme.textTheme.bodyLarge,
+            expanded: _expanded,
+          ),
+        ],
       ),
-    };
-    final long = switch (item) {
-      ReceivedItem_Text(:final text) =>
-        text.length > 240 || '\n'.allMatches(text).length >= _collapsedLines,
-      ReceivedItem_Link() => false,
     };
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(icon, size: 20, color: theme.colorScheme.outline),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    '${_received.fromName} · $when',
-                    style: theme.textTheme.labelLarge,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Padding(
-              padding: const EdgeInsets.only(right: 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: content,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final long = switch (item) {
+              ReceivedItem_Text(:final text) => _isCut(
+                context,
+                visibleText(text),
+                theme.textTheme.bodyLarge,
+                constraints.maxWidth - _bodyInset,
               ),
-            ),
-            const SizedBox(height: 4),
-            OverflowBar(
-              alignment: MainAxisAlignment.end,
+              ReceivedItem_Link() => false,
+            };
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (long)
-                  TextButton(
-                    onPressed: () => setState(() => _expanded = !_expanded),
-                    child: Text(_expanded ? 'Show less' : 'Show more'),
-                  ),
-                if (address != null)
-                  FilledButton.tonalIcon(
-                    onPressed: () => unawaited(_open(address)),
-                    icon: const Icon(Icons.open_in_new),
-                    label: const Text('Open'),
-                  ),
-                TextButton.icon(
-                  onPressed: () => unawaited(_copy(copyThis)),
-                  icon: const Icon(Icons.copy),
-                  label: const Text('Copy'),
+                Row(
+                  children: [
+                    Icon(icon, size: 20, color: theme.colorScheme.outline),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '${_received.fromName} · $when',
+                        style: theme.textTheme.labelLarge,
+                      ),
+                    ),
+                  ],
                 ),
-                IconButton(
-                  tooltip: 'Remove',
-                  onPressed: () => unawaited(_remove()),
-                  icon: const Icon(Icons.delete_outline),
+                const SizedBox(height: 8),
+                Padding(
+                  padding: const EdgeInsets.only(right: _bodyInset),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: content,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                OverflowBar(
+                  alignment: MainAxisAlignment.end,
+                  children: [
+                    if (long)
+                      TextButton(
+                        onPressed: () => setState(() => _expanded = !_expanded),
+                        child: Text(_expanded ? 'Show less' : 'Show more'),
+                      ),
+                    if (address != null)
+                      FilledButton.tonalIcon(
+                        onPressed: () => unawaited(_open(address)),
+                        icon: const Icon(Icons.open_in_new),
+                        label: const Text('Open'),
+                      ),
+                    TextButton.icon(
+                      onPressed: () => unawaited(_copy(copyThis)),
+                      icon: const Icon(Icons.copy),
+                      label: const Text('Copy'),
+                    ),
+                    IconButton(
+                      tooltip: 'Remove',
+                      onPressed: () => unawaited(_remove()),
+                      icon: const Icon(Icons.delete_outline),
+                    ),
+                  ],
                 ),
               ],
-            ),
-          ],
+            );
+          },
         ),
       ),
     );
@@ -305,14 +343,18 @@ class _ItemCardState extends State<_ItemCard> {
 }
 
 class _TextBody extends StatelessWidget {
-  const _TextBody({required this.text, required this.expanded});
+  const _TextBody({
+    required this.text,
+    required this.style,
+    required this.expanded,
+  });
 
   final String text;
+  final TextStyle? style;
   final bool expanded;
 
   @override
   Widget build(BuildContext context) {
-    final style = Theme.of(context).textTheme.bodyLarge;
     final shown = visibleText(text);
     // Text that can be selected has no way to cut itself short, so a long one is cut short
     // here and shown whole, and selectable, once the person asks for it.

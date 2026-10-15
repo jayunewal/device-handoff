@@ -31,9 +31,10 @@ Future<InboxController> _show(
   FakeSession session, {
   List<String>? opened,
   bool opens = true,
+  Size size = const Size(900, 1600),
 }) async {
   tester.view
-    ..physicalSize = const Size(900, 1600)
+    ..physicalSize = size
     ..devicePixelRatio = 1;
   addTearDown(tester.view.reset);
   final controller = InboxController(session);
@@ -210,6 +211,89 @@ void main() {
     await tester.tap(find.text('Show less'));
     await tester.pump();
     expect(shown().maxLines, 6);
+  });
+
+  group('whether text is cut short is decided by how it wraps', () {
+    // Each of these has fewer than 240 characters or fewer than six line ends, which is what
+    // the screen once counted, and each still takes more than six lines on the screen.
+    Future<void> showText(
+      WidgetTester tester,
+      String text, {
+      Size size = const Size(900, 1600),
+    }) async {
+      final session = _session()
+        ..received = [sampleReceived(1, item: ReceivedItem.text(text: text))];
+      await _show(tester, session, size: size);
+    }
+
+    testWidgets('on a phone, four lines that each wrap twice or more', (
+      tester,
+    ) async {
+      final line = 'word ' * 11;
+      final text = List.filled(4, line.trim()).join('\n');
+      expect(text.length, lessThan(240));
+
+      await showText(tester, text, size: const Size(393, 852));
+
+      expect(find.text('Show more'), findsOneWidget);
+    });
+
+    testWidgets('when the letters are made larger', (tester) async {
+      tester.platformDispatcher.textScaleFactorTestValue = 1;
+      addTearDown(tester.platformDispatcher.clearAllTestValues);
+      final text = ('word ' * 30).trim();
+      expect(text.length, lessThan(240));
+      await showText(tester, text);
+      expect(find.text('Show more'), findsNothing, reason: 'it fits as it is');
+
+      tester.platformDispatcher.textScaleFactorTestValue = 2;
+      await tester.pumpAndSettle();
+
+      expect(find.text('Show more'), findsOneWidget);
+      await tester.tap(find.text('Show more'));
+      await tester.pump();
+      expect(find.text('Show less'), findsOneWidget);
+      expect(find.text(text), findsOneWidget, reason: 'all of it, once asked');
+    });
+
+    testWidgets('when the lines end in a carriage return and nothing else', (
+      tester,
+    ) async {
+      await showText(tester, 'a\rb\rc\rd\re\rf\rg\rh');
+
+      expect(find.text('Show more'), findsOneWidget);
+    });
+
+    testWidgets('and not when everything fits, however many characters', (
+      tester,
+    ) async {
+      // Small letters, so that more than 240 characters take fewer than six lines.
+      tester.platformDispatcher.textScaleFactorTestValue = 0.5;
+      addTearDown(tester.platformDispatcher.clearAllTestValues);
+      final text = ('word ' * 50).trim();
+      expect(text.length, greaterThan(240));
+
+      await showText(tester, text);
+
+      expect(find.text(text), findsOneWidget);
+      expect(find.text('Show more'), findsNothing);
+    });
+
+    testWidgets('six lines are shown whole, seven are cut', (tester) async {
+      final six = [for (var i = 1; i <= 6; i++) 'six $i'].join('\n');
+      final seven = [for (var i = 1; i <= 7; i++) 'seven $i'].join('\n');
+      final session = _session()
+        ..received = [
+          sampleReceived(2, item: ReceivedItem.text(text: seven)),
+          sampleReceived(1, item: ReceivedItem.text(text: six)),
+        ];
+
+      await _show(tester, session);
+
+      expect(find.text('Show more'), findsOneWidget);
+      final cut = tester.widget<Text>(find.text(seven));
+      expect(cut.maxLines, 6);
+    });
   });
 
   testWidgets('removes one item', (tester) async {
