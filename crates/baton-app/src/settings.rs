@@ -26,9 +26,16 @@ pub fn device_name(data_dir: &Path) -> Result<Option<String>> {
 /// Saves `name` as the name this device shows other devices. It takes effect the next time
 /// the app starts, and only for devices that pair after that.
 ///
-/// Every other setting in the settings file stays as it is. A name with nothing visible in
-/// it is refused.
+/// Every other setting in the settings file stays as it is.
+///
+/// # Errors
+///
+/// [`ErrorKind::BadName`](crate::ErrorKind::BadName) for a name with nothing visible in it,
+/// whose message the screen that asked for the name can show as it is.
 pub fn set_device_name(data_dir: &Path, name: &str) -> Result<()> {
+    if !Config::is_usable_device_name(name) {
+        return Err(Error::bad_name());
+    }
     let dir = DataDir::open(data_dir).map_err(|e| Error::local(&e))?;
     Config::save_device_name(&dir.config_file(), name).map_err(|e| Error::local(&e))
 }

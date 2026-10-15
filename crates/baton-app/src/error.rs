@@ -40,6 +40,8 @@ pub enum ErrorKind {
     Declined,
     /// What was to be sent is not acceptable: empty, malformed or too large.
     BadItem,
+    /// The name given for this device has nothing visible in it.
+    BadName,
     /// The pairing ticket cannot be used: not a ticket, out of date, or made by this device.
     BadTicket,
     /// The other device did not pair: declined, busy, or the ticket was used up.
@@ -81,6 +83,13 @@ impl Error {
         Self::new(
             ErrorKind::NotPaired,
             "That device is not paired with this one.",
+        )
+    }
+
+    pub(crate) fn bad_name() -> Self {
+        Self::new(
+            ErrorKind::BadName,
+            "Give this device a name with something visible in it.",
         )
     }
 

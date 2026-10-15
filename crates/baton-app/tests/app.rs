@@ -432,8 +432,22 @@ async fn the_name_a_person_chose_is_the_name_devices_see() {
         settings::device_name(dir.path()).unwrap().as_deref(),
         Some("Kitchen iPad")
     );
-    let error = settings::set_device_name(dir.path(), "  ").unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::Storage);
+    // A name with nothing in it is the person's to fix, not damage to the folder, and what
+    // the screen shows must not give the folder's path away.
+    for name in ["", "  ", "\u{200b}"] {
+        let error = settings::set_device_name(dir.path(), name).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::BadName, "{name:?}");
+        assert!(error.message().contains("name"), "{error}");
+        assert!(
+            !error.message().contains(&*dir.path().to_string_lossy()),
+            "{error}"
+        );
+    }
+    assert_eq!(
+        settings::device_name(dir.path()).unwrap().as_deref(),
+        Some("Kitchen iPad"),
+        "a name that was refused changes nothing"
+    );
 
     let app = App::start(Options::new(dir.path())).await.unwrap();
     assert_eq!(app.me().name, "Kitchen iPad");
