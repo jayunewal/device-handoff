@@ -8,13 +8,19 @@
 //! into an issue. A line is made safe for that on the way in, because these lines get pasted
 //! into a public place: it is cut to a length, characters that would act on a screen instead of
 //! showing are replaced, anything that looks like a pairing code is removed together with the
-//! rest of the event (a code is a bearer secret while its offer lasts), and so are the details that say who a device belongs to or
-//! where it is: whole keys, the account name in a path and public IP addresses (see [`hide`]).
+//! rest of the event (a code is a bearer secret while its offer lasts), and so are the details
+//! that say who a device belongs to or where it is: whole keys, the account name in a path and
+//! public IP addresses (see [`hide`]). A panic is logged too, so that it is among the lines
+//! (see [`log_panics`]).
 
 mod hide;
+mod panics;
+
+pub(crate) use panics::log_panics;
 
 use std::{
     borrow::Cow,
+    cell::Cell,
     collections::VecDeque,
     io,
     sync::{Mutex, PoisonError},
@@ -61,17 +67,18 @@ impl LogBuffer {
 
     /// Keeps the lines of `text`, made safe, and drops the oldest ones above the capacity.
     pub(crate) fn push(&self, text: &str) {
-        // The text is one event, and the parser of a pairing code ignores white space, so a
-        // code can run over several lines. What follows one in the event goes with it.
-        let text = remove_codes(text);
+        // All the work that could go wrong is done before the list is held. A panic is logged
+        // by the hook of [`log_panics`], which comes back here, and a hook that found the
+        // list held by its own thread would wait for ever.
+        let kept = kept_lines(text, self.capacity);
         // A panic while the list was held leaves it as it was, so a poisoned lock is still
         // good: a log that stopped working is the last thing to want while looking for a bug.
         let mut lines = self.lines.lock().unwrap_or_else(PoisonError::into_inner);
-        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        for line in kept {
             while lines.len() >= self.capacity.max(1) {
                 lines.pop_front();
             }
-            lines.push_back(clean(line));
+            lines.push_back(line);
         }
     }
 
@@ -122,6 +129,50 @@ impl<'a> MakeWriter<'a> for Capture {
             bytes: Vec::new(),
         }
     }
+}
+
+thread_local! {
+    /// Whether this thread is making an event safe at this moment.
+    static CLEANING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether the thread that asks is in the middle of making an event safe. The panic hook asks.
+/// A panic in the code that makes lines safe is not logged through that code again: it could
+/// fail again on its own message, and a panic inside a panic hook ends the process.
+pub(crate) fn is_cleaning() -> bool {
+    CLEANING.with(Cell::get)
+}
+
+/// Runs `work`. [`is_cleaning`] is true on this thread for as long as it runs, also when it
+/// panics, which is when the hook looks.
+fn while_cleaning<T>(work: impl FnOnce() -> T) -> T {
+    /// Puts back what was there, also when `work` unwinds.
+    struct Reset(bool);
+
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            CLEANING.with(|cleaning| cleaning.set(self.0));
+        }
+    }
+
+    let _reset = Reset(CLEANING.with(|cleaning| cleaning.replace(true)));
+    work()
+}
+
+/// The lines of the event `text` that a buffer of `capacity` lines keeps, made safe.
+fn kept_lines(text: &str, capacity: usize) -> Vec<String> {
+    while_cleaning(|| {
+        // The text is one event, and the parser of a pairing code ignores white space, so a
+        // code can run over several lines. What follows one in the event goes with it.
+        let text = remove_codes(text);
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect();
+        // An event of more lines than fit would push out its own first ones again.
+        let skipped = lines.len().saturating_sub(capacity.max(1));
+        lines.iter().skip(skipped).copied().map(clean).collect()
+    })
 }
 
 /// `line` with keys, account names and public addresses taken out, characters that would act
@@ -383,6 +434,40 @@ mod tests {
             log.lines(),
             ["2026-10-15T08:00:00Z  INFO baton_app: Baton started"]
         );
+    }
+
+    #[test]
+    fn an_event_of_more_lines_than_fit_keeps_the_last_ones() {
+        let log = buffer(3);
+
+        log.push("1\n2\n3\n4\n5\n");
+
+        assert_eq!(log.lines(), ["3", "4", "5"]);
+    }
+
+    #[test]
+    fn a_thread_is_cleaning_only_while_it_makes_an_event_safe() {
+        assert!(!is_cleaning());
+
+        while_cleaning(|| {
+            assert!(is_cleaning());
+            while_cleaning(|| ());
+            assert!(
+                is_cleaning(),
+                "the work that was going on is still going on"
+            );
+        });
+
+        assert!(!is_cleaning());
+        // Also when the work panics, which is when the panic hook asks.
+        let result = std::panic::catch_unwind(|| {
+            while_cleaning(|| {
+                assert!(is_cleaning());
+                panic!("a panic while cleaning");
+            });
+        });
+        assert!(result.is_err());
+        assert!(!is_cleaning());
     }
 
     #[test]
