@@ -183,6 +183,7 @@ jobs:
             grep -q "$key" entitlements.txt || { cat entitlements.txt; echo "$key is missing from the entitlements of $app" >&2; exit 1; }
           done
       - name: Start the app on this Mac
+        timeout-minutes: 25
         working-directory: apps/baton
         run: flutter test integration_test -d macos
       - name: Package the app
@@ -214,7 +215,7 @@ jobs:
         run: flutter pub get --enforce-lockfile
       - name: Build the app for an iPhone
         # Nothing signs it, so it cannot be installed from here. Whoever installs it builds it
-        # on their own Mac, with their own Apple ID; docs/install-on-iphone.md says how.
+        # on their own Mac, with their own Apple ID; docs/install-the-app.md says how.
         working-directory: apps/baton
         run: flutter build ios --release --no-codesign
       - name: Check that the library is in the app, with the functions that the app looks up
@@ -225,14 +226,19 @@ jobs:
           for symbol in frb_get_rust_content_hash frb_pde_ffi_dispatcher_primary frb_init_frb_dart_api_dl; do
             nm -gU "$lib" | grep -q " _$symbol\$" || { echo "$symbol is missing from $lib" >&2; exit 1; }
           done
-      - name: Start the app in an iPhone simulator
-        working-directory: apps/baton
+      - name: Start an iPhone simulator
+        # A simulator that does not come up should fail here, not use up the job's hour.
+        timeout-minutes: 10
         run: |
           set -eu
           udid=$(xcrun simctl list devices available | grep 'iPhone' | tail -n 1 | grep -oE '[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}')
           echo "Simulator: $udid"
+          echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
           xcrun simctl bootstatus "$udid" -b
-          flutter test integration_test -d "$udid"
+      - name: Start the app in the simulator
+        timeout-minutes: 25
+        working-directory: apps/baton
+        run: flutter test integration_test -d "$SIMULATOR_UDID"
 
   build:
     name: Build (${{ matrix.name }})
