@@ -31,12 +31,12 @@ FakeSession _session({List<Device> devices = const []}) => FakeSession(
   pairedDevices: devices,
 );
 
+Widget _screen(FakeSession session) => MaterialApp(
+  home: DevicesScreen(session: session, now: () => _now),
+);
+
 Future<void> _show(WidgetTester tester, FakeSession session) async {
-  await tester.pumpWidget(
-    MaterialApp(
-      home: DevicesScreen(session: session, now: () => _now),
-    ),
-  );
+  await tester.pumpWidget(_screen(session));
   await tester.pumpAndSettle();
 }
 
@@ -127,6 +127,22 @@ void main() {
 
     // A timer that is still running fails the test, so this also shows it stopped.
     await tester.pumpWidget(const SizedBox());
+    expect(session.listening, isFalse);
+  });
+
+  testWidgets('cancels the events that arrive after it has closed', (
+    tester,
+  ) async {
+    final session = _session()..holdEvents();
+    // The screen shows a spinner until the lists are read, so it never settles.
+    await tester.pumpWidget(_screen(session));
+    await tester.pump();
+    expect(session.listens, 0, reason: 'the events have not arrived yet');
+
+    await tester.pumpWidget(const SizedBox());
+    session.releaseEvents();
+    await tester.pump();
+    expect(session.listens, 1, reason: 'a stream is told to stop by a cancel');
     expect(session.listening, isFalse);
   });
 }

@@ -83,16 +83,33 @@ class FakeSession implements Session {
   /// Whether `stop` was called.
   bool stopped = false;
 
-  final _events = StreamController<Event>.broadcast();
+  late final _events = StreamController<Event>.broadcast(
+    onListen: () => listens++,
+  );
+
+  /// Makes `events` wait until [releaseEvents], as the bridge takes a moment to hand the stream
+  /// over.
+  void holdEvents() => _eventsReady = Completer<void>();
+
+  /// Lets a held `events` hand over its stream.
+  void releaseEvents() => _eventsReady?.complete();
+
+  Completer<void>? _eventsReady;
 
   /// Whether anything is listening to the events.
   bool get listening => _events.hasListener;
+
+  /// How many times anything has started to listen to the events.
+  int listens = 0;
 
   /// Hands an event to the screen, as Baton would.
   void emit(Event event) => _events.add(event);
 
   @override
-  Stream<Event> events() => _events.stream;
+  Future<Stream<Event>> events() async {
+    await _eventsReady?.future;
+    return _events.stream;
+  }
 
   @override
   Future<List<Device>> devices() async => pairedDevices;

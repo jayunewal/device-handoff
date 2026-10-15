@@ -151,7 +151,13 @@ class DevicesController extends ChangeNotifier {
   /// Starts listening for events and reads what the screen shows.
   Future<void> start() async {
     // Listening comes first, so that nothing that happens while the lists are read is lost.
-    _events = _session.events().listen(
+    final events = await _session.events();
+    if (_disposed) {
+      // Nobody is left to read them. A stream is told to stop only when someone cancels it.
+      unawaited(events.listen(null).cancel());
+      return;
+    }
+    _events = events.listen(
       _onEvent,
       onError: (Object e) => debugPrint('Baton: events: $e'),
     );

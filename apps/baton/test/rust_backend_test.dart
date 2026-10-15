@@ -61,7 +61,7 @@ void main() {
         ),
       ),
     );
-    final ended = session.events().isEmpty;
+    final ended = (await session.events()).isEmpty;
     await session.stop();
     expect(await ended, isTrue, reason: 'the events end when Baton stops');
     final again = await _backend(folder).start();

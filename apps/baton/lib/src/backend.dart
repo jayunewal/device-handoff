@@ -38,9 +38,10 @@ abstract interface class Session {
   /// This device.
   Me get me;
 
-  /// Events from now on. Take the stream before reading the lists, so that nothing that
-  /// happens in between is lost. It ends when Baton stops.
-  Stream<Event> events();
+  /// Events from now on. Wait for the stream before reading the lists, so that nothing that
+  /// happens in between is lost: once it is here, Baton is sending to it. It ends when Baton
+  /// stops.
+  Future<Stream<Event>> events();
 
   /// The devices paired with this one.
   Future<List<Device>> devices();

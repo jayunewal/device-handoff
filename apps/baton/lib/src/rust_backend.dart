@@ -116,7 +116,7 @@ class _RustSession implements Session {
   Me get me => _baton.me();
 
   @override
-  Stream<Event> events() => _baton.events();
+  Future<Stream<Event>> events() => _baton.events();
 
   @override
   Future<List<Device>> devices() => _baton.devices();
