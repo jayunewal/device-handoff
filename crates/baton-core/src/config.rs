@@ -18,7 +18,7 @@ use url::Url;
 
 use crate::{
     error::{Error, Result},
-    fsutil::{Access, read_text},
+    fsutil::{Access, read_text, write_atomic},
 };
 
 /// How long a pairing ticket stays valid unless configured otherwise.
@@ -194,11 +194,17 @@ impl Config {
         toml::to_string_pretty(self).map_err(|e| Error::Config(e.to_string()))
     }
 
+    /// Whether `name` can be this device's name: something visible is left of it once it is
+    /// cleaned for display. A name made of spaces, or of characters that draw nothing, is
+    /// not usable.
+    pub fn is_usable_device_name(name: &str) -> bool {
+        sanitize_display_name(name) != FALLBACK_NAME || name.trim() == FALLBACK_NAME
+    }
+
     /// Checks that the settings make sense together.
     pub fn validate(&self) -> Result<()> {
         if let Some(name) = &self.device_name
-            && sanitize_display_name(name) == FALLBACK_NAME
-            && name.trim() != FALLBACK_NAME
+            && !Self::is_usable_device_name(name)
         {
             return Err(config_error(
                 "device_name must contain at least one visible character",
@@ -216,6 +222,32 @@ impl Config {
             Some(name) => sanitize_display_name(name),
             None => sanitize_display_name(&gethostname::gethostname().to_string_lossy()),
         }
+    }
+
+    /// Records `name` as this device's name in the settings file at `path`, for an app that
+    /// asks the person for one.
+    ///
+    /// The file is made if there is none. Every other setting in it stays as it is, but
+    /// comments in a file that already exists are lost. Nothing is written unless the result
+    /// would load: a name with nothing visible in it is an error, and so is a file that is
+    /// damaged already, which is left as it was.
+    pub fn save_device_name(path: &Path, name: &str) -> Result<()> {
+        let mut table = match read_text(path, Access::OthersMayRead)? {
+            Some(text) => text
+                .parse::<toml::Table>()
+                .map_err(|e| Error::invalid(path, e.message()))?,
+            None => toml::Table::new(),
+        };
+        table.insert(
+            "device_name".to_owned(),
+            toml::Value::String(name.to_owned()),
+        );
+        let text = toml::to_string(&table).map_err(|e| Error::Config(e.to_string()))?;
+        Self::from_toml(&text).map_err(|e| match e {
+            Error::Config(message) => Error::invalid(path, &message),
+            other => other,
+        })?;
+        write_atomic(path, text.as_bytes())
     }
 }
 
@@ -335,6 +367,82 @@ fn config_error(message: impl Into<String>) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saving_a_name_makes_the_file_and_changes_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        Config::save_device_name(&path, "Kitchen iPad").unwrap();
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.device_name.as_deref(), Some("Kitchen iPad"));
+        assert_eq!(
+            Config {
+                device_name: None,
+                ..config
+            },
+            Config::default()
+        );
+    }
+
+    #[test]
+    fn saving_a_name_keeps_the_other_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "device_name = \"Old\"\n[network]\nlan_discovery = false\n[handoff]\nmax_inbox_items = 50\n",
+        )
+        .unwrap();
+        Config::save_device_name(&path, "New").unwrap();
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.device_name.as_deref(), Some("New"));
+        assert!(!config.network.lan_discovery);
+        assert_eq!(config.handoff.max_inbox_items, 50);
+    }
+
+    #[test]
+    fn a_name_with_nothing_visible_in_it_is_refused_and_nothing_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        for name in ["", "   ", "\u{200b}\u{7}"] {
+            let error = Config::save_device_name(&path, name).unwrap_err();
+            assert!(error.to_string().contains("visible character"), "{error}");
+        }
+        assert!(!path.exists());
+
+        std::fs::write(&path, "device_name = \"Old\"\n").unwrap();
+        Config::save_device_name(&path, " ").unwrap_err();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "device_name = \"Old\"\n"
+        );
+    }
+
+    #[test]
+    fn what_makes_a_name_usable_is_what_the_settings_file_accepts() {
+        for name in [
+            "Kitchen iPad",
+            " Mac ",
+            "Jay's phone",
+            "電話",
+            "unnamed device",
+        ] {
+            assert!(Config::is_usable_device_name(name), "{name:?}");
+        }
+        for name in ["", "   ", "\u{200b}\u{7}", "\u{2800}"] {
+            assert!(!Config::is_usable_device_name(name), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn a_damaged_file_is_not_replaced_by_a_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "network = [oops").unwrap();
+        let error = Config::save_device_name(&path, "New").unwrap_err();
+        assert!(error.to_string().contains("config.toml"), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "network = [oops");
+    }
 
     #[test]
     fn defaults_are_valid_and_cautious() {
