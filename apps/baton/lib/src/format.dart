@@ -42,19 +42,23 @@ const _months = [
   'Dec',
 ];
 
-/// When a device was last heard from, in words: "seen 5 minutes ago", "seen on Oct 14" or
-/// "not seen yet". [seconds] counts from the Unix epoch, as the app layer gives it.
-String lastSeen(int? seconds, DateTime now) {
-  if (seconds == null) return 'not seen yet';
+/// How long ago something happened, in words: "just now", "5 minutes ago" or "on Oct 14".
+/// [seconds] counts from the Unix epoch, as the app layer gives it.
+String since(int seconds, DateTime now) {
   final then = DateTime.fromMillisecondsSinceEpoch(seconds * 1000);
   final ago = now.difference(then);
-  if (ago.inMinutes < 1) return 'seen just now';
-  if (ago.inHours < 1) return 'seen ${_count(ago.inMinutes, 'minute')} ago';
-  if (ago.inDays < 1) return 'seen ${_count(ago.inHours, 'hour')} ago';
-  if (ago.inDays < 7) return 'seen ${_count(ago.inDays, 'day')} ago';
+  if (ago.inMinutes < 1) return 'just now';
+  if (ago.inHours < 1) return '${_count(ago.inMinutes, 'minute')} ago';
+  if (ago.inDays < 1) return '${_count(ago.inHours, 'hour')} ago';
+  if (ago.inDays < 7) return '${_count(ago.inDays, 'day')} ago';
   final day = '${_months[then.month - 1]} ${then.day}';
-  return then.year == now.year ? 'seen on $day' : 'seen on $day, ${then.year}';
+  return then.year == now.year ? 'on $day' : 'on $day, ${then.year}';
 }
+
+/// When a device was last heard from, in words: "seen 5 minutes ago", "seen on Oct 14" or
+/// "not seen yet".
+String lastSeen(int? seconds, DateTime now) =>
+    seconds == null ? 'not seen yet' : 'seen ${since(seconds, now)}';
 
 String _count(int n, String unit) => n == 1 ? '1 $unit' : '$n ${unit}s';
 
@@ -74,3 +78,30 @@ String sentence(String message) {
   final capital = text[0].toUpperCase() + text.substring(1);
   return '.!?'.contains(capital[capital.length - 1]) ? capital : '$capital.';
 }
+
+/// What a ping found, as a sentence: "Kitchen iPad answered in 24 ms, over your local
+/// network."
+String describeReach(String name, Reach reach) {
+  final route = switch (reach.route) {
+    Route.lan => ', over your local network',
+    Route.direct => ', directly over the internet',
+    Route.relay => ', through the relay, which is slower',
+    Route.unknown => '',
+  };
+  return '$name answered in ${reach.roundTripMs} ms$route.';
+}
+
+// What another device sends is shown as it is, except for the characters that change which
+// way text runs or that no one can see. A line that reads "https://example.com" can be made to
+// show something else with them, and the copy a person pastes would not be what they read.
+final _hidden = RegExp(
+  r'[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]',
+);
+
+/// [text] from another device, made fit to show: line ends are the same everywhere, and each
+/// character that cannot be seen or that turns text round is shown as a replacement mark (�).
+/// Copy the original, not this.
+String visibleText(String text) => text
+    .replaceAll('\r\n', '\n')
+    .replaceAll('\r', '\n')
+    .replaceAll(_hidden, '\uFFFD');

@@ -91,4 +91,61 @@ void main() {
     expect(sentence(''), '');
     expect(sentence('   '), '');
   });
+
+  test('how long ago something came is said without the word "seen"', () {
+    expect(since(ago(Duration.zero), now), 'just now');
+    expect(since(ago(const Duration(minutes: 5)), now), '5 minutes ago');
+    expect(since(ago(const Duration(hours: 2)), now), '2 hours ago');
+    expect(since(ago(const Duration(days: 3)), now), '3 days ago');
+    expect(since(ago(const Duration(days: 7)), now), 'on Oct 8');
+    expect(since(ago(const Duration(days: 300)), now), 'on Dec 19, 2025');
+  });
+
+  test('what a ping found is told with the way the traffic went', () {
+    String told(Route route) =>
+        describeReach('Kitchen iPad', Reach(roundTripMs: 24, route: route));
+    expect(
+      told(Route.lan),
+      'Kitchen iPad answered in 24 ms, over your local network.',
+    );
+    expect(
+      told(Route.direct),
+      'Kitchen iPad answered in 24 ms, directly over the internet.',
+    );
+    expect(
+      told(Route.relay),
+      'Kitchen iPad answered in 24 ms, through the relay, which is slower.',
+    );
+    expect(told(Route.unknown), 'Kitchen iPad answered in 24 ms.');
+  });
+
+  group('text from another device is made fit to show', () {
+    test('ordinary text, in any script, is left as it is', () {
+      const text = 'Buy milk\n\tand eggs — 牛乳 — חלב — 🥛';
+      expect(visibleText(text), text);
+    });
+
+    test('line ends are the same everywhere', () {
+      expect(visibleText('one\r\ntwo\rthree\nfour'), 'one\ntwo\nthree\nfour');
+    });
+
+    test('characters that turn text round are shown as a mark', () {
+      // A line that reads as a harmless address, until the override is taken away.
+      const fake = 'https://example.com/\u202Egpj.exe';
+      expect(visibleText(fake), 'https://example.com/\uFFFDgpj.exe');
+      for (final c in [0x202A, 0x202B, 0x202C, 0x202D, 0x202E]) {
+        expect(visibleText('a${String.fromCharCode(c)}b'), 'a\uFFFDb');
+      }
+      for (final c in [0x2066, 0x2067, 0x2068, 0x2069]) {
+        expect(visibleText('a${String.fromCharCode(c)}b'), 'a\uFFFDb');
+      }
+    });
+
+    test('control characters that cannot be seen are shown as a mark', () {
+      expect(
+        visibleText('a\u0000b\u0007c\u001Bd\u007Fe\u0085f'),
+        'a\uFFFDb\uFFFDc\uFFFDd\uFFFDe\uFFFDf',
+      );
+    });
+  });
 }

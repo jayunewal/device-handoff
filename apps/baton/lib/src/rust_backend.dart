@@ -145,5 +145,29 @@ class _RustSession implements Session {
   void cancelJoin() => _baton.cancelJoin();
 
   @override
+  Future<void> sendLink(String id, String url, {String? title}) =>
+      _baton.sendLink(id: id, url: url, title: title);
+
+  @override
+  Future<void> sendText(String id, String text) =>
+      _baton.sendText(id: id, text: text);
+
+  @override
+  Future<Reach> ping(String id) => _baton.ping(id: id);
+
+  @override
+  Future<List<Received>> inbox() => _baton.inbox();
+
+  @override
+  Future<bool> removeReceived(int number) =>
+      _baton.removeReceived(number: number);
+
+  @override
+  Future<int> clearInbox() async => (await _baton.clearInbox()).toInt();
+
+  @override
+  String? webAddress(String url) => api.webAddress(url: url);
+
+  @override
   Future<void> stop() => _baton.stop();
 }

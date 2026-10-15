@@ -15,6 +15,7 @@ export 'rust/api/model.dart'
         Event_OfferEnded,
         Event_PairingRequestEnded,
         Event_PairingRequested,
+        Event_Received,
         Event_Resync,
         JoinProgress,
         JoinProgress_Code,
@@ -31,7 +32,13 @@ export 'rust/api/model.dart'
         OfferOutcome_Failed,
         OfferOutcome_Paired,
         PairingRequest,
-        Platform;
+        Platform,
+        Reach,
+        Received,
+        ReceivedItem,
+        ReceivedItem_Link,
+        ReceivedItem_Text,
+        Route;
 
 /// Opens the folder where Baton keeps its files and starts Baton in it.
 abstract interface class Backend {
@@ -93,6 +100,33 @@ abstract interface class Session {
 
   /// Gives up on a [joinPairing] that is still waiting.
   void cancelJoin();
+
+  /// Sends a web link to a paired device. Throws a `BatonError` that says why not, of kind
+  /// `badItem` if [url] is not a full web address, `notPaired`, `unreachable` if the device
+  /// cannot be reached, or `declined` if it answers and does not take the link.
+  Future<void> sendLink(String id, String url, {String? title});
+
+  /// Sends text to a paired device. Throws a `BatonError` as [sendLink] does, with `badItem`
+  /// for text that is empty or longer than the settings allow.
+  Future<void> sendText(String id, String text);
+
+  /// Checks that a paired device answers, and how its traffic gets here. Throws a
+  /// `BatonError` of kind `notPaired` or `unreachable`.
+  Future<Reach> ping(String id);
+
+  /// What other devices have sent, newest first.
+  Future<List<Received>> inbox();
+
+  /// Removes one item from the inbox. Returns whether there was such an item.
+  Future<bool> removeReceived(int number);
+
+  /// Removes everything from the inbox. Returns how many items it held.
+  Future<int> clearInbox();
+
+  /// The address to open for a received link, or `null` if it is not a web address. A screen
+  /// opens a link another device sent only if this gives an address, and then opens that
+  /// address, not the text that was sent: the rule is kept in Rust, once, for every screen.
+  String? webAddress(String url);
 
   /// Stops Baton and lets go of its folder.
   Future<void> stop();

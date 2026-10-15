@@ -212,6 +212,143 @@ class FakeSession implements Session {
   @override
   void cancelJoin() => joinsCancelled++;
 
+  /// What `sendLink` and `sendText` were given and accepted, in order: a link as its address and
+  /// title, text as the text.
+  final List<({String id, String? url, String? title, String? text})> sent = [];
+
+  /// What `sendLink` and `sendText` throw, if they should fail.
+  Object? sendFailure;
+
+  /// Makes `sendLink` and `sendText` wait until [releaseSend], as a send to a device that is
+  /// slow to answer does.
+  void holdSend() => _sendReady = Completer<void>();
+
+  /// Lets the held sends answer.
+  void releaseSend() => _sendReady?.complete();
+
+  Completer<void>? _sendReady;
+
+  Future<void> _send(
+    String id, {
+    String? url,
+    String? title,
+    String? text,
+  }) async {
+    await _sendReady?.future;
+    final failure = sendFailure;
+    if (failure != null) throw failure;
+    sent.add((id: id, url: url, title: title, text: text));
+  }
+
+  @override
+  Future<void> sendLink(String id, String url, {String? title}) =>
+      _send(id, url: url, title: title);
+
+  @override
+  Future<void> sendText(String id, String text) => _send(id, text: text);
+
+  /// The ids that `ping` was given, in order.
+  final List<String> pinged = [];
+
+  /// What `ping` gives.
+  Reach pingResult = const Reach(roundTripMs: 24, route: Route.lan);
+
+  /// What `ping` throws, if it should fail.
+  Object? pingFailure;
+
+  /// Makes `ping` wait until [releasePing], as a device that is slow to answer does.
+  void holdPing() => _pingReady = Completer<void>();
+
+  /// Lets the held pings answer.
+  void releasePing() => _pingReady?.complete();
+
+  Completer<void>? _pingReady;
+
+  @override
+  Future<Reach> ping(String id) async {
+    pinged.add(id);
+    await _pingReady?.future;
+    final failure = pingFailure;
+    if (failure != null) throw failure;
+    return pingResult;
+  }
+
+  /// What `inbox` gives, newest first.
+  List<Received> received = [];
+
+  /// What `inbox`, `removeReceived` and `clearInbox` throw, if they should fail.
+  Object? inboxFailure;
+
+  /// How many times `inbox` was called.
+  int inboxReads = 0;
+
+  /// Makes `inbox` wait until [releaseInbox]. What it then gives is the list as it was when
+  /// it was asked.
+  void holdInbox() => _inboxReady = Completer<void>();
+
+  /// Lets the held reads of `inbox` answer.
+  void releaseInbox() => _inboxReady?.complete();
+
+  Completer<void>? _inboxReady;
+
+  /// Puts [item] at the top of the inbox and tells the screens, as Baton does when a device
+  /// hands it something.
+  void arrive(Received item) {
+    received = [item, ...received];
+    emit(Event_Received(received: item));
+  }
+
+  @override
+  Future<List<Received>> inbox() async {
+    inboxReads++;
+    final asked = received;
+    await _inboxReady?.future;
+    final failure = inboxFailure;
+    if (failure != null) throw failure;
+    return asked;
+  }
+
+  /// The numbers that `removeReceived` was given, in order.
+  final List<int> removed = [];
+
+  @override
+  Future<bool> removeReceived(int number) async {
+    final failure = inboxFailure;
+    if (failure != null) throw failure;
+    removed.add(number);
+    final before = received.length;
+    received = [
+      for (final item in received)
+        if (item.number != number) item,
+    ];
+    return received.length < before;
+  }
+
+  /// How many times `clearInbox` emptied the inbox.
+  int clears = 0;
+
+  @override
+  Future<int> clearInbox() async {
+    final failure = inboxFailure;
+    if (failure != null) throw failure;
+    clears++;
+    final count = received.length;
+    received = [];
+    return count;
+  }
+
+  // The rule that the library keeps, closely enough for a screen to be tried against it: only
+  // http and https, written out as the library writes them.
+  @override
+  String? webAddress(String url) {
+    final uri = Uri.tryParse(url.trim());
+    if (uri == null || !uri.hasAuthority || uri.host.isEmpty) return null;
+    return switch (uri.scheme.toLowerCase()) {
+      'http' || 'https' => uri.toString(),
+      _ => null,
+    };
+  }
+
   @override
   Future<void> stop() async {
     stopped = true;
@@ -234,4 +371,20 @@ const sampleRequest = PairingRequest(
   platform: Platform.ios,
   fingerprint: 'iphn-abcd-efgh-ijkl-mnop',
   code: '514 643',
+);
+
+/// An item in the inbox that a test can show.
+Received sampleReceived(
+  int number, {
+  String from = 'Anna’s iPhone',
+  String fromId =
+      'b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0',
+  int at = 1760529600,
+  ReceivedItem item = const ReceivedItem.text(text: 'Hello from the phone'),
+}) => Received(
+  number: number,
+  fromId: fromId,
+  fromName: from,
+  receivedAt: at,
+  item: item,
 );
