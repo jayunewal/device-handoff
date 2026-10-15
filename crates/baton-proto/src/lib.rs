@@ -11,6 +11,8 @@
 //! - [`pair`] holds the pairing handshake and its proof of possession.
 //! - [`ticket`] holds the pairing ticket that is shown as a QR code or text.
 //! - [`frame`] turns messages into length-prefixed frames and back.
+//! - [`transfer`] holds file transfer: its requests, the list of files, the lanes that carry
+//!   the data and the hash of a file.
 //! - [`limits`] holds the size limits every message is checked against.
 
 // This crate parses bytes from strangers. An index or a slice range that is out of bounds
@@ -26,9 +28,10 @@ pub mod limits;
 pub mod message;
 pub mod pair;
 pub mod ticket;
+pub mod transfer;
 
 pub use device::{DeviceInfo, Platform};
-pub use id::{DeviceId, Fingerprint, ItemId};
+pub use id::{DeviceId, Fingerprint, ItemId, TransferId};
 
 /// Major version of the Baton wire protocol.
 ///
@@ -59,11 +62,18 @@ pub mod close_code {
     pub const NOT_PAIRED: u32 = 403;
     /// The peer was too slow.
     pub const TIMEOUT: u32 = 408;
+    /// What the peer sends is larger than this device accepts.
+    pub const TOO_LARGE: u32 = 413;
     /// The peer holds more connections, or more pairing attempts at once, than this
     /// device allows.
     pub const OVERLOADED: u32 = 429;
+    /// A transfer was stopped on purpose, by the person or by the program. A lane is reset
+    /// or stopped with this code when either side gives the transfer up.
+    pub const CANCELLED: u32 = 499;
     /// This device failed internally or is shutting down.
     pub const INTERNAL: u32 = 500;
+    /// This device has no room for what the peer is sending.
+    pub const NO_SPACE: u32 = 507;
 }
 
 #[cfg(test)]

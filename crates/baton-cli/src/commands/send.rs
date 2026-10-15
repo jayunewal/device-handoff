@@ -112,6 +112,8 @@ fn why(reason: DeclineReason) -> &'static str {
         DeclineReason::RateLimited => "it is receiving too fast from this device; wait a moment",
         DeclineReason::Blocked => "its settings for this device do not allow this kind of item",
         DeclineReason::Invalid => "it did not accept the content; for a link, check the address",
+        DeclineReason::NoSpace => "it has no room for it",
+        DeclineReason::Refused => "nobody there accepted it",
         DeclineReason::Other => "it gave a reason this version does not know",
     }
 }

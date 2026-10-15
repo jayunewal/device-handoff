@@ -9,8 +9,14 @@ use std::time::Duration;
 
 use baton_core::{Error, Identity, link::PathKind};
 use baton_proto::{
-    ALPN_SESSION, DeviceId,
-    message::{ClipboardText, DeclineReason, Item, Link, Outcome, Request, Response, capability},
+    ALPN_SESSION, DeviceId, TransferId,
+    message::{
+        ClipboardText, DeclineReason, Hello, Item, Link, Outcome, Request, Response, capability,
+    },
+    transfer::{
+        Cancel, Declined, Finish, Offer, PreviewItem, Summary, TransferReply, TransferRequest,
+        list::ListHash,
+    },
 };
 use common::{Raw, Spec, device, eventually, pair};
 
@@ -338,6 +344,70 @@ async fn hand_made_requests_get_the_same_answers_as_real_ones() {
         response,
         Response::Pong(baton_proto::message::Ping { nonce: 77 })
     );
+}
+
+#[tokio::test]
+async fn a_device_that_does_not_take_part_in_transfers_declines_every_request_of_one() {
+    let a = device("Laptop").await;
+    let (_raw, connection) = paired_raw(&a).await;
+
+    // It does not say that it does, so a sender has no reason to ask.
+    let hello = Request::Hello(Hello {
+        protocol_minor: 0,
+        device: common::info("Raw"),
+        capabilities: vec![],
+    });
+    let reply = exchange_raw(&connection, &framed(&hello)).await.unwrap();
+    let Response::Hello(hello) = baton_proto::frame::decode::<Response>(&reply).unwrap() else {
+        panic!("not a hello");
+    };
+    assert!(
+        !hello
+            .capabilities
+            .iter()
+            .any(|name| name == capability::TRANSFER_FILES),
+        "{:?}",
+        hello.capabilities
+    );
+
+    // A sender that asks anyway, with requests that are valid, is answered, not cut off.
+    let id = TransferId::from_bytes([5; 16]);
+    let offer = Offer {
+        id,
+        summary: Summary {
+            items: 1,
+            files: 1,
+            folders: 0,
+            bytes: 5,
+        },
+        preview: vec![PreviewItem {
+            name: "a.txt".into(),
+            folder: false,
+            files: 0,
+            bytes: 5,
+        }],
+        list_hash: ListHash::from_bytes([6; ListHash::LEN]),
+    };
+    for request in [
+        TransferRequest::Offer(offer),
+        TransferRequest::Finish(Finish {
+            id,
+            files: 1,
+            bytes: 5,
+        }),
+        TransferRequest::Cancel(Cancel { id }),
+    ] {
+        let reply = exchange_raw(&connection, &framed(&Request::Transfer(request)))
+            .await
+            .unwrap();
+        assert_eq!(
+            baton_proto::frame::decode::<Response>(&reply).unwrap(),
+            Response::Transfer(TransferReply::Declined(Declined {
+                id,
+                reason: DeclineReason::Unsupported,
+            }))
+        );
+    }
 }
 
 #[tokio::test]
