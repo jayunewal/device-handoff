@@ -336,7 +336,7 @@ impl App {
     ///
     /// Do not call this just after [`answer_pairing`](Self::answer_pairing) with a yes: the
     /// offer ends by itself then, and a withdrawal that reaches the node before the yes
-    /// does wins. [`Event::OfferEnded`] says which it was.
+    /// does, wins. [`Event::OfferEnded`] says which it was.
     pub fn cancel_offer(&self) {
         if let Some(open) = locked(&self.inner.offer).as_ref() {
             open.cancel.cancel();
