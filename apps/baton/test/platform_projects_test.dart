@@ -8,6 +8,7 @@ import 'dart:io';
 
 import 'package:baton/src/awake.dart';
 import 'package:baton/src/rust_backend.dart';
+import 'package:baton/src/support_folder.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 String _read(String path) => File(path).readAsStringSync();
@@ -102,6 +103,18 @@ void main() {
       expect(swift, contains('case "$method":'), reason: method);
     }
   });
+
+  test(
+    'the iPhone app answers where Baton asks for the folder of its files',
+    () {
+      // The channel and its question are named in lib/src/support_folder.dart and in the app. If
+      // they differ, Baton does not start on a phone, and the error only says that the system
+      // would not say.
+      final swift = _read('ios/Runner/AppDelegate.swift');
+      expect(swift, contains('name: "${SupportFolder.channelName}"'));
+      expect(swift, contains('case "${SupportFolder.question}":'));
+    },
+  );
 
   test('the library is linked in a way that keeps its functions findable', () {
     for (final system in ['ios', 'macos']) {

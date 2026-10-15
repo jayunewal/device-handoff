@@ -11,14 +11,18 @@ import 'backend.dart';
 import 'rust/api/baton.dart' as api;
 import 'rust/api/startup.dart' as startup;
 import 'rust/frb_generated.dart';
+import 'support_folder.dart';
 
 /// Baton as the Rust library runs it.
 class RustBackend implements Backend {
   /// [dataDir] is the folder that belongs to Baton alone. Without one, the folder for this
-  /// system is used. [library] says where to find the Rust library; without it, it is the one
-  /// that is built into the app.
-  RustBackend({this._dataDir, ExternalLibrary Function()? library})
-    : _library = library ?? _builtIn;
+  /// system is used, made inside [supportFolder]. [library] says where to find the Rust library;
+  /// without it, it is the one that is built into the app.
+  RustBackend({
+    this._dataDir,
+    ExternalLibrary Function()? library,
+    this._supportFolder = const SupportFolder(),
+  }) : _library = library ?? _builtIn;
 
   /// The name of Baton's folder inside `Library/Application Support`. The iPhone, iPad and Mac
   /// apps leave a folder of this name out of backups, in AppDelegate.swift and
@@ -26,6 +30,7 @@ class RustBackend implements Backend {
   static const folderName = 'baton-app';
 
   final String? _dataDir;
+  final SupportFolder _supportFolder;
   final ExternalLibrary Function() _library;
 
   // The library is loaded once per process. A failed load is tried again, so that a person
@@ -51,26 +56,19 @@ class RustBackend implements Backend {
   /// The folder for Baton's files. It is made by Baton, private to the person who runs it.
   ///
   /// On an iPhone, an iPad and a Mac this is inside the app's own `Library/Application
-  /// Support`, which is where an app keeps files that are not the person's documents. The
-  /// folder of the `baton` command is `baton` in the same place, so the two are told apart
-  /// even where an app is not sandboxed.
-  String _folder() {
+  /// Support`, which is where an app keeps files that are not the person's documents, and
+  /// [SupportFolder] says where that is. The folder of the `baton` command is `baton` in the
+  /// same place, so the two are told apart even where an app is not sandboxed.
+  Future<String> _folder() async {
     final dataDir = _dataDir;
     if (dataDir != null) return dataDir;
-    if (!io.Platform.isIOS && !io.Platform.isMacOS) {
-      throw UnsupportedError('Baton does not run on this system yet.');
-    }
-    final home = io.Platform.environment['HOME'];
-    if (home == null || home.isEmpty) {
-      throw StateError('The home folder of the app is not known.');
-    }
-    return '$home/Library/Application Support/$folderName';
+    return '${await _supportFolder.path()}/$folderName';
   }
 
   @override
   Future<String?> deviceName() async {
     await _load();
-    return api.deviceName(dataDir: _folder());
+    return api.deviceName(dataDir: await _folder());
   }
 
   @override
@@ -88,7 +86,7 @@ class RustBackend implements Backend {
   @override
   Future<void> setDeviceName(String name) async {
     await _load();
-    await api.setDeviceName(dataDir: _folder(), name: name);
+    await api.setDeviceName(dataDir: await _folder(), name: name);
   }
 
   @override
@@ -100,7 +98,7 @@ class RustBackend implements Backend {
     // moves to a direct path.
     final phone = io.Platform.isIOS;
     final baton = await api.Baton.start(
-      dataDir: _folder(),
+      dataDir: await _folder(),
       lanDiscovery: phone ? false : null,
       portMapping: phone ? false : null,
     );
