@@ -126,7 +126,9 @@ struct Inner {
     trust: TrustStore,
     inbox: Inbox,
     events: broadcast::Sender<Event>,
-    /// Cancelled as soon as stopping begins.
+    /// Cancelled as soon as stopping begins, or when the last copy of the app is dropped.
+    /// Everything that goes on in the background, such as an offer that is showing, has a
+    /// token that is a child of this one, so that nothing outlives the app.
     stopped: CancellationToken,
     /// Set by the first [`App::stop`], which does the work; later calls wait for it.
     stopping: AtomicBool,
@@ -289,7 +291,7 @@ impl App {
         let _turn = self.inner.offer_turn.lock().await;
         let node = self.running()?;
         let generation = self.inner.next_generation.fetch_add(1, Ordering::Relaxed);
-        let cancel = CancellationToken::new();
+        let cancel = self.inner.stopped.child_token();
         // Installed before the node is asked, so that the end of the offer it replaces
         // is recognised as old news.
         let replaced = locked(&self.inner.offer).replace(Open {
@@ -372,7 +374,7 @@ impl App {
         let node = self.running()?;
         let ticket = parse_ticket(ticket)?;
         let generation = self.inner.next_generation.fetch_add(1, Ordering::Relaxed);
-        let cancel = CancellationToken::new();
+        let cancel = self.inner.stopped.child_token();
         let earlier = locked(&self.inner.join).replace(Open {
             generation,
             cancel: cancel.clone(),
@@ -524,6 +526,16 @@ impl App {
         let peer = DeviceId::from_str(id.trim()).map_err(|_| Error::not_paired())?;
         let device: PairedDevice = self.inner.trust.get(&peer).ok_or_else(Error::not_paired)?;
         Ok((peer, device.display_name().to_owned()))
+    }
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        // An app that is dropped without `stop` still ends what runs in the background. The
+        // node cancels its own work when it is dropped, but an offer's task would otherwise
+        // wait for ever for a withdrawal that nobody is left to make, and keep the stream of
+        // events open with it.
+        self.stopped.cancel();
     }
 }
 

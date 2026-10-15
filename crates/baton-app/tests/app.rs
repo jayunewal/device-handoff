@@ -565,6 +565,25 @@ async fn an_app_that_is_dropped_while_a_question_is_showing_lets_go_of_its_folde
 }
 
 #[tokio::test]
+async fn an_app_that_is_dropped_while_an_offer_is_showing_ends_its_events() {
+    let dir = tempfile::tempdir().unwrap();
+    write_settings(dir.path(), Some("Device A"), false);
+    let a = App::start(Options::new(dir.path())).await.unwrap();
+    let mut events = a.events();
+    a.offer_pairing().await.unwrap();
+
+    // Nobody calls `stop`. The offer is waiting for a withdrawal that nobody is left to
+    // make, and it must not keep the stream of events open.
+    drop(a);
+    let ended = tokio::time::timeout(WAIT, events.next())
+        .await
+        .expect("the events never ended");
+    assert!(ended.is_none(), "{ended:?}");
+    let again = App::start(Options::new(dir.path())).await.unwrap();
+    again.stop().await;
+}
+
+#[tokio::test]
 async fn a_second_stop_returns_only_when_the_folder_is_free() {
     let dir = tempfile::tempdir().unwrap();
     write_settings(dir.path(), Some("Device A"), false);
