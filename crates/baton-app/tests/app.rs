@@ -579,6 +579,19 @@ async fn an_app_that_is_dropped_while_an_offer_is_showing_ends_its_events() {
         .await
         .expect("the events never ended");
     assert!(ended.is_none(), "{ended:?}");
+
+    // The stream can end while the task that holds the offer is still waiting, so look at the
+    // tasks too. This test has a runtime of its own and the app is all that ran on it, so once
+    // the offer's task has ended none are left.
+    let metrics = tokio::runtime::Handle::current().metrics();
+    tokio::time::timeout(WAIT, async {
+        while metrics.num_alive_tasks() > 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a task of the dropped app is still running");
+
     let again = App::start(Options::new(dir.path())).await.unwrap();
     again.stop().await;
 }
