@@ -1,0 +1,28 @@
+name: baton
+description: "Pick up where you left off, on any device."
+publish_to: none
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.13.0
+  flutter: '>=3.47.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # Builds crates/baton-ffi and links it into the iOS and macOS apps.
+  baton_ffi:
+    path: rust_builder
+  # The same version as the code generator and as the crate in crates/baton-ffi.
+  flutter_rust_bridge: 2.13.0
+  freezed_annotation: ^3.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  freezed: ^4.0.2
+  build_runner: ^2.16.2
+
+flutter:
+  uses-material-design: true

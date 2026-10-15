@@ -1,0 +1,5 @@
+# Run `flutter_rust_bridge_codegen generate` in this folder (apps/baton) to write the
+# generated Dart and Rust glue again. The version of the generator must be 2.13.0.
+rust_input: crate::api
+rust_root: ../../crates/baton-ffi/
+dart_output: lib/src/rust

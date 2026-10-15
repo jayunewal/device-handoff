@@ -26,6 +26,9 @@ gethostname.workspace = true
 iroh.workspace = true
 iroh-base.workspace = true
 iroh-mdns-address-lookup.workspace = true
+# Not used here: this only holds back the version of libc that the whole build uses (see
+# the workspace Cargo.toml).
+libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

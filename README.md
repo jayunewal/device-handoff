@@ -48,9 +48,11 @@ The order is a proposal and can change. See [docs/roadmap.md](docs/roadmap.md) f
 | `crates/baton-core` | Device identity, the trust store, per-device policy and settings, the state directory, and the encrypted transport: discovery, pairing, admission control and the session protocol between paired devices. |
 | `crates/baton-app` | What a graphical app calls: start Baton, pair devices, send, read the inbox and hear what happens, all as plain values. No protocol logic of its own. |
 | `crates/baton-cli` | The `baton` command-line program: pair devices, send links and text, read the inbox, and listen for what other devices send. |
+| `crates/baton-ffi` | The bridge to Dart: copies of `baton-app`'s values and calls, and the glue [flutter_rust_bridge](https://github.com/fzyzcjy/flutter_rust_bridge) generates around them. |
+| `apps/baton` | The Flutter app for iPhone, iPad and Mac (Android follows), and the generated Dart side of the bridge. See [apps/baton/README.md](apps/baton/README.md). |
 | `docs/` | Architecture, protocol and security documents, the locked-device page, and architecture decision records in `docs/adr/`. The research notes behind the locked-device page are in `docs/research/`. |
 
-More crates are added as milestone 1 lands (`baton-agent`). Flutter apps will live under `apps/`.
+More crates are added as milestone 1 lands (`baton-agent`).
 
 ## Building
 
@@ -63,6 +65,8 @@ cargo run -p baton-cli -- --help
 ```
 
 The last command prints the help of the `baton` program.
+
+The app needs Flutter on top of that; [apps/baton/README.md](apps/baton/README.md) says what to install and how to run its tests.
 
 [docs/try-it.md](docs/try-it.md) walks through pairing two computers and sending a link and some text. CI builds the `baton` program for macOS, Windows and Linux on every change; the guide says where to download it.
 
