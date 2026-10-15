@@ -35,6 +35,25 @@ void main() {
     }
   });
 
+  test('both apps say why they use the camera, which pairing needs', () {
+    for (final plist in ['ios/Runner/Info.plist', 'macos/Runner/Info.plist']) {
+      expect(_read(plist), contains('<key>NSCameraUsageDescription'));
+    }
+  });
+
+  test('the sandboxed Mac app may use the camera', () {
+    for (final file in [
+      'macos/Runner/DebugProfile.entitlements',
+      'macos/Runner/Release.entitlements',
+    ]) {
+      expect(
+        _read(file),
+        contains('<key>com.apple.security.device.camera</key>\n\t<true/>'),
+        reason: file,
+      );
+    }
+  });
+
   test('the Mac app is sandboxed and may use the network both ways', () {
     for (final file in [
       'macos/Runner/DebugProfile.entitlements',
