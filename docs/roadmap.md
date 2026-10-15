@@ -39,7 +39,9 @@ A self-hostable server that keeps a device roster, so devices signed in to the s
 
 ## Milestone 5: window streaming
 
-Stream a window from a Mac or Windows PC to an iPad or phone, with touch and keyboard control. Needs capture and encode on the source, decode and render on the viewer, and a transport choice for video (QUIC streams or WebRTC). No documented API captures a locked desktop (see [locked-devices.md](locked-devices.md)), so the first version needs the source unlocked while it streams and can lock it afterwards. A privacy mode or a separate session may follow.
+Stream a window from a Mac to an iPhone or iPad, with touch and keyboard control; a Windows PC as the source follows. The design is in [ADR 0009](adr/0009-window-streaming.md): the Mac offers a window that its person picked, frames travel on the existing connection as one QUIC stream each and are dropped when they are late, and input from the phone is confined to the shared window. No documented API captures a locked desktop (see [locked-devices.md](locked-devices.md)), so the first version needs the source unlocked while it streams and can lock it afterwards. A privacy mode or a separate session may follow.
+
+**Order of work.** The part that needs no Apple hardware comes first: the messages, the kinds of stream, their budget and priorities, the rules for frames in flight, recovery and rate, and a benchmark with a synthetic stream, all tested in continuous integration. Then the Mac side (the picker, capture and encoding, with a view on the same Mac), then the viewer on the iPhone and iPad, then input from the phone, then the one-step hand-over from the Mac. Each step that needs a Mac and a phone says which of the tests in the record it has run.
 
 ## Later
 
@@ -49,7 +51,7 @@ Stream a window from a Mac or Windows PC to an iPad or phone, with touch and key
 
 ## Open questions
 
-- Video transport for milestone 5: QUIC datagrams and streams on the existing connection, or WebRTC?
+- Video transport for milestone 5: [ADR 0009](adr/0009-window-streaming.md) proposes one QUIC stream for each frame on the existing connection, not datagrams or WebRTC. Its tests can still change that. Whether the Mac app can post input events from its sandbox is test R6 of the same record.
 - Where each OS should keep the device key (Keychain, Credential Manager, Secret Service, Android Keystore). The answer must stay readable at the lock screen.
 - Who hosts the default relay and account server, and how that is paid for.
 - Short typed pairing codes (a password-authenticated key exchange) for devices that cannot scan a QR code.
