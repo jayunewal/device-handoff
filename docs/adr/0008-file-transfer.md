@@ -79,7 +79,7 @@ A benchmark that anyone can rerun is part of the work, with the four cases of th
 - **A hash of the content of every file before the offer.** It would put hashes in the list and let the receiver skip what it already has. It costs a full read of everything before the first byte moves, which on a large folder is more time than the transfer. Skipping what is already there is a sync feature and is left for later. The list hash in the offer is a different thing: it is made from the names, sizes and times that the sender has from walking the tree, and reads no file.
 - **Hashes made in order.** Simpler, but then every file would have to travel on one lane, in order, and a large file could use only one window.
 - **Compression.** Photos, video, archives and most documents are compressed already, and compressing costs a phone's battery. A capability can add it per span later for text-like content if a measurement shows it pays.
-- **Rsync-style differences, and the receiver pulling files.** Both are real needs and neither is part of the first transfer. Pulling is planned in protocol.md section 9 and would reuse the lanes.
+- **Rsync-style differences, and the receiver pulling files.** Both are real needs and neither is part of the first transfer. Pulling is planned in the planned extensions of protocol.md (section 10) and would reuse the lanes.
 
 ## Prior art and where this differs
 

@@ -1,0 +1,19 @@
+[package]
+name = "baton-stream"
+description = "Window streaming for Baton: the start of a stream and the header of a frame of video. No input or output."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+baton-proto.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
