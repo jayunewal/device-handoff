@@ -77,6 +77,11 @@ pub const MAX_LANES: u8 = 8;
 /// Most files that a `Done` names one by one.
 pub const MAX_FAILURES_LISTED: usize = 256;
 
+// Window streaming (docs/protocol.md section 9).
+
+/// Largest encoded picture of one frame of video, header excluded, in bytes.
+pub const MAX_PICTURE_BYTES: usize = 8 * 1024 * 1024;
+
 /// A field that does not satisfy the protocol's limits.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LimitError {

@@ -544,7 +544,7 @@ header = start (kind 2) | number u64 | depends on u64 | chain u32 | epoch u32 | 
 | Field | Meaning |
 | --- | --- |
 | `number` | Counts the frames of a session from 0, one for each frame that the encoder made, including those that were given up on later. |
-| `depends on` | The newest frame that the viewer must have decoded before this one. For a key frame it is the frame's own number. For any other frame it is the newest earlier frame that something may refer to, so that a frame that nothing refers to can be skipped. For a recovery frame it is the newest such frame that the source knows the viewer holds, and it can be in an earlier chain. |
+| `depends on` | The newest frame that the viewer must have decoded before this one. For a key frame it is the frame's own number, which means that it needs no other frame. For any other frame it is the newest earlier frame that something may refer to, so that a frame that nothing refers to can be skipped. For a recovery frame it is the newest such frame that the source knows the viewer holds, and it can be in an earlier chain. |
 | `chain` | Counts the chains of a session. A chain is a run of frames that are decoded one after the other. It begins at a key frame or at a recovery frame. |
 | `epoch` | Counts the sizes of the picture. It changes, with a key frame, when the size changes. |
 | `capture time` | When the picture was captured, in microseconds since the session began, on the source's clock. |
