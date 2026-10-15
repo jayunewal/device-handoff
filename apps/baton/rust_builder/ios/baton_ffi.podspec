@@ -42,4 +42,10 @@ Builds the Rust library of the Baton app and links it into the app.
     # Xcode strips a build.
     'STRIP_STYLE' => 'non-global',
   }
+
+  # What the Rust library uses from the system, found by what its dependencies link:
+  # SystemConfiguration to list the network interfaces, and Network to watch for changes in
+  # them. A static library does not bring these with it, so the framework it is linked into
+  # names them. When a new dependency needs another, the linker says "Undefined symbol".
+  s.frameworks = 'Network', 'SystemConfiguration'
 end

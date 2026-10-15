@@ -79,4 +79,17 @@ void main() {
       expect(podspec, contains("'STRIP_STYLE' => 'non-global'"));
     }
   });
+
+  test('the pods name the system frameworks that the library needs', () {
+    // The library is a static one, which does not bring them along. Without them the build
+    // ends in "Undefined symbol" from the linker, after minutes of compiling Rust.
+    expect(
+      _read('rust_builder/ios/baton_ffi.podspec'),
+      contains("s.frameworks = 'Network', 'SystemConfiguration'"),
+    );
+    expect(
+      _read('rust_builder/macos/baton_ffi.podspec'),
+      contains("s.frameworks = 'SystemConfiguration'"),
+    );
+  });
 }
