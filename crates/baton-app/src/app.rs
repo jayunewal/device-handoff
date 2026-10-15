@@ -50,6 +50,12 @@ pub struct Options {
     /// Apple has approved it for that, so an iPhone or iPad app passes `Some(false)` and
     /// finds its paired devices through the internet relay instead.
     pub lan_discovery: Option<bool>,
+    /// Switches asking the router to open a port on or off for this run, whatever the
+    /// settings file says. `None` leaves the settings file in charge.
+    ///
+    /// The ask starts with a multicast message too, so an iPhone or iPad app passes
+    /// `Some(false)` here as well.
+    pub port_mapping: Option<bool>,
 }
 
 impl Options {
@@ -58,7 +64,19 @@ impl Options {
         Self {
             data_dir: data_dir.into(),
             lan_discovery: None,
+            port_mapping: None,
         }
+    }
+
+    /// The settings from the file, with the choices made for this run on top.
+    fn applied_to(&self, mut config: Config) -> Config {
+        if let Some(lan_discovery) = self.lan_discovery {
+            config.network.lan_discovery = lan_discovery;
+        }
+        if let Some(port_mapping) = self.port_mapping {
+            config.network.port_mapping = port_mapping;
+        }
+        config
     }
 }
 
@@ -139,10 +157,7 @@ impl App {
     pub async fn start(options: Options) -> Result<Self> {
         let starting = |e: Core| Error::starting(&e);
         let dir = DataDir::open(&options.data_dir).map_err(starting)?;
-        let mut config = Config::load(&dir.config_file()).map_err(starting)?;
-        if let Some(lan_discovery) = options.lan_discovery {
-            config.network.lan_discovery = lan_discovery;
-        }
+        let config = options.applied_to(Config::load(&dir.config_file()).map_err(starting)?);
         let lock = dir.lock().map_err(starting)?;
         let identity = Identity::load_or_create(&dir.identity_file()).map_err(starting)?;
         let trust = TrustStore::load(dir.trust_file()).map_err(starting)?;
@@ -668,5 +683,32 @@ async fn forward_trust_events(
                 Err(RecvError::Closed) => return,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_choices_for_a_run_go_on_top_of_the_settings_file() {
+        let mut file = Config::default();
+        file.network.lan_discovery = true;
+        file.network.port_mapping = true;
+
+        let untouched = Options::new("/data").applied_to(file.clone());
+        assert!(untouched.network.lan_discovery && untouched.network.port_mapping);
+
+        let mut phone = Options::new("/data");
+        phone.lan_discovery = Some(false);
+        phone.port_mapping = Some(false);
+        let phone = phone.applied_to(file.clone());
+        assert!(!phone.network.lan_discovery && !phone.network.port_mapping);
+
+        // Each choice stands alone.
+        let mut only_ports = Options::new("/data");
+        only_ports.port_mapping = Some(false);
+        let only_ports = only_ports.applied_to(file);
+        assert!(only_ports.network.lan_discovery && !only_ports.network.port_mapping);
     }
 }
