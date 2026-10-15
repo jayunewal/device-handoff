@@ -17,6 +17,7 @@ import 'dart:io';
 import 'package:baton/src/rust/api/baton.dart';
 import 'package:baton/src/rust/api/error.dart';
 import 'package:baton/src/rust/api/model.dart' hide Platform;
+import 'package:baton/src/rust/api/startup.dart';
 import 'package:baton/src/rust/frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -275,6 +276,25 @@ void main() {
     }
     await events.ended;
   });
+
+  test(
+    'what the library logged can be read, for the Diagnostics screen',
+    () async {
+      await _start(await _folder(name: 'Device A'));
+
+      final log = recentLog();
+
+      expect(
+        log.where((line) => line.contains('Baton started')),
+        isNotEmpty,
+        reason: log.join('\n'),
+      );
+      for (final line in log) {
+        expect(line, isNot(contains('\n')));
+        expect(line.length, lessThanOrEqualTo(601));
+      }
+    },
+  );
 
   test('only web links are opened, and as they were checked', () {
     // What comes back is the address to open: written out in full, not as it was sent.

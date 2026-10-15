@@ -54,6 +54,7 @@ class _BatonAppState extends State<BatonApp> {
           Phase.failed => ProblemScreen(
             problem: _controller.problem,
             onTryAgain: _controller.begin,
+            recentLog: widget.backend.recentLog,
           ),
         },
       ),

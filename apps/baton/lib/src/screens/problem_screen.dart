@@ -5,12 +5,14 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'content_box.dart';
+import 'diagnostics_screen.dart';
 
 /// Shown when Baton could not start: what went wrong, and a way to try again.
 class ProblemScreen extends StatelessWidget {
   const ProblemScreen({
     required this.problem,
     required this.onTryAgain,
+    required this.recentLog,
     super.key,
   });
 
@@ -18,6 +20,18 @@ class ProblemScreen extends StatelessWidget {
   final String problem;
 
   final Future<void> Function() onTryAgain;
+
+  /// Where the lines of the log come from, for the details.
+  final List<String> Function() recentLog;
+
+  void _showDetails(BuildContext context) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            DiagnosticsScreen(recentLog: recentLog, problem: problem),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -41,9 +55,19 @@ class ProblemScreen extends StatelessWidget {
               const SizedBox(height: 12),
               SelectableText(problem, style: theme.textTheme.bodyLarge),
               const SizedBox(height: 24),
-              FilledButton(
-                onPressed: () => unawaited(onTryAgain()),
-                child: const Text('Try again'),
+              Wrap(
+                spacing: 12,
+                runSpacing: 8,
+                children: [
+                  FilledButton(
+                    onPressed: () => unawaited(onTryAgain()),
+                    child: const Text('Try again'),
+                  ),
+                  TextButton(
+                    onPressed: () => _showDetails(context),
+                    child: const Text('Show details'),
+                  ),
+                ],
               ),
             ],
           ),

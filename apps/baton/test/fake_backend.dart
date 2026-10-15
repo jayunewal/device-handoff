@@ -34,6 +34,9 @@ class FakeBackend implements Backend {
   /// The Baton that `start` hands out.
   late FakeSession session;
 
+  /// What `recentLog` gives, and what the Baton that `start` hands out gives too.
+  final List<String> log = [];
+
   @override
   Future<String?> deviceName() async => savedName;
 
@@ -60,8 +63,12 @@ class FakeBackend implements Backend {
         platform: Platform.macOs,
         fingerprint: 'abcd-efgh-ijkl-mnop-qrst',
       ),
+      log: log,
     );
   }
+
+  @override
+  List<String> recentLog() => [...log];
 }
 
 class FakeSession implements Session {
@@ -69,10 +76,14 @@ class FakeSession implements Session {
     required this.me,
     this.pairedDevices = const [],
     this.reach = const Network(addresses: [], lanDiscovery: true),
-  });
+    List<String>? log,
+  }) : log = log ?? [];
 
   @override
   final Me me;
+
+  /// What `recentLog` gives. Add to it as the library would.
+  final List<String> log;
 
   /// What `devices` gives.
   List<Device> pairedDevices;
@@ -127,8 +138,15 @@ class FakeSession implements Session {
     return asked;
   }
 
+  /// What `network` throws, if it should fail.
+  Object? networkFailure;
+
   @override
-  Future<Network> network() async => reach;
+  Future<Network> network() async {
+    final failure = networkFailure;
+    if (failure != null) throw failure;
+    return reach;
+  }
 
   /// What `unpair` throws, if it should fail.
   Object? unpairFailure;
@@ -348,6 +366,9 @@ class FakeSession implements Session {
       _ => null,
     };
   }
+
+  @override
+  List<String> recentLog() => [...log];
 
   @override
   Future<void> stop() async {

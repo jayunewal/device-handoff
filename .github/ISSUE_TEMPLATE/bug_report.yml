@@ -34,5 +34,5 @@ body:
     id: logs
     attributes:
       label: Logs
-      description: Run with `RUST_LOG=baton=debug`. Remove anything private before pasting.
+      description: In the app, tap the three dots on the Devices tab, choose Diagnostics, tap Copy and paste it here. Pairing codes, public IP addresses and the account name in a path are left out of it already. Read it first and remove anything else you would rather not share. For the command-line program, run with `RUST_LOG=baton=debug` and remove anything private (names, addresses, folders) before pasting.
       render: text
