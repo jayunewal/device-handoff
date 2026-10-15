@@ -134,6 +134,8 @@ If you see **Baton could not start** instead, the message under it says why. Ope
 
 You need Baton on two devices, for example the Mac and the phone, and open on both. Put them on the same Wi-Fi network. Baton can also reach a device on another network by way of a relay, but that has not been tried from the app yet.
 
+In the steps below, the first device shows the code and the second one reads it. It does not matter which is which. With a Mac and a phone, show the code on the Mac and read it with the phone: a phone always has a camera, and some Macs have none.
+
 1. On the first device, tap **Add a device**, then **Show a code**. It shows a QR code, and for how long the code works: a few minutes.
 2. On the second device, tap **Add a device**, then **Scan or enter a code**. The first time, it asks whether Baton may use the camera: choose **OK**. Point the camera at the QR code on the first device.
 3. The second device now shows six digits, and the first one shows the same six, with the name of the second device. If the digits are the same, tap **Yes, they match** on the first device. If they are not, tap **No, cancel**: someone else may be trying to pair.
@@ -141,7 +143,7 @@ You need Baton on two devices, for example the Mac and the phone, and open on bo
 
 A code pairs one device, once. If it ran out, or it did not work, tap **Show a new code**.
 
-If the second device cannot scan the code, for example a Mac with no camera or a phone that was not allowed to use it, tap **Copy the code as text** on the first device, and paste the text into the box under **Or paste the code** on the second, and tap **Connect**. A Mac and an iPhone that use the same Apple ID share their clipboard, so you copy on one and paste on the other. Otherwise send the text to yourself in Messages or Notes.
+If the second device cannot scan the code, for example a Mac with no camera or a phone that was not allowed to use it, tap **Copy the code as text** on the first device, and paste the text into the box under **Or paste the code** on the second, and tap **Connect**. To get the text from one device to the other, copy it on one and paste it on the other. A Mac and an iPhone share their clipboard (Apple calls it Universal Clipboard) when they use the same Apple ID, Wi-Fi and Bluetooth are turned on on both, Handoff is turned on on both (search for **Handoff** in **System Settings** on the Mac and in **Settings** on the phone), and they are close to each other. If what you paste is not what you copied, send the text to yourself in Messages or Notes instead.
 
 To forget a device, tap the three dots at the end of its row, then **Forget this device**, then **Forget**. That is done on one device: the other can no longer reach it, but still lists it until you forget it there too.
 
