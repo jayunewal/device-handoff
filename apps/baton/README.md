@@ -1,8 +1,9 @@
 # Baton app
 
 The Flutter app for iPhone, iPad and Mac. Android follows. It asks for a name for the device the
-first time, then starts Baton and shows the devices paired with it; the screens that pair devices
-and send things are next. Everything it does goes through
+first time, then starts Baton, shows the devices paired with it, and pairs a new one: one device
+shows a QR code, the other scans it or has it pasted in, and the person compares six digits. The
+screens that send things are next. Everything it does goes through
 [`crates/baton-ffi`](../../crates/baton-ffi), the bridge to the Rust core; the app holds no
 protocol logic of its own. [docs/architecture.md](../../docs/architecture.md#the-bridge) says how
 the bridge is put together, and [the app](../../docs/architecture.md#the-app) how the screens sit
@@ -20,8 +21,8 @@ What is in this folder:
 | `lib/src/rust/` | The Dart side of the bridge, written by `flutter_rust_bridge_codegen`. Do not edit it; it is committed so that the app builds without the code generator. |
 | `ios/`, `macos/` | The Xcode projects. The Mac app is sandboxed; both apps leave Baton's folder out of backups. |
 | `rust_builder/` | A Flutter plugin that builds `crates/baton-ffi` during an iOS or macOS build, by way of [Cargokit](https://github.com/irondash/cargokit). |
-| `test/` | Tests. The widget tests (`app_test.dart`, `devices_screen_test.dart`) run the screens against a fake Baton (`fake_backend.dart`), so they need no Rust library. `bridge_test.dart` starts two real Batons on this computer and has them pair and hand each other things, so it covers the generated code, the Rust library and the way they are called together; `rust_backend_test.dart` does the same through `RustBackend`. `platform_projects_test.dart` and `cargokit_test.dart` hold the few settings in the Xcode projects and in the copy of Cargokit that nothing on a Linux computer would notice losing. |
-| `integration_test/` | The app started for real, with the real library: on a Mac and in an iPhone simulator, where CI runs it. |
+| `test/` | Tests. The widget tests (`app_test.dart`, `devices_screen_test.dart`, and one for each pairing screen) run the screens against a fake Baton (`fake_backend.dart`) and a fake camera, so they need no Rust library. `pairing_flow_test.dart` runs two real Batons through the pairing controllers, handing the ticket over as a camera would, and `qr_test.dart` draws tickets as QR codes and reads them back. `bridge_test.dart` starts two real Batons on this computer and has them pair and hand each other things, so it covers the generated code, the Rust library and the way they are called together; `rust_backend_test.dart` does the same through `RustBackend`. `platform_projects_test.dart` and `cargokit_test.dart` hold the few settings in the Xcode projects and in the copy of Cargokit that nothing on a Linux computer would notice losing. |
+| `integration_test/` | The app started for real, with the real library: on a Mac and in an iPhone simulator, where CI runs it, and paired with a second Baton through the real screens. |
 | `tool/` | `make_icons.py` draws the app icon at every size. The pictures are committed; nothing at build time runs it. |
 
 ## What you need
