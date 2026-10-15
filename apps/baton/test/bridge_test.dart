@@ -37,7 +37,7 @@ void main() {
 
     // A name with nothing visible in it is the person's to fix, and the message can be shown
     // as it is.
-    for (final name in ['', '  ', '​']) {
+    for (final name in ['', '  ', '\u200B']) {
       await expectLater(
         setDeviceName(dataDir: folder.path, name: name),
         throwsA(_batonError(ErrorKind.badName)),

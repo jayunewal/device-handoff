@@ -91,4 +91,101 @@ void main() {
     expect(sentence(''), '');
     expect(sentence('   '), '');
   });
+
+  test('how long ago something came is said without the word "seen"', () {
+    expect(since(ago(Duration.zero), now), 'just now');
+    expect(since(ago(const Duration(minutes: 5)), now), '5 minutes ago');
+    expect(since(ago(const Duration(hours: 2)), now), '2 hours ago');
+    expect(since(ago(const Duration(days: 3)), now), '3 days ago');
+    expect(since(ago(const Duration(days: 7)), now), 'on Oct 8');
+    expect(since(ago(const Duration(days: 300)), now), 'on Dec 19, 2025');
+  });
+
+  test('what a ping found is told with the way the traffic went', () {
+    String told(Route route) =>
+        describeReach('Kitchen iPad', Reach(roundTripMs: 24, route: route));
+    expect(
+      told(Route.lan),
+      'Kitchen iPad answered in 24 ms, over your local network.',
+    );
+    expect(
+      told(Route.direct),
+      'Kitchen iPad answered in 24 ms, directly over the internet.',
+    );
+    expect(
+      told(Route.relay),
+      'Kitchen iPad answered in 24 ms, through the relay, which is slower.',
+    );
+    expect(told(Route.unknown), 'Kitchen iPad answered in 24 ms.');
+  });
+
+  group('text from another device is made fit to show', () {
+    test('ordinary text, in any script, is left as it is', () {
+      const text = 'Buy milk\n\tand eggs — 牛乳 — חלב — 🥛';
+      expect(visibleText(text), text);
+    });
+
+    test('line ends are the same everywhere', () {
+      expect(visibleText('one\r\ntwo\rthree\nfour'), 'one\ntwo\nthree\nfour');
+    });
+
+    test('characters that turn text round are shown as a mark', () {
+      // A line that reads as a harmless address, until the override is taken away.
+      const fake = 'https://example.com/\u202Egpj.exe';
+      expect(visibleText(fake), 'https://example.com/\uFFFDgpj.exe');
+      for (final c in [0x202A, 0x202B, 0x202C, 0x202D, 0x202E]) {
+        expect(visibleText('a${String.fromCharCode(c)}b'), 'a\uFFFDb');
+      }
+      for (final c in [0x2066, 0x2067, 0x2068, 0x2069]) {
+        expect(visibleText('a${String.fromCharCode(c)}b'), 'a\uFFFDb');
+      }
+    });
+
+    test('direction marks, which have no glyph, are shown as a mark too', () {
+      // They move digits and punctuation around them without any override: with the right-to-left
+      // marks, "Total $10.12" is laid out as "Total $1012." although what is copied is the same.
+      for (final c in [0x200E, 0x200F, 0x061C]) {
+        expect(visibleText('a${String.fromCharCode(c)}b'), 'a\uFFFDb');
+      }
+      expect(
+        visibleText('Total \$10\u200F.\u200F12'),
+        'Total \$10\uFFFD.\uFFFD12',
+      );
+    });
+
+    test('other characters that have no glyph are shown as a mark', () {
+      // The zero-width space; the word joiner and the invisible operators; the deprecated
+      // format characters; the byte order mark; the annotation marks.
+      final invisible = [
+        0x200B,
+        for (var c = 0x2060; c <= 0x2064; c++) c,
+        for (var c = 0x206A; c <= 0x206F; c++) c,
+        0xFEFF,
+        for (var c = 0xFFF9; c <= 0xFFFB; c++) c,
+      ];
+      for (final c in invisible) {
+        expect(
+          visibleText('a${String.fromCharCode(c)}b'),
+          'a\uFFFDb',
+          reason: 'U+${c.toRadixString(16)}',
+        );
+      }
+    });
+
+    test('the joiners that emoji and several scripts need are left alone', () {
+      const family = '👨\u200D👩\u200D👧';
+      const persian = 'می\u200Cخواهم';
+      const heart = '❤️';
+      expect(visibleText(family), family);
+      expect(visibleText(persian), persian);
+      expect(visibleText(heart), heart);
+    });
+
+    test('control characters that cannot be seen are shown as a mark', () {
+      expect(
+        visibleText('a\u0000b\u0007c\u001Bd\u007Fe\u0085f'),
+        'a\uFFFDb\uFFFDc\uFFFDd\uFFFDe\uFFFDf',
+      );
+    });
+  });
 }

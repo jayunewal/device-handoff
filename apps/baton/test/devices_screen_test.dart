@@ -56,6 +56,7 @@ void main() {
     expect(find.text('Mac'), findsOneWidget);
     expect(find.text('wxyz-abcd-efgh-ijkl-mnop'), findsOneWidget);
     expect(find.text('No other devices yet'), findsOneWidget);
+    expect(find.textContaining('Tap a device'), findsNothing);
   });
 
   testWidgets('lists the paired devices, with when each was last heard from', (
@@ -78,6 +79,63 @@ void main() {
     expect(find.text('iPad · seen 5 minutes ago'), findsOneWidget);
     expect(find.text('Phone'), findsOneWidget);
     expect(find.text('Android · not seen yet'), findsOneWidget);
+  });
+
+  testWidgets('a tap on a device opens the screen to send to it', (
+    tester,
+  ) async {
+    final session = _session(
+      devices: [
+        _device(
+          'Kitchen iPad',
+          Platform.ipadOs,
+          seen: const Duration(minutes: 5),
+        ),
+        _device('Phone', Platform.android),
+      ],
+    );
+    await _show(tester, session);
+    expect(
+      find.text('Tap a device to send it a link or some text.'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('Phone'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Send to Phone'), findsOneWidget);
+    expect(find.text('Send to Kitchen iPad'), findsNothing);
+
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+
+    expect(find.text('Send to Phone'), findsNothing);
+    expect(find.text('Kitchen iPad'), findsOneWidget);
+  });
+
+  testWidgets('the send button on a device opens it too, and sends to it', (
+    tester,
+  ) async {
+    final session = _session(
+      devices: [
+        _device('Kitchen iPad', Platform.ipadOs),
+        _device('Phone', Platform.android),
+      ],
+    );
+    await _show(tester, session);
+
+    await tester.tap(find.byTooltip('Send to Kitchen iPad'));
+    await tester.pumpAndSettle();
+    expect(find.text('Send to Kitchen iPad'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), 'hello');
+    await tester.pump();
+    await tester.tap(find.text('Send text'));
+    await tester.pumpAndSettle();
+
+    expect(session.sent.map((sent) => (sent.id, sent.text)), [
+      (_device('Kitchen iPad', Platform.ipadOs).id, 'hello'),
+    ]);
   });
 
   testWidgets('follows devices being paired, renamed and forgotten', (

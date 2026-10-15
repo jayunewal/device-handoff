@@ -10,6 +10,7 @@ import '../format.dart';
 import '../scanner.dart';
 import 'add_device_screen.dart';
 import 'content_box.dart';
+import 'send_screen.dart';
 
 /// The home screen: this device, and the devices it is paired with.
 class DevicesScreen extends StatefulWidget {
@@ -54,6 +55,18 @@ class _DevicesScreenState extends State<DevicesScreen> {
           session: widget.session,
           now: widget.now,
           scanner: widget.scanner,
+        ),
+      ),
+    );
+  }
+
+  void _send(Device device) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => SendScreen(
+          session: widget.session,
+          device: device,
+          now: widget.now,
         ),
       ),
     );
@@ -104,6 +117,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
             builder: (context, _) => _Devices(
               controller: _controller,
               now: widget.now(),
+              onSend: _send,
               onForget: _forget,
             ),
           ),
@@ -117,11 +131,13 @@ class _Devices extends StatelessWidget {
   const _Devices({
     required this.controller,
     required this.now,
+    required this.onSend,
     required this.onForget,
   });
 
   final DevicesController controller;
   final DateTime now;
+  final void Function(Device device) onSend;
   final void Function(Device device) onForget;
 
   @override
@@ -148,9 +164,22 @@ class _Devices extends StatelessWidget {
           )
         else if (devices.isEmpty)
           const _NoDevices()
-        else
+        else ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 0, 8, 12),
+            child: Text(
+              'Tap a device to send it a link or some text.',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          ),
           for (final device in devices)
-            _DeviceTile(device: device, now: now, onForget: onForget),
+            _DeviceTile(
+              device: device,
+              now: now,
+              onSend: onSend,
+              onForget: onForget,
+            ),
+        ],
       ],
     );
   }
@@ -261,11 +290,13 @@ class _DeviceTile extends StatelessWidget {
   const _DeviceTile({
     required this.device,
     required this.now,
+    required this.onSend,
     required this.onForget,
   });
 
   final Device device;
   final DateTime now;
+  final void Function(Device device) onSend;
   final void Function(Device device) onForget;
 
   @override
@@ -277,13 +308,24 @@ class _DeviceTile extends StatelessWidget {
         leading: Icon(platformIcon(device.platform), size: 32),
         title: Text(device.name),
         subtitle: Text('${platformName(device.platform)} · $seen'),
-        trailing: PopupMenuButton<_DeviceAction>(
-          tooltip: 'More about ${device.name}',
-          onSelected: (_) => onForget(device),
-          itemBuilder: (context) => const [
-            PopupMenuItem(
-              value: _DeviceAction.forget,
-              child: Text('Forget this device'),
+        onTap: () => onSend(device),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              tooltip: 'Send to ${device.name}',
+              icon: const Icon(Icons.send_outlined),
+              onPressed: () => onSend(device),
+            ),
+            PopupMenuButton<_DeviceAction>(
+              tooltip: 'More about ${device.name}',
+              onSelected: (_) => onForget(device),
+              itemBuilder: (context) => const [
+                PopupMenuItem(
+                  value: _DeviceAction.forget,
+                  child: Text('Forget this device'),
+                ),
+              ],
             ),
           ],
         ),

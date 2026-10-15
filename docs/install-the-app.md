@@ -2,7 +2,7 @@
 
 Baton is pre-alpha and is not in the App Store. You build the app on your Mac, and put it on an iPhone or iPad with a cable. A free Apple ID is enough: you do not need to join the Apple Developer Program. The price of the free Apple ID is that an app you install this way stops opening after seven days, and you install it again with the same command ([Every seven days](#every-seven-days)).
 
-This version asks for a name for the device, shows the devices paired with it, and pairs two devices: one shows a QR code and the other scans it, or has it pasted in ([Pair two devices](#pair-two-devices)). The screens that send links come next. Until then the [`baton` program](try-it.md) is the way to send.
+This version asks for a name for the device, shows the devices paired with it, pairs two devices (one shows a QR code and the other scans it, or has it pasted in; [Pair two devices](#pair-two-devices)), and sends links and text between them ([Send a link or some text](#send-a-link-or-some-text)). Files are not in the app yet, and neither is a Baton that receives while the app is closed; the [`baton` program](try-it.md) is the one that can send the clipboard and run in the background of a computer.
 
 Everything below is typed in Terminal, which is a zsh shell on a Mac. Each command block can be pasted whole.
 
@@ -124,7 +124,7 @@ The first time, the command ends with an error, because the phone does not yet t
 ### What you should see
 
 1. The first time, a screen called **Name this device**. Choose a name you will recognise, such as "Kitchen iPad", and tap **Continue**.
-2. A screen with your device's name, **Online**, a **Fingerprint** of five groups of four letters and digits, **No other devices yet**, and an **Add a device** button. **Online** can take a few seconds to replace **Connecting…**.
+2. A screen with your device's name, **Online**, a **Fingerprint** of five groups of four letters and digits, **No other devices yet**, and an **Add a device** button. **Online** can take a few seconds to replace **Connecting…**. At the bottom are two tabs, **Devices** and **Inbox**.
 
 If your Mac or phone asks whether Baton may find devices on your local network, choose **Allow**. Baton finds your other devices that way. If you chose **Don't Allow**, change it in **Settings** (**System Settings** on the Mac), then **Privacy & Security**, then **Local Network**.
 
@@ -134,6 +134,8 @@ If you see **Baton could not start** instead, the message under it says why. Ope
 
 You need Baton on two devices, for example the Mac and the phone, and open on both. Put them on the same Wi-Fi network. Baton can also reach a device on another network by way of a relay, but that has not been tried from the app yet.
 
+In the steps below, the first device shows the code and the second one reads it. It does not matter which is which, but with a Mac and a phone, show the code on the Mac and read it with the phone. A phone's camera focuses on a screen held close, which the camera of many Macs cannot do, and some Macs have no camera at all. A phone that shows a code and then waits is not touched, so it may lock itself before the Mac has read the code.
+
 1. On the first device, tap **Add a device**, then **Show a code**. It shows a QR code, and for how long the code works: a few minutes.
 2. On the second device, tap **Add a device**, then **Scan or enter a code**. The first time, it asks whether Baton may use the camera: choose **OK**. Point the camera at the QR code on the first device.
 3. The second device now shows six digits, and the first one shows the same six, with the name of the second device. If the digits are the same, tap **Yes, they match** on the first device. If they are not, tap **No, cancel**: someone else may be trying to pair.
@@ -141,9 +143,28 @@ You need Baton on two devices, for example the Mac and the phone, and open on bo
 
 A code pairs one device, once. If it ran out, or it did not work, tap **Show a new code**.
 
-If the second device cannot scan the code, for example a Mac with no camera or a phone that was not allowed to use it, tap **Copy the code as text** on the first device, and paste the text into the box under **Or paste the code** on the second, and tap **Connect**. A Mac and an iPhone that use the same Apple ID share their clipboard, so you copy on one and paste on the other. Otherwise send the text to yourself in Messages or Notes.
+If the second device cannot scan the code, for example a Mac with no camera or a phone that was not allowed to use it, tap **Copy the code as text** on the first device, and paste the text into the box under **Or paste the code** on the second, and tap **Connect**. To get the text from one device to the other, copy it on one and paste it on the other. A Mac and an iPhone share their clipboard (Apple calls it Universal Clipboard) when they use the same Apple ID, Wi-Fi and Bluetooth are turned on on both, Handoff is turned on on both (search for **Handoff** in **System Settings** on the Mac and in **Settings** on the phone), and they are close to each other. If what you paste is not what you copied, send the text to yourself in Messages or Notes instead.
 
 To forget a device, tap the three dots at the end of its row, then **Forget this device**, then **Forget**. That is done on one device: the other can no longer reach it, but still lists it until you forget it there too.
+
+## Send a link or some text
+
+You need two paired devices, with Baton open on both. They should be on the same Wi-Fi network.
+
+1. On the device you send from, tap the other device's row on the **Devices** tab, or the paper plane at the end of it. A screen called **Send to** and the device's name opens.
+2. Type or paste a link or some text. **Paste** puts what is on the clipboard into the box. Under the box Baton says how it will go: a web address on its own goes as a link, which the other device can open, and anything else goes as text, which the other device can copy. Text arrives exactly as you wrote it.
+3. Tap **Send link** or **Send text**. Baton says **Sent the link to** or **Sent the text to** and the device's name, and empties the box. If it did not work, it says why and leaves what you typed, so that you can try again.
+4. On the other device a notice appears at the bottom, such as "Kitchen iPad sent you a link", with a **View** button, and the **Inbox** tab shows how many items are new. The notice says who sent what kind of thing, never what it says: it could be a password, and a notice can be seen by anyone who is looking at the screen. Tap **View**, or the **Inbox** tab.
+
+The inbox lists what other devices sent, newest first, and keeps it until you remove it, also after you close the app. On a link, **Open** opens it in the web browser, **Copy** copies it, and the bin removes it. Text can be copied and removed. Long text is cut short until you tap **Show more**. The icon at the top of the inbox clears all of it, after asking.
+
+Baton opens only web addresses, the ones that start with `http://` or `https://`. A link of another kind, such as a phone number, a file or an app, is shown and can be copied, but has no **Open** button: opening it could start something you did not ask for. Characters that cannot be seen, or that turn text round, show as a replacement mark (�) in the inbox, so that a line cannot read as one address and be copied as another. **Copy** copies what was sent, as it was sent.
+
+**Check the connection** on the send screen asks the other device to answer, and says how long it took and whether the traffic went over your Wi-Fi, directly over the internet or through the relay.
+
+In this version a device receives only while Baton is running on it. On an iPhone or iPad that means open on the screen: a locked phone, or one that has Baton in the background, cannot be reached, and a send to it ends after a while with a message that says so. Receiving on a locked phone needs a push notification, which is not built yet.
+
+Until then, keep Baton open and the phone in your hand when you send to it, or lengthen **Auto-Lock** while you try Baton (**Settings**, **Display & Brightness**, **Auto-Lock**) and set it back afterwards. If a send to a phone keeps ending with **Could not reach**, check **Low Power Mode** first: it sets Auto-Lock to 30 seconds. Baton does not keep the screen on by itself, because a phone that never locks is the opposite of what Baton is for.
 
 ## Every seven days
 
@@ -153,7 +174,7 @@ An app made with a free Apple ID stops opening after seven days. Its icon is sti
 flutter run --release --no-resident
 ```
 
-That installs over the old copy, so the app keeps what it had stored, such as its name and, once pairing is built, the devices it was paired with. If you delete the app from the phone, that is deleted with it.
+That installs over the old copy, so the app keeps what it had stored, such as its name, the devices it was paired with and its inbox. If you delete the app from the phone, that is deleted with it.
 
 To get a newer version of Baton first:
 
@@ -177,6 +198,8 @@ Choose your team again as above (and your own bundle identifier, if you changed 
 - **`cargo` or `rustup` not found**: Xcode does not use your shell's search path when you build from its window. Build with `flutter run --release --no-resident` in Terminal, as above, and if it still happens, check that `rustup --version` works in the same Terminal.
 - **`Unable to install` or `The code signature is invalid`**: unlock the phone, plug it in again and try once more. If it repeats, delete the Baton app from the phone and run `flutter run --release --no-resident` again. That also deletes what the app had stored.
 - **The camera does not start, or the picture stays black**: check that Baton may use the camera, in **Settings** on the phone, or **System Settings**, **Privacy & Security**, **Camera** on the Mac. The iPhone simulator has no camera. You can always paste the code instead.
+- **`Could not reach` a device, after a wait**: Baton is not running on the other device, or that device is asleep, locked or on another network. On a phone, Baton has to be open on the screen. Open it there and try again; **Check the connection** on the send screen says whether it answers.
+- **A link in the inbox has no Open button**: it is not a web address, so Baton will not open it, and says so under the link. **Copy** still copies it.
 - **`Pairing did not work`**: the sentence under it says why. The usual causes are a code that ran out or was used already (show a new one), and a second device that is not open, or is on another network.
 - **The two devices show different six digits**: tap **No, cancel** on the first device, and start again.
 - **Anything else**: open an [issue](https://github.com/jayunewal/device-handoff/issues) and paste the last 30 lines that Terminal printed.
