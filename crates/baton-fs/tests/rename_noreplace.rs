@@ -129,18 +129,68 @@ fn a_folder_does_not_take_the_name_of_a_file() {
     assert_eq!(read(from.join("one.txt")), "one");
 }
 
+// Linux refuses, because the name is taken (by `from` itself). macOS and Windows see one file and
+// do nothing. Either way nothing is lost.
 #[test]
-fn a_name_cannot_be_moved_onto_itself() {
+fn a_name_moved_onto_itself_loses_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("notes.txt");
     write(&path, "received");
 
+    let result = rename_noreplace(&path, &path);
+    if cfg!(any(target_os = "linux", target_os = "android")) {
+        assert_eq!(kind(result), ErrorKind::AlreadyExists);
+    } else {
+        result.unwrap();
+    }
+
+    assert_eq!(read(&path), "received");
+}
+
+// ADR 0008 names this clash: `Notes.txt` and `notes.txt` from an iPhone to a Mac. Where case is
+// ignored, a name that differs from a file that the person has only in case is that file's name,
+// and the move has to be refused with both files left as they were. The test finds out at run
+// time whether the file system ignores case, and stands down where it does not.
+#[test]
+fn a_name_that_differs_only_in_case_is_taken_where_case_is_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    let (from, had) = (dir.path().join("staged"), dir.path().join("notes.txt"));
+    write(&from, "received");
+    write(&had, "what the person had");
+    let upper = dir.path().join("NOTES.txt");
+    if !upper.exists() {
+        eprintln!("skipped: this file system tells upper and lower case apart");
+        return;
+    }
+
     assert_eq!(
-        kind(rename_noreplace(&path, &path)),
+        kind(rename_noreplace(&from, &upper)),
         ErrorKind::AlreadyExists
     );
 
-    assert_eq!(read(&path), "received");
+    assert_eq!(read(&had), "what the person had");
+    assert_eq!(read(&from), "received");
+}
+
+#[test]
+fn a_folder_cannot_be_moved_into_itself() {
+    let dir = tempfile::tempdir().unwrap();
+    let from = dir.path().join("staged");
+    folder(&from);
+    let inside = from.join("inner").join("again");
+
+    let error = rename_noreplace(&from, &inside).unwrap_err();
+
+    // Linux says `EINVAL` for this and for a file system that does not know the flag, and the
+    // answer is `Unsupported` for both. The system's words are in the message, so that a log
+    // tells them apart.
+    if cfg!(target_os = "linux") {
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
+        assert!(error.to_string().contains("(os error 22)"), "{error}");
+    }
+    assert_eq!(read(from.join("one.txt")), "one");
+    assert_eq!(read(from.join("inner").join("two.txt")), "two");
+    assert!(!inside.exists());
 }
 
 #[test]

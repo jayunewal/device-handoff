@@ -12,15 +12,16 @@ use std::{
 
 pub(crate) use imp::rename_noreplace;
 
-/// What a caller is told when the system or the volume cannot move without replacing.
+/// What a caller is told when the system or the volume cannot move without replacing. `why` is
+/// what the system said, so that a log can tell the causes apart.
 //
 // Which platforms use this helper and the next one differs, so a platform that has no use for
 // one of them must not warn about it.
 #[allow(dead_code)]
-fn unsupported() -> Error {
+fn unsupported(why: impl std::fmt::Display) -> Error {
     Error::new(
         ErrorKind::Unsupported,
-        "this system or volume cannot move without replacing what has the new name",
+        format!("this system or volume cannot move without replacing what has the new name: {why}"),
     )
 }
 
@@ -42,17 +43,24 @@ mod posix {
 
     /// Tells a system that cannot do the call from a path that is wrong.
     ///
-    /// `EINVAL` is what Linux says for flags that a file system does not know, `ENOSYS` is a
-    /// kernel without the call (or a sandbox that filters it), and `ENOTSUP` and `EOPNOTSUPP`
-    /// are what macOS says for a volume that cannot. They are not mistakes of the caller, and
-    /// they are told apart from the errors that are, such as `EEXIST`.
+    /// `ENOSYS` is a kernel without the call (or a sandbox that filters it), and `ENOTSUP` and
+    /// `EOPNOTSUPP` are what macOS says for a volume that cannot. They are not mistakes of the
+    /// caller, and they are told apart from the errors that are, such as `EEXIST`.
+    ///
+    /// `EINVAL` is what Linux says for flags that a file system does not know, and also for a
+    /// folder moved into a folder inside itself. The two cannot be told apart, so it is
+    /// `Unsupported` there, with the system's words in the message. On Apple systems it is
+    /// only the second kind (or `.` and `..`), since they say `ENOTSUP` for a volume that
+    /// cannot, so it is left as it is and std calls it `InvalidInput`.
     pub(super) fn classify(error: Error) -> Error {
-        let code = error.raw_os_error();
-        let cannot = [libc::EINVAL, libc::ENOSYS, libc::ENOTSUP, libc::EOPNOTSUPP];
-        if code.is_some_and(|code| cannot.contains(&code)) {
-            super::unsupported()
+        let cannot: &[libc::c_int] = if cfg!(target_vendor = "apple") {
+            &[libc::ENOSYS, libc::ENOTSUP, libc::EOPNOTSUPP]
         } else {
-            error
+            &[libc::EINVAL, libc::ENOSYS, libc::ENOTSUP, libc::EOPNOTSUPP]
+        };
+        match error.raw_os_error() {
+            Some(code) if cannot.contains(&code) => super::unsupported(error),
+            _ => error,
         }
     }
 
@@ -73,9 +81,25 @@ mod posix {
 
         #[test]
         fn a_volume_that_cannot_is_told_apart_from_a_path_that_is_wrong() {
-            for code in [libc::EINVAL, libc::ENOSYS, libc::ENOTSUP, libc::EOPNOTSUPP] {
-                let error = classify(Error::from_raw_os_error(code));
+            for code in [libc::ENOSYS, libc::ENOTSUP, libc::EOPNOTSUPP] {
+                let system = Error::from_raw_os_error(code);
+                let words = system.to_string();
+                let error = classify(system);
                 assert_eq!(error.kind(), ErrorKind::Unsupported, "{code}");
+                assert!(
+                    error.to_string().contains(&words),
+                    "the system's words: {error}"
+                );
+            }
+            // The one code that means a flag that is not known on Linux, and a mistake of the
+            // caller on Apple systems.
+            let einval = classify(Error::from_raw_os_error(libc::EINVAL));
+            if cfg!(target_vendor = "apple") {
+                assert_eq!(einval.kind(), ErrorKind::InvalidInput);
+                assert_eq!(einval.raw_os_error(), Some(libc::EINVAL));
+            } else {
+                assert_eq!(einval.kind(), ErrorKind::Unsupported);
+                assert!(einval.to_string().contains("(os error 22)"), "{einval}");
             }
             for (code, kind) in [
                 (libc::EEXIST, ErrorKind::AlreadyExists),
@@ -183,9 +207,9 @@ mod imp {
         let to = posix::c_string(to)?;
         // SAFETY: `from` and `to` are NUL-terminated strings that are alive until the call
         // returns, and the call reads those two strings and nothing else. Every argument of the
-        // variadic `syscall` is a `long`, which is what the C library passes on to the kernel.
-        // The call number and the flag are constants of the system, and a wrong kernel can only
-        // answer with an error.
+        // variadic `syscall` is as wide as a `long` (a pointer is, on every Linux and Android
+        // target), which is what the C library passes on to the kernel. The call number and the
+        // flag are constants of the system.
         let returned = unsafe {
             libc::syscall(
                 libc::SYS_renameat2,
@@ -276,6 +300,6 @@ mod imp {
 
     /// There is no call to make on this system.
     pub(crate) fn rename_noreplace(_from: &Path, _to: &Path) -> Result<()> {
-        Err(unsupported())
+        Err(unsupported("there is no such call on this system"))
     }
 }
