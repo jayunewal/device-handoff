@@ -7,8 +7,8 @@
 //! last few hundred log lines and shows them on its Diagnostics screen, where they can be copied
 //! into an issue. A line is made safe for that on the way in, because these lines get pasted
 //! into a public place: it is cut to a length, characters that would act on a screen instead of
-//! showing are replaced, anything that looks like a pairing code is removed (a code is a bearer
-//! secret while its offer lasts), and so are the details that say who a device belongs to or
+//! showing are replaced, anything that looks like a pairing code is removed together with the
+//! rest of the event (a code is a bearer secret while its offer lasts), and so are the details that say who a device belongs to or
 //! where it is: whole keys, the account name in a path and public IP addresses (see [`hide`]).
 
 mod hide;
@@ -28,12 +28,9 @@ const CAPACITY: usize = 400;
 /// The most characters of a line that are kept. What is cut off is replaced by `…`.
 const LINE_LIMIT: usize = 600;
 
-/// What a pairing code that reached a log line is replaced by.
+/// What a pairing code that reached a log line is replaced by, and with it the rest of the
+/// event.
 const CODE_REMOVED: &str = "BATON1:[removed]";
-
-/// What follows `BATON1:` in a pairing code: letters, digits and the punctuation of the QR
-/// alphabet. The code ends at the first byte that is not one of these.
-const CODE_PUNCTUATION: &[u8] = b"-_.:/+=$%*";
 
 static LOG: LogBuffer = LogBuffer::new(CAPACITY);
 
@@ -64,6 +61,9 @@ impl LogBuffer {
 
     /// Keeps the lines of `text`, made safe, and drops the oldest ones above the capacity.
     pub(crate) fn push(&self, text: &str) {
+        // The text is one event, and the parser of a pairing code ignores white space, so a
+        // code can run over several lines. What follows one in the event goes with it.
+        let text = remove_codes(text);
         // A panic while the list was held leaves it as it was, so a poisoned lock is still
         // good: a log that stopped working is the last thing to want while looking for a bug.
         let mut lines = self.lines.lock().unwrap_or_else(PoisonError::into_inner);
@@ -124,11 +124,10 @@ impl<'a> MakeWriter<'a> for Capture {
     }
 }
 
-/// `line` with pairing codes removed, keys, account names and public addresses taken out,
-/// characters that would act on a screen replaced, and a length that is not too long.
+/// `line` with keys, account names and public addresses taken out, characters that would act
+/// on a screen replaced, and a length that is not too long.
 fn clean(line: &str) -> String {
-    let line = remove_codes(line);
-    let line = hide::shorten_keys(&line);
+    let line = hide::shorten_keys(line);
     let line = hide::hide_account_names(&line);
     let line = hide::hide_public_addresses(&line);
     let mut cleaned = String::with_capacity(line.len().min(LINE_LIMIT));
@@ -167,31 +166,19 @@ fn hidden(c: char) -> bool {
         )
 }
 
-/// `line` with every pairing code (`BATON1:` and what follows it) replaced by [`CODE_REMOVED`].
-fn remove_codes(line: &str) -> Cow<'_, str> {
+/// `text` with the first pairing code (`BATON1:`) and everything after it replaced by
+/// [`CODE_REMOVED`]. The parser of a ticket ignores case and white space, so a code can be
+/// written in groups or over several lines, and only the end of the event is a place where it
+/// surely ends.
+fn remove_codes(text: &str) -> Cow<'_, str> {
     const PREFIX: &str = "baton1:";
     // Lowercasing the ASCII letters keeps every byte where it was, so a position found in the
-    // lowercase copy is a position in the line, and it is a character boundary there because
+    // lowercase copy is a position in the text, and it is a character boundary there because
     // the match is ASCII.
-    let lowered = line.to_ascii_lowercase();
-    if !lowered.contains(PREFIX) {
-        return Cow::Borrowed(line);
+    match text.to_ascii_lowercase().find(PREFIX) {
+        None => Cow::Borrowed(text),
+        Some(start) => Cow::Owned(format!("{}{CODE_REMOVED}", &text[..start])),
     }
-    let mut kept = String::with_capacity(line.len());
-    let mut from = 0;
-    while let Some(found) = lowered[from..].find(PREFIX) {
-        let start = from + found;
-        kept.push_str(&line[from..start]);
-        kept.push_str(CODE_REMOVED);
-        let code_starts = start + PREFIX.len();
-        let code_length = line[code_starts..]
-            .bytes()
-            .take_while(|b| b.is_ascii_alphanumeric() || CODE_PUNCTUATION.contains(b))
-            .count();
-        from = code_starts + code_length;
-    }
-    kept.push_str(&line[from..]);
-    Cow::Owned(kept)
 }
 
 #[cfg(test)]
@@ -300,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pairing_code_is_removed_wherever_it_is() {
+    fn a_pairing_code_is_removed_wherever_it_is_with_the_rest_of_the_event() {
         let log = buffer(10);
         let code = "BATON1:ABCDEFGHIJ0123456789-$%*+./:XYZ";
 
@@ -312,16 +299,30 @@ mod tests {
         assert_eq!(
             log.lines(),
             [
-                "joining BATON1:[removed] failed",
+                "joining BATON1:[removed]",
                 "BATON1:[removed]",
-                "two codes BATON1:[removed], and BATON1:[removed];",
-                "ticket=\"BATON1:[removed]\"",
+                "two codes BATON1:[removed]",
+                "ticket=\"BATON1:[removed]",
             ]
         );
     }
 
     #[test]
-    fn text_that_only_mentions_the_prefix_loses_what_follows_it_and_nothing_else() {
+    fn a_code_written_in_groups_or_over_several_lines_is_removed_whole() {
+        let log = buffer(10);
+
+        // The parser of a ticket drops white space and ignores case.
+        log.push("could not read baton1: ABCD EFGH\n  IJKL 1234\nlast line of the event\n");
+        log.push("the next event\n");
+
+        assert_eq!(
+            log.lines(),
+            ["could not read BATON1:[removed]", "the next event"]
+        );
+    }
+
+    #[test]
+    fn text_that_only_mentions_the_prefix_loses_the_rest_of_its_event() {
         let log = buffer(10);
 
         log.push("a code starts with BATON1: and ends\n");
@@ -330,8 +331,8 @@ mod tests {
         assert_eq!(
             log.lines(),
             [
-                "a code starts with BATON1:[removed] and ends",
-                "Zoë’s BATON1:[removed]é goes on",
+                "a code starts with BATON1:[removed]",
+                "Zoë’s BATON1:[removed]",
             ]
         );
     }

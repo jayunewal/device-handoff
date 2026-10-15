@@ -98,7 +98,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.contains("could not join BATON1:[removed] just now")),
+                .any(|line| line.ends_with("could not join BATON1:[removed]")),
             "{lines:?}"
         );
         assert!(
