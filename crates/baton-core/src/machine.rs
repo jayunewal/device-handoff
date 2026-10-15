@@ -20,6 +20,8 @@
 //! Moving the key into a keystore whose items cannot leave the device would make the
 //! problem go away; see `docs/security.md`.
 
+use std::sync::OnceLock;
+
 use data_encoding::HEXLOWER;
 
 /// Domain separation, so the hash is specific to Baton and to this use.
@@ -59,7 +61,28 @@ impl MachineId {
 }
 
 /// The machine Baton is running on, if the operating system will say.
+///
+/// The answer is worked out the first time and kept, because the machine does not change while
+/// Baton runs. On a Mac and on Windows it comes from a program that Baton starts, and for a
+/// moment a program that is starting holds a copy of every file that Baton has open, the lock
+/// on the folder of a running Baton included. A folder that was let go of in that moment would
+/// still be locked, and a Baton started on it again would be told that it is already running.
+/// Asked once, that moment comes while the first Baton of the process is starting. No other has
+/// finished starting by then, because each waits here for the answer, so there is no folder yet
+/// that could be stopped and started again.
 pub(crate) fn current() -> Option<MachineId> {
+    static CURRENT: OnceLock<Option<MachineId>> = OnceLock::new();
+    CURRENT.get_or_init(read).clone()
+}
+
+/// How often the operating system has been asked, for the test that it is asked only once.
+#[cfg(test)]
+static READS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Asks the operating system which machine this is.
+fn read() -> Option<MachineId> {
+    #[cfg(test)]
+    READS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     MachineId::from_raw(&raw()?)
 }
 
@@ -273,6 +296,16 @@ mod tests {
     #[test]
     fn the_machine_gives_the_same_answer_every_time() {
         assert_eq!(current(), current());
+    }
+
+    #[test]
+    fn the_operating_system_is_asked_only_once() {
+        // Another test may have asked already. However often the machine is needed, the system
+        // has been asked once in all.
+        for _ in 0..4 {
+            let _ = current();
+        }
+        assert_eq!(READS.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     // The macOS and Windows runners are real machines with the identifiers above, so the
