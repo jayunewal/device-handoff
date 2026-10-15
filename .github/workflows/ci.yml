@@ -18,8 +18,60 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  # Chooses which of the jobs below a change can affect, so that a change to the Mac app does not
+  # also run the Rust workspace on three systems. A push to main and a run started by hand run
+  # everything, because the downloads are built there. The rules are in
+  # .github/scripts/changed-paths.sh, and "What CI runs" in CONTRIBUTING.md says them in words.
+  changes:
+    name: Changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.choose.outputs.rust }}
+      app: ${{ steps.choose.outputs.app }}
+      mac: ${{ steps.choose.outputs.mac }}
+      iphone: ${{ steps.choose.outputs.iphone }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The paths of a pull request are the ones between the commit it branched from and
+          # its last commit, which needs the history.
+          fetch-depth: 0
+      - name: Check the rules against the changes people really make
+        run: bash .github/scripts/changed-paths-test.sh
+      - name: Choose the jobs
+        id: choose
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -u
+          everything() {
+            printf 'rust=true\napp=true\nmac=true\niphone=true\n' | tee -a "$GITHUB_OUTPUT"
+          }
+          if [ "$EVENT" != pull_request ]; then
+            echo "This is not a pull request, so every job runs."
+            everything
+            exit 0
+          fi
+          if ! paths=$(git -c core.quotepath=false diff --no-renames --name-only "$BASE...$HEAD"); then
+            echo "::warning::Could not list the files that this pull request changes, so every job runs."
+            everything
+            exit 0
+          fi
+          echo "Changed files:"
+          printf '%s\n' "$paths"
+          if ! answer=$(printf '%s\n' "$paths" | bash .github/scripts/changed-paths.sh); then
+            echo "::warning::Could not tell which jobs the change affects, so every job runs."
+            everything
+            exit 0
+          fi
+          printf '%s\n' "$answer" | tee -a "$GITHUB_OUTPUT"
+
   fmt:
     name: Format
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -30,6 +82,8 @@ jobs:
 
   clippy:
     name: Clippy
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -44,6 +98,8 @@ jobs:
 
   test:
     name: Test (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -57,6 +113,8 @@ jobs:
 
   msrv:
     name: Minimum supported Rust version
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -75,6 +133,8 @@ jobs:
 
   docs:
     name: Rustdoc
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     env:
       RUSTDOCFLAGS: -D warnings
@@ -86,6 +146,8 @@ jobs:
 
   deny:
     name: Licenses and advisories
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -93,6 +155,8 @@ jobs:
 
   app:
     name: App (Flutter, Linux)
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -147,6 +211,8 @@ jobs:
   # way Cargokit builds the Rust library into them, meet a real Xcode.
   app-mac:
     name: App (macOS)
+    needs: changes
+    if: needs.changes.outputs.mac == 'true'
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
@@ -197,6 +263,8 @@ jobs:
 
   app-iphone:
     name: App (iPhone)
+    needs: changes
+    if: needs.changes.outputs.iphone == 'true'
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
@@ -253,6 +321,8 @@ jobs:
 
   build:
     name: Build (${{ matrix.name }})
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
