@@ -142,7 +142,8 @@ fn ends_account_name(c: char, windows: bool) -> bool {
 /// are given addresses (and `64:ff9b::/96` by the IPv4 address it holds): `baton_core::node` holds
 /// `e::`, and `baton_ffi::api` holds `::a`, which are addresses to the parser and are outside it.
 /// A candidate that is joined to a letter or a digit on either side is a piece of a word and is
-/// left alone as well.
+/// left alone as well. The first and the last address of a list printed with `{:?}` are found
+/// although a bracket is joined to them.
 pub(super) fn hide_public_addresses(line: &str) -> Cow<'_, str> {
     let bytes = line.as_bytes();
     let mut edits = Edits::new(line);
@@ -161,7 +162,27 @@ pub(super) fn hide_public_addresses(line: &str) -> Cow<'_, str> {
         // that comes before it. `::1` begins with colons, so the whole run is tried first.
         let to = run.trim_end_matches(['.', ':', '%', '[']).len();
         let from = to - run[..to].trim_start_matches(['.', ':', '%', ']']).len();
-        for (first, last) in [(0, run.len()), (0, to), (from, to)] {
+        // A list printed with `{:?}`, as in `[9.9.9.9, 1.1.1.1]`, puts a bracket before its first
+        // address and after its last. The brackets of an address with a port belong to it, so
+        // the stretches without them come after the ones above, and a single bracket is cut
+        // first: `[[2606:4700::1]:2` is the first item of a list of such addresses, and
+        // `[2606:4700::1]:2]` is the last.
+        let opener = usize::from(run.starts_with('['));
+        let closer = run.len() - usize::from(run.ends_with(']'));
+        let hi = run.trim_end_matches(['.', ':', '%', '[', ']']).len();
+        let lo = hi
+            - run[..hi]
+                .trim_start_matches(['.', ':', '%', '[', ']'])
+                .len();
+        for (first, last) in [
+            (0, run.len()),
+            (0, to),
+            (from, to),
+            (opener, run.len()),
+            (0, closer),
+            (opener, closer),
+            (lo, hi),
+        ] {
             let (begin, end) = (start + first, start + last);
             if is_part_of_a_word(line, begin, end) {
                 continue;
@@ -454,6 +475,51 @@ mod tests {
             hide_public_addresses("connect https://8.8.8.8:8080/path failed"),
             "connect https://public IPv4 (hidden):8080/path failed"
         );
+    }
+
+    #[test]
+    fn the_first_and_the_last_address_of_a_printed_list_are_found_too() {
+        // A list printed with `{:?}` starts with a bracket and ends with one, and the stretch that
+        // holds its first or its last address holds the bracket as well.
+        for (line, shown) in [
+            (
+                "addrs=[9.9.9.9:41641, 10.0.0.7:41641]",
+                "addrs=[public IPv4 (hidden):41641, 10.0.0.7:41641]",
+            ),
+            (
+                "[9.9.9.9, 1.1.1.1]",
+                "[public IPv4 (hidden), public IPv4 (hidden)]",
+            ),
+            ("[2606:4700::1, fe80::1]", "[public IPv6 (hidden), fe80::1]"),
+            (
+                "[[2606:4700::1]:2, [fe80::1%2]:3]",
+                "[public IPv6 (hidden):2, [fe80::1%2]:3]",
+            ),
+            (
+                "addrs: [9.9.9.9:41641]",
+                "addrs: [public IPv4 (hidden):41641]",
+            ),
+            (
+                "last: [10.0.0.7:1, [2606:4700::1]:2]",
+                "last: [10.0.0.7:1, public IPv6 (hidden):2]",
+            ),
+            ("[[2606:4700::1]:2]", "[public IPv6 (hidden):2]"),
+            (
+                "[[2606:4700::1]:2, [2606:4700::2]:3]",
+                "[public IPv6 (hidden):2, public IPv6 (hidden):3]",
+            ),
+        ] {
+            assert_eq!(hide_public_addresses(line), shown, "{line}");
+        }
+    }
+
+    #[test]
+    fn brackets_around_what_is_not_an_address_change_nothing() {
+        // The brackets are cut from a stretch only to see whether an address is left. None is
+        // here, and none of these is joined to a word.
+        let line = "[08:00:00] [1.3.0] [dead:beef] [e::] [::a] [1.2.3] [v0.1] [::1] [192.168.1.2:5] \
+                    [fe80::1%2] [[::a]:1] [2001:db8::1]";
+        assert!(matches!(hide_public_addresses(line), Cow::Borrowed(_)));
     }
 
     #[test]
