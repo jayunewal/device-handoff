@@ -54,6 +54,12 @@ abstract interface class Backend {
 
   /// Starts Baton. Throws a `BatonError` that says why not.
   Future<Session> start();
+
+  /// The last lines the library logged, oldest first, for a bug report. The library has
+  /// already taken out pairing codes and the characters that would act on a screen, but the
+  /// lines can still name devices and network addresses. It is empty if the library did not
+  /// load, which is itself a reason to show the person.
+  List<String> recentLog();
 }
 
 /// A Baton that is running.
@@ -127,6 +133,9 @@ abstract interface class Session {
   /// opens a link another device sent only if this gives an address, and then opens that
   /// address, not the text that was sent: the rule is kept in Rust, once, for every screen.
   String? webAddress(String url);
+
+  /// The same lines as [Backend.recentLog].
+  List<String> recentLog();
 
   /// Stops Baton and lets go of its folder.
   Future<void> stop();

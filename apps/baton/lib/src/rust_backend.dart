@@ -9,6 +9,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 import 'backend.dart';
 import 'rust/api/baton.dart' as api;
+import 'rust/api/startup.dart' as startup;
 import 'rust/frb_generated.dart';
 
 /// Baton as the Rust library runs it.
@@ -105,6 +106,16 @@ class RustBackend implements Backend {
     );
     return _RustSession(baton);
   }
+
+  @override
+  List<String> recentLog() {
+    try {
+      return startup.recentLog();
+    } on Object {
+      // The library never loaded, so nothing was logged that could be read.
+      return const [];
+    }
+  }
 }
 
 class _RustSession implements Session {
@@ -167,6 +178,9 @@ class _RustSession implements Session {
 
   @override
   String? webAddress(String url) => api.webAddress(url: url);
+
+  @override
+  List<String> recentLog() => startup.recentLog();
 
   @override
   Future<void> stop() => _baton.stop();
