@@ -38,6 +38,45 @@ pub const MAX_CLIPBOARD_TEXT_BYTES: usize = 1024 * 1024;
 /// Longest error message, in bytes.
 pub const MAX_ERROR_MESSAGE_BYTES: usize = 1024;
 
+// File transfer (docs/protocol.md section 8).
+
+/// Most top-level items of a transfer that an offer shows by name.
+pub const MAX_PREVIEW_ITEMS: usize = 16;
+
+/// Longest name of one file or folder, in bytes. Most file systems allow no more.
+pub const MAX_FILE_NAME_BYTES: usize = 255;
+
+/// Longest relative path in a transfer, in bytes.
+pub const MAX_PATH_BYTES: usize = 1024;
+
+/// Most parts (names joined by `/`) in a relative path.
+pub const MAX_PATH_DEPTH: usize = 64;
+
+/// Most files in one transfer.
+pub const MAX_TRANSFER_FILES: u32 = 100_000;
+
+/// Most folders in one transfer.
+pub const MAX_TRANSFER_FOLDERS: u32 = 100_000;
+
+/// Largest file in a transfer, in bytes (1 PiB). It keeps the number of spans of a file well
+/// inside 32 bits and the sum of the sizes of a few files inside 64 bits.
+pub const MAX_FILE_BYTES: u64 = 1 << 50;
+
+/// Most entries in one frame of the list of files.
+pub const MAX_LIST_FRAME_ENTRIES: usize = 1024;
+
+/// Most bytes the whole list of files of one transfer may take in the form that is hashed (an
+/// entry is 19 bytes and its path). It is the connection's receive window, so the list of an
+/// accepted transfer always fits in what a connection can hold before a span can be read.
+/// A transfer with a longer list is offered as several transfers.
+pub const MAX_LIST_BYTES: usize = 16 * 1024 * 1024;
+
+/// Most lanes (unidirectional streams) one transfer may use.
+pub const MAX_LANES: u8 = 8;
+
+/// Most files that a `Done` names one by one.
+pub const MAX_FAILURES_LISTED: usize = 256;
+
 /// A field that does not satisfy the protocol's limits.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LimitError {
@@ -66,6 +105,15 @@ pub enum LimitError {
     Empty {
         /// Name of the field.
         field: &'static str,
+    },
+    /// A field is within the size limits but makes no sense, for example a total that its
+    /// parts do not add up to.
+    #[error("{field} is not valid: {reason}")]
+    Invalid {
+        /// Name of the field.
+        field: &'static str,
+        /// What is wrong, for logs.
+        reason: &'static str,
     },
 }
 

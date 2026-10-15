@@ -219,6 +219,8 @@ impl Error {
             DeclineReason::Invalid => {
                 "it did not accept the content; for a link, check the address"
             }
+            DeclineReason::NoSpace => "it has no room for it",
+            DeclineReason::Refused => "nobody there accepted it",
             DeclineReason::Other => "it gave a reason this version does not know",
         };
         Self::new(

@@ -3,7 +3,8 @@
 //! Messages exchanged between paired devices on the session protocol.
 //!
 //! Each request travels on its own bidirectional stream and gets exactly one
-//! response, much like a call over HTTP.
+//! response, much like a call over HTTP. The data of a file transfer travels on streams of its
+//! own, described in [`transfer`](crate::transfer).
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +16,7 @@ use crate::{
         MAX_ERROR_MESSAGE_BYTES, MAX_FRAME_LEN, MAX_TITLE_BYTES, MAX_URL_BYTES, check_len,
         check_non_empty_len,
     },
+    transfer::{TransferReply, TransferRequest},
 };
 
 /// Capability identifiers a device can advertise in [`Hello`].
@@ -26,6 +28,9 @@ pub mod capability {
     pub const LINK: &str = "handoff.link";
     /// Accepts [`Item::ClipboardText`](super::Item::ClipboardText).
     pub const CLIPBOARD_TEXT: &str = "handoff.clipboard.text";
+    /// Accepts [`Request::Transfer`](super::Request::Transfer), and with it the lanes of
+    /// section 8 of `docs/protocol.md`: offers of files and folders.
+    pub const TRANSFER_FILES: &str = "transfer.files";
 }
 
 /// A message with a defined maximum size and field limits.
@@ -50,6 +55,9 @@ pub enum Request {
     Ping(Ping),
     /// Hand something to the peer.
     Handoff(Handoff),
+    /// Offer files and folders to the peer, or follow up on an offer. Only to a peer that
+    /// advertised [`capability::TRANSFER_FILES`].
+    Transfer(TransferRequest),
 }
 
 /// A response to a [`Request`].
@@ -61,6 +69,8 @@ pub enum Response {
     Pong(Ping),
     /// Answers [`Request::Handoff`].
     Handoff(HandoffReply),
+    /// Answers [`Request::Transfer`].
+    Transfer(TransferReply),
     /// The request could not be handled at all.
     Error(ErrorReply),
 }
@@ -239,6 +249,11 @@ pub enum DeclineReason {
     Blocked,
     /// The content is not valid for its kind, for example a malformed link.
     Invalid,
+    /// The receiver has no room for it: its storage is full, or what it would hold from this
+    /// device would pass the limit the person set.
+    NoSpace,
+    /// The person using the receiver said no, or did not answer in time.
+    Refused,
     /// Any reason this version does not know about.
     #[serde(other)]
     Other,
@@ -260,6 +275,9 @@ pub enum ErrorCode {
     Malformed,
     /// The receiver is shutting down or failed internally.
     Internal,
+    /// The request names something the receiver does not have, such as a transfer it never
+    /// saw or has forgotten.
+    NotFound,
     /// Any code this version does not know about.
     #[serde(other)]
     Other,
@@ -314,6 +332,7 @@ impl Message for Request {
             Self::Hello(hello) => hello.validate(),
             Self::Ping(_) => Ok(()),
             Self::Handoff(handoff) => handoff.item.validate(),
+            Self::Transfer(request) => request.validate(),
         }
     }
 }
@@ -325,6 +344,7 @@ impl Message for Response {
         match self {
             Self::Hello(hello) => hello.validate(),
             Self::Pong(_) | Self::Handoff(_) => Ok(()),
+            Self::Transfer(reply) => reply.validate(),
             Self::Error(error) => {
                 check_len("error message", &error.message, MAX_ERROR_MESSAGE_BYTES)
             }

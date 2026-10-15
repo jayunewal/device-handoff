@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Identifiers: devices and handoff items.
+//! Identifiers: devices, handoff items and transfers.
 
 use std::{fmt, str::FromStr};
 
@@ -181,12 +181,66 @@ impl<'de> Deserialize<'de> for ItemId {
     }
 }
 
+/// Identifies one transfer of files, so a retry is recognised and its lanes find their offer.
+///
+/// Chosen at random by the sender. It is a type of its own, and not an [`ItemId`], so that
+/// the two can never be mixed up in a table that is keyed by one of them.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TransferId([u8; Self::LEN]);
+
+impl TransferId {
+    /// Length of a transfer id in bytes.
+    pub const LEN: usize = 16;
+
+    /// Wraps raw bytes, which the caller must have drawn from a random source.
+    pub const fn from_bytes(bytes: [u8; Self::LEN]) -> Self {
+        Self(bytes)
+    }
+
+    /// The raw bytes.
+    pub const fn as_bytes(&self) -> &[u8; Self::LEN] {
+        &self.0
+    }
+}
+
+impl fmt::Display for TransferId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&HEXLOWER.encode(&self.0))
+    }
+}
+
+impl fmt::Debug for TransferId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "TransferId({self})")
+    }
+}
+
+impl Serialize for TransferId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        ByteArray::new(self.0).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for TransferId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        ByteArray::<{ Self::LEN }>::deserialize(deserializer).map(|bytes| Self(bytes.into_array()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn id(byte: u8) -> DeviceId {
         DeviceId::from_bytes([byte; 32])
+    }
+
+    #[test]
+    fn a_transfer_id_prints_as_hex_and_is_not_an_item_id() {
+        let id = TransferId::from_bytes(std::array::from_fn(|i| u8::try_from(i).unwrap()));
+        assert_eq!(id.to_string(), "000102030405060708090a0b0c0d0e0f");
+        assert_eq!(format!("{id:?}"), format!("TransferId({id})"));
+        assert_eq!(id.as_bytes().len(), TransferId::LEN);
     }
 
     #[test]
