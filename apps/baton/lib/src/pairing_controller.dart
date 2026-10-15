@@ -245,6 +245,10 @@ class JoinController extends ChangeNotifier {
     if (_phase != JoinPhase.entering || ticket.trim().isEmpty) return;
     _problem = '';
     _set(JoinPhase.connecting);
+    // The try before this one, if it was turned down, may not have ended yet. Nothing it says
+    // from here on is about this one. Cancelling a bridge stream finishes only when it next
+    // yields (see docs/architecture.md), so this does not wait for it.
+    unawaited(_progress?.cancel());
     _progress = _session
         .joinPairing(ticket)
         .listen(

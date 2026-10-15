@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import 'dart:async';
+
 import 'package:baton/src/backend.dart';
 import 'package:baton/src/screens/enter_code_screen.dart';
 import 'package:flutter/material.dart';
@@ -110,6 +112,26 @@ void _mockClipboard(WidgetTester tester, {String? holds}) {
       null,
     ),
   );
+}
+
+/// Something that is not a code is tried and turned down while its stream stays open, and then
+/// a code is tried. Gives the stream of the first try.
+Future<StreamController<JoinProgress>> _turnedDownThenTried(
+  WidgetTester tester,
+  FakeSession session,
+  _Camera camera,
+) async {
+  camera.see('https://example.com/menu');
+  await tester.pump();
+  final earlier = session.joining;
+  earlier.add(const JoinProgress.failed(error: _notATicket));
+  await tester.pumpAndSettle();
+
+  camera.see(sampleTicket);
+  await tester.pump();
+  expect(session.joined, ['https://example.com/menu', sampleTicket]);
+  expect(find.text('Reaching the other device…'), findsOneWidget);
+  return earlier;
 }
 
 void main() {
@@ -261,6 +283,38 @@ void main() {
     camera.see(sampleTicket);
     await tester.pump();
     expect(session.joined, ['https://example.com/menu', sampleTicket]);
+    expect(find.text('Reaching the other device…'), findsOneWidget);
+  });
+
+  testWidgets('hears nothing more from a try once a new one has begun', (
+    tester,
+  ) async {
+    final session = _session();
+    final camera = _Camera();
+    await _open(tester, session, camera);
+    final earlier = await _turnedDownThenTried(tester, session, camera);
+
+    // The earlier stream has not ended, and it says one more thing.
+    earlier.add(const JoinProgress.paired(device: _anna));
+    await tester.pump();
+
+    expect(find.text('Paired with Anna’s iPhone'), findsNothing);
+    expect(find.text('Reaching the other device…'), findsOneWidget);
+    unawaited(earlier.close());
+  });
+
+  testWidgets('an earlier try that ends late does not end the new one', (
+    tester,
+  ) async {
+    final session = _session();
+    final camera = _Camera();
+    await _open(tester, session, camera);
+    final earlier = await _turnedDownThenTried(tester, session, camera);
+
+    unawaited(earlier.close());
+    await tester.pump();
+
+    expect(find.text('Pairing stopped before it was finished.'), findsNothing);
     expect(find.text('Reaching the other device…'), findsOneWidget);
   });
 
