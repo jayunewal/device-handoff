@@ -6,12 +6,12 @@ import 'package:flutter/material.dart';
 
 import 'backend.dart';
 import 'controller.dart';
-import 'screens/devices_screen.dart';
+import 'screens/home_screen.dart';
 import 'screens/name_screen.dart';
 import 'screens/problem_screen.dart';
 
 /// The whole app. The first time it asks for a name for this device. Then it starts Baton and
-/// shows the devices.
+/// shows the devices and the inbox.
 class BatonApp extends StatefulWidget {
   const BatonApp({required this.backend, super.key});
 
@@ -50,7 +50,7 @@ class _BatonAppState extends State<BatonApp> {
             suggestion: _controller.suggestedName,
             onChosen: _controller.chooseName,
           ),
-          Phase.running => DevicesScreen(session: _controller.session!),
+          Phase.running => HomeScreen(session: _controller.session!),
           Phase.failed => ProblemScreen(
             problem: _controller.problem,
             onTryAgain: _controller.begin,
