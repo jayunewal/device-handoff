@@ -16,6 +16,8 @@ cargo deny check
 
 Tests run on the loopback interface and do not need internet access.
 
+If you change the functions under `crates/baton-ffi/src/api`, write the Dart side of the bridge again and commit the result. CI does the same and fails when the files differ. [apps/baton/README.md](apps/baton/README.md) has the commands.
+
 Code that parses input from the network also has fuzz targets. They are not part of the normal build and need a nightly toolchain and [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz); [crates/baton-proto/fuzz/README.md](crates/baton-proto/fuzz/README.md) says how to run them. If you change a parser, let them run for a few minutes before you open the pull request.
 
 ## Making a change
@@ -31,7 +33,7 @@ Commit messages: a short imperative summary (about 70 characters), a blank line,
 ## Code style
 
 - `cargo fmt` and `cargo clippy -D warnings` must be clean.
-- No `unsafe` in the core crates (`unsafe_code` is forbidden workspace-wide). If a platform layer needs it, put it in its own crate with the reason written down.
+- No `unsafe` in the core crates (`unsafe_code` is forbidden workspace-wide). If a platform layer needs it, put it in its own crate with the reason written down. `baton-ffi` is that crate for the Flutter bridge: `unsafe` is denied everywhere in it except the module that `flutter_rust_bridge_codegen` writes.
 - Input from the network is untrusted. Parsing code must not panic: return an error. Avoid `unwrap()` outside tests, do not index or slice with `[]` (`baton-proto` turns on `clippy::indexing_slicing`; use `get`, `split_first_chunk` and the like), and bound every length and count before allocating.
 - Errors in library crates use `thiserror`; the command-line program turns them into messages written for the person who ran the command, with the likeliest cause and what to do about it (`CliError`).
 - Start new source files with `// SPDX-License-Identifier: Apache-2.0`.
