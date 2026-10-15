@@ -71,7 +71,8 @@ pub struct Path {
     pub window: u64,
     /// The smoothed round-trip time.
     pub rtt: Duration,
-    /// How fast the path delivers, in bytes a second, or 0 if that is not known.
+    /// How fast the path delivers, in bytes a second, or 0 to use the window over the round trip,
+    /// which is what a path under Cubic delivers.
     pub rate: u64,
 }
 
@@ -164,8 +165,8 @@ pub struct Sender {
     /// The newest frame of the current chain that a later frame may refer to.
     last_referenced: Option<u64>,
     frames: BTreeMap<u64, Frame>,
-    /// What the frame that is being encoded has to be, if one is.
-    encoding: Option<FrameKind>,
+    /// What the frame that is being encoded has to be, and the epoch it was begun in, if one is.
+    encoding: Option<(FrameKind, u32)>,
     want_key: bool,
     /// The current chain lost a frame, so the next frame has to begin a new one.
     broken: bool,
@@ -252,25 +253,35 @@ impl Sender {
     /// what it has, which includes the frame in flight, so the key frame goes at once and the
     /// frame in flight is reset with it.
     ///
-    /// The picture is encoded if fewer than [`Params::min_in_flight`] frames are in flight, or
-    /// if the bytes in flight are below the congestion window; and never if
-    /// [`Params::max_in_flight`] are. Counting frames alone would be wrong twice: a path with a
-    /// long round trip needs more frames in flight to be full, and a receiver may hold an
-    /// acknowledgement back for a while, so a run of small frames would wait for no reason.
+    /// A delta is encoded if fewer than [`Params::min_in_flight`] frames are in flight, or if the
+    /// bytes in flight are below the congestion window; and never if [`Params::max_in_flight`]
+    /// are. Counting frames alone would be wrong twice: a path with a long round trip needs more
+    /// frames in flight to be full, and a receiver may hold an acknowledgement back for a while,
+    /// so a run of small frames would wait for no reason.
+    ///
+    /// A frame that begins a chain is counted after the resets it makes. It makes every frame
+    /// that is not held useless, and when it is written the ones in flight are reset (see
+    /// [`sent`](Self::sent)), so it is alone in flight and under both limits: waiting for the
+    /// acknowledgement of a frame that it is about to reset would only delay the picture that the
+    /// viewer is waiting for.
     pub fn begin(&mut self, path: &Path) -> Option<FrameKind> {
         if self.encoding.is_some() {
             return None;
         }
-        let in_flight = self.in_flight();
-        let room = (self.want_key || !self.begins_chain_in_flight())
-            && in_flight < self.params.max_in_flight
-            && (in_flight < self.params.min_in_flight || self.in_flight_bytes() < path.window);
+        let kind = self.next_kind();
+        let room = if kind == FrameKind::Delta {
+            let in_flight = self.in_flight();
+            !self.begins_chain_in_flight()
+                && in_flight < self.params.max_in_flight
+                && (in_flight < self.params.min_in_flight || self.in_flight_bytes() < path.window)
+        } else {
+            self.want_key || !self.begins_chain_in_flight()
+        };
         if !room {
             self.stats.skipped += 1;
             return None;
         }
-        let kind = self.next_kind();
-        self.encoding = Some(kind);
+        self.encoding = Some((kind, self.epoch));
         Some(kind)
     }
 
@@ -303,7 +314,11 @@ impl Sender {
     /// The frame that [`begin`](Self::begin) announced was made and its stream written at `now`.
     ///
     /// Returns the header to write at the start of the stream, and the earlier frames that this
-    /// one makes useless. Returns `None` if no frame was being encoded.
+    /// one makes useless. Returns `None` if no frame was being encoded, and also if the one that
+    /// was is of no use any more: the size of the picture changed, or a frame that a delta was to
+    /// follow was given up on, while it was being made. Nothing was sent then, as after
+    /// [`cancel`](Self::cancel), and the caller drops the picture. The next frame is the key frame
+    /// of the new size, or the frame that begins a new chain.
     ///
     /// The time by which the frame is late is fixed here, from what the path is like now. It is
     /// the grace, plus a number of round trips, plus the time that the path needs for the bytes
@@ -311,7 +326,10 @@ impl Sender {
     /// its queue since looks faster, but that does not make a frame that was written into the
     /// queue any later.
     pub fn sent(&mut self, now: Duration, encoded: &Encoded, path: &Path) -> Option<Sent> {
-        let kind = self.encoding.take()?;
+        let (kind, epoch) = self.encoding.take()?;
+        if epoch != self.epoch || (kind == FrameKind::Delta && self.broken) {
+            return None;
+        }
         let due = now + self.allowance(encoded.size, path);
         let number = self.next_number;
         self.next_number += 1;
@@ -460,6 +478,10 @@ impl Sender {
 
     /// Looks at the clock. Returns the streams to reset because their frames are late.
     ///
+    /// A key frame that the viewer asked for, and that had to wait for its time, is let go here,
+    /// so this is to be called on a timer. [`request_key_frame`](Self::request_key_frame) lets it
+    /// go too, when the viewer asks again.
+    ///
     /// A frame that is not referenced is given up on alone. A frame that is referenced breaks
     /// the chain: the later frames of the chain are given up on with it, and the next frame
     /// begins a new chain.
@@ -472,10 +494,7 @@ impl Sender {
     /// late. The rule resumes with the frame after it. A path that is gone is for the session to
     /// end, by its rule for liveness.
     pub fn poll(&mut self, now: Duration) -> Vec<u64> {
-        if self.key_due.is_some_and(|due| due <= now) {
-            self.key_due = None;
-            self.want_key = true;
-        }
+        self.release_key_due(now);
         if self.begins_chain_in_flight() {
             return Vec::new();
         }
@@ -514,17 +533,31 @@ impl Sender {
         reset
     }
 
+    /// Lets go of a key frame that the viewer asked for and that waited for its time, if the time
+    /// has come.
+    fn release_key_due(&mut self, now: Duration) {
+        if self.key_due.is_some_and(|due| due <= now) {
+            self.key_due = None;
+            self.want_key = true;
+        }
+    }
+
     /// How long a frame of `size` bytes may be in flight if it is written now.
     fn allowance(&self, size: usize, path: &Path) -> Duration {
         let bytes = self
             .in_flight_bytes()
             .saturating_add(u64::try_from(size).unwrap_or(u64::MAX));
-        let transmit = if path.rate == 0 {
-            Duration::ZERO
-        } else {
-            let micros = u128::from(bytes) * 1_000_000 / u128::from(path.rate);
-            Duration::from_micros(u64::try_from(micros).unwrap_or(u64::MAX))
+        // The rate the path delivers: what the connection says, or else the window over the round
+        // trip, which is what Cubic delivers (ADR 0009, rule 2).
+        let rate = match path.rate {
+            0 => (u128::from(path.window) * 1_000_000).checked_div(path.rtt.as_micros()),
+            rate => Some(u128::from(rate)),
         };
+        let transmit = rate
+            .and_then(|rate| (u128::from(bytes) * 1_000_000).checked_div(rate))
+            .map_or(Duration::ZERO, |micros| {
+                Duration::from_micros(u64::try_from(micros).unwrap_or(u64::MAX))
+            });
         (self.params.grace + path.rtt.saturating_mul(self.params.round_trips) + transmit)
             .min(self.params.longest)
     }
@@ -570,11 +603,13 @@ impl Sender {
     ///
     /// Key frames made on request are at least [`Params::min_key_interval`] apart, so that a
     /// viewer cannot make the source encode as fast as it can ask. A request that comes sooner
-    /// waits for its time, and [`poll`](Self::poll) lets it go.
+    /// waits for its time, and [`poll`](Self::poll) lets it go, or the next request that comes
+    /// after that time, which the viewer repeats while it waits.
     pub fn request_key_frame(&mut self, now: Duration, tried: u64) -> Result<(), UnknownFrame> {
         if tried >= self.next_number {
             return Err(UnknownFrame(tried));
         }
+        self.release_key_due(now);
         let on_its_way = self.frames.range(tried + 1..).any(|(_, f)| {
             f.kind == FrameKind::Key && matches!(f.state, State::InFlight | State::Held)
         });
@@ -595,7 +630,8 @@ impl Sender {
 
     /// The size of the picture changed. Starts a new epoch, which begins with a key frame, and
     /// returns the streams of the frames in flight, which are of the old size and are to be
-    /// reset.
+    /// reset. A picture that is being encoded is of the old size too: [`sent`](Self::sent)
+    /// returns `None` for it.
     pub fn new_epoch(&mut self) -> Vec<u64> {
         self.epoch += 1;
         self.want_key = true;
@@ -624,10 +660,12 @@ impl Sender {
             .iter()
             .find(|(_, f)| matches!(f.state, State::InFlight | State::Acked))
             .map_or(self.next_number, |(n, _)| *n);
-        let keep_from = oldest_open.min(self.held_tip.unwrap_or(u64::MAX));
+        // Nothing needs the record of a settled frame: a frame that depends on one that is
+        // forgotten counts it as held (see `promote`), and a recovery frame takes the number of
+        // the newest held frame from `held_tip`, not from a record.
         let doomed: Vec<u64> = self
             .frames
-            .range(..keep_from)
+            .range(..oldest_open)
             .map(|(n, _)| *n)
             .take(self.frames.len() - KEPT)
             .collect();
@@ -1160,11 +1198,56 @@ mod tests {
         s.begin(&slow).unwrap();
         s.sent(Duration::ZERO, &frame(50_000), &slow).unwrap();
         assert_eq!(s.allowance(150_000, &slow), 460 * MS);
-        // An unknown rate counts no time to send.
-        assert_eq!(s.allowance(150_000, &Path { rate: 0, ..slow }), 260 * MS);
+        // An unknown rate is the window over the round trip, which is what Cubic delivers: a
+        // megabyte over 80 ms takes 16 ms for the 200 KB.
+        assert_eq!(s.allowance(150_000, &Path { rate: 0, ..slow }), 276 * MS);
+        // Without a round trip or a window there is nothing to work it out from, and no time to
+        // send is counted.
+        let unknown = Path { rate: 0, ..slow };
+        assert_eq!(
+            s.allowance(
+                150_000,
+                &Path {
+                    rtt: Duration::ZERO,
+                    ..unknown
+                }
+            ),
+            100 * MS
+        );
+        assert_eq!(
+            s.allowance(
+                150_000,
+                &Path {
+                    window: 0,
+                    ..unknown
+                }
+            ),
+            260 * MS
+        );
         // A path that is hopeless does not make the wait longer than the limit.
         let crawl = Path { rate: 1, ..slow };
         assert_eq!(s.allowance(150_000, &crawl), Params::default().longest);
+    }
+
+    #[test]
+    fn a_large_frame_on_a_slow_link_is_given_the_time_to_cross_it_when_no_rate_is_known() {
+        // 150 KB at 2 Mbit/s, over a window of 7.5 KB and a round trip of 30 ms, which is what a
+        // connection under Cubic can give: the frame needs 600 ms to cross, and is not late
+        // after 160 ms, as it would be if the time to cross it were left out.
+        let slow = Path {
+            window: 7_500,
+            rtt: 30 * MS,
+            rate: 0,
+        };
+        let mut s = sender();
+        s.begin(&slow).unwrap();
+        s.sent(Duration::ZERO, &frame(150_000), &slow).unwrap(); // 0, key, never late
+        s.acked(0);
+        s.begin(&slow).unwrap();
+        s.sent(Duration::ZERO, &frame(150_000), &slow).unwrap(); // 1
+        assert_eq!(s.poll(160 * MS), [] as [u64; 0]);
+        assert_eq!(s.poll(760 * MS), [] as [u64; 0]);
+        assert_eq!(s.poll(761 * MS), vec![1]);
     }
 
     #[test]
@@ -1207,6 +1290,117 @@ mod tests {
     }
 
     #[test]
+    fn a_picture_that_was_being_encoded_when_the_size_changed_is_dropped() {
+        let mut s = sender();
+        start(&mut s, &frame(1000)); // 0, key
+        assert_eq!(s.begin(&path()), Some(FrameKind::Delta));
+        // The window is resized while the picture of the old size is in the encoder.
+        assert_eq!(s.new_epoch(), [] as [u64; 0]);
+        assert!(s.sent(MS, &frame(100), &path()).is_none());
+        assert_eq!(s.in_flight(), 0);
+        // The next frame is the key frame of the new size, and nothing of the old size went out.
+        assert_eq!(s.begin(&path()), Some(FrameKind::Key));
+        let h = s.sent(2 * MS, &frame(1000), &path()).unwrap().header;
+        assert_eq!((h.number, h.epoch, h.depends_on), (1, 1, 1));
+    }
+
+    #[test]
+    fn a_key_frame_of_the_old_size_does_not_answer_the_wish_for_one_of_the_new() {
+        let mut s = sender();
+        assert_eq!(s.begin(&path()), Some(FrameKind::Key));
+        s.new_epoch();
+        assert!(s.sent(MS, &frame(1000), &path()).is_none());
+        assert!(s.recovery_pending());
+        assert_eq!(s.begin(&path()), Some(FrameKind::Key));
+        let h = s.sent(2 * MS, &frame(1000), &path()).unwrap().header;
+        assert_eq!((h.number, h.epoch), (0, 1));
+    }
+
+    #[test]
+    fn a_delta_that_was_being_encoded_when_its_chain_broke_is_dropped() {
+        let mut s = sender();
+        start(&mut s, &ltr(1000, 1)); // 0, key, long-term reference, held
+        send(&mut s, MS, &frame(100)); // 1
+        assert_eq!(s.begin(&path()), Some(FrameKind::Delta));
+        // Frame 1 is given up on while the next picture is in the encoder. A delta that follows
+        // it could never be decoded.
+        assert_eq!(s.poll(500 * MS), vec![1]);
+        assert!(s.sent(501 * MS, &frame(100), &path()).is_none());
+        assert_eq!(s.stats().sent, 2);
+        // The frame after it begins the new chain.
+        assert_eq!(s.begin(&path()), Some(FrameKind::Recovery));
+    }
+
+    #[test]
+    fn a_key_frame_that_the_viewer_asked_for_goes_at_the_next_picture_whatever_is_in_flight() {
+        let mut s = sender();
+        start(&mut s, &frame(10)); // 0, key, held
+        for i in 1..=6 {
+            send(&mut s, LATER + i * MS, &frame(10));
+        }
+        assert_eq!(s.in_flight(), 6);
+        assert_eq!(s.begin(&path()), None);
+        // The viewer cannot decode what it has, and says so. The six frames are of no use to it
+        // and the key frame resets them, so it does not wait for the acknowledgement of any.
+        s.request_key_frame(LATER + 7 * MS, 1).unwrap();
+        assert_eq!(s.begin(&path()), Some(FrameKind::Key));
+        let sent = s.sent(LATER + 8 * MS, &frame(10), &path()).unwrap();
+        assert_eq!(sent.reset, vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(s.in_flight(), 1);
+    }
+
+    #[test]
+    fn a_recovery_frame_does_not_wait_for_frames_in_flight_that_it_resets() {
+        let mut s = sender();
+        send(&mut s, Duration::ZERO, &ltr(10, 1)); // 0, key, long-term reference
+        s.acked(0);
+        send(&mut s, MS, &frame(10)); // 1
+        send(&mut s, 2 * MS, &frame(10)); // 2
+        send(&mut s, 3 * MS, &frame(10)); // 3
+        let narrow = Path {
+            window: 5,
+            ..path()
+        };
+        assert_eq!(s.begin(&narrow), None);
+        // The viewer stopped reading frame 3, which breaks the chain. Frames 1 and 2 are not
+        // held, and the recovery frame resets them, so it goes at the next picture.
+        assert_eq!(s.lost(3), vec![3]);
+        assert_eq!(s.begin(&narrow), Some(FrameKind::Recovery));
+        let sent = s.sent(4 * MS, &frame(10), &narrow).unwrap();
+        assert_eq!(sent.reset, vec![1, 2]);
+        assert_eq!(sent.header.depends_on, 0);
+        assert_eq!(s.in_flight(), 1);
+    }
+
+    #[test]
+    fn a_request_that_waits_is_let_go_by_the_request_that_follows_its_time() {
+        let mut s = sender();
+        start(&mut s, &frame(1000)); // 0, written at time 0
+        send(&mut s, 50 * MS, &frame(100)); // 1
+        s.acked(1);
+        s.request_key_frame(100 * MS, 1).unwrap();
+        assert!(!s.recovery_pending());
+        // The viewer asks again every 500 ms while it waits. On a still screen nothing else
+        // looks at the clock, and the request that comes after its time lets the key frame go.
+        s.request_key_frame(600 * MS, 1).unwrap();
+        assert!(s.recovery_pending());
+        assert_eq!(s.begin(&path()), Some(FrameKind::Key));
+    }
+
+    #[test]
+    fn a_long_run_of_frames_that_nothing_refers_to_is_forgotten() {
+        let mut s = sender();
+        start(&mut s, &frame(100)); // 0, key, held: the tip stays here
+        let mut now = Duration::ZERO;
+        for _ in 0..5000 {
+            now += 16 * MS;
+            let sent = send(&mut s, now, &droppable(100));
+            s.acked(sent.header.number);
+        }
+        assert!(s.frames.len() <= KEPT + 1, "{} records", s.frames.len());
+    }
+
+    #[test]
     fn an_old_session_does_not_grow_without_limit() {
         let mut s = sender();
         let mut now = Duration::ZERO;
@@ -1221,41 +1415,71 @@ mod tests {
         assert_eq!(s.stats().sent, 5000);
     }
 
+    /// What must hold of a frame that was just written.
+    fn check(s: &Sender, sent: &Sent) -> Result<(), proptest::test_runner::TestCaseError> {
+        sent.header.validate().unwrap();
+        // A frame is never written with the epoch of a size it was not made for.
+        proptest::prop_assert_eq!(sent.header.epoch, s.epoch);
+        match sent.header.kind() {
+            // A frame that begins a chain resets everything that is not held, so it is alone.
+            FrameKind::Key | FrameKind::Recovery => proptest::prop_assert_eq!(s.in_flight(), 1),
+            // A delta never follows a frame that was given up on.
+            FrameKind::Delta => {
+                if let Some(dependency) = s.frames.get(&sent.header.depends_on) {
+                    proptest::prop_assert!(dependency.state != State::Abandoned);
+                }
+            }
+        }
+        Ok(())
+    }
+
     proptest::proptest! {
         /// Whatever happens, headers are valid, the limits hold, and nothing is held that
-        /// depends on something that is not.
+        /// depends on something that is not. A picture can wait in the encoder while the size
+        /// changes, or frames are given up on.
         #[test]
         fn any_run_of_events_keeps_the_rules(
-            events in proptest::collection::vec((0_u8..8, 0_u64..40, 1_usize..3000), 1..300)
+            events in proptest::collection::vec((0_u8..10, 0_u64..40, 1_usize..3000), 1..300)
         ) {
             let mut s = sender();
             let mut now = Duration::ZERO;
             let mut headers: Vec<FrameHeader> = Vec::new();
+            let mut encoding = false;
             for (event, n, size) in events {
                 now += Duration::from_millis(n);
+                let encoded = Encoded {
+                    size,
+                    referenced: n % 3 != 0,
+                    ltr: (n % 5 == 0).then_some(LtrToken(n)),
+                    capture_time: 0,
+                };
                 match event {
-                    0..=2 => {
-                        if s.begin(&path()).is_some() {
-                            let encoded = Encoded {
-                                size,
-                                referenced: n % 3 != 0,
-                                ltr: (n % 5 == 0).then_some(LtrToken(n)),
-                                capture_time: 0,
-                            };
+                    0 | 1 => {
+                        if s.begin(&path()).is_some()
+                            && let Some(sent) = s.sent(now, &encoded, &path())
+                        {
+                            check(&s, &sent)?;
+                            headers.push(sent.header);
+                        }
+                    }
+                    2 => encoding |= s.begin(&path()).is_some(),
+                    3 => {
+                        if encoding {
+                            encoding = false;
                             if let Some(sent) = s.sent(now, &encoded, &path()) {
-                                sent.header.validate().unwrap();
+                                check(&s, &sent)?;
                                 headers.push(sent.header);
                             }
                         }
                     }
-                    3 | 4 => {
+                    4 | 5 => {
                         let pick = usize::try_from(n).unwrap() % headers.len().max(1);
                         if let Some(h) = headers.get(pick) {
                             s.acked(h.number);
                         }
                     }
-                    5 => { s.poll(now); }
-                    6 => {
+                    6 => { s.poll(now); }
+                    7 => {
                         if s.next_number() > 0 {
                             let tried = n % s.next_number();
                             s.request_key_frame(now, tried).unwrap();
