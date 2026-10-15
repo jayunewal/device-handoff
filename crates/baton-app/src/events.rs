@@ -28,6 +28,10 @@ pub enum Event {
     OfferEnded(OfferOutcome),
     /// Events were missed because they came faster than they were read. Read the devices and
     /// the inbox again.
+    ///
+    /// A pairing request, or the end of an offer, among the missed events is not recovered
+    /// this way yet: a request nobody answers runs out as a no after two minutes, and an
+    /// offer ends when its time is up.
     Resync,
 }
 
