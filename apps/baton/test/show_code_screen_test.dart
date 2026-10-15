@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import 'package:baton/src/awake.dart';
 import 'package:baton/src/backend.dart';
 import 'package:baton/src/qr.dart';
 import 'package:baton/src/screens/show_code_screen.dart';
@@ -8,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'fake_backend.dart';
+import 'fake_screen.dart';
 
 // The offer in the fake lapses five minutes after this.
 final _start = DateTime.fromMillisecondsSinceEpoch(1760529600 * 1000);
@@ -35,6 +37,7 @@ Future<void> _open(
   FakeSession session, {
   DateTime Function()? now,
   bool settle = true,
+  ScreenKeeper? screen,
 }) async {
   _tall(tester);
   await tester.pumpWidget(
@@ -44,8 +47,11 @@ Future<void> _open(
           body: TextButton(
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute<void>(
-                builder: (_) =>
-                    ShowCodeScreen(session: session, now: now ?? () => _start),
+                builder: (_) => ShowCodeScreen(
+                  session: session,
+                  now: now ?? () => _start,
+                  screen: screen ?? FakeScreen(),
+                ),
               ),
             ),
             child: const Text('Open'),
@@ -404,5 +410,176 @@ void main() {
 
     expect(find.byType(QrView), findsOneWidget);
     expect(find.text('The code was withdrawn'), findsNothing);
+  });
+
+  group('the screen of the device', () {
+    testWidgets('stays on while the code is shown and answered', (
+      tester,
+    ) async {
+      final screen = FakeScreen();
+      final session = _session();
+      await _open(tester, session, screen: screen);
+      expect(screen.asked, ['keepOn']);
+
+      session.emit(const Event.pairingRequested(request: sampleRequest));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Yes, they match'));
+      await tester.pump();
+      expect(screen.asked, ['keepOn'], reason: 'asked once, and still on');
+
+      session.emit(
+        const Event.offerEnded(outcome: OfferOutcome.paired(device: _anna)),
+      );
+      await tester.pump();
+      expect(find.text('Paired with Anna’s iPhone'), findsOneWidget);
+      expect(screen.asked, ['keepOn', 'letTurnOff']);
+    });
+
+    testWidgets('is on from the moment a code is asked for', (tester) async {
+      final screen = FakeScreen();
+      final session = _session()..holdOffer();
+
+      await _open(tester, session, screen: screen, settle: false);
+
+      expect(find.text('Getting a code ready…'), findsOneWidget);
+      expect(screen.on, isTrue);
+    });
+
+    testWidgets('is let go when the code runs out, and kept on for the next', (
+      tester,
+    ) async {
+      final screen = FakeScreen();
+      final session = _session();
+      await _open(tester, session, screen: screen);
+
+      session.emit(const Event.offerEnded(outcome: OfferOutcome.expired()));
+      await tester.pumpAndSettle();
+      expect(find.text('The code ran out'), findsOneWidget);
+      expect(screen.asked, ['keepOn', 'letTurnOff']);
+
+      await tester.tap(find.text('Show a new code'));
+      await tester.pumpAndSettle();
+      expect(screen.asked, ['keepOn', 'letTurnOff', 'keepOn']);
+    });
+
+    testWidgets('is let go when a device is turned down or pairing fails', (
+      tester,
+    ) async {
+      final screen = FakeScreen();
+      final session = _session();
+      await _open(tester, session, screen: screen);
+      session.emit(const Event.pairingRequested(request: sampleRequest));
+      await tester.pumpAndSettle();
+
+      session.emit(
+        const Event.offerEnded(
+          outcome: OfferOutcome.failed(message: 'The connection was lost.'),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Pairing did not work'), findsOneWidget);
+      expect(screen.asked, ['keepOn', 'letTurnOff']);
+    });
+
+    testWidgets('is let go when no code can be made, and kept on to retry', (
+      tester,
+    ) async {
+      final screen = FakeScreen();
+      final session = _session()
+        ..offerFailure = const BatonError(
+          kind: ErrorKind.network,
+          message: 'Baton could not reach the network.',
+        );
+      await _open(tester, session, screen: screen);
+      expect(find.text('Could not make a code'), findsOneWidget);
+      expect(screen.asked, ['keepOn', 'letTurnOff']);
+
+      session.offerFailure = null;
+      await tester.tap(find.text('Try again'));
+      await tester.pumpAndSettle();
+      expect(screen.asked, ['keepOn', 'letTurnOff', 'keepOn']);
+    });
+
+    testWidgets('is let go when the screen is closed', (tester) async {
+      final screen = FakeScreen();
+      await _open(tester, _session(), screen: screen);
+      expect(screen.on, isTrue);
+
+      await _close(tester);
+
+      expect(screen.asked, ['keepOn', 'letTurnOff']);
+    });
+
+    testWidgets('is let go when the screen is closed with a question open', (
+      tester,
+    ) async {
+      final screen = FakeScreen();
+      final session = _session();
+      await _open(tester, session, screen: screen);
+      session.emit(const Event.pairingRequested(request: sampleRequest));
+      await tester.pumpAndSettle();
+
+      await _close(tester);
+
+      expect(screen.asked, ['keepOn', 'letTurnOff']);
+    });
+
+    testWidgets(
+      'is not kept on again by a code made after the screen had gone',
+      (tester) async {
+        final screen = FakeScreen();
+        final session = _session()..holdOffer();
+        await _open(tester, session, screen: screen, settle: false);
+        await _close(tester);
+        expect(screen.asked, ['keepOn', 'letTurnOff']);
+
+        session.releaseOffer();
+        await tester.pumpAndSettle();
+
+        expect(screen.asked, ['keepOn', 'letTurnOff']);
+      },
+    );
+
+    testWidgets('is let go after the limit, if the screen is left open', (
+      tester,
+    ) async {
+      final screen = FakeScreen();
+      final session = _session();
+      await _open(tester, session, screen: screen);
+
+      await tester.pump(awakeLimit + const Duration(seconds: 1));
+      expect(screen.asked, ['keepOn', 'letTurnOff']);
+
+      // Somebody is there after all: a device asks, and the person has the screen again.
+      session.emit(const Event.pairingRequested(request: sampleRequest));
+      await tester.pumpAndSettle();
+      expect(find.text('514 643'), findsOneWidget);
+      expect(screen.asked, ['keepOn', 'letTurnOff', 'keepOn']);
+    });
+
+    testWidgets('counts the limit again from each step', (tester) async {
+      final screen = FakeScreen();
+      final session = _session();
+      await _open(tester, session, screen: screen);
+
+      // A device asks just before the limit, and the person takes most of a limit again to
+      // answer: the pairing is still going on after more than the limit has passed.
+      await tester.pump(awakeLimit - const Duration(minutes: 1));
+      session.emit(const Event.pairingRequested(request: sampleRequest));
+      await tester.pumpAndSettle();
+      await tester.pump(awakeLimit - const Duration(minutes: 1));
+      expect(screen.asked, ['keepOn'], reason: 'asked once, and still on');
+
+      // Answering is a step too.
+      await tester.tap(find.text('Yes, they match'));
+      await tester.pump();
+      await tester.pump(awakeLimit - const Duration(minutes: 1));
+      expect(screen.asked, ['keepOn'], reason: 'asked once, and still on');
+
+      // And with no step after it the screen is let go.
+      await tester.pump(const Duration(minutes: 2));
+      expect(screen.asked, ['keepOn', 'letTurnOff']);
+    });
   });
 }

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:qr/qr.dart';
 
+import '../awake.dart';
 import '../backend.dart';
 import '../format.dart';
 import '../pairing_controller.dart';
@@ -20,6 +21,7 @@ class ShowCodeScreen extends StatefulWidget {
   const ShowCodeScreen({
     required this.session,
     this.now = DateTime.now,
+    this.screen = const PlatformScreenKeeper(),
     super.key,
   });
 
@@ -28,12 +30,19 @@ class ShowCodeScreen extends StatefulWidget {
   /// The time to count the minutes left from. Tests give it a clock of their own.
   final DateTime Function() now;
 
+  /// Keeps the screen of the device on while the code is being made, shown and answered. Tests
+  /// give it one of their own.
+  final ScreenKeeper screen;
+
   @override
   State<ShowCodeScreen> createState() => _ShowCodeScreenState();
 }
 
 class _ShowCodeScreenState extends State<ShowCodeScreen> {
-  late final OfferController _controller = OfferController(widget.session);
+  late final OfferController _controller = OfferController(
+    widget.session,
+    screen: widget.screen,
+  );
   QrImage? _code;
   String? _codeFor;
 

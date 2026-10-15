@@ -158,16 +158,24 @@ const _collapsedLines = 6;
 /// The space to the right of what an item holds, between it and the edge of the card.
 const _bodyInset = 8.0;
 
-/// Whether [text] takes more than [_collapsedLines] lines when it is set the way a card sets
-/// it, in [width]. How lines wrap depends on the width and on the size of the letters, which
-/// the person can change for the whole system, so this asks the layout and does not count
-/// characters or line ends.
-bool _isCut(BuildContext context, String text, TextStyle? style, double width) {
+/// The style a text is set in, worked out the way `Text` does it: [style] on top of the style
+/// around it, and bold if the person turned on Bold Text in the system settings. Bold letters
+/// are wider, so lines wrap earlier. The card works this out once and gives the result both to
+/// the text and to [_isCut], so what is measured is what is drawn.
+TextStyle _setIn(BuildContext context, TextStyle? style) {
+  final set = DefaultTextStyle.of(context).style.merge(style);
+  return MediaQuery.boldTextOf(context)
+      ? set.merge(const TextStyle(fontWeight: FontWeight.bold))
+      : set;
+}
+
+/// Whether [text] takes more than [_collapsedLines] lines when it is set in [style], in
+/// [width]. How lines wrap depends on the width, on the size of the letters and on how bold they
+/// are, which the person can change for the whole system, so this asks the layout and does not
+/// count characters or line ends.
+bool _isCut(BuildContext context, String text, TextStyle style, double width) {
   final painter = TextPainter(
-    text: TextSpan(
-      text: text,
-      style: DefaultTextStyle.of(context).style.merge(style),
-    ),
+    text: TextSpan(text: text, style: style),
     maxLines: _collapsedLines,
     textDirection: Directionality.of(context),
     textScaler: MediaQuery.textScalerOf(context),
@@ -233,52 +241,54 @@ class _ItemCardState extends State<_ItemCard> {
     final item = _received.item;
     final when = since(_received.receivedAt.toInt(), widget.now);
     final address = widget.controller.addressToOpen(_received);
-    final (
-      IconData icon,
-      String copyThis,
-      List<Widget> content,
-    ) = switch (item) {
-      ReceivedItem_Link(:final url, :final title) => (
-        Icons.link,
-        url,
-        [
-          if (title != null && title.trim().isNotEmpty) ...[
-            Text(visibleText(title), style: theme.textTheme.titleMedium),
-            const SizedBox(height: 4),
-          ],
-          SelectableText(visibleText(url), style: theme.textTheme.bodyMedium),
-          if (address == null) ...[
-            const SizedBox(height: 8),
-            Text(
-              'This is not a web address, so Baton will not open it.',
-              style: theme.textTheme.bodySmall,
-            ),
-          ],
-        ],
-      ),
-      ReceivedItem_Text(:final text) => (
-        Icons.notes,
-        text,
-        [
-          _TextBody(
-            text: text,
-            style: theme.textTheme.bodyLarge,
-            expanded: _expanded,
-          ),
-        ],
-      ),
-    };
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+        // The card's own context and width are the ones its text gets, so the text is set up here.
         child: LayoutBuilder(
           builder: (context, constraints) {
+            final bodyStyle = _setIn(context, theme.textTheme.bodyLarge);
+            final (
+              IconData icon,
+              String copyThis,
+              List<Widget> content,
+            ) = switch (item) {
+              ReceivedItem_Link(:final url, :final title) => (
+                Icons.link,
+                url,
+                [
+                  if (title != null && title.trim().isNotEmpty) ...[
+                    Text(
+                      visibleText(title),
+                      style: theme.textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 4),
+                  ],
+                  SelectableText(
+                    visibleText(url),
+                    style: theme.textTheme.bodyMedium,
+                  ),
+                  if (address == null) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      'This is not a web address, so Baton will not open it.',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ],
+                ],
+              ),
+              ReceivedItem_Text(:final text) => (
+                Icons.notes,
+                text,
+                [_TextBody(text: text, style: bodyStyle, expanded: _expanded)],
+              ),
+            };
             final long = switch (item) {
               ReceivedItem_Text(:final text) => _isCut(
                 context,
                 visibleText(text),
-                theme.textTheme.bodyLarge,
+                bodyStyle,
                 constraints.maxWidth - _bodyInset,
               ),
               ReceivedItem_Link() => false,
@@ -350,7 +360,9 @@ class _TextBody extends StatelessWidget {
   });
 
   final String text;
-  final TextStyle? style;
+
+  /// The style the text is set in, as [_setIn] works it out.
+  final TextStyle style;
   final bool expanded;
 
   @override

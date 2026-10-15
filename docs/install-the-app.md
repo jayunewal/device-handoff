@@ -134,7 +134,7 @@ If you see **Baton could not start** instead, the message under it says why. Ope
 
 You need Baton on two devices, for example the Mac and the phone, and open on both. Put them on the same Wi-Fi network. Baton can also reach a device on another network by way of a relay, but that has not been tried from the app yet.
 
-In the steps below, the first device shows the code and the second one reads it. It does not matter which is which, but with a Mac and a phone, show the code on the Mac and read it with the phone. A phone's camera focuses on a screen held close, which the camera of many Macs cannot do, and some Macs have no camera at all. A phone that shows a code and then waits is not touched, so it may lock itself before the Mac has read the code.
+In the steps below, the first device shows the code and the second one reads it. It does not matter which is which, but with a Mac and a phone, show the code on the Mac and read it with the phone. A phone's camera focuses on a screen held close, which the camera of many Macs cannot do, and some Macs have no camera at all.
 
 1. On the first device, tap **Add a device**, then **Show a code**. It shows a QR code, and for how long the code works: a few minutes.
 2. On the second device, tap **Add a device**, then **Scan or enter a code**. The first time, it asks whether Baton may use the camera: choose **OK**. Point the camera at the QR code on the first device.
@@ -142,6 +142,8 @@ In the steps below, the first device shows the code and the second one reads it.
 4. Both devices say **Paired with** and the name of the other. Tap **Done**. Each now lists the other.
 
 A code pairs one device, once. If it ran out, or it did not work, tap **Show a new code**.
+
+While a phone or an iPad shows a code, reads one or waits to be asked about one, Baton keeps its screen on, so that it does not lock itself while you are looking at the other device. It lets Auto-Lock work as you set it again as soon as the pairing is over, you leave the screen, or five minutes pass with nothing happening on it, for example a camera that waits for a code that nobody holds up. Each step of the pairing, such as a code that is read or a question that is answered, keeps the screen on for five minutes more.
 
 If the second device cannot scan the code, for example a Mac with no camera or a phone that was not allowed to use it, tap **Copy the code as text** on the first device, and paste the text into the box under **Or paste the code** on the second, and tap **Connect**. To get the text from one device to the other, copy it on one and paste it on the other. A Mac and an iPhone share their clipboard (Apple calls it Universal Clipboard) when they use the same Apple ID, Wi-Fi and Bluetooth are turned on on both, Handoff is turned on on both (search for **Handoff** in **System Settings** on the Mac and in **Settings** on the phone), and they are close to each other. If what you paste is not what you copied, send the text to yourself in Messages or Notes instead.
 
@@ -164,7 +166,7 @@ Baton opens only web addresses, the ones that start with `http://` or `https://`
 
 In this version a device receives only while Baton is running on it. On an iPhone or iPad that means open on the screen: a locked phone, or one that has Baton in the background, cannot be reached, and a send to it ends after a while with a message that says so. Receiving on a locked phone needs a push notification, which is not built yet.
 
-Until then, keep Baton open and the phone in your hand when you send to it, or lengthen **Auto-Lock** while you try Baton (**Settings**, **Display & Brightness**, **Auto-Lock**) and set it back afterwards. If a send to a phone keeps ending with **Could not reach**, check **Low Power Mode** first: it sets Auto-Lock to 30 seconds. Baton does not keep the screen on by itself, because a phone that never locks is the opposite of what Baton is for.
+Until then, keep Baton open and the phone in your hand when you send to it, or lengthen **Auto-Lock** while you try Baton (**Settings**, **Display & Brightness**, **Auto-Lock**) and set it back afterwards. If a send to a phone keeps ending with **Could not reach**, check **Low Power Mode** first: it sets Auto-Lock to 30 seconds. Baton keeps the screen on only while two devices pair (see **Pair two devices**). At any other time Auto-Lock works as you set it, because a phone that never locks is the opposite of what Baton is for.
 
 ## Every seven days
 

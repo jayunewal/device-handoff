@@ -13,8 +13,10 @@ import 'dart:async';
 import 'dart:io' show Directory, File;
 
 import 'package:baton/src/app.dart';
+import 'package:baton/src/awake.dart';
 import 'package:baton/src/backend.dart';
 import 'package:baton/src/rust_backend.dart';
+import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -35,6 +37,7 @@ void main() {
     await tester.enterText(find.byType(TextField), 'Test device');
     await tester.tap(find.text('Continue'));
     await _see(tester, find.text('No other devices yet'));
+    await _expectScreenKeptOn(isFalse, 'when no one is pairing');
 
     // The name went through the library and came back, and so did the fingerprint.
     expect(find.text('Test device'), findsOneWidget);
@@ -131,6 +134,7 @@ Future<Session> _pairThroughTheScreens(WidgetTester tester) async {
   await _see(tester, find.text('Scan or enter a code'));
   await tester.tap(find.text('Scan or enter a code'));
   await _see(tester, find.text('Or paste the code', skipOffstage: false));
+  await _expectScreenKeptOn(isTrue, 'while the screen waits for a code');
 
   // The camera is on the screen and sees what it sees. Nothing here depends on it, except
   // that it must not take the app down. The screen can be longer than a small window, so
@@ -153,6 +157,7 @@ Future<Session> _pairThroughTheScreens(WidgetTester tester) async {
 
   expect(second.answerPairing(request.id, accept: true), isTrue);
   await _see(tester, find.text('Paired with Second device'));
+  await _expectScreenKeptOn(isFalse, 'once the pairing is over');
   await tester.tap(find.text('Done'));
   await _see(tester, find.text('Second device'));
   expect(find.text('No other devices yet'), findsNothing);
@@ -164,6 +169,18 @@ Future<Session> _pairThroughTheScreens(WidgetTester tester) async {
   expect((await second.devices()).single.name, 'Test device');
 
   return second;
+}
+
+/// Checks what an iPhone or iPad itself says about whether its screen is being kept on: that
+/// Baton's request went through the code in the iOS app and reached the system. Elsewhere there
+/// is no such screen, and this checks nothing.
+Future<void> _expectScreenKeptOn(Matcher matcher, String when) async {
+  if (defaultTargetPlatform != TargetPlatform.iOS) return;
+  expect(
+    await const PlatformScreenKeeper().isKeptOn(),
+    matcher,
+    reason: 'the screen of the device $when',
+  );
 }
 
 /// A folder for one device, with settings that keep it to this computer: no relay, no

@@ -279,6 +279,25 @@ void main() {
       expect(find.text('Show more'), findsNothing);
     });
 
+    testWidgets('in bold letters when Bold Text is on, which are wider', (
+      tester,
+    ) async {
+      const text = 'A text that is the same either way, but for its weight';
+      addTearDown(tester.platformDispatcher.clearAllTestValues);
+      await showText(tester, text);
+      Text shown() => tester.widget<Text>(find.text(text));
+      expect(shown().style?.fontWeight, isNot(FontWeight.bold));
+
+      tester.platformDispatcher.accessibilityFeaturesTestValue =
+          const FakeAccessibilityFeatures(boldText: true);
+      await tester.pumpAndSettle();
+
+      // The test font is as wide in bold as it is otherwise, so the wrapping cannot show it. The
+      // card gives the one style it worked out both to the text and to the measuring, so this is
+      // the style that decides whether the cut is offered.
+      expect(shown().style?.fontWeight, FontWeight.bold);
+    });
+
     testWidgets('six lines are shown whole, seven are cut', (tester) async {
       final six = [for (var i = 1; i <= 6; i++) 'six $i'].join('\n');
       final seven = [for (var i = 1; i <= 7; i++) 'seven $i'].join('\n');
