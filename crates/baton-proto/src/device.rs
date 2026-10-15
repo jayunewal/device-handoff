@@ -117,7 +117,7 @@ pub fn sanitize_text(raw: &str, max_chars: usize) -> Option<String> {
     let mut chars = 0;
     let mut pending_space = false;
     for c in raw.chars() {
-        if is_default_ignorable(c) || is_interlinear_annotation(c) {
+        if is_invisible(c) {
             continue;
         }
         if c.is_control() || c.is_whitespace() || c == BRAILLE_BLANK {
@@ -136,6 +136,17 @@ pub fn sanitize_text(raw: &str, max_chars: usize) -> Option<String> {
         chars += needed;
     }
     (!out.is_empty()).then_some(out)
+}
+
+/// Whether `c` draws nothing or changes the order of text: a character with the Unicode
+/// property `Default_Ignorable_Code_Point`, or an interlinear annotation character. These
+/// are the characters that [`sanitize_text`] removes.
+///
+/// A name that is written to a disk has no use for them either, but it cannot just lose
+/// them as a label can, so the receiver of a file chooses what to do with each one (see
+/// `baton_core::transfer::names`).
+pub fn is_invisible(c: char) -> bool {
+    is_default_ignorable(c) || is_interlinear_annotation(c)
 }
 
 /// U+2800 BRAILLE PATTERN BLANK. It draws nothing, yet it is a letter-like symbol, so it
@@ -426,6 +437,21 @@ mod tests {
         ] {
             assert!(!is_default_ignorable(c), "U+{:04X}", u32::from(c));
         }
+    }
+
+    #[test]
+    fn invisible_characters_are_exactly_the_ones_that_a_label_loses() {
+        // What `is_invisible` says is what `sanitize_text` removes, and everything else that is
+        // not a control character, a space or the braille blank stays.
+        for c in '\0'..=char::MAX {
+            let cleaned = sanitize_text(&format!("a{c}b"), 10);
+            if is_invisible(c) {
+                assert_eq!(cleaned.as_deref(), Some("ab"), "U+{:04X}", u32::from(c));
+            } else if !(c.is_control() || c.is_whitespace() || c == BRAILLE_BLANK) {
+                assert_eq!(cleaned, Some(format!("a{c}b")), "U+{:04X}", u32::from(c));
+            }
+        }
+        assert!(!is_invisible('a') && !is_invisible('\n') && !is_invisible(BRAILLE_BLANK));
     }
 
     #[test]
