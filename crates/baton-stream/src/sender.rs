@@ -706,7 +706,7 @@ mod tests {
         assert_eq!((h.number, h.depends_on, h.chain, h.epoch), (0, 0, 0, 0));
         assert!(h.is_key() && h.is_referenced());
         assert_eq!(h.session, session());
-        assert!(sent.reset.is_empty());
+        assert_eq!(sent.reset, [] as [u64; 0]);
         h.validate().unwrap();
     }
 
@@ -808,8 +808,8 @@ mod tests {
         send(&mut s, 2 * MS, &ltr(100, 102)); // 2, depends on 1
         send(&mut s, 3 * MS, &ltr(100, 103)); // 3, depends on 2
         // Frame 3 arrives first: it is not held, because 2 and 1 might never arrive.
-        assert!(s.acked(3).is_empty());
-        assert!(s.acked(2).is_empty());
+        assert_eq!(s.acked(3), [] as [LtrToken; 0]);
+        assert_eq!(s.acked(2), [] as [LtrToken; 0]);
         // Frame 1 settles all three.
         let mut held = s.acked(1);
         held.sort();
@@ -817,7 +817,7 @@ mod tests {
         assert_eq!(s.held_tip, Some(3));
         assert_eq!(s.held_ltrs, 4);
         // Acknowledging again changes nothing.
-        assert!(s.acked(1).is_empty());
+        assert_eq!(s.acked(1), [] as [LtrToken; 0]);
     }
 
     #[test]
@@ -887,7 +887,7 @@ mod tests {
         // Two streams were reset. Frame 4 was acknowledged, so there is nothing to reset, but
         // it can never be held now.
         assert_eq!(s.stats().abandoned, 2);
-        assert!(s.acked(4).is_empty());
+        assert_eq!(s.acked(4), [] as [LtrToken; 0]);
         // The recovery frame is held once the viewer has it and what it depends on.
         s.acked(5);
         assert_eq!(s.held_tip, Some(5));
@@ -925,7 +925,7 @@ mod tests {
         send(&mut s, Duration::ZERO, &frame(230_000)); // 0, a key frame that needs a long time
         // Far past every deadline, and nothing is given up on: a key frame that was replaced
         // would be replaced by one that is no smaller, and none would ever arrive.
-        assert!(s.poll(Duration::from_secs(30)).is_empty());
+        assert_eq!(s.poll(Duration::from_secs(30)), [] as [u64; 0]);
         assert_eq!(s.stats().abandoned, 0);
         assert_eq!(s.in_flight(), 1);
         assert!(!s.recovery_pending());
@@ -951,7 +951,7 @@ mod tests {
             .unwrap();
         assert_eq!(recovery.header.kind(), FrameKind::Recovery);
         assert_eq!(s.begin(&path()), None);
-        assert!(s.poll(Duration::from_secs(30)).is_empty());
+        assert_eq!(s.poll(Duration::from_secs(30)), [] as [u64; 0]);
         s.acked(recovery.header.number);
         assert_eq!(s.begin(&path()), Some(FrameKind::Delta));
     }
@@ -997,7 +997,7 @@ mod tests {
         let sent = s.sent(LATER + MS, &frame(1000), &path()).unwrap();
         assert_eq!(sent.reset, vec![0]);
         // The late acknowledgement of the key frame that failed counts for nothing.
-        assert!(s.acked(0).is_empty());
+        assert_eq!(s.acked(0), [] as [LtrToken; 0]);
         assert_eq!(s.held_tip, None);
         s.acked(sent.header.number);
         assert_eq!(s.held_tip, Some(1));
@@ -1079,7 +1079,7 @@ mod tests {
         // Too soon after the first key frame: the request waits for its time.
         s.request_key_frame(100 * MS, 1).unwrap();
         assert!(!s.recovery_pending());
-        assert!(s.poll(249 * MS).is_empty());
+        assert_eq!(s.poll(249 * MS), [] as [u64; 0]);
         assert!(!s.recovery_pending());
         // At the end of the interval the key frame is wanted, and poll lets it go.
         s.poll(250 * MS);
@@ -1104,7 +1104,7 @@ mod tests {
     fn a_key_frame_for_a_new_size_does_not_wait_for_the_interval() {
         let mut s = sender();
         start(&mut s, &frame(1000)); // 0
-        assert!(s.new_epoch().is_empty());
+        assert_eq!(s.new_epoch(), [] as [u64; 0]);
         assert_eq!(s.begin(&path()), Some(FrameKind::Key));
     }
 
@@ -1128,7 +1128,7 @@ mod tests {
         );
         assert_eq!(s.held_ltrs, 0);
         // A late acknowledgement of a frame given up on is ignored.
-        assert!(s.acked(1).is_empty());
+        assert_eq!(s.acked(1), [] as [LtrToken; 0]);
         assert_eq!(s.held_tip, None);
     }
 
@@ -1139,10 +1139,10 @@ mod tests {
         send(&mut s, MS, &frame(100)); // 1
         send(&mut s, 2 * MS, &droppable(100)); // 2
         assert_eq!(s.poll(Duration::from_secs(1)), vec![1, 2]);
-        assert!(s.acked(1).is_empty());
-        assert!(s.acked(2).is_empty());
+        assert_eq!(s.acked(1), [] as [LtrToken; 0]);
+        assert_eq!(s.acked(2), [] as [LtrToken; 0]);
         assert_eq!(s.in_flight(), 0);
-        assert!(s.poll(Duration::from_secs(5)).is_empty());
+        assert_eq!(s.poll(Duration::from_secs(5)), [] as [u64; 0]);
     }
 
     #[test]
@@ -1180,7 +1180,7 @@ mod tests {
         s.sent(Duration::ZERO, &frame(1000), &slow).unwrap();
         // 100 ms of grace and two round trips of 200 ms. That the path looks faster by now, or
         // that nobody asks what it looks like, changes nothing.
-        assert!(s.poll(500 * MS).is_empty());
+        assert_eq!(s.poll(500 * MS), [] as [u64; 0]);
         assert_eq!(s.poll(501 * MS), vec![1]);
     }
 
@@ -1191,7 +1191,7 @@ mod tests {
         s.acked(0);
         send(&mut s, Duration::ZERO, &frame(1000)); // 1
         // 100 ms of grace and two round trips of 20 ms.
-        assert!(s.poll(140 * MS).is_empty());
+        assert_eq!(s.poll(140 * MS), [] as [u64; 0]);
         assert_eq!(s.poll(141 * MS), vec![1]);
     }
 
