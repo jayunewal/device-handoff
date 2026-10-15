@@ -8,16 +8,19 @@
 //!
 //! - What the file system cannot hold, and what only disguises a name, becomes `_`. That is every
 //!   control character, and the characters that hide text or change its order (`U+202E`, the
-//!   zero-width space and the rest of [`is_invisible`]), except the joiners and the variation
-//!   selectors that ordinary writing and emoji need. Where the rules are Windows's (see [`Rules`])
-//!   it is also `< > : " \ | ? *`, a dot or a space at the end of a name, and the names that
-//!   Windows keeps for devices, which get an `_` after the device word (`CON.txt` becomes
+//!   zero-width space and the rest of [`is_invisible`]), except the joiners, the variation
+//!   selectors and the Mongolian vowel separator that ordinary writing and emoji need, and the
+//!   tags that make the flags of England, Scotland and Wales. Where the rules are Windows's (see
+//!   [`Rules`]) it is also `< > : " \ | ? *`, a dot or a space at the end of a name, and the names
+//!   that Windows keeps for devices, which get an `_` after the device word (`CON.txt` becomes
 //!   `CON_.txt`). Where they are Apple's it is `:`, which the Finder shows as `/`.
 //! - Two names in one folder that the file system takes for one name get a number before the
 //!   extension, and the later one in the list gets it: `Notes.txt` and `notes.txt` become
 //!   `Notes.txt` and `notes 2.txt` where case is ignored. A name that clashes with nothing keeps
 //!   the name it was given, even when it looks like one that a number would have made: a file
-//!   that was called `notes 2.txt` is not renamed to make room.
+//!   that was called `notes 2.txt` is not renamed to make room. Nor is a name that needed no
+//!   cleaning: it goes before the names that cleaning made into the same name, so `a_b` stays
+//!   `a_b` and `a:b` becomes `a_b 2` where the colon is replaced.
 //!
 //! [`plan`] chooses the name of every entry of a list. [`numbered`] is the numbering on its own,
 //! for the code that moves the items of a transfer into place and finds a name taken there.
@@ -54,8 +57,10 @@ pub struct Rules {
     /// The system whose rules say which characters a name cannot have.
     ///
     /// A Windows host holds every name to the Windows list whatever this says. A `:` or a `\` in a
-    /// name there is not part of one name when the name is joined to a folder, and a plan is the
-    /// same on every host, so that it never depends on which one made it.
+    /// name there is not part of one name when the name is joined to a folder, so a plan made on
+    /// a Windows host can differ from one made elsewhere with the same rules. That does not
+    /// matter, because a transfer is received by one device from start to end: on one device the
+    /// same list and the same rules always give the same plan.
     pub platform: Platform,
     /// Names that differ only in case are one name.
     pub ignores_case: bool,
@@ -98,13 +103,18 @@ const fn windows_rules(rules: Rules) -> bool {
 
 /// What the file system compares names by: names with the same key are one name to it.
 ///
-/// Case is folded by making the text upper case and then lower case, which makes `ß` and `SS`
-/// the same, as full case folding does. A key that matches too much only gives a name a number it
-/// did not need. One that matches too little is caught by the move into place, which refuses to
-/// replace what it finds.
+/// Case is folded by making the text lower case, upper case and lower case again, which makes `ß`
+/// and `SS` the same, as full case folding does, and `ẞ` too: the capital sharp s is its own upper
+/// case, so it is only the lower case that takes it to `ß`. A key that matches too much only gives
+/// a name a number it did not need. One that matches too little is caught where the names are
+/// written, and fails that entry and no other: a top-level item is moved into place by a move that
+/// refuses to replace what it finds, and inside a folder the writer makes files with `create_new`
+/// and folders with `create_dir`, never `create_dir_all`, which would take two folders that the
+/// plan keeps apart for one.
 fn key(name: &str, rules: Rules) -> String {
     let folded: String = if rules.ignores_case {
         name.chars()
+            .flat_map(char::to_lowercase)
             .flat_map(char::to_uppercase)
             .flat_map(char::to_lowercase)
             .collect()
@@ -133,18 +143,30 @@ fn family(name: &str, rules: Rules) -> String {
 /// Whether `c` is one of the invisible characters that ordinary writing needs, and that is
 /// therefore kept: the zero-width joiner and non-joiner (emoji sequences, Persian, the scripts of
 /// India), the variation selectors (what makes an emoji an emoji, and which form of a Han
-/// character) and the Mongolian free variation selectors.
+/// character) and the Mongolian ones, which are the free variation selectors and the vowel
+/// separator that is written inside words.
 const fn needed_by_text(c: char) -> bool {
     matches!(
         c,
-        '\u{180B}'..='\u{180D}'
-            | '\u{180F}'
+        '\u{180B}'..='\u{180F}'
             | '\u{200C}'
             | '\u{200D}'
             | '\u{FE00}'..='\u{FE0F}'
             | '\u{E0100}'..='\u{E01EF}'
     )
 }
+
+/// The flags of England, Scotland and Wales: a black flag (`U+1F3F4`), the tag characters that
+/// spell `gbeng`, `gbsct` or `gbwls`, and the tag that ends them (`U+E007F`).
+///
+/// Tag characters draw nothing and can carry text that nobody sees, so they are replaced wherever
+/// they are. These three sequences are the exception, because they are how emoji spells these
+/// flags and the only text that they can carry is the name of the flag that they show.
+const SUBDIVISION_FLAGS: [&str; 3] = [
+    "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}",
+    "\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}",
+    "\u{1F3F4}\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}",
+];
 
 /// Whether a name may have `c` in it under `rules`.
 fn allowed(c: char, rules: Rules) -> bool {
@@ -223,6 +245,26 @@ fn cut(text: &str, max: usize) -> &str {
     &text[..end]
 }
 
+/// `name` with every character that it cannot have replaced by `_`, and the flags that
+/// [`SUBDIVISION_FLAGS`] lists kept whole.
+fn replace_characters(name: &str, rules: Rules) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut rest = name;
+    while let Some(c) = rest.chars().next() {
+        if let Some(flag) = SUBDIVISION_FLAGS
+            .iter()
+            .find(|flag| rest.starts_with(**flag))
+        {
+            out.push_str(flag);
+            rest = &rest[flag.len()..];
+        } else {
+            out.push(if allowed(c, rules) { c } else { REPLACEMENT });
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    out
+}
+
 /// A name that is safe to create on a volume with these rules: what cannot be in it is replaced
 /// by `_`, as the module docs say, and nothing else is changed.
 ///
@@ -231,10 +273,7 @@ fn cut(text: &str, max: usize) -> &str {
 /// is. (Only the `_` that a device name gets adds a byte, and then the end of the name is cut.)
 /// Cleaning a name that is clean changes nothing.
 pub fn clean(name: &str, rules: Rules) -> String {
-    let mut name: String = name
-        .chars()
-        .map(|c| if allowed(c, rules) { c } else { REPLACEMENT })
-        .collect();
+    let mut name = replace_characters(name, rules);
     if windows_rules(rules) {
         replace_trailing(&mut name);
         if let Some(end) = device_end(&name) {
@@ -396,37 +435,47 @@ impl Group {
 /// that comes before it. Each name is [cleaned](clean), and then numbered if the file system
 /// takes it for one name with another in its folder under `rules`. The first of such names keeps
 /// the name it has and each later one, in the order of the list, gets the first number that is
-/// free, which is a number that no other name of the folder has taken or already is. What is
-/// inside a folder goes inside the planned folder, whatever it ended up called.
+/// free, which is a number that no other name of the folder has taken or already is. A name that
+/// needed no cleaning counts as the first of its kind before the names that cleaning changed, so
+/// that `a_b` keeps its name when `a:b` is cleaned into it. What is inside a folder goes inside
+/// the planned folder, whatever it ended up called.
 ///
-/// The same list and the same rules always give the same plan, which a transfer that is resumed
-/// relies on to find what it has already written.
+/// On one device the same list and the same rules always give the same plan, which a transfer
+/// that is resumed relies on to find what it has already written.
 pub fn plan(entries: &[ListEntry], rules: Rules) -> Result<Plan, PlanError> {
     let mut folders: HashMap<&str, usize> = HashMap::new();
     let mut groups: HashMap<Option<usize>, Group> = HashMap::new();
     let mut items = Vec::with_capacity(entries.len());
+    // Whether cleaning changed the name of each entry.
+    let mut changed = Vec::with_capacity(entries.len());
     for (index, entry) in entries.iter().enumerate() {
-        let (folder, name) = path::split_name(&entry.path);
+        let (folder, given) = path::split_name(&entry.path);
         let parent = if folder.is_empty() {
             None
         } else {
             let found = folders.get(folder).copied();
             Some(found.ok_or(PlanError::MissingParent { index })?)
         };
-        let name = clean(name, rules);
-        let clashes = !groups
-            .entry(parent)
-            .or_default()
-            .taken
-            .insert(key(&name, rules));
+        let name = clean(given, rules);
+        changed.push(name != given);
         if entry.folder {
             folders.insert(&entry.path, index);
         }
         items.push(Planned {
             parent,
             name,
-            clashes,
+            clashes: false,
         });
+    }
+    // The names that cleaning left alone take their place first, and then the names that it
+    // changed, each in the order of the list: `a_b` is not given a number because `a:b` came
+    // before it and became `a_b` too.
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    order.sort_by_key(|&index| changed[index]);
+    for index in order {
+        let item = &mut items[index];
+        let taken = &mut groups.entry(item.parent).or_default().taken;
+        item.clashes = !taken.insert(key(&item.name, rules));
     }
     // Every name that does not clash is taken by now, so a number never takes the name of
     // another entry of the list.
@@ -505,9 +554,48 @@ mod tests {
                 "می\u{200C}خواهم.txt",
                 "漢\u{E0100}字.txt",
                 "\u{1F1E9}\u{1F1EA}.txt",
+                // The Mongolian word for black, which has the vowel separator inside it.
+                "\u{182C}\u{1820}\u{1837}\u{180E}\u{1820}.txt",
+                // The flags of England, Scotland and Wales.
+                "\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F} trip.jpg",
+                "\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F} trip.jpg",
+                "trip \u{1F3F4}\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}",
             ] {
                 assert_eq!(clean(name, rules), name, "{name:?} on {rules:?}");
             }
+        }
+    }
+
+    #[test]
+    fn tag_characters_are_kept_only_in_the_flags_that_use_them() {
+        let england = SUBDIVISION_FLAGS[0];
+        let scotland = SUBDIVISION_FLAGS[1];
+        for rules in [WINDOWS, MAC, IPHONE, LINUX] {
+            for flag in SUBDIVISION_FLAGS {
+                // Next to each other, and between other characters.
+                let name = format!("a{flag}{flag}b");
+                assert_eq!(clean(&name, rules), name);
+                // A tag before or after a flag is not part of it.
+                assert_eq!(
+                    clean(&format!("\u{E0041}{flag}\u{E0041}"), rules),
+                    format!("_{flag}_")
+                );
+            }
+            // Text in tags after the black flag is not a flag of the three.
+            let hidden = "\u{1F3F4}\u{E0069}\u{E0067}\u{E006E}\u{E006F}\u{E0072}\u{E0065}\u{E007F}";
+            assert_eq!(clean(hidden, rules), "\u{1F3F4}_______");
+            // Tags without the black flag in front of them, and a flag with its end cut off.
+            let loose = england.trim_start_matches('\u{1F3F4}');
+            assert_eq!(clean(loose, rules), "______");
+            let cut_short = scotland.trim_end_matches('\u{E007F}');
+            assert_eq!(clean(cut_short, rules), "\u{1F3F4}_____");
+            // A flag that goes on is the flag and then tags that are replaced.
+            assert_eq!(
+                clean(&format!("{england}\u{E0067}\u{E007F}"), rules),
+                format!("{england}__")
+            );
+            // The tag that ends a flag is replaced on its own like any other.
+            assert_eq!(clean("\u{E007F}", rules), "_");
         }
     }
 
@@ -534,7 +622,7 @@ mod tests {
                 '\u{E007F}',
                 '\u{034F}',
                 '\u{206A}',
-                '\u{180E}',
+                '\u{1D173}',
             ] {
                 assert_eq!(
                     clean(&format!("a{c}b"), rules),
@@ -805,6 +893,47 @@ mod tests {
     }
 
     #[test]
+    fn the_capital_sharp_s_is_the_same_name_as_the_small_one_and_as_ss() {
+        let entries = [file("ß.txt"), file("ẞ.txt"), file("ss.txt"), file("SS.txt")];
+        assert_eq!(
+            planned(&entries, MAC),
+            ["ß.txt", "ẞ 2.txt", "ss 3.txt", "SS 4.txt"]
+        );
+        // Where case counts they are four names.
+        assert_eq!(
+            planned(&entries, IPHONE),
+            ["ß.txt", "ẞ.txt", "ss.txt", "SS.txt"]
+        );
+        // The other way round, the first of them keeps its name.
+        let entries = [file("ẞ"), file("ss"), file("ß")];
+        assert_eq!(planned(&entries, MAC), ["ẞ", "ss 2", "ß 3"]);
+    }
+
+    #[test]
+    fn no_character_gives_a_different_key_in_another_case() {
+        let case_only = Rules::new(Platform::Linux, true, false);
+        for c in '\0'..=char::MAX {
+            if c.to_lowercase().eq([c]) && c.to_uppercase().eq([c]) {
+                continue;
+            }
+            let key_of = |text: String| key(&text, case_only);
+            let own = key_of(c.to_string());
+            assert_eq!(
+                own,
+                key_of(c.to_lowercase().collect()),
+                "U+{:04X} and its lower case",
+                u32::from(c)
+            );
+            assert_eq!(
+                own,
+                key_of(c.to_uppercase().collect()),
+                "U+{:04X} and its upper case",
+                u32::from(c)
+            );
+        }
+    }
+
+    #[test]
     fn names_that_differ_only_in_the_form_of_their_text_clash_where_the_volume_normalises() {
         let composed = "caf\u{E9}.txt";
         let decomposed = "cafe\u{301}.txt";
@@ -829,10 +958,43 @@ mod tests {
 
     #[test]
     fn names_that_clean_to_one_name_are_numbered_too() {
-        let entries = [file("a:b"), file("a_b"), file("a?b")];
+        let entries = [file("a:b"), file("a?b"), file("a*b")];
         assert_eq!(planned(&entries, WINDOWS), ["a_b", "a_b 2", "a_b 3"]);
-        let entries = [file("x\u{202E}y"), file("x_y")];
+        let entries = [file("x\u{202E}y"), file("x\u{202D}y")];
         assert_eq!(planned(&entries, LINUX), ["x_y", "x_y 2"]);
+    }
+
+    #[test]
+    fn a_name_that_needed_no_cleaning_is_not_given_up_for_one_that_did() {
+        // `a_b` was called that, and `a:b` has to change anyway, so `a:b` is the one that waits.
+        let entries = [file("a:b"), file("a_b"), file("a?b")];
+        assert_eq!(planned(&entries, WINDOWS), ["a_b 2", "a_b", "a_b 3"]);
+        let entries = [file("x\u{202E}y"), file("x_y")];
+        assert_eq!(planned(&entries, LINUX), ["x_y 2", "x_y"]);
+        // Among the names of one kind the list decides, and the numbers step over what is taken.
+        let entries = [
+            file("a:b"),
+            file("a_b 2"),
+            file("a?b"),
+            file("A_B"),
+            file("a_b"),
+        ];
+        assert_eq!(
+            planned(&entries, WINDOWS),
+            ["a_b 3", "a_b 2", "a_b 4", "A_B", "a_b 5"]
+        );
+        // It is the same inside a folder, and in a folder of its own.
+        let entries = [
+            folder("d"),
+            file("d/a:b"),
+            file("d/a_b"),
+            folder("e"),
+            file("e/a:b"),
+        ];
+        assert_eq!(
+            planned(&entries, WINDOWS),
+            ["d", "d/a_b 2", "d/a_b", "e", "e/a_b"]
+        );
     }
 
     #[test]
@@ -1035,10 +1197,55 @@ mod tests {
 
     /// Bits of names that are trouble on some system or other.
     const PIECES: &[&str] = &[
-        "a", "A", "b", "B", "ß", "SS", "ss", "é", "e\u{301}", "É", ":", "\\", "<", "?", ".", " ",
-        ".txt", ".tar", ".gz", "con", "CON", "COM1", "nul", "_", " 2", "2", "\u{202E}", "\u{200D}",
-        "\u{FE0F}", "\u{7}", "日", "\u{200B}",
+        "a",
+        "A",
+        "b",
+        "B",
+        "ß",
+        "ẞ",
+        "SS",
+        "ss",
+        "é",
+        "e\u{301}",
+        "É",
+        ":",
+        "\\",
+        "<",
+        "?",
+        ".",
+        " ",
+        ".txt",
+        ".tar",
+        ".gz",
+        "con",
+        "CON",
+        "COM1",
+        "nul",
+        "_",
+        " 2",
+        "2",
+        "\u{202E}",
+        "\u{200D}",
+        "\u{FE0F}",
+        "\u{180E}",
+        "\u{7}",
+        "日",
+        "\u{200B}",
+        // A black flag, a tag that is no flag, and a whole flag (Scotland).
+        "\u{1F3F4}",
+        "\u{E0067}",
+        "\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}",
     ];
+
+    /// Whether every character of `name`, but those in flags that are kept, is one that `rules`
+    /// allow.
+    fn has_only_allowed_characters(name: &str, rules: Rules) -> bool {
+        let mut rest = name.to_owned();
+        for flag in SUBDIVISION_FLAGS {
+            rest = rest.replace(flag, "");
+        }
+        rest.chars().all(|c| allowed(c, rules))
+    }
 
     fn name() -> impl Strategy<Value = String> {
         proptest::collection::vec(proptest::sample::select(PIECES), 1..6)
@@ -1178,7 +1385,7 @@ mod tests {
                 // And it is a name that can be made.
                 prop_assert!(!own.is_empty() && own != "." && own != "..");
                 prop_assert!(own.len() <= MAX_FILE_NAME_BYTES);
-                prop_assert!(own.chars().all(|c| allowed(c, rules)), "{own:?}");
+                prop_assert!(has_only_allowed_characters(own, rules), "{own:?}");
                 if windows_rules(rules) {
                     prop_assert!(!own.ends_with(['.', ' ']), "{own:?}");
                     prop_assert!(device_end(own).is_none(), "{own:?}");
@@ -1192,11 +1399,17 @@ mod tests {
             flatten(&tree, "", None, &mut flat);
             let entries: Vec<ListEntry> = flat.iter().map(|(entry, _)| entry.clone()).collect();
             let planned = plan(&entries, rules).unwrap();
+            // A name that needed no cleaning is first of its kind before one that did.
             let mut seen: HashSet<(Option<usize>, String)> = HashSet::new();
-            for (index, (entry, parent)) in flat.iter().enumerate() {
-                let cleaned = clean(path::split_name(&entry.path).1, rules);
-                if seen.insert((*parent, key(&cleaned, rules))) {
-                    prop_assert_eq!(planned.name(index), Some(cleaned.as_str()));
+            for changed in [false, true] {
+                for (index, (entry, parent)) in flat.iter().enumerate() {
+                    let given = path::split_name(&entry.path).1;
+                    let cleaned = clean(given, rules);
+                    if (cleaned != given) == changed
+                        && seen.insert((*parent, key(&cleaned, rules)))
+                    {
+                        prop_assert_eq!(planned.name(index), Some(cleaned.as_str()));
+                    }
                 }
             }
         }
@@ -1205,7 +1418,7 @@ mod tests {
         fn cleaning_is_idempotent_and_keeps_what_is_fine(name in name(), rules in rules()) {
             let once = clean(&name, rules);
             prop_assert_eq!(clean(&once, rules), once.clone());
-            let stays = name.chars().all(|c| allowed(c, rules))
+            let stays = has_only_allowed_characters(&name, rules)
                 && !(windows_rules(rules)
                     && (name.ends_with(['.', ' ']) || device_end(&name).is_some()));
             if stays {
