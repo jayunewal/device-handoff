@@ -6,6 +6,7 @@
 
 import 'package:baton/src/backend.dart';
 import 'package:baton/src/pairing_controller.dart';
+import 'package:baton/src/qr.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support.dart';
@@ -19,13 +20,20 @@ Future<Session> _start(String name) async {
 }
 
 /// An offer on [session] that is showing, and the text a camera reads from its QR code, which is
-/// the ticket.
+/// the ticket. That the code reads back as the ticket is tried in qr_test.dart, on tickets that
+/// stay the same: the decoder in these tests fails on one valid code in a hundred, and the ticket
+/// of a live Baton is different every time.
 Future<(OfferController, String)> _showCode(Session session) async {
   final offer = OfferController(session);
   addTearDown(offer.dispose);
   await offer.start();
   expect(offer.phase, OfferPhase.showing);
   final ticket = offer.offer!.ticket;
+  expect(
+    () => ticketCode(ticket),
+    returnsNormally,
+    reason: 'it fits a QR code',
+  );
   return (offer, ticket);
 }
 
