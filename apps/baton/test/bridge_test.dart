@@ -21,12 +21,14 @@ import 'package:baton/src/rust/frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'support.dart';
+
 /// How long to wait for something that should happen at once.
 const _wait = Duration(seconds: 30);
 
 void main() {
   setUpAll(() async {
-    await RustLib.init(externalLibrary: ExternalLibrary.open(_libraryPath()));
+    await RustLib.init(externalLibrary: ExternalLibrary.open(libraryPath()));
   });
 
   test('the name is chosen before Baton starts', () async {
@@ -297,20 +299,6 @@ void main() {
       expect(webAddress(url: url), isNull, reason: url);
     }
   });
-}
-
-/// Where the library built for this computer is.
-String _libraryPath() {
-  final given = Platform.environment['BATON_FFI_LIB'];
-  if (given != null && given.isNotEmpty) {
-    return given;
-  }
-  final file = Platform.isMacOS
-      ? 'libbaton_ffi.dylib'
-      : Platform.isWindows
-      ? 'baton_ffi.dll'
-      : 'libbaton_ffi.so';
-  return '../../target/debug/$file';
 }
 
 /// A folder for one device, with settings that keep it to this computer: no relay, no

@@ -2,10 +2,9 @@
 
 import 'package:flutter/material.dart';
 
+import 'src/app.dart';
+import 'src/rust_backend.dart';
+
 void main() {
-  runApp(
-    const MaterialApp(
-      home: Scaffold(body: Center(child: Text('Baton'))),
-    ),
-  );
+  runApp(BatonApp(backend: RustBackend()));
 }
