@@ -15,6 +15,7 @@ use baton_proto::{
     frame,
     message::{Message, Request, Response},
     pair::{PairRequest, PairResponse},
+    transfer::list::ListChunk,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -37,6 +38,7 @@ fuzz_target!(|data: &[u8]| {
     let mut accepted = round_trips::<Request>(data);
     accepted |= round_trips::<Response>(data);
     accepted |= round_trips::<PairResponse>(data);
+    accepted |= round_trips::<ListChunk>(data);
     // `PairRequest` carries a proof, which deliberately cannot be compared with `==`.
     if let Ok(request) = frame::decode_payload::<PairRequest>(data) {
         accepted = true;
