@@ -473,3 +473,52 @@ async fn a_folder_that_cannot_be_used_is_reported_as_storage() {
     assert_eq!(error.kind(), ErrorKind::Storage, "{error}");
     assert!(!error.message().contains('\n'));
 }
+
+#[tokio::test]
+async fn withdrawing_an_offer_just_after_a_yes_reports_what_happened() {
+    // A sheet that closes as the person taps Yes withdraws the offer in the same breath.
+    // Whichever of the two the devices went by, the screen must be told what happened to
+    // them: a yes cannot be taken back, and a withdrawal that came first is not a pairing.
+    for _ in 0..3 {
+        let a = Dev::start("Device A").await;
+        let b = Dev::start("Device B").await;
+        let mut events = a.app.events();
+        let offer = a.app.offer_pairing().await.unwrap();
+        let (task, _code) = join(&b, &offer.ticket);
+        let request = next_matching(&mut events, |event| match event {
+            Event::PairingRequested(request) => Some(request),
+            _ => None,
+        })
+        .await;
+
+        assert!(a.app.answer_pairing(request.id, true));
+        a.app.cancel_offer();
+
+        let outcome = next_matching(&mut events, |event| match event {
+            Event::OfferEnded(outcome) => Some(outcome),
+            _ => None,
+        })
+        .await;
+        let joined = task.await.unwrap();
+        match outcome {
+            OfferOutcome::Paired(device) => {
+                assert_eq!(device.id, b.id());
+                assert_eq!(joined.unwrap().id, a.id());
+                assert_eq!(a.app.devices().len(), 1);
+                assert_eq!(b.app.devices().len(), 1);
+            }
+            OfferOutcome::Cancelled => {
+                joined.unwrap_err();
+                assert!(
+                    a.app.devices().is_empty(),
+                    "reported as cancelled, but paired"
+                );
+                assert!(
+                    b.app.devices().is_empty(),
+                    "reported as cancelled, but paired"
+                );
+            }
+            other => panic!("the offer ended some other way: {other:?}"),
+        }
+    }
+}

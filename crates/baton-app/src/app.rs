@@ -280,11 +280,9 @@ impl App {
             expires_at: offer.expires_at(),
         };
         tokio::spawn(async move {
-            let outcome = tokio::select! {
-                result = offer.wait() => outcome_of(result),
-                // Dropping the offer withdraws it.
-                () = cancel.cancelled() => OfferOutcome::Cancelled,
-            };
+            // What the node decided is what is reported. A withdrawal that comes just after
+            // the person said yes is too late, and the pairing is reported as it happened.
+            let outcome = outcome_of(offer.wait_or_withdraw(cancel.cancelled_owned()).await);
             if let Some(inner) = weak.upgrade() {
                 inner.finish_offer(generation, outcome);
             }
