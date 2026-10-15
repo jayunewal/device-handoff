@@ -57,7 +57,9 @@ flutter build macos --release
 open build/macos/Build/Products/Release/Baton.app
 ```
 
-The first build takes a while, because it compiles the Rust library for both kinds of Mac. Later builds are faster.
+The first build takes a while, because it compiles the Rust library for both kinds of Mac. Later builds are faster. Flutter may warn that the `baton_ffi` plugin does not support Swift Package Manager, and that this will become an error in a future version of Flutter. It is only a warning in Flutter 3.47, and the build goes on.
+
+The first time Baton opens, macOS may ask whether it may find devices on your local network. Choose **Allow**.
 
 If you only want to run the Mac app and not build anything, CI builds it on every change. Open the [CI runs](https://github.com/jayunewal/device-handoff/actions/workflows/ci.yml), pick the latest run on `main` with a green tick and download `baton-app-macos` under **Artifacts** at the bottom of the page. GitHub asks you to sign in to download. Unzip it, then unzip the `Baton-macos-app.zip` inside it, move `Baton.app` to your Applications folder and run:
 
@@ -85,9 +87,11 @@ macOS blocks a program that was downloaded and is not signed by a developer; tha
 Flutter has to set up the iOS project before Xcode can open it:
 
 ```sh
-flutter build ios --config-only
+flutter build ios --config-only --no-codesign
 open ios/Runner.xcworkspace
 ```
+
+Flutter prints a warning that it is building for a device with code signing disabled, and that you will have to sign the app yourself. That is expected: Xcode signs the app in the next step, once you have chosen your team. The flag is there because a Mac that has never signed an app has no certificate yet, and without the flag Flutter stops with `No development certificates available to code sign app for device deployment`. Xcode makes the certificate when you choose your team.
 
 In Xcode:
 
@@ -96,7 +100,7 @@ In Xcode:
 3. Under **Team**, choose your name followed by **(Personal Team)**. Xcode makes the certificate and registers your phone; this is why the phone has to be plugged in.
 4. If Xcode says the bundle identifier `io.github.jayunewal.baton` is not available, change it to one of your own, for example `com.example.yourname.baton`. The identifier has to be different from the identifier of any other app made with a free Apple ID.
 
-You can then close Xcode. It writes your team into `ios/Runner.xcodeproj/project.pbxproj`, so Git shows that file as changed. That is expected. Before you update the code later, put the file back with `git checkout ios/Runner.xcodeproj/project.pbxproj`, and choose your team again afterwards.
+You can then close Xcode. Building the app and choosing your team change a few files under `ios/` and `macos/` (Flutter and CocoaPods add their settings, and Xcode adds your team), so Git shows them as changed. That is expected. Before you update the code later, put them all back with `git checkout -- ios macos`, then choose your team again, and your own bundle identifier if you changed it.
 
 ### Build it and put it on the phone
 
@@ -122,6 +126,8 @@ The first time, the command ends with an error, because the phone does not yet t
 1. The first time, a screen called **Name this device**. Choose a name you will recognise, such as "Kitchen iPad", and tap **Continue**.
 2. A screen with your device's name, **Online**, a **Fingerprint** of five groups of four letters and digits, and **No other devices yet**. **Online** can take a few seconds to replace **Connecting…**.
 
+If your Mac or phone asks whether Baton may find devices on your local network, choose **Allow**. Baton finds your other devices that way. If you chose **Don't Allow**, change it in **Settings** (**System Settings** on the Mac), then **Privacy & Security**, then **Local Network**.
+
 If you see **Baton could not start** instead, the message under it says why. Open an [issue](https://github.com/jayunewal/device-handoff/issues) and paste that sentence into it.
 
 ## Every seven days
@@ -137,14 +143,14 @@ That installs over the old copy, so the app keeps what it had stored, such as it
 To get a newer version of Baton first:
 
 ```sh
-git checkout ios/Runner.xcodeproj/project.pbxproj
+git checkout -- ios macos
 git pull
 flutter pub get
-flutter build ios --config-only
+flutter build ios --config-only --no-codesign
 open ios/Runner.xcworkspace
 ```
 
-Choose your team again as above, close Xcode, and run `flutter run --release --no-resident`.
+Choose your team again as above (and your own bundle identifier, if you changed it), close Xcode, and run `flutter run --release --no-resident`.
 
 ## If something does not work
 
