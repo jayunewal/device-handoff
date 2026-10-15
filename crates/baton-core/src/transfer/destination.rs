@@ -79,6 +79,11 @@ impl Destination {
     ///
     /// It makes the staging folder of the device in it if there is none, removes what an earlier
     /// run left there, and finds out what the volume does with names.
+    ///
+    /// Open each folder once per run, when the app starts or when the person picks another one,
+    /// and clone the `Destination` for each transfer. Opening it again would remove the staging
+    /// folders of the transfers that are going on, and their lanes would write into files that are
+    /// gone.
     pub fn open(root: impl Into<PathBuf>, owner: &DeviceId) -> Result<Self, OpenError> {
         let root = root.into();
         if !fs::metadata(&root)?.is_dir() {

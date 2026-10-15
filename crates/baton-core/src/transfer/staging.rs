@@ -20,10 +20,17 @@
 //!   written again. So the bytes a file has are the first that arrived for each span, and the hash
 //!   that is checked is the hash of those. A sender that sends two versions of a span cannot get
 //!   the second into a file whose hash says the first.
+//! - **A late write counts for nothing.** Each start of a file has a number of its own, and a lane
+//!   is tied to the start that it claimed its span in. A lane that is still writing when its file
+//!   is dropped writes into a file that is gone, and when it finishes after the file has started
+//!   again, its span is not counted for the new file, or its place taken from the lane that is
+//!   writing the same span there.
 //! - **Nothing is mixed.** A file is made with `create_new`, so a name that is taken already
 //!   fails that file and never gets the bytes of another.
 //! - **A file that fails is removed,** and can start again from its first span.
 //! - **A received file is never executable,** and takes the time that the sender gave it.
+//! - **A transfer that is discarded stays discarded.** A lane that is late makes no file, even if
+//!   the same transfer is staged again and a folder is there.
 //!
 //! All of it is blocking disk work. Code that runs on an async executor calls it on a thread
 //! meant for blocking, as the rest of this crate does for its files.
@@ -34,7 +41,10 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, ErrorKind},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, SystemTime},
 };
 
@@ -75,6 +85,10 @@ pub enum StageError {
     /// The spans of a file do not make the hash that the sender gave. The file is removed.
     #[error("the file does not have the hash that its sender gave")]
     Mismatch,
+    /// The transfer was discarded, and nothing more is written for it. Lanes that were late say so
+    /// when they are stopped; it is not a fault of the disk.
+    #[error("the transfer was discarded")]
+    Discarded,
     /// The disk is full, or the quota of the app is used up.
     #[error("there is no room on the disk")]
     NoSpace,
@@ -120,6 +134,10 @@ struct Info {
 
 /// What is known about a file that has been started.
 struct Slot {
+    /// Which start of the file this is. A file that is dropped and starts again gets a new one, so
+    /// that a lane that is still writing into the file that is gone does not count its span for
+    /// the file that started again.
+    start: u64,
     /// The values of the spans that are written.
     hasher: FileHasher,
     /// The spans that are being written now, so that no other lane writes them too.
@@ -133,8 +151,9 @@ struct Slot {
 }
 
 impl Slot {
-    fn new(size: u64) -> Result<Self, HashError> {
+    fn new(size: u64, start: u64) -> Result<Self, HashError> {
         Ok(Self {
+            start,
             hasher: FileHasher::new(size)?,
             pending: Vec::new(),
             created: false,
@@ -151,6 +170,8 @@ struct State {
     open: Vec<u32>,
     /// Files that were dropped and could not be removed from the disk.
     stuck: BTreeSet<u32>,
+    /// Whether the transfer was discarded. Nothing is made after that.
+    discarded: bool,
 }
 
 /// A transfer that is being received into a staging folder.
@@ -163,6 +184,9 @@ pub struct Staging {
     plan: Plan,
     info: Vec<Info>,
     max_open: usize,
+    /// The number that the next start of a file takes. It counts the starts of every file of the
+    /// transfer, so no two have the same one.
+    starts: AtomicU64,
     state: Mutex<State>,
 }
 
@@ -206,6 +230,7 @@ impl Staging {
             plan,
             info,
             max_open: MAX_OPEN_FILES,
+            starts: AtomicU64::new(0),
             state: Mutex::new(State::default()),
         };
         if let Err(e) = staging.make_folders() {
@@ -227,7 +252,8 @@ impl Staging {
     /// arrives. A span that the file has already, or that is being written by another lane, is
     /// not written again ([`Written::Duplicate`]): the first bytes stay. If the disk fails, the
     /// span is not kept and the file is damaged: the caller drops it with
-    /// [`drop_file`](Self::drop_file), and it can start again.
+    /// [`drop_file`](Self::drop_file), and it can start again. After
+    /// [`discard`](Self::discard) it fails with [`StageError::Discarded`] and makes nothing.
     pub fn write_span(&self, file: u32, span: u32, data: &[u8]) -> Result<Written, StageError> {
         let info = self.file_info(file)?;
         let expected =
@@ -240,9 +266,9 @@ impl Staging {
             }
             .into());
         }
-        let handle = match self.claim(file, span)? {
+        let (handle, start) = match self.claim(file, span)? {
             Claim::Held => return Ok(Written::Duplicate),
-            Claim::Writing(handle) => handle,
+            Claim::Writing { handle, start } => (handle, start),
         };
         let written = hash::hash_span(info.size, span, data)
             .map_err(StageError::from)
@@ -256,11 +282,11 @@ impl Staging {
         drop(handle);
         match written {
             Ok(value) => {
-                let complete = self.release(file, span, Some(value));
+                let complete = self.release(file, span, start, Some(value));
                 Ok(Written::New { complete })
             }
             Err(e) => {
-                self.release(file, span, None);
+                self.release(file, span, start, None);
                 Err(e)
             }
         }
@@ -289,8 +315,11 @@ impl Staging {
     pub fn verify(&self, file: u32, expected: &blake3::Hash) -> Result<(), StageError> {
         let info = self.file_info(file)?;
         let mut state = lock(&self.state);
+        if state.discarded {
+            return Err(StageError::Discarded);
+        }
         if info.size == 0 && !state.slots.contains_key(&file) {
-            state.slots.insert(file, Slot::new(0)?);
+            state.slots.insert(file, self.new_slot(0)?);
             if let Err(e) = self.handle(&mut state, file) {
                 state.slots.remove(&file);
                 return Err(e);
@@ -325,9 +354,10 @@ impl Staging {
     /// Removes what is written of file number `file`, so that it can start again from its first
     /// span, as a file does after the sender skipped it or it failed.
     ///
-    /// A span that another lane is writing at this moment ends up in a file that is gone. If the
-    /// file cannot be removed, it is on record in [`stuck`](Self::stuck), and nothing that has
-    /// it inside may be put in place.
+    /// A span that another lane is writing at this moment ends up in a file that is gone, and is
+    /// not counted if the file starts again before that lane is done. If the file cannot be
+    /// removed, it is on record in [`stuck`](Self::stuck), and nothing that has it inside may be
+    /// put in place.
     pub fn drop_file(&self, file: u32) -> Result<(), StageError> {
         self.file_info(file)?;
         let mut state = lock(&self.state);
@@ -342,15 +372,23 @@ impl Staging {
 
     /// Removes the folder of the transfer and everything in it, as for a transfer that was
     /// cancelled, or whose decision is forgotten. The lanes of the transfer are stopped by then,
-    /// and a call that still comes in fails, since there is no folder to write in.
+    /// and a call that still comes in fails with [`StageError::Discarded`] and makes nothing,
+    /// whatever is on the disk: the same transfer can be staged again, and a lane that is late
+    /// must not make a file in the folder of that one.
     pub fn discard(&self) -> io::Result<()> {
         {
             // Close what is open first: some systems do not remove a folder with an open file in it.
             let mut state = lock(&self.state);
+            state.discarded = true;
             state.slots.clear();
             state.open.clear();
         }
         fs::remove_dir_all(&self.dir)
+    }
+
+    /// A slot for a file that starts, with the number of this start.
+    fn new_slot(&self, size: u64) -> Result<Slot, HashError> {
+        Slot::new(size, self.starts.fetch_add(1, Ordering::Relaxed))
     }
 
     fn file_info(&self, file: u32) -> Result<Info, StageError> {
@@ -380,30 +418,42 @@ impl Staging {
     }
 
     /// Takes a place for span `span` of file `file`, and a handle to write it with, or says that
-    /// the span is held or is being written.
+    /// the span is held or is being written. The place is in the start of the file that is current
+    /// now, and the claim says which start that is.
     fn claim(&self, file: u32, span: u32) -> Result<Claim, StageError> {
         let info = self.file_info(file)?;
         let mut state = lock(&self.state);
+        if state.discarded {
+            return Err(StageError::Discarded);
+        }
         let slot = match state.slots.entry(file) {
             Entry::Occupied(slot) => slot.into_mut(),
-            Entry::Vacant(slot) => slot.insert(Slot::new(info.size)?),
+            Entry::Vacant(slot) => slot.insert(self.new_slot(info.size)?),
         };
         if slot.hasher.has(span) || slot.pending.contains(&span) {
             return Ok(Claim::Held);
         }
+        let start = slot.start;
         let handle = self.handle(&mut state, file)?;
         if let Some(slot) = state.slots.get_mut(&file) {
             slot.pending.push(span);
         }
-        Ok(Claim::Writing(handle))
+        Ok(Claim::Writing { handle, start })
     }
 
     /// Gives the place of a span back, and keeps its value if its bytes were written. Says whether
     /// the file is complete now.
-    fn release(&self, file: u32, span: u32, value: Option<hash::SpanValue>) -> bool {
+    ///
+    /// `start` is the one that the claim gave. If the file was dropped since, there is no slot, or
+    /// a slot of a later start: the bytes went into a file that is gone, so nothing is kept, and
+    /// the place of a lane of the new start is not touched.
+    fn release(&self, file: u32, span: u32, start: u64, value: Option<hash::SpanValue>) -> bool {
         let mut state = lock(&self.state);
-        // A file that was dropped meanwhile has no slot, and nothing to keep.
-        let Some(slot) = state.slots.get_mut(&file) else {
+        let Some(slot) = state
+            .slots
+            .get_mut(&file)
+            .filter(|slot| slot.start == start)
+        else {
             return false;
         };
         slot.pending.retain(|pending| *pending != span);
@@ -502,8 +552,8 @@ impl Staging {
 enum Claim {
     /// The span is held, or another lane is writing it.
     Held,
-    /// The caller writes the span with this file.
-    Writing(Arc<File>),
+    /// The caller writes the span with this file, which belongs to this start of the file.
+    Writing { handle: Arc<File>, start: u64 },
 }
 
 /// Makes a folder that must not exist yet. Where the system has modes, a private one has only its
@@ -979,6 +1029,15 @@ mod tests {
         assert_eq!(fs::read(staging.dir.join("f")).unwrap(), content);
     }
 
+    /// What a lane does first in `write_span`: it takes the place of a span and a handle to write
+    /// it with. A test that calls this and `release` itself can put other calls in between.
+    fn claimed(staging: &Staging, file: u32, span: u32) -> (Arc<File>, u64) {
+        match staging.claim(file, span).unwrap() {
+            Claim::Writing { handle, start } => (handle, start),
+            Claim::Held => panic!("span {span} of file {file} is held"),
+        }
+    }
+
     #[test]
     fn a_span_that_ends_after_its_file_was_dropped_is_not_kept() {
         let (_scratch, destination) = destination();
@@ -987,15 +1046,69 @@ mod tests {
         let staging = staged(&destination, &[file("f", size as u64)]);
         staging.write_span(0, 0, &content[..SPAN]).unwrap();
         // The lane is in the middle of span 1 when the file is dropped.
-        lock(&staging.state)
-            .slots
-            .get_mut(&0)
-            .unwrap()
-            .pending
-            .push(1);
+        let (handle, start) = claimed(&staging, 0, 1);
+        drop(handle);
         staging.drop_file(0).unwrap();
-        assert!(!staging.release(0, 1, Some([0; 32])));
+        assert!(!staging.release(0, 1, start, Some([0; 32])));
         assert!(!staging.is_complete(0).unwrap());
+    }
+
+    #[test]
+    fn a_span_that_ends_after_its_file_started_again_is_not_counted_for_it() {
+        let (_scratch, destination) = destination();
+        let size = 2 * SPAN;
+        let content = bytes(17, size);
+        let staging = staged(&destination, &[file("f", size as u64)]);
+        let (first, second) = content.split_at(SPAN);
+
+        // Lane B has claimed span 0 and written it when the file is dropped. Lane C starts the
+        // file again with span 1, and only then does lane B let go of its span.
+        let (handle, start) = claimed(&staging, 0, 0);
+        write_all_at(&handle, first, 0).unwrap();
+        drop(handle);
+        staging.drop_file(0).unwrap();
+        staging.write_span(0, 1, second).unwrap();
+        let value = hash::hash_span(size as u64, 0, first).unwrap();
+        assert!(!staging.release(0, 0, start, Some(value)));
+
+        // The new file does not have span 0, and says so: it is not complete, and does not pass.
+        assert!(!staging.is_complete(0).unwrap());
+        assert!(matches!(
+            staging.verify(0, &blake3::hash(&content)),
+            Err(StageError::Incomplete)
+        ));
+        // Span 0 is still wanted, and the file comes out with the right bytes.
+        assert_eq!(
+            staging.write_span(0, 0, first).unwrap(),
+            Written::New { complete: true }
+        );
+        staging.verify(0, &blake3::hash(&content)).unwrap();
+        assert_eq!(fs::read(staging.dir.join("f")).unwrap(), content);
+    }
+
+    #[test]
+    fn a_late_release_does_not_take_the_place_of_a_lane_of_the_new_start() {
+        let (_scratch, destination) = destination();
+        let content = bytes(19, SPAN);
+        let staging = staged(&destination, &[file("f", SPAN as u64)]);
+        let value = hash::hash_span(SPAN as u64, 0, &content).unwrap();
+
+        let (handle, old) = claimed(&staging, 0, 0);
+        drop(handle);
+        staging.drop_file(0).unwrap();
+        // Lane C is writing span 0 of the file that started again.
+        let (handle, new) = claimed(&staging, 0, 0);
+        assert_ne!(old, new);
+        // The late release of lane B leaves its place alone, so no third lane writes span 0 too.
+        assert!(!staging.release(0, 0, old, Some(value)));
+        assert!(matches!(staging.claim(0, 0), Ok(Claim::Held)));
+        assert!(!staging.is_complete(0).unwrap());
+        // And lane C finishes as it would have.
+        write_all_at(&handle, &content, 0).unwrap();
+        drop(handle);
+        assert!(staging.release(0, 0, new, Some(value)));
+        staging.verify(0, &blake3::hash(&content)).unwrap();
+        assert_eq!(fs::read(staging.dir.join("f")).unwrap(), content);
     }
 
     #[test]
@@ -1007,8 +1120,42 @@ mod tests {
         staging.discard().unwrap();
         assert!(!staging.dir.exists());
         // A lane that is late gets an error and makes nothing.
-        assert!(staging.write_span(1, 0, &content).is_err());
+        assert!(matches!(
+            staging.write_span(1, 0, &content),
+            Err(StageError::Discarded)
+        ));
         assert!(!staging.dir.exists());
+    }
+
+    #[test]
+    fn a_lane_that_is_late_makes_nothing_when_the_transfer_is_staged_again() {
+        let (_scratch, destination) = destination();
+        let content = bytes(18, 100);
+        let entries = [folder("d"), file("d/f", 100), file("e", 0)];
+        let first = staged(&destination, &entries);
+        first.write_span(1, 0, &content).unwrap();
+        first.discard().unwrap();
+
+        // The same transfer is staged again, and its folder is there for a late lane to find.
+        let again = staged(&destination, &entries);
+        assert_eq!(again.dir, first.dir);
+        assert!(matches!(
+            first.write_span(1, 0, &content),
+            Err(StageError::Discarded)
+        ));
+        // An empty file is made by its check, and that is refused too.
+        assert!(matches!(
+            first.verify(2, &blake3::hash(b"")),
+            Err(StageError::Discarded)
+        ));
+        assert!(!again.dir.join("d").join("f").exists());
+        assert!(!again.dir.join("e").exists());
+
+        // The transfer that is staged now is not in the way of what it makes.
+        again.write_span(1, 0, &content).unwrap();
+        again.verify(1, &blake3::hash(&content)).unwrap();
+        again.verify(2, &blake3::hash(b"")).unwrap();
+        assert_eq!(fs::read(again.dir.join("d").join("f")).unwrap(), content);
     }
 
     #[test]
