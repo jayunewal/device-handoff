@@ -46,3 +46,8 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# CocoaPods writes these on the first build on a Mac. Its pods are the Flutter plugins that
+# pub get fetches, so there is nothing to pin yet, and Git would show them as new files.
+/ios/Podfile.lock
+/macos/Podfile.lock
