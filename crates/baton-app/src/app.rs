@@ -9,7 +9,7 @@ use std::{
     str::FromStr as _,
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -65,7 +65,8 @@ impl Options {
 /// One running Baton on one device.
 ///
 /// It can be cloned: every clone is the same running Baton. Dropping the last clone stops
-/// it, but [`stop`](Self::stop) does so politely, and is what to call when the app is done.
+/// it, whatever is going on, but [`stop`](Self::stop) does so politely, and is what to call
+/// when the app is done.
 #[derive(Clone)]
 pub struct App {
     inner: Arc<Inner>,
@@ -87,6 +88,19 @@ struct Open {
     cancel: CancellationToken,
 }
 
+/// The questions put to the person and the answers they are waiting for.
+///
+/// This is kept apart from [`Inner`] because the pairing connection that asked a question
+/// holds on to it for as long as the question is open. If it held the whole app, an app that
+/// was dropped while a question was showing would stay running, with its folder locked,
+/// until the question was over.
+struct Questions {
+    /// Requests that are waiting for the person's answer.
+    waiting: Mutex<HashMap<u64, oneshot::Sender<bool>>>,
+    next: AtomicU64,
+    events: broadcast::Sender<Event>,
+}
+
 struct Inner {
     node: Arc<Node>,
     id: DeviceId,
@@ -94,10 +108,16 @@ struct Inner {
     trust: TrustStore,
     inbox: Inbox,
     events: broadcast::Sender<Event>,
+    /// Cancelled as soon as stopping begins.
     stopped: CancellationToken,
-    /// Requests that are waiting for the person's answer.
-    pending: Mutex<HashMap<u64, oneshot::Sender<bool>>>,
-    next_request: AtomicU64,
+    /// Set by the first [`App::stop`], which does the work; later calls wait for it.
+    stopping: AtomicBool,
+    /// Cancelled when stopping is over: the node is down and the folder is free.
+    released: CancellationToken,
+    questions: Arc<Questions>,
+    /// Held while an offer is made, so that offers reach the node in the order they were
+    /// asked for.
+    offer_turn: tokio::sync::Mutex<()>,
     /// The offer that is showing.
     offer: Mutex<Option<Open>>,
     /// The pairing that is being joined, while the other device has not answered.
@@ -144,6 +164,11 @@ impl App {
         tracing::info!(device = %identity.device_id().short(), "Baton started");
         let (events, _) = broadcast::channel(EVENT_BACKLOG);
         let stopped = CancellationToken::new();
+        let questions = Arc::new(Questions {
+            waiting: Mutex::new(HashMap::new()),
+            next: AtomicU64::new(1),
+            events: events.clone(),
+        });
         tokio::spawn(forward_arrivals(arrivals, events.clone(), stopped.clone()));
         tokio::spawn(forward_trust_events(
             trust_events,
@@ -160,8 +185,10 @@ impl App {
                 inbox,
                 events,
                 stopped,
-                pending: Mutex::new(HashMap::new()),
-                next_request: AtomicU64::new(1),
+                stopping: AtomicBool::new(false),
+                released: CancellationToken::new(),
+                questions,
+                offer_turn: tokio::sync::Mutex::new(()),
                 offer: Mutex::new(None),
                 join: Mutex::new(None),
                 next_generation: AtomicU64::new(1),
@@ -173,23 +200,20 @@ impl App {
     /// Stops the network, telling the devices that are connected, and lets go of the
     /// folder so that another [`App`] can start in it. Every later call fails with
     /// [`ErrorKind::Stopped`], and [`Events`] ends.
+    ///
+    /// It can be called more than once, from anywhere: every call returns once the folder
+    /// is free, and none leaves the app half stopped if its caller stops waiting.
     pub async fn stop(&self) {
         let inner = &self.inner;
-        if inner.stopped.is_cancelled() {
-            return;
+        if !inner.stopping.swap(true, Ordering::AcqRel) {
+            // Calls made from here on are refused at once, not when the work below gets
+            // its turn.
+            inner.stopped.cancel();
+            // The work runs on a task of its own, so that a caller that gives up waiting
+            // does not leave it undone.
+            tokio::spawn(Arc::clone(inner).shut_down());
         }
-        inner.stopped.cancel();
-        if let Some(open) = locked(&inner.offer).take() {
-            open.cancel.cancel();
-        }
-        if let Some(open) = locked(&inner.join).take() {
-            open.cancel.cancel();
-        }
-        locked(&inner.pending).clear();
-        inner.node.shutdown().await;
-        // Released only now that nothing is using the folder.
-        locked(&inner.lock).take();
-        tracing::info!(device = %inner.id.short(), "Baton stopped");
+        inner.released.cancelled().await;
     }
 
     /// This device.
@@ -242,6 +266,12 @@ impl App {
     ///
     /// [`ErrorKind::Stopped`] if the app has stopped.
     pub async fn offer_pairing(&self) -> Result<Offer> {
+        self.running()?;
+        // One offer is made at a time. Making one can take a moment (the node gives the
+        // relay a few seconds to answer, so that the ticket works from other networks), and
+        // two calls in that moment, a double tap say, must reach the node in the order they
+        // were made, or the older offer would replace the newer one.
+        let _turn = self.inner.offer_turn.lock().await;
         let node = self.running()?;
         let generation = self.inner.next_generation.fetch_add(1, Ordering::Relaxed);
         let cancel = CancellationToken::new();
@@ -255,19 +285,8 @@ impl App {
             old.cancel.cancel();
         }
 
-        let weak = Arc::downgrade(&self.inner);
-        let approver = {
-            let weak = weak.clone();
-            move |request: PairApprovalRequest| {
-                let weak = weak.clone();
-                async move {
-                    match weak.upgrade() {
-                        Some(inner) => inner.ask(request).await,
-                        None => false,
-                    }
-                }
-            }
-        };
+        let questions = Arc::clone(&self.inner.questions);
+        let approver = move |request: PairApprovalRequest| Arc::clone(&questions).ask(request);
         let offer = match node.offer_pairing(approver).await {
             Ok(offer) => offer,
             Err(e) => {
@@ -275,10 +294,14 @@ impl App {
                 return Err(Error::pairing(&e));
             }
         };
+        // The app may have been stopped while the node was making the offer. Dropping the
+        // offer withdraws it, and nobody is handed a ticket that is already dead.
+        self.running()?;
         let shown = Offer {
             ticket: offer.ticket_text().to_owned(),
             expires_at: offer.expires_at(),
         };
+        let weak = Arc::downgrade(&self.inner);
         tokio::spawn(async move {
             // What the node decided is what is reported. A withdrawal that comes just after
             // the person said yes is too late, and the pairing is reported as it happened.
@@ -300,7 +323,7 @@ impl App {
     /// Answers a [`PairingRequest`]. Returns `false` if it is not waiting any more, because
     /// it was answered already or the offer ended.
     pub fn answer_pairing(&self, request: u64, accept: bool) -> bool {
-        let waiting = locked(&self.inner.pending).remove(&request);
+        let waiting = locked(&self.inner.questions.waiting).remove(&request);
         waiting.is_some_and(|answer| answer.send(accept).is_ok())
     }
 
@@ -486,27 +509,23 @@ impl Inner {
         let _ = self.events.send(event);
     }
 
-    /// Puts a pairing request to the person and waits for the answer. A request that stops
-    /// mattering first, because the offer ended or the other device left, drops this
-    /// future, and the screen is told to take the question away.
-    async fn ask(self: Arc<Self>, request: PairApprovalRequest) -> bool {
-        let id = self.next_request.fetch_add(1, Ordering::Relaxed);
-        let (answer, answered) = oneshot::channel();
-        locked(&self.pending).insert(id, answer);
-        let _unanswered = Unanswered {
-            inner: Arc::clone(&self),
-            id,
-        };
-        tracing::debug!(request = id, device = %request.peer.short(), "pairing request shown");
-        self.emit(Event::PairingRequested(PairingRequest {
-            id,
-            device_id: request.peer.to_string(),
-            name: request.device.name.clone(),
-            platform: request.device.platform.into(),
-            fingerprint: request.fingerprint().to_string(),
-            code: request.confirmation.to_string(),
-        }));
-        answered.await.unwrap_or(false)
+    /// The work of [`App::stop`]: ends everything that is going on, shuts the node down and
+    /// gives up the folder, in that order.
+    async fn shut_down(self: Arc<Self>) {
+        // Wakes the calls that wait for this, whatever becomes of the task.
+        let _released = self.released.clone().drop_guard();
+        if let Some(open) = locked(&self.offer).take() {
+            open.cancel.cancel();
+        }
+        if let Some(open) = locked(&self.join).take() {
+            open.cancel.cancel();
+        }
+        // Questions that are open become a no.
+        locked(&self.questions.waiting).clear();
+        self.node.shutdown().await;
+        // Released only now that nothing is using the folder.
+        locked(&self.lock).take();
+        tracing::info!(device = %self.id.short(), "Baton stopped");
     }
 
     /// Takes the offer of this generation out of the slot, if it is still there.
@@ -532,16 +551,45 @@ impl Inner {
     }
 }
 
+impl Questions {
+    /// Puts a pairing request to the person and waits for the answer. A request that stops
+    /// mattering first, because the offer ended or the other device left, drops this
+    /// future, and the screen is told to take the question away.
+    async fn ask(self: Arc<Self>, request: PairApprovalRequest) -> bool {
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let (answer, answered) = oneshot::channel();
+        locked(&self.waiting).insert(id, answer);
+        let _unanswered = Unanswered {
+            questions: Arc::clone(&self),
+            id,
+        };
+        tracing::debug!(request = id, device = %request.peer.short(), "pairing request shown");
+        // Nobody listening is fine.
+        let _ = self.events.send(Event::PairingRequested(PairingRequest {
+            id,
+            device_id: request.peer.to_string(),
+            name: request.device.name.clone(),
+            platform: request.device.platform.into(),
+            fingerprint: request.fingerprint().to_string(),
+            code: request.confirmation.to_string(),
+        }));
+        answered.await.unwrap_or(false)
+    }
+}
+
 /// Tells the screen that a pairing request is no longer waiting, if nobody answered it.
 struct Unanswered {
-    inner: Arc<Inner>,
+    questions: Arc<Questions>,
     id: u64,
 }
 
 impl Drop for Unanswered {
     fn drop(&mut self) {
-        if locked(&self.inner.pending).remove(&self.id).is_some() {
-            self.inner.emit(Event::PairingRequestEnded { id: self.id });
+        if locked(&self.questions.waiting).remove(&self.id).is_some() {
+            let _ = self
+                .questions
+                .events
+                .send(Event::PairingRequestEnded { id: self.id });
         }
     }
 }

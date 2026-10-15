@@ -9,7 +9,7 @@
 //! blocked. Every wait has a limit, so a hang fails the test instead of stalling the run.
 #![allow(missing_docs, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::{path::Path, time::Duration};
+use std::{path::Path, task::Poll, time::Duration};
 
 use baton_app::{
     App, ErrorKind, Event, Events, OfferOutcome, Options, Platform, ReceivedItem, Route, settings,
@@ -521,4 +521,89 @@ async fn withdrawing_an_offer_just_after_a_yes_reports_what_happened() {
             other => panic!("the offer ended some other way: {other:?}"),
         }
     }
+}
+
+#[tokio::test]
+async fn an_app_that_is_dropped_while_a_question_is_showing_lets_go_of_its_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    write_settings(dir.path(), Some("Device A"), false);
+    let a = App::start(Options::new(dir.path())).await.unwrap();
+    let b = Dev::start("Device B").await;
+    let mut events = a.events();
+    let offer = a.offer_pairing().await.unwrap();
+    let (task, _code) = join(&b, &offer.ticket);
+    next_matching(&mut events, |event| match event {
+        Event::PairingRequested(request) => Some(request),
+        _ => None,
+    })
+    .await;
+
+    // The question is on the screen and nobody has answered. The screen goes away, and the
+    // folder is free at once: the question does not keep the app running.
+    drop(events);
+    drop(a);
+    let again = App::start(Options::new(dir.path())).await.unwrap();
+    again.stop().await;
+    // The device that asked finds out only when its connection runs out, which takes a
+    // while, so it is not waited for.
+    task.abort();
+}
+
+#[tokio::test]
+async fn a_second_stop_returns_only_when_the_folder_is_free() {
+    let dir = tempfile::tempdir().unwrap();
+    write_settings(dir.path(), Some("Device A"), false);
+    let app = App::start(Options::new(dir.path())).await.unwrap();
+
+    // The first call is given up on as soon as it has begun, as when a screen is closed
+    // while it waits. The stopping goes on without it.
+    let mut first = Box::pin(app.stop());
+    std::future::poll_fn(|cx| {
+        let _ = first.as_mut().poll(cx);
+        Poll::Ready(())
+    })
+    .await;
+    drop(first);
+    app.stop().await;
+    let again = App::start(Options::new(dir.path())).await.unwrap();
+    again.stop().await;
+
+    // Two calls at once are both held until it is done.
+    let dir = tempfile::tempdir().unwrap();
+    write_settings(dir.path(), Some("Device B"), false);
+    let app = App::start(Options::new(dir.path())).await.unwrap();
+    tokio::join!(app.stop(), app.stop());
+    let again = App::start(Options::new(dir.path())).await.unwrap();
+    again.stop().await;
+}
+
+#[tokio::test]
+async fn an_offer_that_is_being_made_as_the_app_stops_is_not_handed_out() {
+    // With a relay set, the node waits a moment for it before it makes the offer. This one
+    // is not there, so the offer is being made for the whole of that moment.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "device_name = \"Device A\"\n[network]\nrelay = \"custom\"\n\
+         relay_urls = [\"http://127.0.0.1:9\"]\nlan_discovery = false\nport_mapping = false\n",
+    )
+    .unwrap();
+    let app = App::start(Options::new(dir.path())).await.unwrap();
+    let offering = {
+        let app = app.clone();
+        tokio::spawn(async move { app.offer_pairing().await })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !offering.is_finished(),
+        "the offer should still be in the making"
+    );
+
+    app.stop().await;
+    let error = tokio::time::timeout(WAIT, offering)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Stopped, "{error}");
 }
