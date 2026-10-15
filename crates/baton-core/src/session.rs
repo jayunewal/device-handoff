@@ -25,6 +25,7 @@ use baton_proto::{
         DeclineReason, ErrorCode, ErrorReply, Handoff, HandoffReply, Hello, Item, Outcome, Request,
         Response,
     },
+    transfer::{Declined, TransferReply},
 };
 use iroh::{
     Endpoint, EndpointAddr, RelayUrl,
@@ -355,6 +356,13 @@ async fn serve_stream(
                 .handle(shared.handler.as_ref(), &paired, handoff)
                 .await,
         ),
+        // This version does not take part in transfers and does not say it does (it
+        // advertises no `transfer.files`), so a request for one is answered as protocol.md
+        // section 8 says for a device that does not.
+        Request::Transfer(transfer) => Response::Transfer(TransferReply::Declined(Declined {
+            id: transfer.id(),
+            reason: DeclineReason::Unsupported,
+        })),
     };
     respond(&mut send, &response).await;
 }

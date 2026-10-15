@@ -39,19 +39,20 @@ A receiver reads the whole item before it interprets any of it. That is a requir
 | --- | --- |
 | Session (`Request`, `Response`) | 2 MiB |
 | Pairing (`PairRequest`, `PairResponse`) | 4 KiB |
+| A piece of the list of files of a transfer (`ListChunk`, on a lane, section 8) | 2 MiB |
 
 CBOR encoding rules, as produced by the reference implementation:
 
 - Structs are maps with text keys. Receivers ignore unknown keys, so adding an optional field is compatible. Optional fields that are absent are omitted.
 - A unit enum variant (one without data) is its name as text (`"Accepted"`). A variant with data is a one-entry map from the name to the data (`{"Ping": {"nonce": 1}}`). Receivers also accept a unit variant as a one-entry map whose value is null (`{"Accepted": null}`), which is how some encoders write it, and reject any other value there.
 - Device ids, item ids, secrets and proofs are byte strings of fixed length.
-- Enums that a newer version may extend (`Platform`, `DeclineReason`, `ErrorCode`, `PairRejection`) decode an unknown variant as `Other`. That works only for variants without data, so **new variants of these enums MUST be unit variants**: an older receiver cannot skip a variant that carries data, and fails to decode the message. Other enums do not tolerate unknown variants; a request with an unknown variant is answered with `Error { code: Malformed }`.
+- Enums that a newer version may extend (`Platform`, `DeclineReason`, `ErrorCode`, `PairRejection`, `FailReason`) decode an unknown variant as `Other`. That works only for variants without data, so **new variants of these enums MUST be unit variants**: an older receiver cannot skip a variant that carries data, and fails to decode the message. Other enums do not tolerate unknown variants; a request with an unknown variant is answered with `Error { code: Malformed }`.
 
 String and list sizes are limited as well (see section 6). A message that breaks a limit MUST NOT be sent, and MUST be rejected when received.
 
 ## 3. Session protocol (`baton/1`)
 
-Each request uses its own bidirectional stream: the client opens a stream, writes one `Request` frame, and finishes its side; the server reads the frame, writes one `Response` frame, and finishes. Either side MAY have several streams open at once. A receiver SHOULD give a peer no more than 16 concurrent streams and SHOULD time out a stream that makes no progress for 10 seconds. These limits are for the control messages of this section, which are small. Bulk transfer (section 8) uses streams of its own with a separate budget, so that a long transfer neither counts against the 16 nor is cut off by a timer meant for a request. Peers do not open unidirectional streams or send datagrams, and a receiver SHOULD NOT allow them. Each receiver also chooses its own QUIC flow-control windows, which cap how much data a sender may have in flight and so how fast one stream can go: a stream cannot carry more than one window per round trip. The reference implementation announces 8 MiB for each stream. It starts every connection with a connection window of only 64 KiB, which is room for fifteen of the largest pairing frame and all that a stranger on `baton-pair/1` ever gets, and raises the connection window to 16 MiB once it has seen that the peer is paired, in both directions, which QUIC lets a receiver do at any time and announces in a `MAX_DATA` frame. That lets one stream fill a path of 500 Mbit/s with a round trip of 100 ms and still bounds the unread data a peer can make a device hold. A sender with more than 64 KiB for a new connection waits about one round trip for the raise, which a client that opens with a `Hello` never notices. The QUIC library's default of about 1.25 MB would cap the same stream at 12.5 MB/s at that round trip.
+Each request uses its own bidirectional stream: the client opens a stream, writes one `Request` frame, and finishes its side; the server reads the frame, writes one `Response` frame, and finishes. Either side MAY have several streams open at once. A receiver SHOULD give a peer no more than 16 concurrent streams and SHOULD time out a stream that makes no progress for 10 seconds. These limits are for the control messages of this section, which are small. Bulk transfer (section 8) uses streams of its own with a separate budget, so that a long transfer neither counts against the 16 nor is cut off by a timer meant for a request. Peers send no datagrams, and open no unidirectional streams except the lanes of a transfer that the receiver has accepted (section 8). A receiver allows a peer that is not paired no unidirectional stream at all, and one that is paired no more than its lane budget. The reference implementation allows none to anyone until it takes part in transfers, and will then raise the limit to 8 for a peer it knows to be paired, in the place where it raises the connection window. Each receiver also chooses its own QUIC flow-control windows, which cap how much data a sender may have in flight and so how fast one stream can go: a stream cannot carry more than one window per round trip. The reference implementation announces 8 MiB for each stream. It starts every connection with a connection window of only 64 KiB, which is room for fifteen of the largest pairing frame and all that a stranger on `baton-pair/1` ever gets, and raises the connection window to 16 MiB once it has seen that the peer is paired, in both directions, which QUIC lets a receiver do at any time and announces in a `MAX_DATA` frame. That lets one stream fill a path of 500 Mbit/s with a round trip of 100 ms and still bounds the unread data a peer can make a device hold. A sender with more than 64 KiB for a new connection waits about one round trip for the raise, which a client that opens with a `Hello` never notices. The QUIC library's default of about 1.25 MB would cap the same stream at 12.5 MB/s at that round trip.
 
 Both directions use the same protocol: a device that has paired with another may open a connection to it, and the other may open one back. A connection is not tied to one direction of traffic.
 
@@ -78,6 +79,7 @@ Capabilities defined so far:
 | --- | --- |
 | `handoff.link` | Accepts `Item::Link` |
 | `handoff.clipboard.text` | Accepts `Item::ClipboardText` |
+| `transfer.files` | Takes part in file transfers: accepts the requests and the lanes of section 8 |
 
 A sender MUST NOT send an item whose capability the receiver did not advertise. A receiver that gets one anyway answers `Declined(Unsupported)`. A kind of item the receiver does not know at all cannot be decoded, and is answered with `Error { code: Malformed }`: the capability exchange is how new kinds are introduced, not an unannounced request.
 
@@ -98,7 +100,7 @@ Response {"Handoff": {"id": h'<same id>', "outcome": "Accepted"}}
 Response {"Handoff": {"id": h'...', "outcome": {"Declined": "TooLarge"}}}
 ```
 
-`Accepted` means the receiver took the item. What it then does is up to its own policy for the sending device, and the sender is not told (see [security.md](security.md)). `Declined` carries a reason: `Unsupported`, `TooLarge`, `RateLimited`, `Blocked`, `Invalid` or `Other`.
+`Accepted` means the receiver took the item. What it then does is up to its own policy for the sending device, and the sender is not told (see [security.md](security.md)). `Declined` carries a reason: `Unsupported`, `TooLarge`, `RateLimited`, `Blocked`, `Invalid` or `Other`. Transfers (section 8) use two more, `NoSpace` and `Refused`.
 
 The item id is chosen at random by the sender and reused when it retries, for example because the connection dropped before the answer arrived. A receiver SHOULD remember the outcome of recently handled ids per peer and give a repeat the same outcome without acting on it again. If the first copy is still being handled, the repeat waits for its outcome. The reference implementation remembers 1024 ids for 10 minutes.
 
@@ -108,7 +110,7 @@ Links are untrusted strings. The protocol does not restrict the scheme; receiver
 
 ### Errors
 
-A request that cannot be handled at all gets `{"Error": {"code": "Malformed", "message": "..."}}` when a response can still be written. `code` is `Malformed` or `Internal` (or `Other` from a newer version). The message is for logs and MUST NOT be shown to a person as is.
+A request that cannot be handled at all gets `{"Error": {"code": "Malformed", "message": "..."}}` when a response can still be written. `code` is `Malformed`, `Internal` or `NotFound` (the request names something the receiver does not have, such as a transfer it never saw, section 8), or `Other` from a newer version. The message is for logs and MUST NOT be shown to a person as is.
 
 If the frame header itself is unacceptable (zero length or over the limit), the receiver resets the stream with code 400 instead, and with code 408 if the request does not arrive within the deadline.
 
@@ -122,8 +124,11 @@ The same codes are used to close a connection and to reset a stream.
 | 400 | Protocol violation |
 | 403 | Not paired |
 | 408 | Timeout |
+| 413 | What the peer sends is larger than this device accepts: a list of files over its limit (section 8) |
 | 429 | Too many connections or pairing attempts at once, or a pairing connection that was pushed out by a newer one. A sender that is too fast is told so in the response (`Declined(RateLimited)`), not by closing |
+| 499 | A transfer was stopped on purpose, by the person or by the program. Used to stop or reset a lane (section 8) |
 | 500 | Internal error or shutting down |
+| 507 | This device has no room for what the peer is sending: used to stop a lane (section 8) |
 
 ## 4. Pairing protocol (`baton-pair/1`)
 
@@ -220,7 +225,7 @@ An offerer MUST:
 
 A wrong proof does not close the offer, and wrong proofs are not counted. The secret has 256 bits, so guessing it is not a realistic attack, while letting a few wrong proofs void the offer would hand a cheap trick to anyone who knows the offerer's device id, which a device announces on its network: they could cancel every pairing as it starts.
 
-What an offerer SHOULD limit is its own load: how many pairing connections it serves at once, how long each may last, and how often one peer key or address may ask. These limits protect the device and say nothing about the secret. The reference implementation serves 8 pairing connections at once. When all 8 places are taken, a new connection takes the place of the oldest one that has not shown a valid proof, which is closed with code 429; a new connection is refused with 429 only when every place holds a connection that has. A connection that has not delivered its request within 10 seconds of being made, which includes opening the stream, is closed with 408 whether or not any other connection is waiting. It closes a pairing connection with code 0 once the answer has been delivered, and with 400 if the frame header breaks the limits. Both sides SHOULD turn on QUIC keep-alives, because the exchange can sit idle for as long as a person takes to decide. A future way of pairing with a short code that a person types would be guessable, so it would need a password-authenticated key exchange and strict limits on attempts. It would be a new protocol (section 8), not a change to this one.
+What an offerer SHOULD limit is its own load: how many pairing connections it serves at once, how long each may last, and how often one peer key or address may ask. These limits protect the device and say nothing about the secret. The reference implementation serves 8 pairing connections at once. When all 8 places are taken, a new connection takes the place of the oldest one that has not shown a valid proof, which is closed with code 429; a new connection is refused with 429 only when every place holds a connection that has. A connection that has not delivered its request within 10 seconds of being made, which includes opening the stream, is closed with 408 whether or not any other connection is waiting. It closes a pairing connection with code 0 once the answer has been delivered, and with 400 if the frame header breaks the limits. Both sides SHOULD turn on QUIC keep-alives, because the exchange can sit idle for as long as a person takes to decide. A future way of pairing with a short code that a person types would be guessable, so it would need a password-authenticated key exchange and strict limits on attempts. It would be a new protocol (section 9), not a change to this one.
 
 `Rejected(Declined)` is sent only after a valid proof, when the person said no or did not answer in time.
 
@@ -238,13 +243,13 @@ Compatible, and allowed within a major version:
 
 - new optional struct fields;
 - new capabilities, and new item kinds guarded by them;
-- new unit variants of the extensible enums;
+- new unit variants of the extensible enums, and new reasons for skipping a file (a byte of a lane that an older version reads as `Other`);
 - new ignorable ticket flags and extensions;
 - raising a limit.
 
 Critical ticket flags and extensions are allowed within a major version too, but an older reader refuses such a ticket, so they are only for things that must not be ignored.
 
-Anything else, including a new variant of a non-extensible enum without a capability, a new variant with data in an extensible enum, lowering a limit, or changing how a proof or a confirmation code is computed, needs a new major version and ALPN.
+Anything else, including a new variant of a non-extensible enum without a capability, a new variant with data in an extensible enum, lowering a limit, changing how a proof or a confirmation code is computed, or changing how the hash of a file or of a list is made, needs a new major version and ALPN. A new kind of unidirectional stream, or a new tag of a frame on a lane, needs a capability that the other side advertised before it is used: a receiver cannot know how long a frame with a tag it does not know is, so it treats one as a violation (section 8).
 
 ## 6. Limits
 
@@ -259,6 +264,16 @@ Anything else, including a new variant of a non-extensible enum without a capabi
 | Link title | 1 KiB |
 | Clipboard text | 1 MiB |
 | Error message | 1 KiB |
+| Top-level items that an offer shows by name | 16 |
+| Files in one transfer | 100,000 |
+| Folders in one transfer | 100,000 |
+| Entries in one piece of the list of files | 1024 |
+| The list of files, in the form that is hashed | 16 MiB |
+| Name of a file or folder | 255 bytes |
+| Path in a transfer | 1024 bytes and 64 names |
+| One file in a transfer | 2^50 bytes (1 PiB) |
+| Lanes of one transfer | 8 |
+| Files that `Done` names | the first 256 that failed, and a count of the rest |
 | Ticket text | 2048 characters |
 | Ticket relay hint | 255 bytes |
 | Ticket addresses | 16 |
@@ -287,6 +302,18 @@ The reference implementation also applies the following by default. They are not
 | Lifetime of a pairing ticket | 5 minutes (a setting, from 30 seconds to 15 minutes) |
 | QUIC keep-alive and idle timeout | 10 seconds and 30 seconds |
 
+The reference implementation does not take part in transfers yet: it advertises no `transfer.files`. When it does, it is built to use these defaults, which are not part of the wire format either.
+
+| Behaviour | Default |
+| --- | --- |
+| Unidirectional streams (lanes) a peer may open on a connection | 0, raised to 8 once the peer is known to be paired |
+| Transfers a paired device may have going at once, counted across its connections | 2; a further offer is declined with `RateLimited` |
+| Lanes granted to a transfer | 4 |
+| Time a person has to answer an offer | 2 minutes |
+| Time a sender waits for the answer to an offer, and for `Done` | 2 minutes 30 seconds, and 2 minutes |
+| Time without a byte moving, after which a transfer is stopped | 30 seconds |
+| Decision on an offer kept | for an accepted offer, as long as what was received for it is kept; for a refusal by the person or by policy, at least 10 minutes |
+
 ## 7. Test vectors
 
 These are checked by the test suite and were reproduced independently with the reference BLAKE3 implementation.
@@ -305,10 +332,184 @@ These are checked by the test suite and were reproduced independently with the r
 | The same ticket with flags `10` (critical) | as the ticket above with `0110` at the start and checksum `bcbeeb70`; refused: needs a newer version |
 | The text form of the ticket above, with `BATON2:` in place of `BATON1:` | refused: needs a newer version, whatever follows the colon |
 
-## 8. Planned extensions
+### File transfer
+
+The frame of an `Offer` with transfer id `42`×16, 2 top-level items (the folder `Holiday` with 2 files and 1200 bytes, and the file `notes.txt` of 34 bytes), 3 files, 1 folder, 1234 bytes, and the list hash `00 01 02 … 1f`:
+
+```
+000000c2a1685472616e73666572a1654f66666572a462696450424242424242424242424242424242426773756d6d617279a4656974656d73026566696c65730367666f6c64657273016562797465731904d2677072657669657782a4646e616d6567486f6c6964617966666f6c646572f56566696c6573026562797465731904b0a2646e616d65696e6f7465732e7478746562797465731822696c6973745f686173685820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+```
+
+| Item | Value |
+| --- | --- |
+| Header of a lane for transfer id `a0 a1 … af` and lane 3 | `01a0a1a2a3a4a5a6a7a8a9aaabacadaeaf03` |
+| Head of a `List` frame | `01` |
+| Head of a `Span` frame, file `0x01020304`, span `0x0a0b0c0d` | `02010203040a0b0c0d` |
+| Head of an `End` frame, file 5, hash `00 01 02 … 1f` | `0300000005000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f` |
+| Head of a `Skip` frame, file 6, reason `Changed` | `040000000602` |
+
+The BLAKE3 hash of a file whose byte at place *i* is *i* mod 251, which is the value `b3sum` prints, for the sizes where the shape of the tree changes:
+
+| Size in bytes | Hash |
+| --- | --- |
+| 0 | `af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262` |
+| 1 | `2d3adedff11b61f14c886e35afa036736dcd87a74d27b5c1510225d0f592e213` |
+| 1048576 (one span) | `74cb441fd087764ca9c3694da742ebe30cbeb3060a17009ca81825c7a8d10343` |
+| 1048577 (one span and one byte) | `2f053cd7472cf0cd2f9adaf45c1180255b91b9a865404a63671a0ee5f792ed33` |
+| 2097155 (two spans and three bytes) | `891dfce8b8f6360c474d71183da59574306e74157a5ce6cbcd12933cc78c819f` |
+| 5242881 (five spans and one byte) | `a2eed482c537df008175a978a474f0a2f257d3ef11f7ac1f6fa9f5e49af4d345` |
+
+The list hash of four entries: the folder `Holiday`, the file `Holiday/a.txt` of 5 bytes modified at 1700000000000, the file `b` of 0 bytes with no time, and the file `Ärger.txt` (10 bytes in UTF-8) of 1024 bytes modified at -1. The 107 bytes that are hashed, one entry to a line (the spaces are for reading):
+
+```
+01 0000000000000000 0000000000000000 0007 486f6c69646179
+02 0000000000000005 0000018bcfe56800 000d 486f6c696461792f612e747874
+00 0000000000000000 0000000000000000 0001 62
+02 0000000000000400 ffffffffffffffff 000a c384726765722e747874
+```
+
+Their hash, BLAKE3 in its key derivation mode with the context `baton 2026-10-15 transfer list v1`: `995bf65ca3365c2cfb21667b2099730a378325363410779c479a102f69eefb99`.
+
+## 8. File transfer
+
+A device sends files and folders to a paired device as one **transfer**: a single offer that the receiver decides once, and then the data, which travels on streams of their own called **lanes**. [ADR 0008](adr/0008-file-transfer.md) records why it is shaped this way. A device that takes part advertises the capability `transfer.files` (section 3). A sender MUST NOT make an offer to a device that did not advertise it, and MUST NOT open a lane to one.
+
+A device that does not take part answers every valid transfer request (`Offer`, `Finish` and `Cancel`) with `Declined(Unsupported)`, the reply that this section defines for it. A device of a version before this section cannot read the request and answers `Error { code: Malformed }` (section 3), so a sender that ignored the capability is still told, not cut off. Everything below applies to a device that advertised `transfer.files`. The reference implementation is not one yet, and where this section says what it does, it means what it is built to do (see section 6 for the numbers).
+
+### The list of files
+
+A transfer is a list of **entries**, files and folders, each with a path relative to the folder the receiver puts the transfer in:
+
+```
+{"path": "Holiday", "folder": true}
+{"path": "Holiday/a.jpg", "size": 1100, "modified_ms": 1700000000000}
+```
+
+`folder` is left out for a file, `size` for an empty file, and `modified_ms` when the sender does not know the time. The time is in milliseconds since 1970 and may be negative. A folder has no size and no time. A file is at most 2^50 bytes (1 PiB). Only files and folders are entries: a sender does not send links, devices or other special files, and does not follow a link inside a folder it was asked to send.
+
+A path is untrusted text from another device. It has one or more names separated by `/`, on every platform. A name is 1 to 255 bytes, is not `.` or `..`, and has no NUL character. A path has at most 1024 bytes and 64 names. A path that is absolute (it starts with `/`), has an empty name, or breaks any other rule here is not accepted: in an offer, that makes the offer not valid, and in the list, it is a violation (see the rules for the receiver). What one particular file system does not allow (control characters, the reserved names of Windows, a trailing dot or space, `\` and `:`, names that differ only in case) is not checked here, because it depends on the receiver: the receiver puts it right when it chooses the name to create (see the rules for the receiver below).
+
+The list is in a fixed order, so that a receiver can check it as it arrives without a table of the paths it has seen. Entries are sorted name by name, each name by its bytes, so that a folder comes directly before what is inside it, and every entry is inside a folder that was listed before it. A path therefore appears once, and nothing is inside a file. (Sorting each whole path as one string would be wrong: it puts `a-b` between `a` and `a/b`, because `-` sorts before `/`.) The **top-level items** are the entries whose path is one name. The **position** of an entry is its number in the list, counting folders; data frames name a file by it.
+
+The list travels in pieces of 1 to 1024 entries, each a frame of section 2 that holds a `ListChunk` (`{"entries": [...]}`, at most 2 MiB).
+
+The **list hash** is BLAKE3 in its key derivation mode, with the context `baton 2026-10-15 transfer list v1`, of every entry in the order of the list, each in this form:
+
+```
+flags u8 | size u64 | modified i64 | path length u16 | path
+```
+
+The numbers are big-endian. Bit 0 of `flags` is set for a folder, bit 1 when the entry has a time, and the other bits are 0. The size is 0 for a folder, and the time is 0 when there is none. An entry takes 19 bytes and its path, so entries need no separator, and the hash does not depend on how the list was cut into pieces. Everything an entry says is in it, time included. A list takes at most 16 MiB in this form, and holds at most 100,000 files and 100,000 folders, because a receiver holds the whole list before it writes anything. A sender whose list is larger offers it as more than one transfer.
+
+### Offer
+
+```
+Request  {"Transfer": {"Offer": {"id": h'<16 random bytes>',
+                                 "summary": {"items": 2, "files": 3, "folders": 1, "bytes": 1234},
+                                 "preview": [{"name": "Holiday", "folder": true, "files": 2, "bytes": 1200},
+                                             {"name": "notes.txt", "bytes": 34}],
+                                 "list_hash": h'<32 bytes>'}}}
+Response {"Transfer": {"Accepted": {"id": h'<same id>', "lanes": 4}}}
+Response {"Transfer": {"Declined": {"id": h'<same id>', "reason": "Refused"}}}
+```
+
+The sender makes the offer after it has walked the whole tree, so that the list, the counts and the hash exist before anything moves. `id` is chosen at random by the sender and reused when it retries. `items` counts the top-level items (at least 1, and at most `files` plus `folders`), `files` and `folders` count every file and folder, and `bytes` adds up the sizes of all the files. `preview` shows the first top-level items by name, in the order of the list: exactly the first `min(items, 16)` of them, so its names are in increasing order and none is repeated. A folder in it says how many files are inside it, in every folder below it, and how many bytes they hold. A file says its size, and a file has no `files`. `list_hash` is the hash of the whole list, and an offer without it cannot be read.
+
+The receiver decides once, and a person may be asked: the preview is what they see. A preview is text that another device wrote, so it is shown under the rules for a device name (`sanitize_display_name`, section 3). An offer that is not valid on its own, because a number or a name is beyond a limit of section 6, the parts do not add up, or the preview is not what it must be, breaks a limit and is answered with `Error { code: Malformed }` like any other request that does.
+
+A receiver SHOULD check an offer in this order, as it does for an item:
+
+1. whether it takes part at all (`Unsupported`);
+2. whether the offer is a repeat of one it has decided on, see below;
+3. whether it is within what it will ever take: more than the person allows (`TooLarge`), or more bytes than its storage has room for, less the reserve it keeps (`NoSpace`);
+4. whether the peer already has as many transfers going as it may, or is sending too many items (`RateLimited`);
+5. its policy for the sending device (`Blocked`), and then the person, who may say no or may not answer in time (`Refused`).
+
+`Accepted` carries `lanes`, a number from 1 to 8: how many lanes the sender may open, numbered from 0. A whole transfer counts as one item against the receiver's limit on items, however much it holds, and as one entry in its inbox. Its lanes count neither against the limit of concurrent streams nor against the timer for requests (section 3): they have a budget of their own.
+
+**A repeat.** A sender that did not get the answer repeats the offer with the same id, as with a handoff. A transfer is different from a handoff, because data follows the decision: a yes for three files must not be reusable under the same id for three thousand. So a repeat is the same offer only if the id, the summary, the preview and the list hash are all equal. The receiver answers the same offer as it did the first time without asking again, waiting for the first copy's decision if the person has not given it yet. It answers any other offer under that id with `Declined(Invalid)`. A receiver remembers the decision, an accepted offer included, for as long as it keeps what it received for the transfer, and a refusal by the person or by its policy for at least 10 minutes. Refusals made before it asks anyone (`Unsupported`, `TooLarge`, `NoSpace`, `RateLimited`) are not remembered, so a sender that has fixed the problem can offer the same transfer again.
+
+A sender waits for the answer to an offer for as long as a person may take, and for the network. That is 2 minutes of the person (as in pairing) and a margin, 2 minutes 30 seconds in the reference implementation, instead of the 30 seconds of other requests. It repeats the offer on a new stream if it gives up.
+
+### Lanes
+
+After `Accepted` the sender opens up to `lanes` unidirectional streams to the receiver. Each starts with a header of 18 bytes, and then holds frames:
+
+```
+lane   = header frame*
+header = kind u8 (1) | transfer id [16] | lane u8
+frame  = tag u8 | head | bytes
+
+tag 1  List  head: none                    bytes: a frame of section 2 holding a ListChunk
+tag 2  Span  head: file u32 | span u32     bytes: as many as the list says for that span
+tag 3  End   head: file u32 | hash [32]    bytes: none
+tag 4  Skip  head: file u32 | reason u8    bytes: none
+```
+
+Numbers are big-endian. The `kind` byte says what a unidirectional stream carries, and 1, a lane of a transfer, is the only kind. `lane` is the number of this lane, below the `lanes` that were accepted. The receiver sends nothing back along a lane. A receiver that wants no more data stops a lane (QUIC's `STOP_SENDING`) with a code of the table in section 3, and QUIC delivers the bytes of a lane reliably and in order, so there is nothing to acknowledge.
+
+**Spans.** A file is cut into spans of 1 MiB (2^20 bytes), the last one shorter. A file of 0 bytes has no span, and a file of 1 byte up to 1 MiB has one. `Span` carries the bytes of span `span` of the file at position `file`: exactly as many as the size of that file says (1 MiB, or what is left for the last span), and nothing else, no CBOR around the data. `file` MUST be the position of a file, not of a folder, and `span` MUST be below the number of spans of the file. The spans of one large file may go on different lanes, which is how a long path gets more than one window, and the spans of many small files go back to back on one lane. Nothing waits per file or per span. The receiver writes each span at its offset in a file whose size it knows from the list.
+
+**The hash of a file** is its ordinary BLAKE3 hash, the value `b3sum` prints. It can be made from the spans in any order, because a span that starts on a 1 MiB boundary is a complete subtree of BLAKE3's tree of 1 KiB chunks. Each side makes the chaining value of each span it handles, and merges the values of a file at the end with the rule of the tree: the left subtree of a node holds the largest power of two of spans that is less than the number of spans it holds. A file of one span or less, an empty file included, is hashed as a root, so that the value of its only span is the hash of the file (the chaining value of a subtree is not the hash of a file, and cannot be made from empty input). The test vectors in section 7 include the sizes where this matters.
+
+**End and Skip.** After it has read the last span of a file, the sender sends `End` with the hash of the whole file, on any lane. It may reach the receiver before the last spans of that file do, because lanes are independent, so the receiver finishes a file when it holds `End` and all its spans. A file of 0 bytes has only an `End`, with the hash of nothing. `Skip` says that the sender will not send a file, or no more of it: it could not read it (`Unreadable`, code 1), the file changed while it was being read (`Changed`, 2), it is gone (`Missing`, 3), or another reason that this version does not know (`Other`, 0, which is what a byte that is not one of these means). The receiver drops what it holds of that file. In each attempt (see Resuming) every file of the list gets one `End` or one `Skip` from the sender, and a folder gets neither. A frame with a tag that this version does not know is a violation (see the rules for the receiver), because the length of what follows it is not known.
+
+**The list goes first.** The first frames on lane 0 are the list, in `List` frames. The list is complete when it holds `files` plus `folders` entries. A `List` frame is valid only on lane 0 and only before the list is complete, and nothing else is valid on lane 0 before then. The receiver needs the whole list before it writes anything, because it checks the sizes, the quota and the free space first, so until the list of a transfer is in, it leaves the other lanes of that transfer unread. Credit for data is taken when it is written, and lanes can together hold more than the connection window, so a sender that wrote spans while it was still writing the list could use up the window with spans that the receiver is not reading, and the rest of the list could not be sent: nothing would move until the timer ended the transfer. Two rules prevent it, and a sender MUST follow the first and a receiver the second. Both are made for each transfer, because a connection can carry two at once, and the data of one must never use up the credit that the list of the other is waiting for:
+
+- The sender writes the whole list of a transfer to its lane 0 before it writes a span, an `End` or a `Skip` of that transfer to any lane.
+- The receiver reads lane 0 of a transfer up to the end of its list before it reads any other lane of that transfer, and it does not hold back the lanes of a transfer whose list is in because the list of another transfer is not.
+
+**Lane 0 is opened first.** A lane holds one of the receiver's unidirectional streams from the moment it is opened until it ends, whether or not anything is read from it. Until the list of a transfer is in, the receiver reads nothing from the other lanes of that transfer, so they hold their streams and move nothing. A sender therefore opens lane 0 of a transfer before it opens the others, so that a transfer that holds a stream holds one for its list, and a receiver grants no more lanes to the transfers that a peer may have going at once than its limit on unidirectional streams allows (see the rules for the receiver). Without both, such lanes could fill the limit before lane 0 of a transfer was opened, and nothing would move until the timer ended the transfer.
+
+A sender SHOULD send a lane at a lower priority than the streams of requests, so that data buffered for a lane never goes out before data buffered for a request. That is all that priority gives. Flow-control credit is taken when data is written, so lanes that keep writing keep the credit used up, and a request written during a transfer waits for the next credit update, like a lane does. A receiver sends one after it has read an eighth of the connection window.
+
+### Finish, Cancel and the outcome
+
+```
+Request  {"Transfer": {"Finish": {"id": h'...', "files": 3, "bytes": 1234}}}
+Response {"Transfer": {"Done": {"id": h'...', "failed": [{"file": 7, "reason": "Mismatch"}], "more_failed": 0}}}
+Request  {"Transfer": {"Cancel": {"id": h'...'}}}
+Response {"Transfer": {"Cancelled": {"id": h'...'}}}
+```
+
+The sender makes `Finish` when it has written everything it will write and finished its lanes. `files` is how many files it sent in full (the files of the list less the ones it skipped), and `bytes` is what those add up to. The receiver compares them with its own count, and logs a difference, and a difference changes no file's outcome, because each file's outcome is decided by its own frames. `Finish` can reach the receiver before the last frames of the lanes do, so the receiver waits for them.
+
+It answers with `Done` when every file of the list has been settled: checked and in place, failed, or skipped by the sender, and not before. A file that still has no `End` and no `Skip` when no byte has moved for 30 seconds (see the rules for the receiver) is `Incomplete`. `failed` names the files that are not in place, by their position in the list and a reason (`Incomplete`, `Mismatch`, `NoSpace`, `WriteFailed`, `Skipped` or `Other`): the first 256 of them at most, in the order of the list. `more_failed` counts the rest, and they all come after the last one named. So a file that is not named is **in place** if `more_failed` is 0, or if it comes before the last file that is named: it matched its hash and is under its final name. When `more_failed` is above 0, a file after the last one named may or may not be in place, and the sender cannot tell which, so it MUST treat it as not in place, and it sends the file again if the transfer is tried again. A `Done` whose positions are not in increasing order, or that has a `more_failed` above 0 with fewer than 256 files named, is not valid. Being in place does not say that the disk has stored the file. Flushing each of 10,000 small files would cost more than moving them, so a receiver does not wait for the disk per file, and a power cut just after `Done` can lose files that the sender has shown as sent. A sender shows "sent" when the other device has the files, which is what it knows.
+
+`Done` takes longer than a reply to an ordinary request, as an offer does, so the sender waits for it for longer than 30 seconds (2 minutes in the reference implementation). A sender that gives up sends `Finish` again, and the receiver answers it with the same outcome for as long as it remembers the transfer. A `Finish` for a transfer that the receiver does not know, because it never accepted it, dropped it or forgot it, is answered with `Error { code: NotFound }`.
+
+`Cancel` gives a transfer up at any point, an offer that still waits for a person included: the receiver drops what it holds for the transfer and answers `Cancelled`. It answers the same way for a transfer it does not know, because then there is nothing left to cancel. A sender that cancels also resets its lanes with code 499, and a receiver that gives a transfer up, because the person did so, stops the lanes with 499. A sender treats a stop code on a lane as the receiver's answer, and does not send `Finish` for a transfer that was stopped.
+
+### Rules for the receiver
+
+- **Who and how many.** A receiver MUST check that the peer is still paired when it reads each transfer request and when it takes a lane, as section 3 asks for each request. A device may keep several connections to the same peer (section 6), and the budget of streams is per connection, so a receiver counts the transfers a peer has going itself, across the connections (an offer that waits for a person is going), and answers an offer beyond its limit with `Declined(RateLimited)`. The lanes that it grants to the transfers that a peer may have going at once add up to no more than the limit on unidirectional streams that it announces (the reference implementation is built to allow 2 at once and to grant 4 lanes each, which comes to the 8 of its limit). A stranger has no unidirectional stream: the receiver announces a limit of 0 for them, and raises it for a peer only once it knows the peer is paired.
+- **Which lanes.** A stream of a kind other than 1 is stopped with 400. A lane belongs to the transfer that has its id and that this peer offered, never to one found by the id alone, so that another paired device that learned an id cannot add to someone else's transfer. A lane for a transfer that this peer did not offer, or that is not going because it was declined, cancelled, finished or forgotten, is stopped with 499: it can arrive late, and that is not a fault. A lane whose number is not below the number granted, or that repeats a number already used on its connection, is a violation of the transfer.
+- **A violation of a transfer** is a list that is not valid, is not in order, has an entry that is not inside a listed folder, has other counts or sizes than the summary, does not show the top-level items of the preview with the sizes the preview gave, or does not have the hash of the offer; a frame with a tag that is not known; a `Span` that names a folder, a file that is not in the list, or a span that is not in the file; an `End` or a `Skip` for a folder or for a position that is not in the list; a second `End` or `Skip` for a file within one attempt (see Resuming); a `List` frame where none may come. The receiver stops every lane of the transfer with code 400, drops the transfer, and keeps the connection (it MAY close the connection if a peer does it again). A list that takes more than 16 MiB in the form that is hashed is stopped with 413 in the same way. A duplicate is not a violation: a span that the receiver already holds (it was sent again after a reconnection, see below) or one of a file that was skipped is read to its end and dropped, and the first value is kept.
+- **Nothing is written before the list is checked.** The receiver compares the counts and sizes of the list with the summary, the quota and the free space before the first byte is written. If it runs out of room later, it stops the lanes with 507, and files that were not placed are `NoSpace` in `Done`.
+- **Staging.** It writes into a staging folder that it makes on the same volume as the destination, and it moves each top-level item into place once the transfer has ended (`Finish`) and the files in it have been checked, leaving out any file that failed. A person never finds a folder that is still being received. The staging files are made with `create_new`, so that a clash that slips through fails the file and never mixes the bytes of two.
+- **Nothing is replaced.** The move into place MUST refuse to replace what exists, with a system call that does so atomically (`renamex_np` with `RENAME_EXCL` on macOS, iOS and iPadOS, `renameat2` with `RENAME_NOREPLACE` on Linux and Android, `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` on Windows). When a name is taken it takes the next number and tries again. On a volume that does not support the call, the item fails and is named in `Done`, and it is never moved over another.
+- **Names are the receiver's to choose.** It chooses the name of every entry, not only of the top-level items, and compares names the way its file system does (not case-sensitively where the file system is not, and after Unicode normalisation where the file system does it). A name that would take the name of something that exists, or clash with another name in the same folder of the same transfer, gets a number before its extension: `notes.txt` becomes `notes 2.txt`. Characters that the file system does not allow are replaced, and so are the characters that only disguise a name, such as the text-direction controls that make `invoice`, U+202E and `fdp.app` look like a PDF. A link inside a folder is never followed, and the receiver never creates a link, a device or another special file.
+- **Permissions.** Permission bits are not carried, so a received file is never executable. Where the system has a mark for files that came from elsewhere, a received file gets it. The receiver does not open or run anything it receives (see [security.md](security.md)).
+- **Time.** A transfer that has moved no byte for 30 seconds is stopped, with code 408 on the lanes, and a long transfer is not stopped for being long. A receiver SHOULD read each lane on its own, so that a slow write holds up that lane and no other.
+- **After a stop.** What a receiver received stays in the staging folder for as long as it remembers the decision, so that the transfer can resume. A staging folder that is not resumed is removed.
+
+### Rules for the sender
+
+- A sender walks the whole tree before it offers, takes the size and the modification time of each file for the list, and makes the list hash with the list. It reads no file for that: the hash of the list needs no pass over the data, so the first byte leaves at once.
+- It hashes each file as it reads it, and sends the hash after the last span.
+- A file can change while it is read, and the hash cannot show that, because the hash covers the bytes the sender read. So the sender compares the size and the modification time of a file with the list before it reads the file, after the last read, and before it resumes the file, and a difference fails the file with `Skip(Changed)`. This catches what programs normally do, which is to change one of the two, and it does not see a change that keeps both.
+- A file that fails fails alone. The others are kept, and `Done` names the failures.
+- A lane that stops with a code ends the transfer: 499 is the receiver giving it up, 507 and 413 are that it has no room or that the list is too long, 403 that this device is not paired any more, 408 that it timed out, and 400 that the transfer broke a rule. A write that makes no progress for 30 seconds ends the attempt, and the sender MAY try again, see below.
+
+### Resuming
+
+A transfer outlives a connection. If the connection drops, the sender connects again and repeats the offer unchanged: it keeps the list and does not make a new one, so the repeat is the same offer. A receiver that has kept what it received answers `Accepted` again, and the sender sends the transfer again on new lanes of the new connection, the list first. Each such send is an **attempt**. A receiver that accepts a repeat on a new connection ends the attempt before it: it stops the lanes of that attempt that are still open with 499, reads the list again from the new lane 0, and checks it as it did the first time. A receiver drops the spans it already holds when they arrive again, as above. The `End` of a file carries the hash of the bytes as they are now, and a resumed attempt sends an `End` for every file again, those that were complete before included. The receiver checks each against the values of the spans it kept and of those that arrived now, so a file that was edited in between fails its check, even one that was complete in staging, and no mix of two versions is put in place.
+
+This revision has no way to say which spans the receiver holds, so a transfer that is resumed is sent again in full, which is correct and not fast. A later revision adds an optional field to `Accepted` that names the spans the receiver holds. A sender that ignores it keeps sending everything, which stays correct, so the field needs no new capability. The sender then reads those spans again and hashes them without sending them, so that the hash it sends is still that of the bytes as they are now and never a merge of old and new values.
+
+## 9. Planned extensions
 
 Nothing in this section is part of the protocol yet. It is written down so that the rules above leave room for it, and so that the reasons are on record before any of it is built.
 
-- **File transfer** (milestone 1). Files and folders move on unidirectional streams of their own, with a stream budget of their own and a lower send priority than the control streams of section 3, so that a transfer never takes a request's stream. They share the connection's flow-control window, so a request can still wait about one credit update behind them; the record gives the bound and the benchmark measures it. The sender offers a whole file or folder at once, with a summary and a preview of the names, and the receiver decides once; the full list of files and the data that follow do not each count against the rate limit on items or the limit on streams. Liveness is judged on progress over time, not on a fixed deadline for each stream. The sender hashes while it sends, so a large file needs no extra pass first. It is guarded by its own capability, `transfer.files`. [ADR 0008](adr/0008-file-transfer.md) records the design: unidirectional streams with a budget of their own that is granted once a device is known to be paired, spans of 1 MiB whose BLAKE3 values can be made in any order, a staging folder, and resuming with the same offer. This section becomes a specification, with the messages, limits and rules for the receiver, when the types that carry them are added.
 - **Pull.** Besides pushing an item to a device, a device can ask a paired device what it has ready to continue (`ListActivities`) and fetch one of them (`Fetch`). That lets a device that was asleep or locked when something was sent catch up when it wakes, and lets a phone pick up what was on a laptop without the laptop pushing it. Both requests are guarded by a capability, so older peers never see them. A device answers them while it is locked with the items that were sent to the asking device, and with staged items only if the person has turned that on for the asking device, which is off by default. See [Locked devices](architecture.md#locked-devices).
 - **A short code that a person types**, for pairing devices that can neither show nor scan a QR code. As explained in section 4, that needs a password-authenticated key exchange and a new ALPN.
