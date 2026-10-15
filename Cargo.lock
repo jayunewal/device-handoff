@@ -431,6 +431,7 @@ name = "baton-core"
 version = "0.1.0"
 dependencies = [
  "baton-core",
+ "baton-fs",
  "baton-proto",
  "blake3",
  "ciborium",

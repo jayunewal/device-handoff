@@ -120,9 +120,16 @@ impl Destination {
     }
 
     /// Starts receiving the transfer `id`, whose list has been checked against its offer: makes
-    /// the folder of the transfer, and the folders of the list in it.
+    /// the folder of the transfer, and the folders of the list in it. When the transfer has ended,
+    /// [`Staging::place`] puts what was received in this destination.
     pub fn stage(&self, id: TransferId, listing: &Listing) -> Result<Staging, StageError> {
-        Staging::create(&self.staging_root, id, listing, self.rules)
+        Staging::create(
+            &self.staging_root,
+            self.root.clone(),
+            id,
+            listing,
+            self.rules,
+        )
     }
 }
 

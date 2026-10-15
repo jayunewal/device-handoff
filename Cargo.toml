@@ -15,6 +15,7 @@ publish = false
 # Internal
 baton-app = { path = "crates/baton-app" }
 baton-core = { path = "crates/baton-core" }
+baton-fs = { path = "crates/baton-fs" }
 baton-proto = { path = "crates/baton-proto" }
 
 # External. Versions are requirements; Cargo.lock pins what is actually built.

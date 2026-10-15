@@ -8,7 +8,8 @@
 //! file, so spans can come in any order and from several lanes at once, and memory is bounded by
 //! the spans being written and not by the size of any file (ADR 0008). The value of each span is
 //! kept, 32 bytes a span, and [`Staging::verify`] merges them when the sender says what the hash
-//! of the file is.
+//! of the file is. When the transfer has ended, [`Staging::place`] moves what was checked out of
+//! the staging folder and into the destination.
 //!
 //! This is the disk side of receiving. It knows nothing about lanes, attempts or what a sender may
 //! send and when: the state machine that applies the rules of protocol.md section 8 decides what
@@ -30,7 +31,8 @@
 //! - **A file that fails is removed,** and can start again from its first span.
 //! - **A received file is never executable,** and takes the time that the sender gave it.
 //! - **A transfer that is discarded stays discarded.** A lane that is late makes no file, even if
-//!   the same transfer is staged again and a folder is there.
+//!   the same transfer is staged again and a folder is there. One that has been put in place takes
+//!   no more spans either.
 //!
 //! All of it is blocking disk work. Code that runs on an async executor calls it on a thread
 //! meant for blocking, as the rest of this crate does for its files.
@@ -59,9 +61,17 @@ use baton_proto::{
 use super::names::{self, Plan, PlanError, Rules};
 use crate::util::lock;
 
+mod placing;
+
+pub use placing::{Outcome, Placement};
+
 /// The most files that a transfer keeps open at once. A phone allows a process a few hundred open
 /// files, and a transfer has at most eight lanes, each writing one span at a time.
 const MAX_OPEN_FILES: usize = 16;
+
+/// The most names that an item tries in the destination, its own and the numbers after it. A folder
+/// in which this many are taken is no place for it, and the item fails.
+const MAX_NAME_TRIES: usize = 10_000;
 
 /// Why a staging folder could not be made or written, or a file could not be checked.
 #[derive(Debug, thiserror::Error)]
@@ -89,6 +99,10 @@ pub enum StageError {
     /// when they are stopped; it is not a fault of the disk.
     #[error("the transfer was discarded")]
     Discarded,
+    /// The transfer was put in place, and takes no more spans. Lanes that are late say so when
+    /// they are stopped.
+    #[error("the transfer was put in place already")]
+    Placed,
     /// The disk is full, or the quota of the app is used up.
     #[error("there is no room on the disk")]
     NoSpace,
@@ -99,15 +113,20 @@ pub enum StageError {
 
 impl From<io::Error> for StageError {
     fn from(error: io::Error) -> Self {
-        if matches!(
-            error.kind(),
-            ErrorKind::StorageFull | ErrorKind::QuotaExceeded
-        ) {
+        if is_out_of_room(&error) {
             Self::NoSpace
         } else {
             Self::Io(error)
         }
     }
+}
+
+/// Whether the disk said that it is full, or that the quota of the app is used up.
+fn is_out_of_room(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        ErrorKind::StorageFull | ErrorKind::QuotaExceeded
+    )
 }
 
 /// What writing a span did.
@@ -146,8 +165,9 @@ struct Slot {
     created: bool,
     /// The file, open for writing, for as long as it is one of the few that are kept open.
     handle: Option<Arc<File>>,
-    /// Whether the time of the file has been set.
-    stamped: bool,
+    /// Whether the file has passed its check, and has the time that the list gave it. Only such a
+    /// file is put in place.
+    verified: bool,
 }
 
 impl Slot {
@@ -158,7 +178,7 @@ impl Slot {
             pending: Vec::new(),
             created: false,
             handle: None,
-            stamped: false,
+            verified: false,
         })
     }
 }
@@ -172,6 +192,33 @@ struct State {
     stuck: BTreeSet<u32>,
     /// Whether the transfer was discarded. Nothing is made after that.
     discarded: bool,
+    /// What became of the items of the transfer, once they were put in place. Asking again gives
+    /// this, and nothing is written after it.
+    placed: Option<Placement>,
+}
+
+impl State {
+    /// Whether the transfer still takes spans: not after it was discarded, and not after it was
+    /// put in place.
+    fn check_open(&self) -> Result<(), StageError> {
+        if self.discarded {
+            Err(StageError::Discarded)
+        } else if self.placed.is_some() {
+            Err(StageError::Placed)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// An item at the top of the list: a file, or a folder with everything in it. It is what is moved
+/// into place in one step.
+struct Top {
+    /// Its position in the list.
+    entry: usize,
+    /// The position after the last entry that is inside it. A list puts what is inside a folder
+    /// right after the folder, so the entries from `entry` up to here are the item.
+    end: usize,
 }
 
 /// A transfer that is being received into a staging folder.
@@ -180,10 +227,17 @@ struct State {
 /// [module documentation](self).
 pub struct Staging {
     id: TransferId,
+    /// The folder of the transfer in the staging folder.
     dir: PathBuf,
+    /// The folder that the items are put in, which is on the same volume as the staging folder.
+    root: PathBuf,
+    rules: Rules,
     plan: Plan,
     info: Vec<Info>,
+    tops: Vec<Top>,
     max_open: usize,
+    /// How many names an item tries in the destination. A field so that a test can lower it.
+    max_name_tries: usize,
     /// The number that the next start of a file takes. It counts the starts of every file of the
     /// transfer, so no two have the same one.
     starts: AtomicU64,
@@ -203,11 +257,13 @@ impl fmt::Debug for Staging {
 impl Staging {
     /// Makes the folder of transfer `id` in `parent`, and the folders of `listing` in it.
     ///
-    /// `parent` is the staging folder of a destination. The folder of the transfer must not exist:
+    /// `parent` is the staging folder of a destination, and `root` the destination itself, where
+    /// the items of the transfer are put in the end. The folder of the transfer must not exist:
     /// a name taken by a folder of the list means the volume treats two names as one that the
     /// rules did not, and the transfer is not started, with nothing left behind.
     pub(super) fn create(
         parent: &Path,
+        root: PathBuf,
         id: TransferId,
         listing: &Listing,
         rules: Rules,
@@ -227,9 +283,13 @@ impl Staging {
         let staging = Self {
             id,
             dir,
+            root,
+            rules,
             plan,
             info,
+            tops: tops(listing),
             max_open: MAX_OPEN_FILES,
+            max_name_tries: MAX_NAME_TRIES,
             starts: AtomicU64::new(0),
             state: Mutex::new(State::default()),
         };
@@ -315,9 +375,7 @@ impl Staging {
     pub fn verify(&self, file: u32, expected: &blake3::Hash) -> Result<(), StageError> {
         let info = self.file_info(file)?;
         let mut state = lock(&self.state);
-        if state.discarded {
-            return Err(StageError::Discarded);
-        }
+        state.check_open()?;
         if info.size == 0 && !state.slots.contains_key(&file) {
             state.slots.insert(file, self.new_slot(0)?);
             if let Err(e) = self.handle(&mut state, file) {
@@ -334,8 +392,7 @@ impl Staging {
             let _ = self.remove(&mut state, file);
             return Err(StageError::Mismatch);
         }
-        let stamped = slot.stamped;
-        if !stamped {
+        if !slot.verified {
             if let Some(time) = info.modified_ms.and_then(system_time) {
                 // A time that cannot be set (a volume that does not keep one, a date it cannot
                 // hold) does not fail a file whose bytes are right.
@@ -344,7 +401,7 @@ impl Staging {
                     .and_then(|handle| handle.set_modified(time).map_err(StageError::from));
             }
             if let Some(slot) = state.slots.get_mut(&file) {
-                slot.stamped = true;
+                slot.verified = true;
             }
         }
         Self::close(&mut state, file);
@@ -356,8 +413,8 @@ impl Staging {
     ///
     /// A span that another lane is writing at this moment ends up in a file that is gone, and is
     /// not counted if the file starts again before that lane is done. If the file cannot be
-    /// removed, it is on record in [`stuck`](Self::stuck), and nothing that has it inside may be
-    /// put in place.
+    /// removed, it is on record in [`stuck`](Self::stuck), and nothing that has it inside is put
+    /// in place. Dropping it again tries to remove it again, and so does [`place`](Self::place).
     pub fn drop_file(&self, file: u32) -> Result<(), StageError> {
         self.file_info(file)?;
         let mut state = lock(&self.state);
@@ -365,7 +422,7 @@ impl Staging {
     }
 
     /// The files that were dropped, or failed their check, and could not be removed. A folder
-    /// that has one of them inside must not be put in place.
+    /// that has one of them inside is not put in place.
     pub fn stuck(&self) -> Vec<u32> {
         lock(&self.state).stuck.iter().copied().collect()
     }
@@ -423,9 +480,7 @@ impl Staging {
     fn claim(&self, file: u32, span: u32) -> Result<Claim, StageError> {
         let info = self.file_info(file)?;
         let mut state = lock(&self.state);
-        if state.discarded {
-            return Err(StageError::Discarded);
-        }
+        state.check_open()?;
         let slot = match state.slots.entry(file) {
             Entry::Occupied(slot) => slot.into_mut(),
             Entry::Vacant(slot) => slot.insert(self.new_slot(info.size)?),
@@ -526,16 +581,15 @@ impl Staging {
         state.open.retain(|open| *open != file);
     }
 
-    /// Forgets file `file` and removes it from the disk.
+    /// Forgets file `file` and removes it from the disk. A file that could not be removed before
+    /// is tried again, and is on record until it is gone.
     fn remove(&self, state: &mut State, file: u32) -> io::Result<()> {
         state.open.retain(|open| *open != file);
-        let Some(slot) = state.slots.remove(&file) else {
-            return Ok(());
-        };
-        if !slot.created {
+        // The slot goes first: some systems do not remove a file that is open.
+        let created = state.slots.remove(&file).is_some_and(|slot| slot.created);
+        if !created && !state.stuck.contains(&file) {
             return Ok(());
         }
-        drop(slot);
         let Ok(path) = self.staged_path(usize::try_from(file).unwrap_or(usize::MAX)) else {
             return Ok(());
         };
@@ -544,7 +598,10 @@ impl Staging {
                 state.stuck.insert(file);
                 Err(e)
             }
-            _ => Ok(()),
+            _ => {
+                state.stuck.remove(&file);
+                Ok(())
+            }
         }
     }
 }
@@ -571,6 +628,22 @@ pub(super) fn make_dir(path: &Path, private: bool) -> io::Result<()> {
 #[cfg(not(unix))]
 pub(super) fn make_dir(path: &Path, _private: bool) -> io::Result<()> {
     fs::create_dir(path)
+}
+
+/// The items at the top of the list. A list puts what is inside a folder right after it, so the
+/// entries of an item follow each other.
+fn tops(listing: &Listing) -> Vec<Top> {
+    let mut tops: Vec<Top> = Vec::new();
+    for (index, entry) in listing.entries().iter().enumerate() {
+        match tops.last_mut() {
+            Some(top) if entry.path.contains('/') => top.end = index + 1,
+            _ => tops.push(Top {
+                entry: index,
+                end: index + 1,
+            }),
+        }
+    }
+    tops
 }
 
 /// The time that the list gave a file, as the system takes it, if it can be one.
@@ -600,6 +673,29 @@ fn write_all_at(file: &File, mut data: &[u8], mut offset: u64) -> io::Result<()>
         offset += written as u64;
     }
     Ok(())
+}
+
+#[cfg(test)]
+impl Staging {
+    /// Makes file number `file`, which has been started, one that the system will not let go: a
+    /// folder takes its place, and removing a file does not remove a folder. That fails where
+    /// a person has no right to remove a file, as it does for a program that runs as root, which
+    /// the rights of the files cannot be used to imitate.
+    fn make_unremovable(&self, file: u32) {
+        // Some systems do not remove a file that is open.
+        Self::close(&mut lock(&self.state), file);
+        let path = self.staged_path(usize::try_from(file).unwrap()).unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+    }
+
+    /// Lets the system let go of file number `file` that `make_unremovable` held: there is a
+    /// file there, which a removal takes away.
+    fn make_removable(&self, file: u32) {
+        let path = self.staged_path(usize::try_from(file).unwrap()).unwrap();
+        fs::remove_dir(&path).unwrap();
+        fs::write(&path, b"what is left").unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -1027,6 +1123,29 @@ mod tests {
         staging.write_span(0, 1, &content[SPAN..]).unwrap();
         staging.verify(0, &blake3::hash(&content)).unwrap();
         assert_eq!(fs::read(staging.dir.join("f")).unwrap(), content);
+    }
+
+    #[test]
+    fn a_file_that_could_not_be_removed_is_on_record_until_it_is_gone() {
+        let (_scratch, destination) = destination();
+        let staging = staged(&destination, &[file("f", 3)]);
+        staging.write_span(0, 0, b"abc").unwrap();
+        staging.make_unremovable(0);
+
+        assert!(staging.drop_file(0).is_err());
+        assert_eq!(staging.stuck(), [0]);
+        // The file is not forgotten: it is tried again, and is still on record when that fails.
+        assert!(staging.drop_file(0).is_err());
+        assert_eq!(staging.stuck(), [0]);
+        // Once the system lets it go, it is removed and the record goes.
+        staging.make_removable(0);
+        staging.drop_file(0).unwrap();
+        assert!(!staging.dir.join("f").exists());
+        assert_eq!(staging.stuck(), Vec::<u32>::new());
+        // And the file starts again like any other.
+        staging.write_span(0, 0, b"abc").unwrap();
+        staging.verify(0, &blake3::hash(b"abc")).unwrap();
+        assert_eq!(fs::read(staging.dir.join("f")).unwrap(), b"abc");
     }
 
     /// What a lane does first in `write_span`: it takes the place of a span and a handle to write

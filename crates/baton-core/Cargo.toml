@@ -17,6 +17,7 @@ workspace = true
 test-support = ["iroh/test-utils"]
 
 [dependencies]
+baton-fs.workspace = true
 baton-proto.workspace = true
 blake3.workspace = true
 data-encoding.workspace = true
