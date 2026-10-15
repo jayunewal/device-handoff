@@ -68,7 +68,7 @@ The last command prints the help of the `baton` program.
 
 The app needs Flutter on top of that; [apps/baton/README.md](apps/baton/README.md) says what to install and how to run its tests, and [docs/install-the-app.md](docs/install-the-app.md) how to build it and put it on a device.
 
-[docs/try-it.md](docs/try-it.md) walks through pairing two computers and sending a link and some text. CI builds the `baton` program for macOS, Windows and Linux on every change; the guide says where to download it.
+[docs/try-it.md](docs/try-it.md) walks through pairing two computers and sending a link and some text. CI builds the `baton` program for macOS, Windows and Linux for every change that is merged into `main`; the guide says where to download it.
 
 ## Contributing
 

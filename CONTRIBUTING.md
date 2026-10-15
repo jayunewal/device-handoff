@@ -16,7 +16,7 @@ cargo deny check
 
 Tests run on the loopback interface and do not need internet access.
 
-If you change the functions under `crates/baton-ffi/src/api`, write the Dart side of the bridge again and commit the result. CI does the same and fails when the files differ. If you change the app in `apps/baton`, `flutter analyze`, the formatting check and `flutter test` must pass there. [apps/baton/README.md](apps/baton/README.md) has the commands for both, and CI builds the Mac app and the iPhone app on every change.
+If you change the functions under `crates/baton-ffi/src/api`, write the Dart side of the bridge again and commit the result. CI does the same and fails when the files differ. If you change the app in `apps/baton`, `flutter analyze`, the formatting check and `flutter test` must pass there. [apps/baton/README.md](apps/baton/README.md) has the commands for both, and CI builds the Mac app and the iPhone app for the changes that can affect them (see [What CI runs](#what-ci-runs)).
 
 Code that parses input from the network also has fuzz targets. They are not part of the normal build and need a nightly toolchain and [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz); [crates/baton-proto/fuzz/README.md](crates/baton-proto/fuzz/README.md) says how to run them. If you change a parser, let them run for a few minutes before you open the pull request.
 
@@ -29,6 +29,24 @@ Code that parses input from the network also has fuzz targets. They are not part
 5. Update the docs in the same pull request: [docs/protocol.md](docs/protocol.md) for any wire change and [docs/security.md](docs/security.md) for any trust change.
 
 Commit messages: a short imperative summary (about 70 characters), a blank line, then a body that explains *why*.
+
+## What CI runs
+
+A pull request runs only the jobs that its change can affect, so a change to the Mac app does not also build the Rust workspace on three systems. The **Changes** job decides from the paths that the pull request touches, and the jobs it leaves out show as skipped.
+
+| The change is only in | The jobs that run |
+| --- | --- |
+| Markdown files, `docs/` (but not `docs/try-it.md`), the issue templates, `.github/CODEOWNERS`, `.github/dependabot.yml`, the Python script in `apps/baton/tool/` | None |
+| `docs/try-it.md`, which the Build jobs pack into the downloads | The Rust jobs |
+| `apps/baton/test/` | App (Flutter, Linux) |
+| `apps/baton/ios/` | App (Flutter, Linux) and App (iPhone) |
+| `apps/baton/macos/` | App (Flutter, Linux) and App (macOS) |
+| Anything else in `apps/` | The three App jobs |
+| Anything else | All of them |
+
+The Rust jobs are Format, Clippy, Test, Minimum supported Rust version, Rustdoc, Licenses and advisories, and Build. A change that is in several rows runs the jobs of all of them. A change to `crates/`, `Cargo.lock`, `.github/workflows` or the scripts next to it, and anything the rules do not know, such as a new folder, runs all of them. So does an empty list of paths, or a pull request whose paths cannot be listed. A push to `main` and a run started by hand always run everything, because the downloads are built there.
+
+The rules are in `.github/scripts/changed-paths.sh`. `changed-paths-test.sh` next to it holds them to the changes people really make, and CI runs it first, so a rule that skips a job it should not fails there.
 
 ## Code style
 
