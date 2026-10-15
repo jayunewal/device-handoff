@@ -16,7 +16,7 @@ cargo deny check
 
 Tests run on the loopback interface and do not need internet access.
 
-If you change the functions under `crates/baton-ffi/src/api`, write the Dart side of the bridge again and commit the result. CI does the same and fails when the files differ. [apps/baton/README.md](apps/baton/README.md) has the commands.
+If you change the functions under `crates/baton-ffi/src/api`, write the Dart side of the bridge again and commit the result. CI does the same and fails when the files differ. If you change the app in `apps/baton`, `flutter analyze`, the formatting check and `flutter test` must pass there. [apps/baton/README.md](apps/baton/README.md) has the commands for both, and CI builds the Mac app and the iPhone app on every change.
 
 Code that parses input from the network also has fuzz targets. They are not part of the normal build and need a nightly toolchain and [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz); [crates/baton-proto/fuzz/README.md](crates/baton-proto/fuzz/README.md) says how to run them. If you change a parser, let them run for a few minutes before you open the pull request.
 
