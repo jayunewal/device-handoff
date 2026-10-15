@@ -107,7 +107,8 @@ pub enum ReceivedItem {
 }
 
 // What was received may be a password or a link with a sign-in token in it, and values like
-// this one end up in logs. Only sizes are printed.
+// this one end up in logs. Only sizes are printed. That does not carry over to Dart, where
+// the generated class prints the link or the text: see "The bridge" in docs/architecture.md.
 impl std::fmt::Debug for ReceivedItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
