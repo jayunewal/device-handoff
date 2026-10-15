@@ -5,7 +5,7 @@
 //! Nothing a viewer sends is trusted. [`validate_batch`] checks every number and length before
 //! anything is used, and a batch that fails is a violation that ends the session. What is left
 //! of the checks (is the point inside the shared window, is anything in front of it) depends on
-//! what the Mac is doing at that moment, and is the job of the `gate` module, which is added next.
+//! what the Mac is doing at that moment, and is the job of [`gate`](crate::gate).
 //!
 //! A key event carries no frame number and no position: it is a key code, the modifiers that
 //! are down and, optionally, the text that the key produced. A pointer event names the frame of
