@@ -120,17 +120,66 @@ void main() {
     expect(heard, 1, reason: 'nothing changed');
   });
 
-  test('reads the inbox again when events were missed', () async {
-    final session = _session();
-    final controller = await _started(session);
-    session.received = [sampleReceived(5)];
+  test(
+    'reads the inbox again when events were missed, and counts what they hid',
+    () async {
+      final session = _session();
+      final controller = await _started(session);
+      final announced = <Received>[];
+      controller.arrivals.listen(announced.add);
+      session.received = [sampleReceived(5)];
 
-    session.emit(const Event.resync());
-    await pumpEventQueue();
+      session.emit(const Event.resync());
+      await pumpEventQueue();
 
-    expect(controller.items!.map((item) => item.number), [5]);
-    expect(controller.unseen, 0, reason: 'what was missed is not announced');
-  });
+      expect(controller.items!.map((item) => item.number), [5]);
+      expect(controller.unseen, 1, reason: 'it came while the app was open');
+      expect(announced, isEmpty, reason: 'no event said what it was');
+
+      controller.looking = true;
+      expect(controller.unseen, 0);
+    },
+  );
+
+  test(
+    'counts what is listed: an item the core has dropped is not new',
+    () async {
+      final session = _session();
+      final controller = await _started(session);
+      session.arrive(sampleReceived(1));
+      session.arrive(sampleReceived(2));
+      await pumpEventQueue();
+      expect(controller.unseen, 2);
+
+      // The core keeps a limited number of items and drops the oldest.
+      session.received = [sampleReceived(3)];
+      session.emit(const Event.resync());
+      await pumpEventQueue();
+
+      expect(controller.items!.map((item) => item.number), [3]);
+      expect(
+        controller.unseen,
+        1,
+        reason: 'the one that is listed, not the two',
+      );
+    },
+  );
+
+  test(
+    'an item that the first read lists before its event comes is still new',
+    () async {
+      final session = _session()
+        ..received = [sampleReceived(3), sampleReceived(2), sampleReceived(1)];
+      final controller = await _started(session);
+      expect(controller.unseen, 0, reason: 'all of it was there already');
+
+      // The core had stored the third item before it was read, and the event for it comes now.
+      session.emit(Event.received(received: sampleReceived(3)));
+      await pumpEventQueue();
+
+      expect(controller.unseen, 1);
+    },
+  );
 
   test('takes one item out, and stops counting it as new', () async {
     final session = _session();

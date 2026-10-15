@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 
@@ -21,8 +22,15 @@ class InboxController extends ChangeNotifier {
   List<Received>? _items;
   String? _problem;
 
-  // The numbers of the items that came while the app was open, and that the person has not
-  // had the inbox on screen for since. What was already there when the app opened is not new.
+  // The number of the newest item that was there when the app opened, or that the person has
+  // had on screen since. Numbers are never reused, so every listed item above it is new, also
+  // one whose event was missed (see `Event_Resync`). An item that is no longer listed is not
+  // counted.
+  int _seen = 0;
+
+  // The numbers of the items whose events came while the inbox was not on screen. An event can
+  // come after the first read has listed its item, and that read counts what it lists as
+  // already there, so such an item is told apart by its event as well.
   final Set<int> _fresh = {};
 
   /// What other devices have sent, newest first, or `null` until it has been read.
@@ -31,8 +39,14 @@ class InboxController extends ChangeNotifier {
   /// What to tell the person if the inbox could not be read, as a sentence. `null` if it could.
   String? get problem => _problem;
 
-  /// How many items came since the person last had the inbox on screen.
-  int get unseen => _fresh.length;
+  /// How many of the items listed came since the person last had the inbox on screen.
+  int get unseen {
+    final items = _items;
+    if (items == null) return _fresh.length;
+    return items.where((item) => _isNew(item.number.toInt())).length;
+  }
+
+  bool _isNew(int number) => number > _seen || _fresh.contains(number);
 
   /// Each item as it comes, so that a screen other than the inbox can say that something
   /// arrived. The item is for that and no more: it can be a password, so a notice says who
@@ -46,7 +60,10 @@ class InboxController extends ChangeNotifier {
   set looking(bool value) {
     if (_looking == value) return;
     _looking = value;
-    if (value) _fresh.clear();
+    if (value) {
+      _fresh.clear();
+      _seen = math.max(_seen, _newest(_items ?? const []));
+    }
     notifyListeners();
   }
 
@@ -121,6 +138,9 @@ class InboxController extends ChangeNotifier {
     ReceivedItem_Text() => null,
   };
 
+  static int _newest(Iterable<Received> items) =>
+      items.fold(0, (newest, item) => math.max(newest, item.number.toInt()));
+
   Future<void> _read() async {
     if (_reading) {
       // Something changed after the read that is going on began, so read again after it.
@@ -133,6 +153,13 @@ class InboxController extends ChangeNotifier {
         _readAgain = false;
         final items = await _session.inbox();
         if (_disposed) return;
+        if (_items == null) {
+          // What was there when the app opened is not new, but what came as it was read is.
+          _seen = _newest(
+            items.where((item) => !_fresh.contains(item.number.toInt())),
+          );
+        }
+        if (_looking) _seen = math.max(_seen, _newest(items));
         _items = items;
         _problem = null;
         notifyListeners();
