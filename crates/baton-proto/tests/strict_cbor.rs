@@ -21,12 +21,17 @@
 mod reference;
 
 use baton_proto::{
-    DeviceId, DeviceInfo, ItemId, Platform, frame,
+    DeviceId, DeviceInfo, ItemId, Platform, TransferId, frame,
     message::{
         ClipboardText, DeclineReason, ErrorCode, ErrorReply, Handoff, HandoffReply, Hello, Item,
         Link, Outcome, Ping, Request, Response,
     },
     pair::{PairProof, PairRejection, PairRequest, PairResponse, PairSecret},
+    transfer::{
+        Accepted, Cancel, Cancelled, Declined, Done, FailReason, Failure, Finish, Offer,
+        PreviewItem, Summary, TransferReply, TransferRequest,
+        list::{ListChunk, ListEntry, ListHash},
+    },
 };
 
 fn device() -> DeviceInfo {
@@ -118,6 +123,107 @@ fn valid_payloads() -> Vec<(&'static str, Vec<u8>)> {
             payload(&PairResponse::Rejected(PairRejection::Declined)),
         ),
     ]
+    .into_iter()
+    .chain(transfer_payloads())
+    .collect()
+}
+
+/// Valid payloads of the messages of a file transfer.
+fn transfer_payloads() -> Vec<(&'static str, Vec<u8>)> {
+    fn payload<M: baton_proto::message::Message>(message: &M) -> Vec<u8> {
+        frame::encode(message).unwrap()[frame::HEADER_LEN..].to_vec()
+    }
+    let id = TransferId::from_bytes([0x24; 16]);
+    let offer = Offer {
+        id,
+        summary: Summary {
+            items: 2,
+            files: 3,
+            folders: 1,
+            bytes: 1_234,
+        },
+        preview: vec![
+            PreviewItem {
+                name: "Holiday".into(),
+                folder: true,
+                files: 2,
+                bytes: 1_200,
+            },
+            PreviewItem {
+                name: "notes.txt".into(),
+                folder: false,
+                files: 0,
+                bytes: 34,
+            },
+        ],
+        list_hash: ListHash::from_bytes([0x24; ListHash::LEN]),
+    };
+    let list = ListChunk {
+        entries: vec![
+            ListEntry {
+                path: "Holiday".into(),
+                folder: true,
+                size: 0,
+                modified_ms: None,
+            },
+            ListEntry {
+                path: "Holiday/a.jpg".into(),
+                folder: false,
+                size: 1_100,
+                modified_ms: Some(1_700_000_000_000),
+            },
+        ],
+    };
+    vec![
+        (
+            "request offer",
+            payload(&Request::Transfer(TransferRequest::Offer(offer))),
+        ),
+        (
+            "request finish",
+            payload(&Request::Transfer(TransferRequest::Finish(Finish {
+                id,
+                files: 3,
+                bytes: 1_234,
+            }))),
+        ),
+        (
+            "request cancel",
+            payload(&Request::Transfer(TransferRequest::Cancel(Cancel { id }))),
+        ),
+        (
+            "response accepted transfer",
+            payload(&Response::Transfer(TransferReply::Accepted(Accepted {
+                id,
+                lanes: 4,
+            }))),
+        ),
+        (
+            "response declined transfer",
+            payload(&Response::Transfer(TransferReply::Declined(Declined {
+                id,
+                reason: DeclineReason::NoSpace,
+            }))),
+        ),
+        (
+            "response done",
+            payload(&Response::Transfer(TransferReply::Done(Done {
+                id,
+                failed: vec![Failure {
+                    file: 2,
+                    reason: FailReason::Mismatch,
+                }],
+                more_failed: 1,
+            }))),
+        ),
+        (
+            "response cancelled",
+            payload(&Response::Transfer(TransferReply::Cancelled(Cancelled {
+                id,
+            }))),
+        ),
+        ("list", payload(&list)),
+    ]
 }
 
 /// Decodes `bytes` as every message type and checks the invariant.
@@ -125,7 +231,8 @@ fn check(label: &str, bytes: &[u8]) {
     let accepted = frame::decode_payload::<Request>(bytes).is_ok()
         || frame::decode_payload::<Response>(bytes).is_ok()
         || frame::decode_payload::<PairRequest>(bytes).is_ok()
-        || frame::decode_payload::<PairResponse>(bytes).is_ok();
+        || frame::decode_payload::<PairResponse>(bytes).is_ok()
+        || frame::decode_payload::<ListChunk>(bytes).is_ok();
     assert!(
         !accepted || reference::is_one_item(bytes),
         "{label}: accepted a payload that is not one CBOR item: {}",
