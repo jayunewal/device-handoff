@@ -491,8 +491,9 @@ async fn a_folder_that_cannot_be_used_is_reported_as_storage() {
 #[tokio::test]
 async fn withdrawing_an_offer_just_after_a_yes_reports_what_happened() {
     // A sheet that closes as the person taps Yes withdraws the offer in the same breath.
-    // Whichever of the two the devices went by, the screen must be told what happened to
-    // them: a yes cannot be taken back, and a withdrawal that came first is not a pairing.
+    // Whichever of the two reached the node first, the screen must be told what happened to
+    // the devices: a yes that was claimed cannot be taken back, and a withdrawal that came
+    // first is not a pairing.
     for _ in 0..3 {
         let a = Dev::start("Device A").await;
         let b = Dev::start("Device B").await;
@@ -561,6 +562,38 @@ async fn an_app_that_is_dropped_while_a_question_is_showing_lets_go_of_its_folde
     // The device that asked finds out only when its connection runs out, which takes a
     // while, so it is not waited for.
     task.abort();
+}
+
+#[tokio::test]
+async fn an_app_that_is_dropped_while_an_offer_is_showing_ends_its_events() {
+    let dir = tempfile::tempdir().unwrap();
+    write_settings(dir.path(), Some("Device A"), false);
+    let a = App::start(Options::new(dir.path())).await.unwrap();
+    let mut events = a.events();
+    a.offer_pairing().await.unwrap();
+
+    // Nobody calls `stop`. The offer is waiting for a withdrawal that nobody is left to
+    // make, and it must not keep the stream of events open.
+    drop(a);
+    let ended = tokio::time::timeout(WAIT, events.next())
+        .await
+        .expect("the events never ended");
+    assert!(ended.is_none(), "{ended:?}");
+
+    // The stream can end while the task that holds the offer is still waiting, so look at the
+    // tasks too. This test has a runtime of its own and the app is all that ran on it, so once
+    // the offer's task has ended none are left.
+    let metrics = tokio::runtime::Handle::current().metrics();
+    tokio::time::timeout(WAIT, async {
+        while metrics.num_alive_tasks() > 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a task of the dropped app is still running");
+
+    let again = App::start(Options::new(dir.path())).await.unwrap();
+    again.stop().await;
 }
 
 #[tokio::test]

@@ -126,7 +126,9 @@ struct Inner {
     trust: TrustStore,
     inbox: Inbox,
     events: broadcast::Sender<Event>,
-    /// Cancelled as soon as stopping begins.
+    /// Cancelled as soon as stopping begins, or when the last copy of the app is dropped.
+    /// Everything that goes on in the background, such as an offer that is showing, has a
+    /// token that is a child of this one, so that nothing outlives the app.
     stopped: CancellationToken,
     /// Set by the first [`App::stop`], which does the work; later calls wait for it.
     stopping: AtomicBool,
@@ -289,7 +291,7 @@ impl App {
         let _turn = self.inner.offer_turn.lock().await;
         let node = self.running()?;
         let generation = self.inner.next_generation.fetch_add(1, Ordering::Relaxed);
-        let cancel = CancellationToken::new();
+        let cancel = self.inner.stopped.child_token();
         // Installed before the node is asked, so that the end of the offer it replaces
         // is recognised as old news.
         let replaced = locked(&self.inner.offer).replace(Open {
@@ -319,7 +321,9 @@ impl App {
         let weak = Arc::downgrade(&self.inner);
         tokio::spawn(async move {
             // What the node decided is what is reported. A withdrawal that comes just after
-            // the person said yes is too late, and the pairing is reported as it happened.
+            // the person said yes is too late if the node had claimed the yes by then, and
+            // the pairing is reported as it happened. If the withdrawal got there first,
+            // the yes is lost, and the offer is reported as withdrawn.
             let outcome = outcome_of(offer.wait_or_withdraw(cancel.cancelled_owned()).await);
             if let Some(inner) = weak.upgrade() {
                 inner.finish_offer(generation, outcome);
@@ -329,6 +333,10 @@ impl App {
     }
 
     /// Withdraws the offer that is showing, if there is one. [`Event::OfferEnded`] follows.
+    ///
+    /// Do not call this just after [`answer_pairing`](Self::answer_pairing) with a yes: the
+    /// offer ends by itself then, and a withdrawal that reaches the node before the yes
+    /// does, wins. [`Event::OfferEnded`] says which it was.
     pub fn cancel_offer(&self) {
         if let Some(open) = locked(&self.inner.offer).as_ref() {
             open.cancel.cancel();
@@ -337,6 +345,9 @@ impl App {
 
     /// Answers a [`PairingRequest`]. Returns `false` if it is not waiting any more, because
     /// it was answered already or the offer ended.
+    ///
+    /// `true` means the answer was passed on, not that the devices paired: the pairing is
+    /// saved a moment later, and [`Event::OfferEnded`] reports how it went.
     pub fn answer_pairing(&self, request: u64, accept: bool) -> bool {
         let waiting = locked(&self.inner.questions.waiting).remove(&request);
         waiting.is_some_and(|answer| answer.send(accept).is_ok())
@@ -363,7 +374,7 @@ impl App {
         let node = self.running()?;
         let ticket = parse_ticket(ticket)?;
         let generation = self.inner.next_generation.fetch_add(1, Ordering::Relaxed);
-        let cancel = CancellationToken::new();
+        let cancel = self.inner.stopped.child_token();
         let earlier = locked(&self.inner.join).replace(Open {
             generation,
             cancel: cancel.clone(),
@@ -515,6 +526,16 @@ impl App {
         let peer = DeviceId::from_str(id.trim()).map_err(|_| Error::not_paired())?;
         let device: PairedDevice = self.inner.trust.get(&peer).ok_or_else(Error::not_paired)?;
         Ok((peer, device.display_name().to_owned()))
+    }
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        // An app that is dropped without `stop` still ends what runs in the background. The
+        // node cancels its own work when it is dropped, but an offer's task would otherwise
+        // wait for ever for a withdrawal that nobody is left to make, and keep the stream of
+        // events open with it.
+        self.stopped.cancel();
     }
 }
 

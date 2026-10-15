@@ -180,23 +180,34 @@ pub enum ReceivedItem {
 }
 
 impl ReceivedItem {
-    /// Whether this is a link that a screen may open in the web browser. See
-    /// [`is_web_link`].
-    pub fn is_web_link(&self) -> bool {
-        matches!(self, Self::Link { url, .. } if is_web_link(url))
+    /// The address to open, if this is a link that a screen may open in the web browser.
+    /// See [`web_address`].
+    pub fn web_address(&self) -> Option<String> {
+        match self {
+            Self::Link { url, .. } => web_address(url),
+            Self::Text { .. } => None,
+        }
     }
 }
 
-/// Whether `url` is a web address, one that starts with `http` or `https`.
+/// The address to open for a received link, if it is a web address, one that starts with
+/// `http` or `https`.
 ///
 /// The address of a received link was chosen by another device, and the protocol leaves it
 /// to the receiver to decide which kinds to open. `file:`, `smb:`, `tel:`, `sms:` and the
 /// schemes that other apps register can start programs, reach files, dial a number or send
 /// a message, and a person who tapped "open" on an item in a list has not agreed to that.
-/// So a screen opens a received link only if this says yes, and offers to copy it
-/// otherwise. The `baton` command follows the same rule.
-pub fn is_web_link(url: &str) -> bool {
-    url::Url::parse(url).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+/// So a screen opens a received link only if this returns an address, and offers to copy
+/// the link otherwise. The `baton` command follows the same rule.
+///
+/// Open the address that comes back, not the text that was sent. It is the address as it
+/// was checked, written out in full (scheme and host in lower case, no leading spaces, tabs
+/// or line breaks, a backslash read as a slash, as web browsers read it), and the parser
+/// that checked it is not the one that opens it. Other parsers can read the same text
+/// differently, and then what is opened is not what was checked.
+pub fn web_address(url: &str) -> Option<String> {
+    let url = url::Url::parse(url).ok()?;
+    matches!(url.scheme(), "http" | "https").then(|| url.into())
 }
 
 // What was received may be a password or a link with a sign-in token in it, and values
@@ -333,7 +344,7 @@ mod tests {
             "http://example.com",
             "HTTPS://EXAMPLE.COM/",
         ] {
-            assert!(is_web_link(url), "{url}");
+            assert!(web_address(url).is_some(), "{url}");
         }
         for url in [
             "file:///etc/passwd",
@@ -347,7 +358,7 @@ mod tests {
             "",
             "not a link",
         ] {
-            assert!(!is_web_link(url), "{url}");
+            assert_eq!(web_address(url), None, "{url}");
         }
         let web = ReceivedItem::Link {
             url: "https://example.com/".to_owned(),
@@ -360,9 +371,34 @@ mod tests {
         let text = ReceivedItem::Text {
             text: "https://example.com/".to_owned(),
         };
-        assert!(web.is_web_link());
-        assert!(!phone.is_web_link());
-        assert!(!text.is_web_link(), "text is not a link, whatever it holds");
+        assert_eq!(web.web_address().as_deref(), Some("https://example.com/"));
+        assert_eq!(phone.web_address(), None);
+        assert_eq!(
+            text.web_address(),
+            None,
+            "text is not a link, whatever it holds"
+        );
+    }
+
+    #[test]
+    fn what_is_opened_is_the_address_that_was_checked() {
+        // The `url` parser cleans these up, and another parser may not. The address that
+        // comes back is the cleaned one, and reading it again changes nothing.
+        for (sent, opened) in [
+            ("HTTPS://EXAMPLE.COM", "https://example.com/"),
+            ("  https://example.com/a  ", "https://example.com/a"),
+            ("https://exam\tple.com/pa\nth", "https://example.com/path"),
+            ("https:\\\\example.com\\path", "https://example.com/path"),
+            ("https://example.com/a b", "https://example.com/a%20b"),
+            (
+                "http://user@example.com:8080/",
+                "http://user@example.com:8080/",
+            ),
+        ] {
+            let address = web_address(sent).unwrap_or_default();
+            assert_eq!(address, opened, "{sent:?}");
+            assert_eq!(web_address(&address).as_deref(), Some(opened), "{sent:?}");
+        }
     }
 
     #[test]
