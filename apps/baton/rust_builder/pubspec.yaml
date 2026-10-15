@@ -1,0 +1,21 @@
+name: baton_ffi
+description: "Builds the Rust library of the Baton app (crates/baton-ffi) with Cargokit and links it into the iOS and macOS apps."
+version: 0.0.1
+publish_to: none
+
+environment:
+  sdk: ^3.13.0
+  flutter: '>=3.47.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  plugin_platform_interface: ^2.0.2
+
+flutter:
+  plugin:
+    platforms:
+      ios:
+        ffiPlugin: true
+      macos:
+        ffiPlugin: true
