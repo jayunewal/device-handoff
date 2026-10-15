@@ -79,7 +79,7 @@ A benchmark that anyone can rerun is part of the work, with the four cases of th
 - **A hash of the content of every file before the offer.** It would put hashes in the list and let the receiver skip what it already has. It costs a full read of everything before the first byte moves, which on a large folder is more time than the transfer. Skipping what is already there is a sync feature and is left for later. The list hash in the offer is a different thing: it is made from the names, sizes and times that the sender has from walking the tree, and reads no file.
 - **Hashes made in order.** Simpler, but then every file would have to travel on one lane, in order, and a large file could use only one window.
 - **Compression.** Photos, video, archives and most documents are compressed already, and compressing costs a phone's battery. A capability can add it per span later for text-like content if a measurement shows it pays.
-- **Rsync-style differences, and the receiver pulling files.** Both are real needs and neither is part of the first transfer. Pulling is planned in protocol.md section 8 and would reuse the lanes.
+- **Rsync-style differences, and the receiver pulling files.** Both are real needs and neither is part of the first transfer. Pulling is planned in protocol.md section 9 and would reuse the lanes.
 
 ## Prior art and where this differs
 
@@ -94,7 +94,7 @@ What it adds, as far as I know, and I have not searched exhaustively:
 ## Consequences
 
 - The transport settings change in one place: the unidirectional stream limit is zero until the gate raises it for a paired device, and a test shows both halves, as it does for the window. The compile-time relations of ADR 0007 hold unchanged, because lanes share the connection window.
-- protocol.md section 3 says that peers do not open unidirectional streams. It is updated when the lane format is specified: they may after the peer is paired, for transfers only.
+- protocol.md section 3 used to say that peers do not open unidirectional streams. It now says that a peer that is paired may open them for the lanes of an accepted transfer, and no others, and that a stranger may open none.
 - A paired device can make another hold at most what ADR 0007 says, and can have two offers waiting for a person at the same time at most, counted for the peer across its connections. Further offers are declined with `RateLimited`, so a peer cannot use up the 16 request streams with questions.
 - Disk is the new resource a peer can use. It is bounded by what the person accepted, the quota of bytes, the reserve of free space, and a limit on the size of what is staged. The list, which the receiver holds whole, has a cap of its own. Staging folders that are not resumed are removed.
 - The moves into place need system calls that Baton's rule against unsafe code forbids elsewhere. They are kept in one small module, or in a crate that wraps them, and tested on each platform.
