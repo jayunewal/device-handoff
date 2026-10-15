@@ -5,10 +5,13 @@
 //! On a phone, or in a Mac app that was opened from the Finder, nobody sees standard error, so
 //! a person who has a problem can only say what the screen said. The app therefore keeps the
 //! last few hundred log lines and shows them on its Diagnostics screen, where they can be copied
-//! into an issue. A line is made safe for that on the way in: it is cut to a length, characters
-//! that would act on a screen instead of showing are replaced, and anything that looks like a
-//! pairing code is removed, because a code is a bearer secret while its offer lasts and these
-//! lines get pasted into a public place.
+//! into an issue. A line is made safe for that on the way in, because these lines get pasted
+//! into a public place: it is cut to a length, characters that would act on a screen instead of
+//! showing are replaced, anything that looks like a pairing code is removed (a code is a bearer
+//! secret while its offer lasts), and so are the details that say who a device belongs to or
+//! where it is: whole keys, the account name in a path and public IP addresses (see [`hide`]).
+
+mod hide;
 
 use std::{
     borrow::Cow,
@@ -121,10 +124,13 @@ impl<'a> MakeWriter<'a> for Capture {
     }
 }
 
-/// `line` with pairing codes removed, characters that would act on a screen replaced, and a
-/// length that is not too long.
+/// `line` with pairing codes removed, keys, account names and public addresses taken out,
+/// characters that would act on a screen replaced, and a length that is not too long.
 fn clean(line: &str) -> String {
     let line = remove_codes(line);
+    let line = hide::shorten_keys(&line);
+    let line = hide::hide_account_names(&line);
+    let line = hide::hide_public_addresses(&line);
     let mut cleaned = String::with_capacity(line.len().min(LINE_LIMIT));
     for (count, c) in line.chars().enumerate() {
         if count == LINE_LIMIT {
@@ -326,6 +332,23 @@ mod tests {
             [
                 "a code starts with BATON1:[removed] and ends",
                 "Zoë’s BATON1:[removed]é goes on",
+            ]
+        );
+    }
+
+    #[test]
+    fn what_says_who_a_device_belongs_to_or_where_it_is_is_taken_out() {
+        let log = buffer(10);
+        let key = "b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecf";
+
+        log.push(&format!(
+            "device_id={key} at /Users/anna/Library/baton via 8.8.8.8:41641 and 192.168.1.4:41641"
+        ));
+
+        assert_eq!(
+            log.lines(),
+            [
+                "device_id=b0b1b2b3b4… at /Users/~/Library/baton via public IPv4 (hidden):41641 and 192.168.1.4:41641"
             ]
         );
     }

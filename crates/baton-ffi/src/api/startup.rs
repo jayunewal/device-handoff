@@ -49,10 +49,10 @@ mod tests {
         tracing::warn!("a diagnostic line for the test");
 
         let lines = recent_log();
+        // The name of the module stays whole: `::a` and `f::` are addresses to a parser.
         assert!(
-            lines.iter().any(
-                |line| line.contains("a diagnostic line for the test") && line.contains("WARN")
-            ),
+            lines.iter().any(|line| line
+                .ends_with("WARN baton_ffi::api::startup::tests: a diagnostic line for the test")),
             "{lines:?}"
         );
         // The same call starting again is not a second logger.
@@ -63,6 +63,29 @@ mod tests {
             .filter(|line| line.contains("after the second start"))
             .collect();
         assert_eq!(after.len(), 1, "{after:?}");
+    }
+
+    #[test]
+    fn a_public_address_and_an_account_name_do_not_reach_the_log_the_app_shows() {
+        init_app();
+
+        tracing::warn!(
+            "reached 9.9.9.9:41641 and 10.0.0.7:41641 from /Users/zoe/Library/baton-app"
+        );
+
+        let lines = recent_log();
+        assert!(
+            lines.iter().any(|line| line.contains(
+                "reached public IPv4 (hidden):41641 and 10.0.0.7:41641 from /Users/~/Library/baton-app"
+            )),
+            "{lines:?}"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("9.9.9.9") || line.contains("zoe")),
+            "{lines:?}"
+        );
     }
 
     #[test]
