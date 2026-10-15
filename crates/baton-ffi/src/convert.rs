@@ -2,8 +2,9 @@
 
 //! From the values of `baton_app` to the ones the Dart side sees.
 //!
-//! The matches have no wildcard arms on purpose: a variant added to `baton_app` stops this
-//! crate from compiling until the bridge says what to do with it.
+//! The matches have no wildcard arms, and the structs are taken apart without `..`, on
+//! purpose: a variant or a field added to `baton_app` stops this crate from compiling until
+//! the bridge says what to do with it.
 
 use baton_app as app;
 
@@ -36,24 +37,38 @@ impl From<app::Platform> for Platform {
 
 impl From<app::Me> for Me {
     fn from(me: app::Me) -> Self {
+        let app::Me {
+            id,
+            name,
+            platform,
+            fingerprint,
+        } = me;
         Self {
-            id: me.id,
-            name: me.name,
-            platform: me.platform.into(),
-            fingerprint: me.fingerprint,
+            id,
+            name,
+            platform: platform.into(),
+            fingerprint,
         }
     }
 }
 
 impl From<app::Device> for Device {
     fn from(device: app::Device) -> Self {
+        let app::Device {
+            id,
+            name,
+            platform,
+            fingerprint,
+            paired_at,
+            last_seen_at,
+        } = device;
         Self {
-            id: device.id,
-            name: device.name,
-            platform: device.platform.into(),
-            fingerprint: device.fingerprint,
-            paired_at: signed(device.paired_at),
-            last_seen_at: device.last_seen_at.map(signed),
+            id,
+            name,
+            platform: platform.into(),
+            fingerprint,
+            paired_at: signed(paired_at),
+            last_seen_at: last_seen_at.map(signed),
         }
     }
 }
@@ -71,19 +86,28 @@ impl From<app::Route> for Route {
 
 impl From<app::Reach> for Reach {
     fn from(reach: app::Reach) -> Self {
+        let app::Reach {
+            round_trip_ms,
+            route,
+        } = reach;
         Self {
-            round_trip_ms: reach.round_trip_ms,
-            route: reach.route.into(),
+            round_trip_ms,
+            route: route.into(),
         }
     }
 }
 
 impl From<app::Network> for Network {
     fn from(network: app::Network) -> Self {
+        let app::Network {
+            relay,
+            addresses,
+            lan_discovery,
+        } = network;
         Self {
-            relay: network.relay,
-            addresses: network.addresses,
-            lan_discovery: network.lan_discovery,
+            relay,
+            addresses,
+            lan_discovery,
         }
     }
 }
@@ -99,34 +123,50 @@ impl From<app::ReceivedItem> for ReceivedItem {
 
 impl From<app::Received> for Received {
     fn from(received: app::Received) -> Self {
+        let app::Received {
+            number,
+            from_id,
+            from_name,
+            received_at,
+            item,
+        } = received;
         Self {
-            number: signed(received.number),
-            from_id: received.from_id,
-            from_name: received.from_name,
-            received_at: signed(received.received_at),
-            item: received.item.into(),
+            number: signed(number),
+            from_id,
+            from_name,
+            received_at: signed(received_at),
+            item: item.into(),
         }
     }
 }
 
 impl From<app::Offer> for Offer {
     fn from(offer: app::Offer) -> Self {
+        let app::Offer { ticket, expires_at } = offer;
         Self {
-            ticket: offer.ticket,
-            expires_at: signed(offer.expires_at),
+            ticket,
+            expires_at: signed(expires_at),
         }
     }
 }
 
 impl From<app::PairingRequest> for PairingRequest {
     fn from(request: app::PairingRequest) -> Self {
+        let app::PairingRequest {
+            id,
+            device_id,
+            name,
+            platform,
+            fingerprint,
+            code,
+        } = request;
         Self {
-            id: signed(request.id),
-            device_id: request.device_id,
-            name: request.name,
-            platform: request.platform.into(),
-            fingerprint: request.fingerprint,
-            code: request.code,
+            id: signed(id),
+            device_id,
+            name,
+            platform: platform.into(),
+            fingerprint,
+            code,
         }
     }
 }
