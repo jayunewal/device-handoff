@@ -263,6 +263,37 @@ void main() {
     expect(find.text('No other devices yet'), findsNothing);
   });
 
+  testWidgets('opens the diagnostics from the menu at the top', (tester) async {
+    tester.view
+      ..physicalSize = const Size(900, 1600)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final session = _session()
+      ..log.add('2026-10-15T08:40:00Z  INFO baton_app: Baton started');
+    await _show(tester, session);
+
+    await tester.tap(find.byTooltip('More'));
+    await tester.pumpAndSettle();
+    expect(find.text('Diagnostics'), findsOneWidget, reason: 'the menu entry');
+    await tester.tap(find.text('Diagnostics'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text(
+        'This device: Desk Mac (Mac), fingerprint wxyz-abcd-efgh-ijkl-mnop',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('INFO baton_app: Baton started'),
+      findsOneWidget,
+    );
+
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    expect(find.text('No other devices yet'), findsOneWidget);
+  });
+
   testWidgets('forgets a device when the person agrees', (tester) async {
     final session = _session(
       devices: [

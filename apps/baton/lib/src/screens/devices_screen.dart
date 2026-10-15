@@ -10,6 +10,7 @@ import '../format.dart';
 import '../scanner.dart';
 import 'add_device_screen.dart';
 import 'content_box.dart';
+import 'diagnostics_screen.dart';
 import 'send_screen.dart';
 
 /// The home screen: this device, and the devices it is paired with.
@@ -33,6 +34,9 @@ class DevicesScreen extends StatefulWidget {
   State<DevicesScreen> createState() => _DevicesScreenState();
 }
 
+/// What the menu at the top of the screen offers.
+enum _ScreenAction { diagnostics }
+
 class _DevicesScreenState extends State<DevicesScreen> {
   late final DevicesController _controller = DevicesController(widget.session);
 
@@ -55,6 +59,18 @@ class _DevicesScreenState extends State<DevicesScreen> {
           session: widget.session,
           now: widget.now,
           scanner: widget.scanner,
+        ),
+      ),
+    );
+  }
+
+  void _diagnostics() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => DiagnosticsScreen(
+          recentLog: widget.session.recentLog,
+          session: widget.session,
+          now: widget.now,
         ),
       ),
     );
@@ -104,7 +120,21 @@ class _DevicesScreenState extends State<DevicesScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Baton')),
+      appBar: AppBar(
+        title: const Text('Baton'),
+        actions: [
+          PopupMenuButton<_ScreenAction>(
+            tooltip: 'More',
+            onSelected: (_) => _diagnostics(),
+            itemBuilder: (context) => const [
+              PopupMenuItem(
+                value: _ScreenAction.diagnostics,
+                child: Text('Diagnostics'),
+              ),
+            ],
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _add,
         icon: const Icon(Icons.add),

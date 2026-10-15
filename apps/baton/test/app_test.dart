@@ -97,6 +97,49 @@ void main() {
     expect(backend.starts, 2);
   });
 
+  testWidgets('shows the details of a failed start, with what was logged', (
+    tester,
+  ) async {
+    tester.view
+      ..physicalSize = const Size(900, 1600)
+      ..devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final backend = FakeBackend(
+      savedName: 'Desk',
+      startFailures: [
+        const BatonError(
+          kind: ErrorKind.alreadyRunning,
+          message: 'Another Baton already has this device’s folder open.',
+        ),
+      ],
+    )..log.add('2026-10-15T08:40:00Z ERROR baton_app: could not start');
+    await tester.pumpWidget(BatonApp(backend: backend));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Show details'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Diagnostics'), findsOneWidget);
+    expect(
+      find.text(
+        'Problem: Another Baton already has this device’s folder open.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Baton is not running.'), findsOneWidget);
+    expect(
+      find.textContaining('ERROR baton_app: could not start'),
+      findsOneWidget,
+    );
+
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    expect(find.text('Baton could not start'), findsOneWidget);
+    await tester.tap(find.text('Try again'));
+    await tester.pumpAndSettle();
+    expect(find.text('Desk'), findsOneWidget);
+  });
+
   testWidgets('shows a failure that did not come from Baton as well', (
     tester,
   ) async {
