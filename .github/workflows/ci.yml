@@ -174,6 +174,14 @@ jobs:
           for symbol in frb_get_rust_content_hash frb_pde_ffi_dispatcher_primary frb_init_frb_dart_api_dl; do
             nm -gU "$lib" | grep -q " _$symbol\$" || { echo "$symbol is missing from $lib" >&2; exit 1; }
           done
+      - name: Check that the app is sandboxed, and may use the network both ways
+        run: |
+          set -eu
+          app=apps/baton/build/macos/Build/Products/Release/Baton.app
+          codesign -d --entitlements - "$app" > entitlements.txt 2>&1
+          for key in com.apple.security.app-sandbox com.apple.security.network.client com.apple.security.network.server; do
+            grep -q "$key" entitlements.txt || { cat entitlements.txt; echo "$key is missing from the entitlements of $app" >&2; exit 1; }
+          done
       - name: Start the app on this Mac
         working-directory: apps/baton
         run: flutter test integration_test -d macos
