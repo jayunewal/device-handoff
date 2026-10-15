@@ -16,6 +16,7 @@ import 'package:baton/src/app.dart';
 import 'package:baton/src/awake.dart';
 import 'package:baton/src/backend.dart';
 import 'package:baton/src/rust_backend.dart';
+import 'package:baton/src/support_folder.dart';
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -50,6 +51,30 @@ void main() {
     // Closing the app stops Baton, which lets go of the folder.
     await tester.pumpWidget(const SizedBox());
   });
+
+  testWidgets(
+    'finds the folder for its files from the system, with no HOME to go by',
+    (tester) async {
+      // An iPhone with iOS 27 starts an app without HOME in its environment, and a Baton that
+      // looked for HOME did not start. A simulator does give HOME, so this app is told that it
+      // has none: a folder that came from HOME would be missing here too. Every other test in
+      // this file is given a folder, so none of them would have noticed.
+      const support = SupportFolder(environment: <String, String>{});
+      final path = await support.path();
+
+      expect(path, startsWith('/'));
+      expect(path, endsWith('/Library/Application Support'));
+      // The iOS app makes Baton's folder there when it opens, and leaves it out of backups.
+      expect(
+        Directory('$path/${RustBackend.folderName}').existsSync(),
+        isTrue,
+        reason: 'the folder that the app made for Baton',
+      );
+      // And the library opens it. Asking for the name reads it and changes nothing.
+      await RustBackend(supportFolder: support).deviceName();
+    },
+    skip: defaultTargetPlatform != TargetPlatform.iOS,
+  );
 
   testWidgets('pairs with another Baton, by the code pasted in', (
     tester,
