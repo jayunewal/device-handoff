@@ -16,6 +16,7 @@ use crate::{
         MAX_ERROR_MESSAGE_BYTES, MAX_FRAME_LEN, MAX_TITLE_BYTES, MAX_URL_BYTES, check_len,
         check_non_empty_len,
     },
+    stream::{StreamReply, StreamRequest},
     transfer::{TransferReply, TransferRequest},
 };
 
@@ -31,6 +32,16 @@ pub mod capability {
     /// Accepts [`Request::Transfer`](super::Request::Transfer), and with it the lanes of
     /// section 8 of `docs/protocol.md`: offers of files and folders.
     pub const TRANSFER_FILES: &str = "transfer.files";
+    /// Can offer a window of its own to a paired device: makes a
+    /// [`StreamRequest::Offer`](crate::stream::StreamRequest::Offer) and takes part in the
+    /// session that follows, as the source (section 9 of `docs/protocol.md`).
+    pub const STREAM_SHARE: &str = "stream.share";
+    /// Can show the window of a paired device: accepts
+    /// [`Request::Stream`](super::Request::Stream) and takes part in the session that follows,
+    /// as the viewer.
+    pub const STREAM_VIEW: &str = "stream.view";
+    /// Takes input from a viewer, in a session where the person at the source granted control.
+    pub const STREAM_CONTROL: &str = "stream.control";
 }
 
 /// A message with a defined maximum size and field limits.
@@ -58,6 +69,9 @@ pub enum Request {
     /// Offer files and folders to the peer, or follow up on an offer. Only to a peer that
     /// advertised [`capability::TRANSFER_FILES`].
     Transfer(TransferRequest),
+    /// Offer a window to the peer, or end a session. An offer goes only to a peer that
+    /// advertised [`capability::STREAM_VIEW`], and a stop to the other end of the session.
+    Stream(StreamRequest),
 }
 
 /// A response to a [`Request`].
@@ -71,6 +85,8 @@ pub enum Response {
     Handoff(HandoffReply),
     /// Answers [`Request::Transfer`].
     Transfer(TransferReply),
+    /// Answers [`Request::Stream`].
+    Stream(StreamReply),
     /// The request could not be handled at all.
     Error(ErrorReply),
 }
@@ -333,6 +349,7 @@ impl Message for Request {
             Self::Ping(_) => Ok(()),
             Self::Handoff(handoff) => handoff.item.validate(),
             Self::Transfer(request) => request.validate(),
+            Self::Stream(request) => request.validate(),
         }
     }
 }
@@ -345,6 +362,7 @@ impl Message for Response {
             Self::Hello(hello) => hello.validate(),
             Self::Pong(_) | Self::Handoff(_) => Ok(()),
             Self::Transfer(reply) => reply.validate(),
+            Self::Stream(reply) => reply.validate(),
             Self::Error(error) => {
                 check_len("error message", &error.message, MAX_ERROR_MESSAGE_BYTES)
             }

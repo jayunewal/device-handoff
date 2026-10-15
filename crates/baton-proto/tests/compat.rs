@@ -14,9 +14,10 @@
 )]
 
 use baton_proto::{
-    Platform, TransferId, frame,
+    Platform, SessionId, TransferId, frame,
     message::{DeclineReason, ErrorCode, Hello, Outcome, Ping, Request, Response, capability},
     pair::{PairRejection, PairRequest, PairResponse},
+    stream::{Codec, SourceKind, StopReason, StreamReply, StreamRequest},
     transfer::{FailReason, TransferReply, TransferRequest, list::ListChunk},
 };
 use ciborium::{Value, cbor};
@@ -337,6 +338,189 @@ fn a_kind_of_transfer_request_this_version_does_not_know_is_an_error() {
     assert!(frame::decode_payload::<Request>(&later).is_err());
     let later =
         encode(&cbor!({ "Transfer" => { "Paused" => { "id" => transfer_id() } } }).unwrap());
+    assert!(frame::decode_payload::<Response>(&later).is_err());
+}
+
+fn session_id() -> Value {
+    Value::Bytes(vec![0x5a; 16])
+}
+
+#[test]
+fn a_device_that_takes_part_in_window_streaming_says_so_in_its_capabilities() {
+    // The capabilities are what a source checks before it makes an offer, and what a viewer
+    // checks before it shows a control: a device that does not know the request would answer it
+    // with an error, and an offer is not worth that.
+    assert_eq!(capability::STREAM_SHARE, "stream.share");
+    assert_eq!(capability::STREAM_VIEW, "stream.view");
+    assert_eq!(capability::STREAM_CONTROL, "stream.control");
+}
+
+#[test]
+fn unknown_keys_are_ignored_in_the_messages_of_a_stream() {
+    // The offer, with a key from a later version, and without `control`, which means false.
+    let offer = encode(
+        &cbor!({
+            "Stream" => {
+                "Offer" => {
+                    "later" => [1, 2, { "x" => null }],
+                    "session" => session_id(),
+                    "source" => "Window",
+                    "title" => "Report.pdf",
+                    "app" => "Preview",
+                    "width" => 1440,
+                    "height" => 900,
+                },
+            },
+        })
+        .unwrap(),
+    );
+    let Request::Stream(StreamRequest::Offer(offer)) =
+        frame::decode_payload::<Request>(&offer).unwrap()
+    else {
+        panic!("not an offer");
+    };
+    assert_eq!(offer.session, SessionId::from_bytes([0x5a; 16]));
+    assert_eq!(offer.source, SourceKind::Window);
+    assert_eq!((offer.width, offer.height), (1440, 900));
+    assert!(!offer.control);
+
+    // The answer, in the same way.
+    let accepted = encode(
+        &cbor!({
+            "Stream" => {
+                "Accepted" => {
+                    "later" => "x",
+                    "session" => session_id(),
+                    "max_width" => 2732,
+                    "max_height" => 2048,
+                    "max_fps" => 60,
+                    "codecs" => ["H264"],
+                },
+            },
+        })
+        .unwrap(),
+    );
+    let Response::Stream(StreamReply::Accepted(accepted)) =
+        frame::decode_payload::<Response>(&accepted).unwrap()
+    else {
+        panic!("not an answer");
+    };
+    assert_eq!(accepted.max_fps, 60);
+    assert_eq!(accepted.codecs, [Codec::H264]);
+
+    // And the end of a session, and the reply to it.
+    let stop = encode(
+        &cbor!({
+            "Stream" => {
+                "Stop" => { "later" => 1, "session" => session_id(), "reason" => "Ended" },
+            },
+        })
+        .unwrap(),
+    );
+    let Request::Stream(StreamRequest::Stop(stop)) =
+        frame::decode_payload::<Request>(&stop).unwrap()
+    else {
+        panic!("not a stop");
+    };
+    assert_eq!(stop.reason, StopReason::Ended);
+    let stopped = encode(
+        &cbor!({ "Stream" => { "Stopped" => { "later" => 1, "session" => session_id() } } })
+            .unwrap(),
+    );
+    let Response::Stream(StreamReply::Stopped(stopped)) =
+        frame::decode_payload::<Response>(&stopped).unwrap()
+    else {
+        panic!("not a reply to a stop");
+    };
+    assert_eq!(stopped.session, SessionId::from_bytes([0x5a; 16]));
+}
+
+#[test]
+fn a_kind_a_stream_does_not_know_is_other_and_one_with_data_is_an_error() {
+    let offer = |source: Value| {
+        encode(
+            &cbor!({
+                "Stream" => {
+                    "Offer" => {
+                        "session" => session_id(), "source" => source, "title" => "t",
+                        "app" => "a", "width" => 10, "height" => 10,
+                    },
+                },
+            })
+            .unwrap(),
+        )
+    };
+    let accepted = |codec: Value| {
+        encode(
+            &cbor!({
+                "Stream" => {
+                    "Accepted" => {
+                        "session" => session_id(), "max_width" => 10, "max_height" => 10,
+                        "max_fps" => 30, "codecs" => [codec, "H264"],
+                    },
+                },
+            })
+            .unwrap(),
+        )
+    };
+    let stop = |reason: Value| {
+        encode(
+            &cbor!({ "Stream" => { "Stop" => { "session" => session_id(), "reason" => reason } } })
+                .unwrap(),
+        )
+    };
+    let declined = |reason: Value| {
+        encode(
+            &cbor!({
+                "Stream" => { "Declined" => { "session" => session_id(), "reason" => reason } },
+            })
+            .unwrap(),
+        )
+    };
+
+    // What a later version adds is a unit variant, and this one reads it as Other: a source it
+    // does not know is declined as unsupported, a codec is one that it will not choose.
+    let Request::Stream(StreamRequest::Offer(other)) =
+        frame::decode_payload::<Request>(&offer(Value::Text("Desktop".into()))).unwrap()
+    else {
+        panic!("not an offer");
+    };
+    assert_eq!(other.source, SourceKind::Other);
+    let Response::Stream(StreamReply::Accepted(other)) =
+        frame::decode_payload::<Response>(&accepted(Value::Text("Av1".into()))).unwrap()
+    else {
+        panic!("not an answer");
+    };
+    assert_eq!(other.codecs, [Codec::Other, Codec::H264]);
+    let Request::Stream(StreamRequest::Stop(other)) =
+        frame::decode_payload::<Request>(&stop(Value::Text("SomethingNew".into()))).unwrap()
+    else {
+        panic!("not a stop");
+    };
+    assert_eq!(other.reason, StopReason::Other);
+    let Response::Stream(StreamReply::Declined(other)) =
+        frame::decode_payload::<Response>(&declined(Value::Text("SomethingNew".into()))).unwrap()
+    else {
+        panic!("not a decline");
+    };
+    assert_eq!(other.reason, DeclineReason::Other);
+
+    // One that carries data cannot be read at all, which is why new ones must not.
+    let data = || cbor!({ "Window" => { "id" => 1 } }).unwrap();
+    assert!(frame::decode_payload::<Request>(&offer(data())).is_err());
+    assert!(frame::decode_payload::<Response>(&accepted(data())).is_err());
+    assert!(frame::decode_payload::<Request>(&stop(data())).is_err());
+    assert!(frame::decode_payload::<Response>(&declined(data())).is_err());
+}
+
+#[test]
+fn a_kind_of_stream_request_this_version_does_not_know_is_an_error() {
+    // Requests are not extensible: a device asks only what the capabilities say is understood.
+    let later =
+        encode(&cbor!({ "Stream" => { "Pause" => { "session" => session_id() } } }).unwrap());
+    assert!(frame::decode_payload::<Request>(&later).is_err());
+    let later =
+        encode(&cbor!({ "Stream" => { "Paused" => { "session" => session_id() } } }).unwrap());
     assert!(frame::decode_payload::<Response>(&later).is_err());
 }
 

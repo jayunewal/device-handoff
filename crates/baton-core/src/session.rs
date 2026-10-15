@@ -25,6 +25,7 @@ use baton_proto::{
         DeclineReason, ErrorCode, ErrorReply, Handoff, HandoffReply, Hello, Item, Outcome, Request,
         Response, capability,
     },
+    stream::{self, StreamReply},
     transfer::{Cancelled, Declined, TransferReply, TransferRequest},
 };
 use iroh::{
@@ -389,6 +390,12 @@ async fn serve_stream(
                 }
             }
         }
+        // This version neither shows a window nor shares one and advertises no `stream.view`, so
+        // every request of a session is declined (protocol.md section 9).
+        Request::Stream(request) => Response::Stream(StreamReply::Declined(stream::Declined {
+            session: request.session(),
+            reason: DeclineReason::Unsupported,
+        })),
     };
     respond(&mut send, &response).await;
 }
