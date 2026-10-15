@@ -11,3 +11,4 @@ Short notes on decisions that are expensive to reverse, written when the decisio
 | [0005](0005-cbor-wire-format.md) | CBOR in length-prefixed frames for control messages |
 | [0006](0006-pairing-admission-and-requests.md) | Who is let in, and how requests are handled |
 | [0007](0007-quic-windows-and-connection-memory.md) | QUIC flow-control windows, and how much a peer can make a device hold |
+| [0008](0008-file-transfer.md) | File transfer: one offer, lanes of their own, hashing while sending |
