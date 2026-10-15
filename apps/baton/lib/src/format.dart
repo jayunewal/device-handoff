@@ -94,8 +94,17 @@ String describeReach(String name, Reach reach) {
 // What another device sends is shown as it is, except for the characters that change which
 // way text runs or that no one can see. A line that reads "https://example.com" can be made to
 // show something else with them, and the copy a person pastes would not be what they read.
+//
+// Control characters other than the tab and the line ends; the Bidi_Control characters of
+// Unicode (the marks U+061C, U+200E and U+200F, which move digits and punctuation on their own,
+// the embeddings and overrides U+202A to U+202E, and the isolates U+2066 to U+2069); and the
+// ones that have no glyph: the zero-width space, the word joiner and the invisible operators
+// (U+2060 to U+2064), the deprecated format characters (U+206A to U+206F), the byte order mark
+// and the annotation marks (U+FFF9 to U+FFFB). The zero-width joiners U+200C and U+200D stay,
+// because emoji sequences and several scripts need them, and so do variation selectors.
 final _hidden = RegExp(
-  r'[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]',
+  r'[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F'
+  r'\u061C\u200B\u200E\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF\uFFF9-\uFFFB]',
 );
 
 /// [text] from another device, made fit to show: line ends are the same everywhere, and each

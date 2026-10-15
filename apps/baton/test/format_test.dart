@@ -141,6 +141,46 @@ void main() {
       }
     });
 
+    test('direction marks, which have no glyph, are shown as a mark too', () {
+      // They move digits and punctuation around them without any override: with the right-to-left
+      // marks, "Total $10.12" is laid out as "Total $1012." although what is copied is the same.
+      for (final c in [0x200E, 0x200F, 0x061C]) {
+        expect(visibleText('a${String.fromCharCode(c)}b'), 'a\uFFFDb');
+      }
+      expect(
+        visibleText('Total \$10\u200F.\u200F12'),
+        'Total \$10\uFFFD.\uFFFD12',
+      );
+    });
+
+    test('other characters that have no glyph are shown as a mark', () {
+      // The zero-width space; the word joiner and the invisible operators; the deprecated
+      // format characters; the byte order mark; the annotation marks.
+      final invisible = [
+        0x200B,
+        for (var c = 0x2060; c <= 0x2064; c++) c,
+        for (var c = 0x206A; c <= 0x206F; c++) c,
+        0xFEFF,
+        for (var c = 0xFFF9; c <= 0xFFFB; c++) c,
+      ];
+      for (final c in invisible) {
+        expect(
+          visibleText('a${String.fromCharCode(c)}b'),
+          'a\uFFFDb',
+          reason: 'U+${c.toRadixString(16)}',
+        );
+      }
+    });
+
+    test('the joiners that emoji and several scripts need are left alone', () {
+      const family = '👨\u200D👩\u200D👧';
+      const persian = 'می\u200Cخواهم';
+      const heart = '❤️';
+      expect(visibleText(family), family);
+      expect(visibleText(persian), persian);
+      expect(visibleText(heart), heart);
+    });
+
     test('control characters that cannot be seen are shown as a mark', () {
       expect(
         visibleText('a\u0000b\u0007c\u001Bd\u007Fe\u0085f'),
