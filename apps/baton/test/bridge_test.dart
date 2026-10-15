@@ -1,0 +1,378 @@
+// SPDX-License-Identifier: Apache-2.0
+
+// The Rust library through the bridge, as the app uses it: two devices on this computer pair,
+// hand each other things and stop. Nothing is faked, so these tests are what shows that the
+// generated code, the library and the way the app calls it fit together.
+//
+// They need the library built for this computer:
+//
+//     cargo build -p baton-ffi
+//
+// and, if it is not in the usual place (`../../target/debug`), the path to it in the
+// BATON_FFI_LIB environment variable.
+
+import 'dart:async';
+import 'dart:io';
+
+import 'package:baton/src/rust/api/baton.dart';
+import 'package:baton/src/rust/api/error.dart';
+import 'package:baton/src/rust/api/model.dart' hide Platform;
+import 'package:baton/src/rust/frb_generated.dart';
+import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+/// How long to wait for something that should happen at once.
+const _wait = Duration(seconds: 30);
+
+void main() {
+  setUpAll(() async {
+    await RustLib.init(externalLibrary: ExternalLibrary.open(_libraryPath()));
+  });
+
+  test('the name is chosen before Baton starts', () async {
+    final folder = await _folder(name: null);
+    expect(await deviceName(dataDir: folder.path), isNull);
+
+    // A name with nothing visible in it is the person's to fix, and the message can be shown
+    // as it is.
+    for (final name in ['', '  ', '​']) {
+      await expectLater(
+        setDeviceName(dataDir: folder.path, name: name),
+        throwsA(_batonError(ErrorKind.badName)),
+      );
+    }
+    expect(await deviceName(dataDir: folder.path), isNull);
+
+    await setDeviceName(dataDir: folder.path, name: 'Kitchen iPad');
+    expect(await deviceName(dataDir: folder.path), 'Kitchen iPad');
+    final baton = await _start(folder);
+    expect(baton.me().name, 'Kitchen iPad');
+    expect(baton.me().id, hasLength(64));
+    expect(baton.me().fingerprint, matches(RegExp(r'^(\w{4}-){4}\w{4}$')));
+    final network = await baton.network();
+    expect(network.lanDiscovery, isFalse, reason: 'switched off for this run');
+  });
+
+  test('two devices pair and hand each other things', () async {
+    final a = await _start(await _folder(name: 'Device A'));
+    final b = await _start(await _folder(name: 'Device B'));
+    expect(await a.devices(), isEmpty, reason: 'a new Baton has no devices');
+    final aEvents = _Feed(a.events());
+    addTearDown(aEvents.close);
+
+    final offer = await a.offerPairing();
+    expect(offer.ticket, startsWith('BATON1:'));
+    expect(
+      offer.expiresAt,
+      greaterThan(DateTime.now().millisecondsSinceEpoch ~/ 1000),
+    );
+
+    // The joiner pastes the whole command, as people do.
+    final join = _Feed(
+      b.joinPairing(ticket: 'baton pair join ${offer.ticket}\n'),
+    );
+    addTearDown(join.close);
+    final shown = await join.next<JoinProgress_Code>();
+    final asked = await aEvents.next<Event_PairingRequested>();
+    expect(
+      asked.request.code,
+      shown.code,
+      reason: 'both screens show the same',
+    );
+    expect(asked.request.deviceId, b.me().id);
+    expect(asked.request.fingerprint, b.me().fingerprint);
+    expect(asked.request.name, 'Device B');
+
+    expect(a.answerPairing(request: asked.request.id, accept: true), isTrue);
+    expect(
+      a.answerPairing(request: asked.request.id, accept: true),
+      isFalse,
+      reason: 'an answer counts once',
+    );
+    final paired = await join.next<JoinProgress_Paired>();
+    expect(paired.device.id, a.me().id);
+    await join.ended;
+    final ended = await aEvents.next<Event_OfferEnded>();
+    expect(
+      ended.outcome,
+      isA<OfferOutcome_Paired>().having(
+        (outcome) => outcome.device.id,
+        'device id',
+        b.me().id,
+      ),
+    );
+    expect((await a.devices()).map((d) => d.id), [b.me().id]);
+    expect((await b.devices()).map((d) => d.id), [a.me().id]);
+    expect((await a.devices()).single.name, 'Device B');
+
+    // B hands A a link and then some text, and A's screen hears of both.
+    final reach = await b.ping(id: a.me().id);
+    expect(reach.route, isNot(Route.relay));
+    await b.sendLink(
+      id: a.me().id,
+      url: 'https://example.com/path?q=1',
+      title: 'An example',
+    );
+    final link = (await aEvents.next<Event_Received>()).received;
+    expect(link.fromName, 'Device B');
+    expect(link.fromId, b.me().id);
+    expect(
+      link.item,
+      isA<ReceivedItem_Link>()
+          .having((item) => item.url, 'url', 'https://example.com/path?q=1')
+          .having((item) => item.title, 'title', 'An example'),
+    );
+    await b.sendText(id: a.me().id, text: 'hello from B');
+    final text = (await aEvents.next<Event_Received>()).received;
+    expect(
+      text.item,
+      isA<ReceivedItem_Text>().having(
+        (item) => item.text,
+        'text',
+        'hello from B',
+      ),
+    );
+
+    // The inbox keeps both, newest first, until they are removed.
+    expect((await a.inbox()).map((r) => r.number), [text.number, link.number]);
+    expect(await a.removeReceived(number: text.number), isTrue);
+    expect(await a.removeReceived(number: text.number), isFalse);
+    expect((await a.inbox()).map((r) => r.number), [link.number]);
+    expect(await a.clearInbox(), 1);
+    expect(await a.inbox(), isEmpty);
+
+    // Forgetting a device is heard of too.
+    await a.unpair(id: b.me().id);
+    await aEvents.next<Event_DevicesChanged>();
+    expect(await a.devices(), isEmpty);
+    await expectLater(
+      a.unpair(id: b.me().id),
+      throwsA(_batonError(ErrorKind.notPaired)),
+    );
+  });
+
+  test(
+    'a join that cannot work comes back as a value, not as a crash',
+    () async {
+      final a = await _start(await _folder(name: 'Device A'));
+      final b = await _start(await _folder(name: 'Device B'));
+
+      final notATicket = _Feed(a.joinPairing(ticket: 'hello'));
+      addTearDown(notATicket.close);
+      final bad = await notATicket.next<JoinProgress_Failed>();
+      expect(bad.error.kind, ErrorKind.badTicket);
+      expect(bad.error.message, isNot(contains('\n')));
+      await notATicket.ended;
+
+      // A device that is turned down is told so, and nothing is kept.
+      final events = _Feed(a.events());
+      addTearDown(events.close);
+      final offer = await a.offerPairing();
+      final join = _Feed(b.joinPairing(ticket: offer.ticket));
+      addTearDown(join.close);
+      final asked = await events.next<Event_PairingRequested>();
+      expect(a.answerPairing(request: asked.request.id, accept: false), isTrue);
+      final refused = await join.next<JoinProgress_Failed>();
+      expect(refused.error.kind, ErrorKind.pairingFailed);
+      final ended = await events.next<Event_OfferEnded>();
+      expect(ended.outcome, isA<OfferOutcome_Declined>());
+      expect(await a.devices(), isEmpty);
+      expect(await b.devices(), isEmpty);
+    },
+  );
+
+  test('an offer can be withdrawn, and the screen hears that it was', () async {
+    final a = await _start(await _folder(name: 'Device A'));
+    final events = _Feed(a.events());
+    addTearDown(events.close);
+    await a.offerPairing();
+    a.cancelOffer();
+    final ended = await events.next<Event_OfferEnded>();
+    expect(ended.outcome, isA<OfferOutcome_Cancelled>());
+  });
+
+  test('what cannot be sent comes back as an error with a kind', () async {
+    final a = await _start(await _folder(name: 'Device A'));
+    final nobody = '0' * 64;
+    await expectLater(
+      a.sendText(id: nobody, text: 'hello'),
+      throwsA(_batonError(ErrorKind.notPaired)),
+    );
+    await expectLater(
+      a.sendText(id: nobody, text: '   '),
+      throwsA(_batonError(ErrorKind.badItem)),
+    );
+    await expectLater(
+      a.sendLink(id: nobody, url: 'example.com'),
+      throwsA(_batonError(ErrorKind.badItem)),
+    );
+    await expectLater(
+      a.ping(id: 'not an id'),
+      throwsA(_batonError(ErrorKind.notPaired)),
+    );
+    // A negative number is no inbox item.
+    expect(await a.removeReceived(number: -1), isFalse);
+  });
+
+  test('stopping ends the event stream and lets go of the folder', () async {
+    final folder = await _folder(name: 'Device A');
+    final first = await _start(folder);
+    final id = first.me().id;
+    final events = _Feed(first.events());
+    addTearDown(events.close);
+
+    // One folder, one running Baton.
+    await expectLater(
+      Baton.start(dataDir: folder.path),
+      throwsA(_batonError(ErrorKind.alreadyRunning)),
+    );
+
+    await first.stop();
+    await events.ended;
+    await expectLater(first.inbox(), throwsA(_batonError(ErrorKind.stopped)));
+    await expectLater(
+      first.offerPairing(),
+      throwsA(_batonError(ErrorKind.stopped)),
+    );
+    // Stopping again is fine, from wherever it is asked.
+    await Future.wait([first.stop(), first.stop()]);
+
+    // The same device starts again with the same identity.
+    final again = await _start(folder);
+    expect(again.me().id, id);
+  });
+
+  test('only web links are opened, and as they were checked', () {
+    // What comes back is the address to open: written out in full, not as it was sent.
+    for (final (sent, opened) in [
+      ('https://example.com/a?b=c', 'https://example.com/a?b=c'),
+      ('http://example.com', 'http://example.com/'),
+      ('HTTPS://EXAMPLE.COM', 'https://example.com/'),
+      ('  https://example.com/a  ', 'https://example.com/a'),
+      ('https://example.com/a b', 'https://example.com/a%20b'),
+    ]) {
+      expect(webAddress(url: sent), opened, reason: sent);
+    }
+    for (final url in [
+      'file:///etc/passwd',
+      'smb://server/share',
+      'tel:+15555550100',
+      'javascript:alert(1)',
+      'obsidian://open?vault=x',
+      'example.com',
+      '',
+    ]) {
+      expect(webAddress(url: url), isNull, reason: url);
+    }
+  });
+}
+
+/// Where the library built for this computer is.
+String _libraryPath() {
+  final given = Platform.environment['BATON_FFI_LIB'];
+  if (given != null && given.isNotEmpty) {
+    return given;
+  }
+  final file = Platform.isMacOS
+      ? 'libbaton_ffi.dylib'
+      : Platform.isWindows
+      ? 'baton_ffi.dll'
+      : 'libbaton_ffi.so';
+  return '../../target/debug/$file';
+}
+
+/// A folder for one device, with settings that keep it to this computer: no relay, no
+/// discovery and no port mapping, so the devices find each other through the addresses in
+/// the pairing ticket and the tests run the same everywhere.
+Future<Directory> _folder({required String? name}) async {
+  final folder = await Directory.systemTemp.createTemp('baton-bridge-test-');
+  addTearDown(() => folder.delete(recursive: true));
+  final named = name == null ? '' : 'device_name = "$name"\n';
+  await File('${folder.path}/config.toml').writeAsString(
+    '$named\n[network]\nrelay = "disabled"\nlan_discovery = false\nport_mapping = false\n',
+  );
+  return folder;
+}
+
+/// Starts Baton in [folder], and stops it when the test is over.
+Future<Baton> _start(Directory folder) async {
+  final baton = await Baton.start(
+    dataDir: folder.path,
+    lanDiscovery: false,
+    portMapping: false,
+  );
+  addTearDown(baton.stop);
+  return baton;
+}
+
+/// A [BatonError] of [kind].
+Matcher _batonError(ErrorKind kind) =>
+    isA<BatonError>().having((error) => error.kind, 'kind', kind);
+
+/// What a stream has said so far, so that a test can ask for the next thing it cares about
+/// without missing what came between two questions.
+class _Feed<T extends Object> {
+  _Feed(Stream<T> stream) {
+    _subscription = stream.listen(
+      (item) {
+        _items.add(item);
+        _wake();
+      },
+      onDone: () {
+        _done = true;
+        _wake();
+      },
+    );
+  }
+
+  final _items = <T>[];
+  var _cursor = 0;
+  var _done = false;
+  var _changed = Completer<void>();
+  late final StreamSubscription<T> _subscription;
+
+  void _wake() {
+    final old = _changed;
+    _changed = Completer<void>();
+    old.complete();
+  }
+
+  /// The next item that is an [E], skipping any others. Fails if none comes in time, or the
+  /// stream ends first.
+  Future<E> next<E extends T>() async {
+    final limit = DateTime.now().add(_wait);
+    while (true) {
+      while (_cursor < _items.length) {
+        final item = _items[_cursor++];
+        if (item is E) {
+          return item;
+        }
+      }
+      if (_done) {
+        throw StateError('The stream ended while waiting for a $E.');
+      }
+      final left = limit.difference(DateTime.now());
+      if (left.isNegative) {
+        throw TimeoutException('No $E came.', _wait);
+      }
+      await _changed.future.timeout(left, onTimeout: () {});
+    }
+  }
+
+  /// Completes when the stream has ended, and fails if it does not in time.
+  Future<void> get ended async {
+    final limit = DateTime.now().add(_wait);
+    while (!_done) {
+      final left = limit.difference(DateTime.now());
+      if (left.isNegative) {
+        throw TimeoutException('The stream did not end.', _wait);
+      }
+      await _changed.future.timeout(left, onTimeout: () {});
+    }
+  }
+
+  /// Stops listening. The cancel is not waited for: a stream from the bridge is an `async*`
+  /// generator, and cancelling it completes only when it next yields, which for a stream that
+  /// has gone quiet is when its next event arrives.
+  void close() => unawaited(_subscription.cancel());
+}
