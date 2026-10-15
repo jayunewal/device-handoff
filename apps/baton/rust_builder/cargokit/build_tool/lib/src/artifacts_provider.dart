@@ -237,6 +237,11 @@ List<String> getArtifactNames({
   required bool remote,
   AritifactType? aritifactType,
 }) {
+  // Changed from the template (see ../../../../README.md): Cargo names a library after its
+  // package name with each '-' turned into '_', so the package "baton-ffi" makes
+  // "libbaton_ffi.a". Without this line the build looks for "libbaton-ffi.a", finds nothing
+  // and fails with "Unable to find bundle for dynamic library".
+  libraryName = libraryName.replaceAll('-', '_');
   aritifactType ??= artifactTypeForTarget(target);
   if (target.darwinArch != null) {
     if (aritifactType == AritifactType.staticlib) {
