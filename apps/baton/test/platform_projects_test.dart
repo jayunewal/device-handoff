@@ -6,6 +6,7 @@
 
 import 'dart:io';
 
+import 'package:baton/src/awake.dart';
 import 'package:baton/src/rust_backend.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -88,6 +89,17 @@ void main() {
         reason: file,
       );
       expect(swift, contains('isExcludedFromBackup = true'), reason: file);
+    }
+  });
+
+  test('the iPhone app answers where Baton asks to keep the screen on', () {
+    // The channel and its methods are named in lib/src/awake.dart and in the app. If they
+    // differ, nothing fails but pairing: the screen goes off while the person is on the other
+    // device, and the call is only logged.
+    final swift = _read('ios/Runner/AppDelegate.swift');
+    expect(swift, contains('name: "${PlatformScreenKeeper.channelName}"'));
+    for (final method in ['keepOn', 'letTurnOff', 'isKeptOn']) {
+      expect(swift, contains('case "$method":'), reason: method);
     }
   });
 

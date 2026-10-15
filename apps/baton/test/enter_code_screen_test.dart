@@ -2,6 +2,7 @@
 
 import 'dart:async';
 
+import 'package:baton/src/awake.dart';
 import 'package:baton/src/backend.dart';
 import 'package:baton/src/screens/enter_code_screen.dart';
 import 'package:flutter/material.dart';
@@ -9,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'fake_backend.dart';
+import 'fake_screen.dart';
 
 const _anna = Device(
   id: 'b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0',
@@ -72,8 +74,9 @@ class _SwitchState extends State<_Switch> {
 Future<void> _open(
   WidgetTester tester,
   FakeSession session,
-  _Camera camera,
-) async {
+  _Camera camera, {
+  ScreenKeeper? screen,
+}) async {
   tester.view
     ..physicalSize = const Size(900, 1600)
     ..devicePixelRatio = 1;
@@ -85,8 +88,11 @@ Future<void> _open(
           body: TextButton(
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute<void>(
-                builder: (_) =>
-                    EnterCodeScreen(session: session, scanner: camera.build),
+                builder: (_) => EnterCodeScreen(
+                  session: session,
+                  scanner: camera.build,
+                  screen: screen ?? FakeScreen(),
+                ),
               ),
             ),
             child: const Text('Open'),
@@ -424,5 +430,155 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(session.joinsCancelled, 0);
+  });
+
+  group('the screen of the device', () {
+    testWidgets('stays on while the camera waits and the pairing happens', (
+      tester,
+    ) async {
+      final screen = FakeScreen();
+      final session = _session();
+      final camera = _Camera();
+      await _open(tester, session, camera, screen: screen);
+      expect(screen.asked, ['keepOn'], reason: 'on as soon as the camera is');
+
+      camera.see(sampleTicket);
+      await tester.pump();
+      session.joining.add(const JoinProgress.code(code: '514 643'));
+      await tester.pump();
+      expect(find.text('Check the other device'), findsOneWidget);
+      expect(screen.asked, ['keepOn'], reason: 'asked once, and still on');
+
+      session.joining.add(const JoinProgress.paired(device: _anna));
+      await tester.pump();
+      expect(find.text('Paired with Anna’s iPhone'), findsOneWidget);
+      expect(screen.asked, ['keepOn', 'letTurnOff']);
+    });
+
+    testWidgets('stays on after a picture that is not a code', (tester) async {
+      final screen = FakeScreen();
+      final session = _session();
+      final camera = _Camera();
+      await _open(tester, session, camera, screen: screen);
+
+      camera.see('https://example.com/menu');
+      await tester.pump();
+      session.joining.add(const JoinProgress.failed(error: _notATicket));
+      await tester.pumpAndSettle();
+
+      expect(find.text(_notATicket.message), findsOneWidget);
+      expect(screen.asked, ['keepOn'], reason: 'the camera is still waiting');
+    });
+
+    testWidgets('is let go when pairing fails, and kept on to try again', (
+      tester,
+    ) async {
+      final screen = FakeScreen();
+      final session = _session();
+      final camera = _Camera();
+      await _open(tester, session, camera, screen: screen);
+      camera.see(sampleTicket);
+      await tester.pump();
+
+      session.joining.add(
+        const JoinProgress.failed(
+          error: BatonError(
+            kind: ErrorKind.pairingFailed,
+            message: 'The other device said no.',
+          ),
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Pairing did not work'), findsOneWidget);
+      expect(screen.asked, ['keepOn', 'letTurnOff']);
+
+      await tester.tap(find.text('Try again'));
+      await tester.pumpAndSettle();
+      expect(screen.asked, ['keepOn', 'letTurnOff', 'keepOn']);
+    });
+
+    testWidgets('is let go if the pairing stops without a word', (
+      tester,
+    ) async {
+      final screen = FakeScreen();
+      final session = _session();
+      final camera = _Camera();
+      await _open(tester, session, camera, screen: screen);
+      camera.see(sampleTicket);
+      await tester.pump();
+
+      await session.joining.close();
+      await tester.pump();
+
+      expect(find.text('Pairing did not work'), findsOneWidget);
+      expect(screen.asked, ['keepOn', 'letTurnOff']);
+    });
+
+    testWidgets('is let go when the screen is left', (tester) async {
+      final screen = FakeScreen();
+      await _open(tester, _session(), _Camera(), screen: screen);
+      expect(screen.on, isTrue);
+
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+
+      expect(screen.asked, ['keepOn', 'letTurnOff']);
+    });
+
+    testWidgets('is let go when a pairing is cancelled', (tester) async {
+      final screen = FakeScreen();
+      final session = _session();
+      final camera = _Camera();
+      await _open(tester, session, camera, screen: screen);
+      camera.see(sampleTicket);
+      await tester.pump();
+
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+
+      expect(screen.asked, ['keepOn', 'letTurnOff']);
+    });
+
+    testWidgets('is let go after the limit, if the screen is left open', (
+      tester,
+    ) async {
+      final screen = FakeScreen();
+      final session = _session();
+      final camera = _Camera();
+      await _open(tester, session, camera, screen: screen);
+
+      await tester.pump(awakeLimit + const Duration(seconds: 1));
+      expect(screen.asked, ['keepOn', 'letTurnOff']);
+
+      // The person came back and held the camera up. Going on to pair keeps the screen on, so
+      // that it does not lock while the other device says yes.
+      camera.see(sampleTicket);
+      await tester.pump();
+      expect(find.text('Reaching the other device…'), findsOneWidget);
+      expect(screen.asked, ['keepOn', 'letTurnOff', 'keepOn']);
+    });
+
+    testWidgets('counts the limit again from each step', (tester) async {
+      final screen = FakeScreen();
+      final session = _session();
+      final camera = _Camera();
+      await _open(tester, session, camera, screen: screen);
+
+      // Each step comes just before the limit would have been reached, and the pairing is
+      // still going on after more than the limit has passed.
+      await tester.pump(awakeLimit - const Duration(minutes: 1));
+      camera.see(sampleTicket);
+      await tester.pump();
+      await tester.pump(awakeLimit - const Duration(minutes: 1));
+      session.joining.add(const JoinProgress.code(code: '514 643'));
+      await tester.pump();
+      await tester.pump(awakeLimit - const Duration(minutes: 1));
+      expect(find.text('Check the other device'), findsOneWidget);
+      expect(screen.asked, ['keepOn'], reason: 'asked once, and still on');
+
+      // And with no step after it the screen is let go.
+      await tester.pump(const Duration(minutes: 2));
+      expect(screen.asked, ['keepOn', 'letTurnOff']);
+    });
   });
 }

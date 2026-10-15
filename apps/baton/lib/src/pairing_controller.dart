@@ -4,6 +4,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import 'awake.dart';
 import 'backend.dart';
 
 /// Where "Show a code" is.
@@ -33,11 +34,29 @@ enum OfferPhase {
   failed,
 }
 
+/// Whether the screen of the device stays on in [phase]: from the moment a code is asked for
+/// until the person has been told how it ended.
+bool _offerKeepsScreenOn(OfferPhase phase) => switch (phase) {
+  OfferPhase.starting ||
+  OfferPhase.showing ||
+  OfferPhase.asking ||
+  OfferPhase.answering => true,
+  OfferPhase.paired || OfferPhase.over || OfferPhase.failed => false,
+};
+
 /// What the "Show a code" screen shows: an invitation to pair, and what becomes of it.
+///
+/// The screen of the device stays on while the invitation is being made, shown and answered, so
+/// that it does not go off while the person is on the other device. [screen] does that; tests give
+/// it one of their own.
 class OfferController extends ChangeNotifier {
-  OfferController(this._session);
+  OfferController(
+    this._session, {
+    ScreenKeeper screen = const PlatformScreenKeeper(),
+  }) : _awake = AwakeHold(screen);
 
   final Session _session;
+  final AwakeHold _awake;
   StreamSubscription<Event>? _events;
   bool _disposed = false;
   OfferPhase _phase = OfferPhase.starting;
@@ -172,6 +191,11 @@ class OfferController extends ChangeNotifier {
   void _set(OfferPhase phase) {
     if (_disposed) return;
     _phase = phase;
+    if (_offerKeepsScreenOn(phase)) {
+      _awake.renew();
+    } else {
+      _awake.release();
+    }
     notifyListeners();
   }
 
@@ -179,6 +203,7 @@ class OfferController extends ChangeNotifier {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    _awake.release();
     // An invitation that nobody can see should not stay open. One that has just been said yes to
     // is left alone: it ends by itself, and a withdrawal that got there first would win.
     final open =
@@ -212,12 +237,29 @@ enum JoinPhase {
   failed,
 }
 
+/// Whether the screen of the device stays on in [phase]: from the moment the screen opens, and
+/// the camera waits for a code, until the person has been told how it ended.
+bool _joinKeepsScreenOn(JoinPhase phase) => switch (phase) {
+  JoinPhase.entering || JoinPhase.connecting || JoinPhase.comparing => true,
+  JoinPhase.paired || JoinPhase.failed => false,
+};
+
 /// What the "Scan or enter a code" screen shows: joining the invitation that another device
 /// shows.
+///
+/// The screen of the device stays on from the moment this opens until the pairing has ended, so
+/// that it does not go off while the person holds the camera up, or is on the other device.
+/// [screen] does that; tests give it one of their own.
 class JoinController extends ChangeNotifier {
-  JoinController(this._session);
+  JoinController(
+    this._session, {
+    ScreenKeeper screen = const PlatformScreenKeeper(),
+  }) : _awake = AwakeHold(screen) {
+    _awake.hold();
+  }
 
   final Session _session;
+  final AwakeHold _awake;
   StreamSubscription<JoinProgress>? _progress;
   bool _disposed = false;
   JoinPhase _phase = JoinPhase.entering;
@@ -310,6 +352,11 @@ class JoinController extends ChangeNotifier {
   void _set(JoinPhase phase) {
     if (_disposed) return;
     _phase = phase;
+    if (_joinKeepsScreenOn(phase)) {
+      _awake.renew();
+    } else {
+      _awake.release();
+    }
     notifyListeners();
   }
 
@@ -317,6 +364,7 @@ class JoinController extends ChangeNotifier {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    _awake.release();
     if (_phase == JoinPhase.connecting || _phase == JoinPhase.comparing) {
       _session.cancelJoin();
     }
