@@ -11,7 +11,7 @@ import 'fake_clipboard.dart';
 final _now = DateTime.utc(2026, 10, 15, 8, 44, 54);
 
 const _started =
-    '2026-10-15T08:40:00.000001Z  INFO baton_app: Baton started device=f0f0f0f0';
+    '2026-10-15T08:40:00.000001Z  INFO baton_app: Baton started device=f0f0f0f0f0';
 const _listening =
     '2026-10-15T08:40:01.000002Z  INFO baton_core: Baton is listening';
 
@@ -66,7 +66,7 @@ void main() {
     for (final text in [
       'Taken: 2026-10-15T08:44:54Z',
       'System: macos 14.5',
-      'This device: Desk Mac (Mac), fingerprint wxyz-abcd-efgh-ijkl-mnop',
+      'This device: Desk Mac (Mac), id f0f0f0f0f0',
       'Paired devices: 0',
       'Relay: https://relay.example./',
       'Addresses other devices can try: 192.168.1.5:4000',
@@ -79,6 +79,21 @@ void main() {
     }
     // The text can be selected, to copy a part of it.
     expect(find.byType(SelectionArea), findsOneWidget);
+  });
+
+  testWidgets('says what is hidden and what is not before it is copied', (
+    tester,
+  ) async {
+    await _show(tester, session: _session());
+
+    expect(
+      find.textContaining('Addresses on the internet are hidden.'),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('the addresses of your own network'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('says so when nothing has been logged', (tester) async {
@@ -99,7 +114,7 @@ Baton diagnostics
 
 Taken: 2026-10-15T08:44:54Z
 System: macos 14.5
-This device: Desk Mac (Mac), fingerprint wxyz-abcd-efgh-ijkl-mnop
+This device: Desk Mac (Mac), id f0f0f0f0f0
 Paired devices: 0
 Relay: https://relay.example./
 Addresses other devices can try: 192.168.1.5:4000

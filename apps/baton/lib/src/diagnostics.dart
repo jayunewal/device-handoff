@@ -51,6 +51,122 @@ class Diagnostics {
 
 String _lines(int n) => n == 1 ? '1 line' : '$n lines';
 
+/// The short form of a device's id, which is what the library's log calls a device: the first
+/// ten digits. The log lines of this device and of the ones paired with it are told apart by it.
+String shortId(String id) => id.length > 10 ? id.substring(0, 10) : id;
+
+/// What to show of [address], one of the addresses that other devices can try, in a report that
+/// is pasted into a public place.
+///
+/// A public address names the network this device is on and, with the port mapping that Baton
+/// asks the router for, a port on the router that leads to it. It is shown by its kind and its
+/// port: `public IPv4 (hidden):41641`. The addresses that belong to no one network in
+/// particular (this host, a private or shared network, link-local, multicast and the ones set
+/// aside for documents) stay as they are, because they answer most questions about why a device
+/// cannot be reached. Text that is not an address is not shown at all, because there is no
+/// telling what it holds. The library's log is held to the same rule on its side (`hide.rs`).
+String describeAddress(String address) {
+  const unknown = 'unrecognised address (hidden)';
+  final parts = _splitAddress(address);
+  if (parts == null) return unknown;
+  final (:host, :port) = parts;
+  // A link-local address can carry the interface it is on: `fe80::1%2`.
+  final zone = host.indexOf('%');
+  final ip = io.InternetAddress.tryParse(
+    zone < 0 ? host : host.substring(0, zone),
+  );
+  if (ip == null) return unknown;
+  if (!_isPublic(ip.rawAddress)) return visibleText(address);
+  final kind = ip.type == io.InternetAddressType.IPv4 ? 'IPv4' : 'IPv6';
+  return 'public $kind (hidden)${port == null ? '' : ':$port'}';
+}
+
+/// The address and the port of text like `192.168.1.5:4000`, `[fe80::1%2]:4000` or `::1`, or
+/// `null` if it is neither with a port that could be one.
+({String host, String? port})? _splitAddress(String address) {
+  final String host;
+  String? port;
+  if (address.startsWith('[')) {
+    final close = address.indexOf(']');
+    if (close < 0) return null;
+    host = address.substring(1, close);
+    final after = address.substring(close + 1);
+    if (after.isNotEmpty) {
+      if (!after.startsWith(':')) return null;
+      port = after.substring(1);
+    }
+  } else if (':'.allMatches(address).length == 1) {
+    final colon = address.indexOf(':');
+    host = address.substring(0, colon);
+    port = address.substring(colon + 1);
+  } else {
+    // An address on its own, with no port (an IPv6 one has colons of its own).
+    host = address;
+  }
+  if (port != null && !RegExp(r'^[0-9]{1,5}$').hasMatch(port)) return null;
+  if (port != null && int.parse(port) > 65535) return null;
+  return (host: host, port: port);
+}
+
+bool _isPublic(Uint8List bytes) {
+  if (bytes.length == 4) return _isPublicV4(bytes);
+  // `::ffff:8.8.8.8` is an IPv4 address in an IPv6 form.
+  final mapped =
+      bytes.sublist(0, 10).every((byte) => byte == 0) &&
+      bytes[10] == 0xff &&
+      bytes[11] == 0xff;
+  return mapped ? _isPublicV4(bytes.sublist(12)) : _isPublicV6(bytes);
+}
+
+bool _isPublicV4(Uint8List ip) {
+  final [a, b, c, d] = ip;
+  return !(
+  // 0.0.0.0, this host, a private network, link-local, multicast and broadcast.
+  (a == 0 && b == 0 && c == 0 && d == 0) ||
+      a == 127 ||
+      a == 10 ||
+      (a == 172 && b >= 16 && b < 32) ||
+      (a == 192 && b == 168) ||
+      (a == 169 && b == 254) ||
+      (a >= 224 && a <= 239) ||
+      (a == 255 && b == 255 && c == 255 && d == 255) ||
+      // The ones set aside for documents.
+      (a == 192 && b == 0 && c == 2) ||
+      (a == 198 && b == 51 && c == 100) ||
+      (a == 203 && b == 0 && c == 113) ||
+      // The range for carrier-grade NAT, where VPNs such as Tailscale put their addresses.
+      (a == 100 && b >= 64 && b < 128));
+}
+
+bool _isPublicV6(Uint8List ip) {
+  final first = (ip[0] << 8) | ip[1];
+  final second = (ip[2] << 8) | ip[3];
+  final unspecified = ip.every((byte) => byte == 0);
+  final loopback = ip.sublist(0, 15).every((byte) => byte == 0) && ip[15] == 1;
+  return !(unspecified ||
+      loopback ||
+      ip[0] == 0xff ||
+      (first & 0xfe00) == 0xfc00 ||
+      (first & 0xffc0) == 0xfe80 ||
+      (first == 0x2001 && second == 0x0db8));
+}
+
+// The folder after /Users/ or /home/, and after \Users\ on Windows (also as it looks when a path
+// is printed with its backslashes doubled). A Windows name can hold spaces, and a Unix one ends
+// at the end of the word. \x22 is a double quote and \x27 a single one.
+final _unixHome = RegExp(r'(/Users/|/home/)([^/\\\x22\x27\s)\],;]+)');
+final _windowsHome = RegExp(r'(\\+Users\\+)([^/\\\x22\x27]+)');
+
+/// [text] with the account name in a path replaced by `~`. The folder of the app is under the
+/// home folder of the account, and an account is often named after a person. The library's log
+/// is held to the same rule on its side (`hide.rs`).
+String hideAccountNames(String text) => text
+    .replaceAllMapped(_unixHome, _keepFolderHideName)
+    .replaceAllMapped(_windowsHome, _keepFolderHideName);
+
+String _keepFolderHideName(Match match) =>
+    match[2] == '~' ? match[0]! : '${match[1]}~';
+
 /// `2026-10-15T08:44:54Z`: the time the way the library's own log lines write it, so that the
 /// two can be put side by side.
 String _seconds(DateTime time) =>
@@ -100,7 +216,9 @@ class DiagnosticsController extends ChangeNotifier {
       'System: ${visibleText(system)}',
     ];
     final said = problem;
-    if (said != null) facts.add('Problem: ${visibleText(said)}');
+    if (said != null) {
+      facts.add('Problem: ${hideAccountNames(visibleText(said))}');
+    }
     final running = session;
     if (running == null) {
       facts.add('Baton is not running.');
@@ -108,7 +226,7 @@ class DiagnosticsController extends ChangeNotifier {
       final me = running.me;
       facts.add(
         'This device: ${visibleText(me.name)} (${platformName(me.platform)}), '
-        'fingerprint ${me.fingerprint}',
+        'id ${shortId(me.id)}',
       );
       facts.addAll(await _connection(running));
     }
@@ -130,11 +248,12 @@ class DiagnosticsController extends ChangeNotifier {
         'Paired devices: ${devices.length}',
         'Relay: ${network.relay == null ? 'not connected' : visibleText(network.relay!)}',
         'Addresses other devices can try: '
-            '${addresses.isEmpty ? 'none found' : addresses.map(visibleText).join(', ')}',
+            '${addresses.isEmpty ? 'none found' : addresses.map(describeAddress).join(', ')}',
         'Finding devices on the local network: ${network.lanDiscovery ? 'on' : 'off'}',
       ];
     } on BatonError catch (e) {
-      return ['Connection: could not be read (${visibleText(e.message)})'];
+      final said = hideAccountNames(visibleText(e.message));
+      return ['Connection: could not be read ($said)'];
     } on Object catch (e) {
       // Only what kind of failure it was: what it says might not be fit to paste.
       return ['Connection: could not be read (${e.runtimeType})'];

@@ -279,9 +279,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(
-      find.text(
-        'This device: Desk Mac (Mac), fingerprint wxyz-abcd-efgh-ijkl-mnop',
-      ),
+      find.text('This device: Desk Mac (Mac), id f0f0f0f0f0'),
       findsOneWidget,
     );
     expect(

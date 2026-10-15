@@ -118,8 +118,9 @@ class _Report extends StatelessWidget {
         children: [
           Text(
             'If something does not work, copy this and paste it where you report '
-            'the problem. It names this device and may show network addresses, '
-            'so read it first.',
+            'the problem. It names this device and the ones paired with it, and '
+            'shows the addresses of your own network. Addresses on the internet '
+            'are hidden. Read it before you paste it.',
             style: theme.textTheme.bodyMedium,
           ),
           const SizedBox(height: 16),

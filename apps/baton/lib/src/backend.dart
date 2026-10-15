@@ -56,9 +56,11 @@ abstract interface class Backend {
   Future<Session> start();
 
   /// The last lines the library logged, oldest first, for a bug report. The library has
-  /// already taken out pairing codes and the characters that would act on a screen, but the
-  /// lines can still name devices and network addresses. It is empty if the library did not
-  /// load, which is itself a reason to show the person.
+  /// already made them fit to paste into a public place: pairing codes, whole keys, account
+  /// names in paths and public IP addresses are taken out, and so are the characters that
+  /// would act on a screen. The lines can still name devices and show the addresses of the
+  /// local network. It is empty if the library did not load, which is itself a reason to show
+  /// the person.
   List<String> recentLog();
 }
 
