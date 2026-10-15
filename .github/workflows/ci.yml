@@ -238,7 +238,18 @@ jobs:
       - name: Start the app in the simulator
         timeout-minutes: 25
         working-directory: apps/baton
-        run: flutter test integration_test -d "$SIMULATOR_UDID"
+        run: flutter test integration_test -d "$SIMULATOR_UDID" -v
+      - name: Show what the simulator logged about the app
+        # An app that closes as it opens leaves the test waiting for a window that never
+        # comes. Its crash report and its log say why.
+        if: failure()
+        run: |
+          xcrun simctl list devices booted || true
+          ls -l ~/Library/Logs/DiagnosticReports || true
+          for report in ~/Library/Logs/DiagnosticReports/Runner*; do
+            if [ -f "$report" ]; then echo "== $report"; head -c 8000 "$report"; fi
+          done
+          xcrun simctl spawn "$SIMULATOR_UDID" log show --last 30m --style compact --predicate 'process == "Runner"' | tail -n 100 || true
 
   build:
     name: Build (${{ matrix.name }})
