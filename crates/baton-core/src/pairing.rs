@@ -368,6 +368,9 @@ impl PairOffer {
     }
 
     /// Withdraws the offer. A request already waiting for the person is abandoned.
+    ///
+    /// This has no effect on an offer that a "yes" has claimed: the person's answer is
+    /// final. Whoever waits for the offer is told how it ended either way.
     pub fn cancel(&self) {
         self.shared.offers.end(self.id, OfferEnd::Cancelled);
     }
@@ -379,8 +382,39 @@ impl PairOffer {
     /// [`Error::OfferEnded`] if the offer expired, was cancelled or replaced, the
     /// person declined, or the device that asked disconnected before they answered;
     /// another error if the pairing could not be saved.
-    pub async fn wait(mut self) -> Result<PairedDevice> {
-        match (&mut self.done).await {
+    pub async fn wait(self) -> Result<PairedDevice> {
+        self.wait_or_withdraw(std::future::pending()).await
+    }
+
+    /// Waits as [`wait`](Self::wait) does, and withdraws the offer if `withdraw` finishes
+    /// first.
+    ///
+    /// What comes back is what the offer came to, not what `withdraw` asked for. If a
+    /// "yes" had been given before the offer was withdrawn, the device is paired and
+    /// that is what this returns, because a "yes" cannot be taken back. A screen that
+    /// withdraws its offer when a sheet closes, just after the person said yes, is
+    /// therefore told the truth.
+    ///
+    /// # Errors
+    ///
+    /// As for [`wait`](Self::wait). A withdrawn offer ends with
+    /// [`OfferEnd::Cancelled`].
+    pub async fn wait_or_withdraw(
+        mut self,
+        withdraw: impl Future<Output = ()>,
+    ) -> Result<PairedDevice> {
+        let ended = tokio::select! {
+            // A result that is there already is the answer, whatever else has happened.
+            biased;
+            result = &mut self.done => result,
+            () = withdraw => {
+                self.cancel();
+                // Settled at once if the offer was still open, and in a moment if a
+                // "yes" has claimed it and the pairing is being saved.
+                (&mut self.done).await
+            }
+        };
+        match ended {
             Ok(result) => result,
             // The sender is dropped only when the node goes away.
             Err(_) => Err(Error::Stopped),

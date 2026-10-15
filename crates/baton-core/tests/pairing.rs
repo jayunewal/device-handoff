@@ -367,6 +367,48 @@ async fn a_cancelled_offer_cannot_be_used() {
 }
 
 #[tokio::test]
+async fn an_offer_can_be_withdrawn_while_it_is_waited_on() {
+    let a = device("Laptop").await;
+    let b = device("Phone").await;
+    let offer = a.node.offer_pairing(approve).await.unwrap();
+    let ticket = offer.ticket().clone();
+
+    let (withdraw, withdrawn) = tokio::sync::oneshot::channel::<()>();
+    let waiting = tokio::spawn(offer.wait_or_withdraw(async move {
+        let _ = withdrawn.await;
+    }));
+    // Nothing has happened to the offer yet, so it is still good.
+    tokio::task::yield_now().await;
+    assert!(!waiting.is_finished());
+
+    withdraw.send(()).unwrap();
+    let ended = waiting.await.unwrap().unwrap_err();
+    assert!(
+        matches!(ended, Error::OfferEnded(OfferEnd::Cancelled)),
+        "{ended}"
+    );
+    let error = b.node.join_pairing(&ticket, |_| {}).await.unwrap_err();
+    assert_eq!(rejected(&error), Some(PairRejection::Invalid), "{error}");
+}
+
+#[tokio::test]
+async fn a_yes_that_has_been_given_cannot_be_withdrawn_afterwards() {
+    let a = device("Laptop").await;
+    let b = device("Phone").await;
+    let offer = a.node.offer_pairing(approve).await.unwrap();
+    b.node.join_pairing(offer.ticket(), |_| {}).await.unwrap();
+
+    // The offer is withdrawn as it is waited on, after the pairing is done. What comes
+    // back is the pairing, not the withdrawal.
+    let paired = offer
+        .wait_or_withdraw(std::future::ready(()))
+        .await
+        .unwrap();
+    assert_eq!(paired.id, b.id);
+    assert!(a.trust.contains(&b.id));
+}
+
+#[tokio::test]
 async fn dropping_an_offer_withdraws_it() {
     let a = device("Laptop").await;
     let b = device("Phone").await;
