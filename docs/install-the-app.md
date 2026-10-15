@@ -16,7 +16,13 @@ Everything below is typed in Terminal, which is a zsh shell on a Mac. Each comma
   sudo xcodebuild -runFirstLaunch
   ```
 
-- [Flutter](https://docs.flutter.dev/get-started/install/macos) 3.47 or newer. `flutter --version` says which you have.
+- [Flutter](https://docs.flutter.dev/get-started/install/macos) 3.47 or newer. `flutter --version` says which you have. If it is older and you installed Flutter with Homebrew, this brings it up to date, and the second command checks it. If you installed Flutter in another way, `flutter upgrade` does the same:
+
+  ```sh
+  brew upgrade --cask flutter
+  flutter --version
+  ```
+
 - Rust, installed with [rustup](https://rustup.rs). Rust from Homebrew will not do, because the build adds targets to it. Then add the targets for the phone and for the simulator, and make sure the toolchain is recent:
 
   ```sh
