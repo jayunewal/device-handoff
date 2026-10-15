@@ -308,6 +308,14 @@ Log
         ('[2606:4700:4700::1111]', 'public IPv6 (hidden)'),
         ('::ffff:8.8.8.8', 'public IPv6 (hidden)'),
         ('[::ffff:8.8.8.8]:99', 'public IPv6 (hidden):99'),
+        // An IPv6-only mobile network reaches an IPv4 address through 64:ff9b::/96.
+        ('64:ff9b::808:808', 'public IPv6 (hidden)'),
+        ('[64:ff9b::8.8.8.8]:443', 'public IPv6 (hidden):443'),
+        // The ends of 2000::/3, and an address that a 6to4 gateway made.
+        ('2000::1', 'public IPv6 (hidden)'),
+        ('[3fff:1000::1]:7', 'public IPv6 (hidden):7'),
+        ('3fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff', 'public IPv6 (hidden)'),
+        ('2002:808:808::1', 'public IPv6 (hidden)'),
       ]) {
         expect(describeAddress(address), shown, reason: address);
       }
@@ -337,7 +345,21 @@ Log
         '198.51.100.7:3',
         '203.0.113.200',
         '2001:db8::1',
+        '3fff::1',
+        '[3fff:fff:ffff::1]:5',
         '::ffff:192.168.1.5',
+        // 64:ff9b::/96 holds the IPv4 address that it reaches, and that one is not public.
+        '64:ff9b::a00:1',
+        '[64:ff9b::192.168.1.5]:9',
+        '64:ff9b::7f00:1',
+        // Outside 2000::/3 no network is given an address, just below it and just above.
+        '1fff:ffff::1',
+        '4000::1',
+        // The short forms that the names of modules make.
+        'e::',
+        '::a',
+        'dead::beef',
+        'cafe::babe',
       ]) {
         expect(describeAddress(address), address, reason: address);
       }

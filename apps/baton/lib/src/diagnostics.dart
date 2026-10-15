@@ -141,14 +141,22 @@ bool _isPublicV4(Uint8List ip) {
 bool _isPublicV6(Uint8List ip) {
   final first = (ip[0] << 8) | ip[1];
   final second = (ip[2] << 8) | ip[3];
-  final unspecified = ip.every((byte) => byte == 0);
-  final loopback = ip.sublist(0, 15).every((byte) => byte == 0) && ip[15] == 1;
-  return !(unspecified ||
-      loopback ||
-      ip[0] == 0xff ||
-      (first & 0xfe00) == 0xfc00 ||
-      (first & 0xffc0) == 0xfe80 ||
-      (first == 0x2001 && second == 0x0db8));
+  // 64:ff9b::/96 is how an IPv6-only mobile network reaches IPv4 addresses. The address holds one
+  // in its last four bytes and is as public as that one, as ::ffff:0:0/96 is.
+  if (first == 0x64 &&
+      second == 0xff9b &&
+      ip.sublist(4, 12).every((byte) => byte == 0)) {
+    return _isPublicV4(ip.sublist(12));
+  }
+  // Only 2000::/3 is handed out to networks. Everything else is this host, a private network,
+  // link-local, multicast or not assigned. The library's log is held to the same rule, where it
+  // keeps the short forms that the names of modules make (e:: in core::) out of the way.
+  final global = (first & 0xe000) == 0x2000;
+  // 2001:db8::/32 and 3fff::/20 are set aside for documents.
+  final documentation =
+      (first == 0x2001 && second == 0x0db8) ||
+      (first == 0x3fff && (second & 0xf000) == 0);
+  return global && !documentation;
 }
 
 // The folder after /Users/ or /home/, and after \Users\ on Windows (also as it looks when a path

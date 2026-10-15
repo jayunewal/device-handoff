@@ -138,9 +138,11 @@ fn ends_account_name(c: char, windows: bool) -> bool {
 /// A public address names the network the device is on, and with the port mapping that Baton
 /// asks the router for, a port on the router that leads to the device. Candidates are parsed as
 /// addresses and not matched by their look, because a time (`08:00:00`) or a version (`1.3.0`)
-/// looks like part of one. A candidate that is joined to a letter or a digit on either side is a
-/// piece of a word and is left alone: `baton_core::node` holds `e::`, and `baton_ffi::api` holds
-/// `::a`, which are addresses to the parser.
+/// looks like part of one. An IPv6 address counts as public only inside `2000::/3`, where networks
+/// are given addresses (and `64:ff9b::/96` by the IPv4 address it holds): `baton_core::node` holds
+/// `e::`, and `baton_ffi::api` holds `::a`, which are addresses to the parser and are outside it.
+/// A candidate that is joined to a letter or a digit on either side is a piece of a word and is
+/// left alone as well.
 pub(super) fn hide_public_addresses(line: &str) -> Cow<'_, str> {
     let bytes = line.as_bytes();
     let mut edits = Edits::new(line);
@@ -243,16 +245,20 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
 }
 
 fn is_public_v6(ip: Ipv6Addr) -> bool {
-    let [first, second, ..] = ip.segments();
-    let unique_local = first & 0xfe00 == 0xfc00;
-    let link_local = first & 0xffc0 == 0xfe80;
-    let documentation = first == 0x2001 && second == 0x0db8;
-    !(ip.is_unspecified()
-        || ip.is_loopback()
-        || ip.is_multicast()
-        || unique_local
-        || link_local
-        || documentation)
+    let [first, second, third, fourth, fifth, sixth, high, low] = ip.segments();
+    // `64:ff9b::/96` is how an IPv6-only mobile network reaches IPv4 addresses. The address holds
+    // one in its last 32 bits and is as public as that one, as `::ffff:0:0/96` is.
+    if (first, second, third, fourth, fifth, sixth) == (0x64, 0xff9b, 0, 0, 0, 0) {
+        return is_public_v4(Ipv4Addr::from((u32::from(high) << 16) | u32::from(low)));
+    }
+    // Only `2000::/3` is handed out to networks. Everything else is this host, a private network,
+    // link-local, multicast or not assigned, and so are the short forms that the names of modules
+    // make: `e::` in `core::` and `::a` in `::api`.
+    let global = first & 0xe000 == 0x2000;
+    // `2001:db8::/32` and `3fff::/20` are set aside for documents.
+    let documentation =
+        (first == 0x2001 && second == 0x0db8) || (first == 0x3fff && second & 0xf000 == 0);
+    global && !documentation
 }
 
 #[cfg(test)]
@@ -354,6 +360,17 @@ mod tests {
             ("[2606:4700:4700::1111]", "public IPv6 (hidden)"),
             ("::ffff:8.8.8.8", "public IPv6 (hidden)"),
             ("[::ffff:8.8.8.8]:99", "public IPv6 (hidden):99"),
+            // An IPv6-only mobile network reaches an IPv4 address through `64:ff9b::/96`.
+            ("64:ff9b::808:808", "public IPv6 (hidden)"),
+            ("[64:ff9b::8.8.8.8]:443", "public IPv6 (hidden):443"),
+            // The ends of `2000::/3`, and an address that a 6to4 gateway made.
+            ("2000::1", "public IPv6 (hidden)"),
+            ("[3fff:1000::1]:7", "public IPv6 (hidden):7"),
+            (
+                "3fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+                "public IPv6 (hidden)",
+            ),
+            ("2002:808:808::1", "public IPv6 (hidden)"),
         ] {
             assert_eq!(hide_public_addresses(line), shown, "{line}");
         }
@@ -382,7 +399,16 @@ mod tests {
             "255.255.255.255",
             "192.0.2.7",
             "2001:db8::1",
+            "3fff::1",
+            "[3fff:fff:ffff::1]:5",
             "::ffff:192.168.1.5",
+            // `64:ff9b::/96` holds the IPv4 address that it reaches, and that one is not public.
+            "64:ff9b::a00:1",
+            "[64:ff9b::192.168.1.5]:9",
+            "64:ff9b::7f00:1",
+            // Outside `2000::/3` no network is given an address, just below it and just above.
+            "1fff:ffff::1",
+            "4000::1",
         ] {
             assert!(
                 matches!(hide_public_addresses(line), Cow::Borrowed(_)),
@@ -435,6 +461,28 @@ mod tests {
         let line = "2026-10-15T08:00:00.123456Z  INFO baton_app: iroh 1.3.0 dead:beef \
                     aa:bb:cc:dd:ee:ff 08:00:00 v0.1 1.2.3 deadbeef";
         assert!(matches!(hide_public_addresses(line), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn the_short_forms_that_module_names_make_are_outside_the_public_range() {
+        // Names made of the letters a to f, with nothing joined to them for the guard against
+        // pieces of words to see: only the range tells these from an address.
+        for line in [
+            "e::",
+            "::a",
+            "dead::beef",
+            "cafe::babe",
+            "face::b00c",
+            "bad::add",
+            "ace::fade",
+            "2026-10-15T08:00:00.123456Z  WARN dead::beef: a line",
+            "2026-10-15T08:00:00.123456Z  INFO cafe::babe, then bad::add.",
+        ] {
+            assert!(
+                matches!(hide_public_addresses(line), Cow::Borrowed(_)),
+                "{line}"
+            );
+        }
     }
 
     #[test]
