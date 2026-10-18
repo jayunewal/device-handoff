@@ -49,7 +49,7 @@ use crate::util::random_bytes;
 
 /// What the name of a device's staging folder starts with. A name that starts with a dot is
 /// hidden by the Finder, the Files app and most file managers on Linux and Android.
-const STAGING_PREFIX: &str = ".baton-incoming-";
+pub(crate) const STAGING_PREFIX: &str = ".baton-incoming-";
 
 /// Why a destination could not be opened.
 #[derive(Debug, thiserror::Error)]

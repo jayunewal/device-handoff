@@ -22,18 +22,22 @@
 //!   on. It asks the application, through a handler, for what only the application can say.
 //! - `lanes` takes the lanes of those transfers from the task that takes the unidirectional
 //!   streams of a connection, and gives each to the attempt it belongs to.
+//! - [`send`] is the other side: it walks what a person chose to send into the list of an
+//!   offer.
 //!
 //! A node takes part as a receiver once the application gives it a
 //! [`TransferHandler`](incoming::TransferHandler) (see
 //! [`NodeBuilder::transfer_handler`](crate::NodeBuilder::transfer_handler)), and advertises
-//! `transfer.files` for as long as the handler has a folder to receive into. The side that sends is
-//! not built yet.
+//! `transfer.files` for as long as the handler has a folder to receive into. The side that sends only
+//! walks the files so far: it makes the list and the offer of what a person chose, and nothing is
+//! sent yet.
 
 pub mod destination;
 pub mod incoming;
 pub(crate) mod lanes;
 pub mod names;
 pub mod receive;
+pub mod send;
 pub mod staging;
 
 #[cfg(test)]
