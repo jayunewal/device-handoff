@@ -46,7 +46,7 @@ The order is a proposal and can change. See [docs/roadmap.md](docs/roadmap.md) f
 | --- | --- |
 | `crates/baton-proto` | Wire protocol: message types, framing, the pairing handshake and ticket format. No networking. |
 | `crates/baton-core` | Device identity, the trust store, per-device policy and settings, the state directory, and the encrypted transport: discovery, pairing, admission control and the session protocol between paired devices. |
-| `crates/baton-fs` | File system calls that the standard library does not have: moving a file or a folder to a new name without replacing what has that name. They need `unsafe` code, so they have a crate of their own. |
+| `crates/baton-fs` | File system calls that the standard library does not have: moving a file or a folder to a new name without replacing what has that name, marking a received file as one that came from elsewhere, hiding a folder, and asking how much room a volume has. They need `unsafe` code, so they have a crate of their own. |
 | `crates/baton-stream` | Window streaming without any input or output, built a piece at a time. So far: the start of a stream and the header of a frame of video. See [ADR 0009](docs/adr/0009-window-streaming.md). |
 | `crates/baton-app` | What a graphical app calls: start Baton, pair devices, send, read the inbox and hear what happens, all as plain values. No protocol logic of its own. |
 | `crates/baton-cli` | The `baton` command-line program: pair devices, send links and text, read the inbox, and listen for what other devices send. |
