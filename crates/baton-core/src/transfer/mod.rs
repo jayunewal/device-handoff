@@ -16,12 +16,15 @@
 //!   one transfer: which lanes may be opened, which frames may come when, and what became of every
 //!   file. It is built in pieces too, and so far has the bookkeeping, the reader of a lane, and
 //!   the intake that applies the frames of the lanes to the staging folder.
+//! - [`send`] is the other side: it walks what a person chose to send into the list of an
+//!   offer.
 //!
 //! Nothing here is connected to the session yet, and `transfer.files` is not advertised.
 
 pub mod destination;
 pub mod names;
 pub mod receive;
+pub mod send;
 pub mod staging;
 
 #[cfg(test)]
