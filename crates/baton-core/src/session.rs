@@ -426,6 +426,81 @@ pub(crate) struct Session {
     pub(crate) connection: Connection,
     /// What the peer said about itself when the connection started.
     pub(crate) peer: Arc<Hello>,
+    lease: Arc<Lease>,
+}
+
+impl Session {
+    /// Keeps the connection open for as long as the returned [`Hold`] lives.
+    ///
+    /// A connection in the pool is closed when no request has been made on it for a while, and
+    /// requests are all that the pool sees. What goes on beyond them, the lanes of a transfer or
+    /// the frames of a window that is shown, makes no request, so whoever runs it holds the
+    /// connection. When the last hold ends, the connection counts as used at that moment.
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "held by the sender of files and by window streaming, which come next"
+        )
+    )]
+    pub(crate) fn hold(&self) -> Hold {
+        self.lease.hold()
+    }
+}
+
+/// What besides requests is using a pooled connection.
+#[derive(Debug)]
+struct Lease(Mutex<LeaseState>);
+
+#[derive(Debug)]
+struct LeaseState {
+    /// How many [`Hold`]s are alive.
+    holds: usize,
+    /// When the last hold was let go, or when the connection was made.
+    released: Instant,
+}
+
+impl Lease {
+    fn new() -> Self {
+        Self(Mutex::new(LeaseState {
+            holds: 0,
+            released: Instant::now(),
+        }))
+    }
+
+    fn hold(self: &Arc<Self>) -> Hold {
+        lock(&self.0).holds += 1;
+        Hold(Arc::clone(self))
+    }
+
+    /// Whether the connection has been unused for `idle`: no hold is alive, and the last one
+    /// was let go that long ago (or never was).
+    fn unused_for(&self, idle: Duration, now: Instant) -> bool {
+        let state = lock(&self.0);
+        state.holds == 0 && now.saturating_duration_since(state.released) >= idle
+    }
+}
+
+/// Keeps a pooled connection open while it lives. See [`Session::hold`].
+#[derive(Debug)]
+#[must_use = "the connection is kept open only while the hold lives"]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "held by the sender of files and by window streaming, which come next"
+    )
+)]
+pub(crate) struct Hold(Arc<Lease>);
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        let mut state = lock(&(self.0).0);
+        state.holds = state.holds.saturating_sub(1);
+        if state.holds == 0 {
+            state.released = Instant::now();
+        }
+    }
 }
 
 struct Pooled {
@@ -481,7 +556,8 @@ impl Pool {
             };
             if let Some(existing) = pooled.as_ref()
                 && (existing.session.connection.close_reason().is_some()
-                    || now.saturating_duration_since(existing.used) >= idle)
+                    || (now.saturating_duration_since(existing.used) >= idle
+                        && existing.session.lease.unused_for(idle, now)))
                 && let Some(done) = pooled.take()
             {
                 done.session
@@ -547,6 +623,7 @@ async fn connect(endpoint: &Endpoint, shared: &Shared, peer: &PairedDevice) -> R
     Ok(Session {
         connection,
         peer: Arc::new(reply),
+        lease: Arc::new(Lease::new()),
     })
 }
 
@@ -596,6 +673,7 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::*;
+    use crate::testing::TestNode;
 
     fn device(byte: u8) -> PairedDevice {
         PairedDevice {
@@ -828,6 +906,94 @@ mod tests {
         assert!(again.get().is_none());
         assert_eq!(recent.entries.len(), 1);
         assert!(recent.find(&key, start + RECENT_TTL).is_some());
+    }
+
+    #[test]
+    fn a_lease_is_unused_only_after_the_last_hold_and_for_as_long_as_the_idle_time() {
+        let idle = Duration::from_secs(120);
+        let lease = Arc::new(Lease::new());
+        let made = Instant::now();
+        assert!(!lease.unused_for(idle, made + Duration::from_secs(119)));
+        assert!(lease.unused_for(idle, made + idle));
+
+        let first = lease.hold();
+        let second = lease.hold();
+        let much_later = made + idle * 10;
+        assert!(
+            !lease.unused_for(idle, much_later),
+            "held, however long it is"
+        );
+        drop(first);
+        assert!(!lease.unused_for(idle, much_later), "one hold is left");
+        let before = Instant::now();
+        drop(second);
+        // The time is counted from when the last hold was let go.
+        let released = lock(&lease.0).released;
+        assert!(released >= before);
+        assert!(!lease.unused_for(idle, released + Duration::from_secs(119)));
+        assert!(lease.unused_for(idle, released + idle));
+    }
+
+    #[tokio::test]
+    async fn a_held_connection_is_not_closed_as_idle_and_is_when_the_hold_ends() {
+        let idle = Duration::from_millis(600);
+        let a = TestNode::with(|builder| {
+            builder.tuning(crate::Tuning {
+                idle_connection: idle,
+                ..crate::Tuning::default()
+            })
+        })
+        .await;
+        let b = TestNode::start().await;
+        a.pair_with(&b);
+
+        a.node.ping(&b.id).await.unwrap();
+        let session = a.node.pooled_session(&b.id).await.unwrap();
+        let hold = session.hold();
+        tokio::time::sleep(idle * 4).await;
+        assert!(
+            session.connection.close_reason().is_none(),
+            "closed while held"
+        );
+        assert_eq!(b.node.connected_peers(), vec![a.id]);
+
+        // Letting go counts as use: the idle time starts again, and the pool closes it after that.
+        drop(hold);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(
+            session.connection.close_reason().is_none(),
+            "closed at once"
+        );
+        tokio::time::timeout(Duration::from_secs(10), session.connection.closed())
+            .await
+            .expect("an unused connection was never closed");
+        // And a request after that makes a new one.
+        a.node.ping(&b.id).await.unwrap();
+        let again = a.node.pooled_session(&b.id).await.unwrap();
+        assert_ne!(again.connection.stable_id(), session.connection.stable_id());
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_ends_is_forgotten_whether_or_not_it_is_held() {
+        let idle = Duration::from_millis(300);
+        let a = TestNode::with(|builder| {
+            builder.tuning(crate::Tuning {
+                idle_connection: idle,
+                ..crate::Tuning::default()
+            })
+        })
+        .await;
+        let b = TestNode::start().await;
+        a.pair_with(&b);
+
+        a.node.ping(&b.id).await.unwrap();
+        let session = a.node.pooled_session(&b.id).await.unwrap();
+        let _hold = session.hold();
+        session.connection.close(code(close_code::NORMAL), b"done");
+        tokio::time::sleep(idle * 3).await;
+        let again = a.node.pooled_session(&b.id).await.unwrap();
+        assert!(again.connection.close_reason().is_none());
+        assert_ne!(again.connection.stable_id(), session.connection.stable_id());
     }
 
     #[test]

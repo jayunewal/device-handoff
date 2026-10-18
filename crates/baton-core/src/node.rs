@@ -585,16 +585,13 @@ impl Node {
 
     /// The connection that requests to `peer` go on, made if there is none.
     #[cfg(test)]
-    pub(crate) async fn pooled_connection(
-        &self,
-        peer: &DeviceId,
-    ) -> Result<iroh::endpoint::Connection> {
+    pub(crate) async fn pooled_session(&self, peer: &DeviceId) -> Result<crate::session::Session> {
         let paired = self.shared.trust.get(peer).ok_or(Error::NotPaired(*peer))?;
         let (session, _) = self
             .pool
             .session(&self.endpoint, &self.shared, &paired)
             .await?;
-        Ok(session.connection)
+        Ok(session)
     }
 
     /// Sends one request to a paired device, connecting first if needed.

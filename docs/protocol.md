@@ -300,7 +300,7 @@ The reference implementation also applies the following by default. They are not
 | Items accepted from one paired device | 30 a minute (a setting, at most 600) |
 | Clipboard text accepted | 256 KiB (a setting) |
 | Connections kept open to or from one paired device | 8; the oldest are closed with 429 beyond that |
-| Idle session connection closed after | 2 minutes |
+| Idle session connection closed after | 2 minutes without a request. A connection that a transfer or a window that is shown is using is not idle, and the time starts again when it lets go |
 | Pairing connections served at once | 8; a newcomer pushes out the oldest one that has shown no valid proof |
 | Time a person has to approve a pairing request | 2 minutes |
 | Lifetime of a pairing ticket | 5 minutes (a setting, from 30 seconds to 15 minutes) |
@@ -471,7 +471,7 @@ Numbers are big-endian. The `kind` byte says what a unidirectional stream carrie
 - The sender writes the whole list of a transfer to its lane 0 before it writes a span, an `End` or a `Skip` of that transfer to any lane.
 - The receiver reads lane 0 of a transfer up to the end of its list before it reads any other lane of that transfer, and it does not hold back the lanes of a transfer whose list is in because the list of another transfer is not.
 
-**Lane 0 is opened first.** A lane holds one of the receiver's unidirectional streams from the moment it is opened until it ends, whether or not anything is read from it. Until the list of a transfer is in, the receiver reads nothing from the other lanes of that transfer, so they hold their streams and move nothing. A sender therefore opens lane 0 of a transfer before it opens the others, so that a transfer that holds a stream holds one for its list, and a receiver grants no more lanes to the transfers that a peer may have going at once than its count of lanes allows (see the rules for the receiver). Without both, such lanes could fill the limit before lane 0 of a transfer was opened, and nothing would move until the timer ended the transfer.
+**Lane 0 is opened first.** A lane holds one of the receiver's unidirectional streams from the moment it is opened until it ends, whether or not anything is read from it. Until the list of a transfer is in, the receiver reads nothing from the other lanes of that transfer, so they hold their streams and move nothing. A sender therefore opens lane 0 of a transfer before it opens the others, so that a transfer that holds a stream holds one for its list, and a receiver grants no more lanes to the transfers that a peer may have going at once than its count of lanes allows (see the rules for the receiver). Without both, such lanes could take up the whole count of lanes before lane 0 of a transfer was opened, and nothing would move until the timer ended the transfer.
 
 A sender SHOULD send a lane at a lower priority than the streams of requests, so that data buffered for a lane never goes out before data buffered for a request. That is all that priority gives. Flow-control credit is taken when data is written, so lanes that keep writing keep the credit used up, and a request written during a transfer waits for the next credit update, like a lane does. A receiver sends one after it has read an eighth of the connection window.
 
