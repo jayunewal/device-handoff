@@ -25,6 +25,14 @@ fn a_folder_is_hidden_and_stays_a_folder_that_can_be_used() {
 
     let after = fs::metadata(&staging).unwrap();
     assert!(after.is_dir());
+    // Who may write is not changed. On Windows the standard library's permissions are all the
+    // attributes, hidden included, so only the read-only flag can be compared there (the tests
+    // for Windows below look at the others).
+    assert_eq!(
+        after.permissions().readonly(),
+        before.permissions().readonly()
+    );
+    #[cfg(unix)]
     assert_eq!(after.permissions(), before.permissions());
     assert_eq!(fs::read_to_string(staging.join("part")).unwrap(), "before");
     fs::write(staging.join("later"), "after").unwrap();
