@@ -230,6 +230,12 @@ impl Sender {
         self.next_number
     }
 
+    /// The epoch of the frames that are made now. It changes with
+    /// [`new_epoch`](Self::new_epoch), and the first frame of an epoch is a key frame.
+    pub fn epoch(&self) -> u32 {
+        self.epoch
+    }
+
     /// Whether the next frame has to be something other than a plain delta, so the source
     /// should encode again even if the screen has not changed. A screen that has not changed
     /// delivers no new picture, and without one a lost frame would never be replaced.
