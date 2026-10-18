@@ -229,7 +229,8 @@ jobs:
   #
   # Mac jobs are the ones that wait: GitHub runs five of them at a time for the whole repository,
   # and a run needs four. So these two keep what Cargo builds for the library (the dependencies,
-  # which are most of it) from one run to the next.
+  # which are most of it) from one run to the next, and the iPhone job builds its simulator for
+  # one processor and boots it while the app builds.
   app-mac:
     name: App (macOS)
     needs: changes
@@ -300,10 +301,19 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+      - name: Start an iPhone simulator
+        # It boots (two or three minutes) while the app is built, and the step after the build
+        # waits for it. A simulator that cannot start fails this step, not the job's hour.
+        run: |
+          set -eu
+          udid=$(xcrun simctl list devices available | grep 'iPhone' | tail -n 1 | grep -oE '[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}')
+          echo "Simulator: $udid"
+          echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
+          xcrun simctl boot "$udid"
       - uses: dtolnay/rust-toolchain@stable
         with:
-          # An iPhone or iPad, and a simulator on either kind of Mac.
-          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+          # An iPhone or iPad, and the simulator of this Mac.
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
       - uses: Swatinem/rust-cache@v2
         with:
           # The folder that Cargokit builds in: apps/baton/rust_builder/README.md says why.
@@ -335,19 +345,22 @@ jobs:
           for symbol in frb_get_rust_content_hash frb_pde_ffi_dispatcher_primary frb_init_frb_dart_api_dl; do
             nm -gU "$lib" | grep -q " _$symbol\$" || { echo "$symbol is missing from $lib" >&2; exit 1; }
           done
-      - name: Start an iPhone simulator
+      - name: Wait for the simulator
         # A simulator that does not come up should fail here, not use up the job's hour.
         timeout-minutes: 10
-        run: |
-          set -eu
-          udid=$(xcrun simctl list devices available | grep 'iPhone' | tail -n 1 | grep -oE '[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}')
-          echo "Simulator: $udid"
-          echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
-          xcrun simctl bootstatus "$udid" -b
+        run: xcrun simctl bootstatus "$SIMULATOR_UDID"
       - name: Start the app in the simulator
         timeout-minutes: 25
         working-directory: apps/baton
-        run: flutter test integration_test -d "$SIMULATOR_UDID" -v
+        env:
+          # Only the simulator of this Mac is used. Left alone, a debug build of the pods is made
+          # for the simulator of an Intel Mac as well, which doubles what Cargo and the compilers
+          # do. This file reaches every target, the pods included, and Xcode reads it by itself.
+          XCODE_XCCONFIG_FILE: ${{ runner.temp }}/simulator.xcconfig
+        run: |
+          set -eu
+          printf 'ARCHS[sdk=iphonesimulator*] = %s\n' "$(uname -m)" > "$XCODE_XCCONFIG_FILE"
+          flutter test integration_test -d "$SIMULATOR_UDID" -v
       - name: Show what the simulator logged about the app
         # An app that closes as it opens leaves the test waiting for a window that never
         # comes. Its crash report and its log say why. So does the log of tccd, which asks the
