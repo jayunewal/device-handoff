@@ -1410,6 +1410,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_session_that_ends_before_its_control_stream_is_opened_still_opens_and_ends_it() {
+        let mut rig = Rig::new().await;
+        // The platform lets go of the session at once, before the stream has been opened.
+        rig.handle.end();
+        // The viewer, which waits for the stream, gets it, and its end.
+        let mut control = rig.source_control().await;
+        while read_source_message(&mut control).await.is_some() {}
+        assert_eq!(rig.ended().await, End::Local);
+    }
+
+    #[tokio::test]
     async fn dropping_the_handle_ends_the_session() {
         let rig = Rig::new().await;
         let Rig {

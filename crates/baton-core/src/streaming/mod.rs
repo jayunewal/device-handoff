@@ -322,13 +322,18 @@ pub(super) enum WriteEnd {
     Peer,
 }
 
+/// How long a session that has ended already has to open its control stream. Opening a stream
+/// takes no time unless the other device has not allowed another.
+const OPEN_GRACE: Duration = Duration::from_secs(1);
+
 /// Opens this device's control stream, writes the 17 bytes that start every stream of a session,
 /// and then each message that waits in `queue`, one after the other, until `over` is cancelled.
 ///
 /// The stream is then finished, or reset with the code that says why if `how` says that the
 /// session ended because the other device broke a rule, or because of a fault here. The other
 /// side reads the end of the stream as the end of the session, and a reset as a statement that
-/// the session broke a rule.
+/// the session broke a rule. A session that has ended before the stream was opened opens it all
+/// the same, and ends it at once, because the other side that has seen no stream waits for one.
 pub(super) async fn write_control<M: Message>(
     connection: &Connection,
     session: SessionId,
@@ -337,8 +342,11 @@ pub(super) async fn write_control<M: Message>(
     how: &OnceLock<End>,
 ) -> std::result::Result<(), WriteEnd> {
     let opened = tokio::select! {
-        () = over.cancelled() => return Ok(()),
         opened = connection.open_uni() => opened,
+        () = async {
+            over.cancelled().await;
+            tokio::time::sleep(OPEN_GRACE).await;
+        } => return Ok(()),
     };
     let Ok(mut send) = opened else {
         return Err(WriteEnd::Connection);
