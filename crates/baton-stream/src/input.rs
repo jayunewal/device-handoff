@@ -198,7 +198,9 @@ pub enum Event {
         /// Whether the system repeats a key that is held.
         repeat: bool,
         /// The text that the key produced, which the Mac attaches to the event: at most
-        /// [`MAX_KEY_TEXT_UNITS`] UTF-16 units. An event with no key has some.
+        /// [`MAX_KEY_TEXT_UNITS`] UTF-16 units. An event with no key has some. Left out of the
+        /// message when there is none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         text: Option<String>,
     },
 }

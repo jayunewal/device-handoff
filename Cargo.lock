@@ -499,6 +499,7 @@ version = "0.1.0"
 dependencies = [
  "baton-proto",
  "ciborium",
+ "data-encoding",
  "proptest",
  "serde",
  "thiserror 2.0.21",
