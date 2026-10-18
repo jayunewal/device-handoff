@@ -38,7 +38,9 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::input::{Button, Event, MAX_EVENTS_PER_SECOND, Modifiers, NO_KEY, PointerAction};
+use crate::input::{
+    Button, Event, MAX_BATCH, MAX_EVENTS_PER_SECOND, Modifiers, NO_KEY, PointerAction,
+};
 
 /// How long a picture may have been out of date when an event names it.
 pub const MAX_STALE: Duration = Duration::from_millis(500);
@@ -48,6 +50,12 @@ pub const GEOMETRY_KEPT: Duration = Duration::from_secs(1);
 
 /// Most keys held down at once. A person has ten fingers.
 pub const MAX_HELD_KEYS: usize = 32;
+
+/// Most events that the gate lets through in a second. A viewer keeps to
+/// [`MAX_EVENTS_PER_SECOND`] by its own clock, but the gate counts by the time that events
+/// arrive, and a stall on the way bunches events that were sent apart. A batch more than the rate
+/// is room for that, so that only a viewer that breaks its limit loses events.
+const MAX_EVENTS_COUNTED: usize = MAX_EVENTS_PER_SECOND + MAX_BATCH;
 
 /// Most frames whose geometry is kept, whatever the frame rate.
 const MAX_FRAMES_KEPT: usize = 512;
@@ -199,6 +207,12 @@ impl Geometry {
 }
 
 /// Why an event was dropped.
+///
+/// When two reasons dropped the same number of events, the notice names the one that comes first
+/// here ([`Notices::poll`]). So the order is an order of preference, and of the reasons that the
+/// gate gives [`Reason::NotPressed`] is last on purpose: a tap whose press was dropped has its
+/// release dropped as `NotPressed`, one of each, and the notice has to name the press. A reason
+/// added later goes before it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Reason {
     /// The event has a number or a length that is not allowed. A viewer that sends this is
@@ -212,7 +226,8 @@ pub enum Reason {
     Locked,
     /// The shared window is not on screen.
     NotOnScreen,
-    /// The viewer sent more events in a second than it may.
+    /// The viewer sent more events in a second than it may. The gate allows a batch more than
+    /// [`MAX_EVENTS_PER_SECOND`], because events that were sent apart can arrive together.
     TooFast,
     /// The frame that the event names is not one whose geometry is kept.
     FrameUnknown,
@@ -234,6 +249,10 @@ pub enum Reason {
     TooManyHeld,
     /// A release of a button or a key that this session did not press.
     NotPressed,
+    /// A rule that a later version has and this one does not know. The gate never gives it. It
+    /// is what a notice from a newer source reads as.
+    #[serde(other)]
+    Other,
 }
 
 /// Whether the shared window has the keyboard.
@@ -380,7 +399,11 @@ impl KeyEvent<'_> {
 
 /// The rules for events from a viewer, with what they need to remember: the geometry of recent
 /// frames, when the picture changed, and what has been pressed.
-#[derive(Debug, Default)]
+///
+/// `Debug` shows how much the gate remembers and not what: the codes of the keys that are held
+/// and the places that were pressed are what a person typed and tapped, and a password is typed
+/// one key at a time.
+#[derive(Default)]
 pub struct Gate {
     /// The frames that were sent, oldest first.
     frames: VecDeque<Recorded>,
@@ -394,6 +417,19 @@ pub struct Gate {
     last: Option<Point>,
     /// The times of the events of the last second that count against the rate.
     recent: VecDeque<Duration>,
+}
+
+// How much is held and remembered, never which keys or where, as for the events themselves.
+impl fmt::Debug for Gate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Gate")
+            .field("frames", &self.frames.len())
+            .field("changes", &self.changes.len())
+            .field("buttons_held", &self.buttons.len())
+            .field("keys_held", &self.keys.len())
+            .field("recent", &self.recent.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Gate {
@@ -551,7 +587,7 @@ impl Gate {
         if !context.on_screen || !context.window.is_sound() {
             return Err(Reason::NotOnScreen);
         }
-        if self.recent.len() >= MAX_EVENTS_PER_SECOND {
+        if self.recent.len() >= MAX_EVENTS_COUNTED {
             return Err(Reason::TooFast);
         }
         self.recent.push_back(context.now);
@@ -1616,7 +1652,7 @@ mod tests {
     }
 
     #[test]
-    fn the_viewer_cannot_send_more_than_its_rate() {
+    fn the_viewer_cannot_send_more_than_its_rate_and_a_batch() {
         let mut gate = gate_with_frame();
         let context = context(10 * MS, &[]);
         posted(gate.handle(
@@ -1624,7 +1660,7 @@ mod tests {
             &pointer(7, 0.5, 0.5, PointerAction::Down(Button::Left)),
         ));
         let event = pointer(7, 0.5, 0.5, PointerAction::Move);
-        for _ in 1..MAX_EVENTS_PER_SECOND {
+        for _ in 1..MAX_EVENTS_PER_SECOND + MAX_BATCH {
             posted(gate.handle(&context, &event));
         }
         assert_eq!(dropped(gate.handle(&context, &event)), Reason::TooFast);
@@ -1643,6 +1679,46 @@ mod tests {
         // And the rate is a rate: a second later there is room again.
         let later = super::tests::context(10 * MS + Duration::from_secs(1), &[]);
         assert!(matches!(gate.handle(&later, &event), Decision::Post(_)));
+    }
+
+    /// A viewer that keeps to its rate exactly sends batches of four moves every 1/60 s, which is
+    /// 240 events a second by its clock. They take 20 ms on the way, batch 100 is `held_up`
+    /// longer, and nothing overtakes it. Gives the first batch that lost an event, if any.
+    fn first_batch_that_loses_an_event(held_up: Duration) -> Option<u64> {
+        let mut gate = gate_with_frame();
+        let event = pointer(7, 0.5, 0.5, PointerAction::Move);
+        let mut arrived = Duration::ZERO;
+        for batch in 0_u64..600 {
+            let sent = Duration::from_nanos((batch * 4 + 3) * 1_000_000_000 / 240);
+            let late = if batch == 100 {
+                held_up
+            } else {
+                Duration::ZERO
+            };
+            arrived = arrived.max(sent + 20 * MS + late);
+            for _ in 0..4 {
+                let decision = gate.handle(&context(arrived, &[]), &event);
+                if !matches!(decision, Decision::Post(_)) {
+                    return Some(batch);
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn a_viewer_that_keeps_to_its_rate_loses_nothing_to_jitter() {
+        assert_eq!(first_batch_that_loses_an_event(Duration::ZERO), None);
+        assert_eq!(first_batch_that_loses_an_event(10 * MS), None);
+    }
+
+    #[test]
+    fn a_stall_on_the_way_costs_a_viewer_at_its_rate_nothing_until_it_outlasts_a_batch() {
+        // A quarter of a second without an arrival bunches 16 batches, 64 events, and those with
+        // the 236 that arrive in the next second are 300: the rate and a batch, less a batch.
+        assert_eq!(first_batch_that_loses_an_event(250 * MS), None);
+        // Another 50 ms bunches 4 batches more, and that is over it.
+        assert!(first_batch_that_loses_an_event(300 * MS).is_some());
     }
 
     #[test]
@@ -1795,6 +1871,66 @@ mod tests {
         assert!(!shown.contains("hunter2"), "{shown}");
         assert!(shown.contains("text_bytes: Some(7)"), "{shown}");
     }
+
+    #[test]
+    fn the_gate_does_not_print_which_keys_are_held() {
+        let mut gate = gate_with_frame();
+        let context = context(10 * MS, &[]);
+        for code in [224, 225, 226] {
+            posted(gate.handle(&context, &key(code, true)));
+        }
+        let shown = format!("{gate:?}");
+        for code in ["224", "225", "226"] {
+            assert!(!shown.contains(code), "{shown}");
+        }
+        assert!(shown.contains("keys_held: 3"), "{shown}");
+    }
+
+    #[test]
+    fn the_notice_of_a_tap_that_did_nothing_names_the_press_and_not_the_release() {
+        let mut gate = gate_with_frame();
+        let mut notices = Notices::new();
+        // A window of another application covers the whole window, so the press is dropped, and
+        // so is the release of a press that this session never made: one reason of each.
+        let in_front = [other_app(window())];
+        let context = context(10 * MS, &in_front);
+        let tap = [
+            PointerAction::Down(Button::Left),
+            PointerAction::Up(Button::Left),
+        ];
+        let reasons: Vec<Reason> = tap
+            .into_iter()
+            .map(|action| dropped(gate.handle(&context, &pointer(7, 0.5, 0.5, action))))
+            .collect();
+        assert_eq!(reasons, [Reason::Covered, Reason::NotPressed]);
+        for reason in reasons {
+            notices.dropped(reason);
+        }
+        assert_eq!(
+            notices.poll(10 * MS),
+            Some(Notice {
+                reason: Reason::Covered,
+                count: 1
+            })
+        );
+    }
+
+    #[test]
+    fn a_reason_of_a_later_version_is_read_as_other() {
+        let mut bytes = Vec::new();
+        ciborium::into_writer("FromALaterVersion", &mut bytes).expect("encode");
+        let reason: Reason = ciborium::from_reader(&bytes[..]).expect("a reason");
+        assert_eq!(reason, Reason::Other);
+
+        // The ones that this version gives keep their names.
+        for reason in [Reason::Covered, Reason::NotPressed, Reason::TooFast] {
+            let mut bytes = Vec::new();
+            ciborium::into_writer(&reason, &mut bytes).expect("encode");
+            let back: Reason = ciborium::from_reader(&bytes[..]).expect("a reason");
+            assert_eq!(back, reason);
+        }
+    }
+
     /// One step of a session, as the platform and the viewer would produce it.
     #[derive(Debug, Clone)]
     // The facts of a session are independent of each other, and the test wants every mix.

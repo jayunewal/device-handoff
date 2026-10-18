@@ -30,8 +30,9 @@
 //!
 //! This crate has no clock, so [`validate_batch`] does not count events in time. The gate keeps
 //! the rate, from the time that it is given with each event, and drops what is over
-//! [`MAX_EVENTS_PER_SECOND`]. The session goes on: a viewer that sends too fast has lost events,
-//! and has not broken the format.
+//! [`MAX_EVENTS_PER_SECOND`] and one batch, which is room for a stall on the way that bunches
+//! events that were sent apart. The session goes on: a viewer that sends too fast has lost
+//! events, and has not broken the format.
 //!
 //! Typed text and key codes are secrets (a password is typed one key at a time), so `Debug`
 //! does not print them: a key event shows whether it went down and how long its text is.
@@ -43,7 +44,8 @@ use serde::{Deserialize, Serialize};
 /// Most events in one batch.
 pub const MAX_BATCH: usize = 64;
 
-/// Most events a viewer may send in a second. The gate keeps the count and drops what is over.
+/// Most events a viewer may send in a second, by its own clock. The gate keeps the count by the
+/// time that events arrive, and drops what is over this and a batch ([`MAX_BATCH`]).
 pub const MAX_EVENTS_PER_SECOND: usize = 240;
 
 /// Longest text that a key can carry, in UTF-16 units.
