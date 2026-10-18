@@ -7,19 +7,19 @@
 //! out, and [`Staging`] holds its bytes. They are separate so that each is tested alone, and they
 //! have to agree: a file that the staging has checked is a file that the ledger has settled, and
 //! the other way round. The lanes of an attempt run side by side and in any order, so the
-//! agreement is kept here, in the order of the calls and in one flag that a check and the end of
-//! the transfer share:
+//! agreement is kept here, in the order of the calls and in one gate that every call and the end
+//! of the transfer share:
 //!
 //! - **`End` is recorded before the disk is asked** whether the file is complete, and **a span is
 //!   written before the check is asked for**. A file is checked when both have happened, in either
 //!   order and on different lanes, and [`Ledger::start_check`] gives the check to exactly one of
 //!   the lanes that got there. So a file never waits for a check that no lane is going to make.
-//! - **A check and its outcome are one step as far as the end of the transfer can tell.** Putting
-//!   the items in place ends the transfer, and it has to find every file that was checked settled
-//!   in the ledger, or `Done` would name a file that is in place as failed. A check holds the flag
-//!   open from the moment it takes the hash to the moment it writes the outcome, and
-//!   [`Intake::conclude`] closes it first, which waits for a check that is under way and keeps the
-//!   next from starting.
+//! - **A call and the end of the transfer do not overlap.** Putting the items in place ends the
+//!   transfer, and it has to find every file that was checked settled in the ledger, or `Done` would
+//!   name a file that is in place as failed. Every call that takes a frame holds the gate open from
+//!   its start to its end, a check included, from the moment it takes the hash to the moment it
+//!   writes the outcome. [`Intake::conclude`] closes the gate, which waits for the calls that are
+//!   under way and turns away the ones that come after.
 //! - **A file that fails fails alone.** The error of one file's disk work gives that file its
 //!   outcome and removes what is staged of it, and the lane reads on. Only a full disk stops the
 //!   lane, because every file after this one would fail the same way.
@@ -27,13 +27,22 @@
 //!   one attempt to the next, and each attempt has a book of its own. A file that this attempt did
 //!   not check, because the sender did not send it again or skipped it, is removed before the items
 //!   are put in place: the sender may hold another file under that name by now.
+//! - **An attempt that is over does nothing.** The books of two attempts share one staging folder,
+//!   and neither knows what the other has been told of a file. A late `skip` of the old attempt
+//!   would drop a file that the new one has checked, and a late span of the old attempt would
+//!   complete a file for a book that has no `End`, so that the new book, which holds one, never
+//!   asks for the check. So the book of an attempt is [retired](Intake::retire) before the next
+//!   attempt's book takes its first call. That closes the gate as `conclude` does: it waits for the
+//!   calls under way, and every call after that is [`Gone`](Halt::Gone). A lane that was stopped
+//!   can be in the middle of a write, or hold a frame it has not applied, so stopping its stream is
+//!   not enough: the retiring is what waits.
 //!
 //! Every method is blocking disk work, apart from the ones that only look at the ledger, and is
-//! called on a thread meant for blocking.
+//! called on a thread meant for blocking. `retire` and `conclude` wait for the other calls.
 
 use std::{
     fmt,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard},
 };
 
 use baton_proto::transfer::{Done, FailReason, list::Listing};
@@ -52,7 +61,8 @@ pub enum Halt {
     Violation(Violation),
     /// The disk is full. The file that was being written has failed with `NoSpace`.
     NoSpace,
-    /// The transfer has been put in place, or discarded, and takes nothing more.
+    /// The transfer has been put in place, or discarded, or the attempt of this book is over, and
+    /// the book takes nothing more.
     Gone,
 }
 
@@ -66,13 +76,36 @@ pub struct Concluded {
     pub sent: (u32, u64),
 }
 
+/// Whether a book still takes calls. See the module documentation.
+///
+/// A call enters the gate and stays in it until the guard is dropped, and any number of calls can
+/// be in it at once. Closing the gate waits for them, and nothing enters after that.
+struct Gate(RwLock<bool>);
+
+impl Gate {
+    const fn new() -> Self {
+        Self(RwLock::new(true))
+    }
+
+    /// Enters the gate: `Gone` if it is closed. It is held open for as long as the guard lives.
+    fn enter(&self) -> Result<RwLockReadGuard<'_, bool>, Halt> {
+        let open = self.0.read().unwrap_or_else(PoisonError::into_inner);
+        if *open { Ok(open) } else { Err(Halt::Gone) }
+    }
+
+    /// Closes the gate, once the calls in it have returned. Says whether it was open.
+    fn close(&self) -> bool {
+        let mut open = self.0.write().unwrap_or_else(PoisonError::into_inner);
+        std::mem::replace(&mut *open, false)
+    }
+}
+
 /// What one attempt knows of the files of a transfer, and the staging folder they are written to.
 pub struct Intake {
     listing: Arc<Listing>,
     staging: Arc<Staging>,
     ledger: Mutex<Ledger>,
-    /// Whether the transfer is being put in place. See the module documentation.
-    closed: Mutex<bool>,
+    gate: Gate,
 }
 
 impl fmt::Debug for Intake {
@@ -93,7 +126,7 @@ impl Intake {
             listing,
             staging,
             ledger: Mutex::new(ledger),
-            closed: Mutex::new(false),
+            gate: Gate::new(),
         }
     }
 
@@ -118,8 +151,12 @@ impl Intake {
     ///
     /// A span that the staging holds already, or that another lane is writing, is dropped: the
     /// first bytes stay (protocol.md section 8, rules for the receiver). A file that fails fails
-    /// alone, and the call is `Ok`.
+    /// alone, and the call is `Ok`. A span that is in hand when another lane skips the file can
+    /// still make the staged file; `conclude` removes it with the others that were not checked.
+    ///
+    /// `Gone` if the book was retired or concluded.
     pub fn span(&self, file: u32, span: u32, data: &[u8]) -> Result<bool, Halt> {
+        let _open = self.gate.enter()?;
         if self.wants(file) {
             match self.staging.write_span(file, span, data) {
                 Ok(Written::New { complete: true }) => self.check(file)?,
@@ -134,8 +171,9 @@ impl Intake {
     /// every span is written. Says whether every file is settled now.
     ///
     /// A violation if `file` is not a file of the list, or if the sender has said `End` or `Skip`
-    /// for it in this attempt already.
+    /// for it in this attempt already. `Gone` if the book was retired or concluded.
     pub fn end(&self, file: u32, hash: Hash) -> Result<bool, Halt> {
+        let _open = self.gate.enter()?;
         lock(&self.ledger)
             .end(file, hash)
             .map_err(Halt::Violation)?;
@@ -150,8 +188,9 @@ impl Intake {
     /// Records that the sender will not send file `file`, and removes what is staged of it. Says
     /// whether every file is settled now.
     ///
-    /// A violation under the same conditions as for [`end`](Self::end).
+    /// A violation under the same conditions as for [`end`](Self::end), and `Gone` as there.
     pub fn skip(&self, file: u32) -> Result<bool, Halt> {
+        let _open = self.gate.enter()?;
         lock(&self.ledger).skip(file).map_err(Halt::Violation)?;
         // Whatever the file came out as before, its bytes are of no use now. One that cannot be
         // removed is on record in the staging, and keeps what it is inside from being put in place.
@@ -159,13 +198,25 @@ impl Intake {
         Ok(self.is_settled())
     }
 
+    /// Ends the attempt of this book without putting anything in place: the calls under way
+    /// return first, and every call after that is `Gone`. Call it before the book of the next
+    /// attempt takes its first call, and after the stream of every lane of this attempt is
+    /// stopped. It can be called again, and after `conclude`.
+    pub fn retire(&self) {
+        self.gate.close();
+    }
+
     /// Ends the transfer: puts what was checked in place, and says how every file came out. A file
     /// that has no outcome yet gets `unsettled`.
     ///
-    /// Nothing is checked after this. `Gone` if the transfer was discarded.
+    /// The calls under way return first, and nothing is taken after this: `Gone` is the answer
+    /// to every call, including a second `conclude`, which would not know what the first has
+    /// put in place. The book gives its outcome once, and the caller keeps it. `Gone` too if the
+    /// transfer was discarded or the book was retired.
     pub fn conclude(&self, unsettled: FailReason) -> Result<Concluded, Halt> {
-        // A check that is under way ends, with its outcome in the ledger, before this goes on.
-        *lock(&self.closed) = true;
+        if !self.gate.close() {
+            return Err(Halt::Gone);
+        }
         let (mut failures, unchecked, sent) = {
             let ledger = lock(&self.ledger);
             (
@@ -190,28 +241,22 @@ impl Intake {
     }
 
     /// Checks file `file` against the hash that `End` gave, if the sender has said `End`, the file
-    /// has no outcome, and no one else has been given the check.
+    /// has no outcome, and no one else has been given the check. The caller is in the gate.
     fn check(&self, file: u32) -> Result<(), Halt> {
-        let closed = lock(&self.closed);
-        if *closed {
-            return Err(Halt::Gone);
-        }
         let Some(hash) = lock(&self.ledger).start_check(file) else {
             return Ok(());
         };
-        let result = match self.staging.verify(file, &hash) {
+        match self.staging.verify(file, &hash) {
             Ok(()) => {
                 lock(&self.ledger).settle(file, Ok(()));
                 Ok(())
             }
             Err(error) => self.fail(file, &error),
-        };
-        drop(closed);
-        result
+        }
     }
 
     /// Gives file `file` the outcome that `error` calls for, and removes what is staged of it.
-    /// `Ok` if the lane can go on, because the error is the file's own.
+    /// `Ok` if the lane can go on, because the error is the file's own. The caller is in the gate.
     fn fail(&self, file: u32, error: &StageError) -> Result<(), Halt> {
         let reason = match error {
             StageError::Discarded | StageError::Placed => return Err(Halt::Gone),
@@ -245,8 +290,12 @@ mod tests {
     use std::{
         fs,
         path::{Path, PathBuf},
-        sync::Barrier,
+        sync::{
+            Barrier,
+            atomic::{AtomicBool, Ordering},
+        },
         thread,
+        time::Duration,
     };
 
     use baton_proto::{id::TransferId, transfer::list::ListEntry};
@@ -444,7 +493,7 @@ mod tests {
         assert!(!intake.skip(0).unwrap());
         assert!(!intake.wants(0));
         assert!(!rig.staged().join("x").exists());
-        // A span that was on its way when the sender gave up on the file makes no file.
+        // A span that comes after the skip is dropped, and makes no file.
         assert!(!intake.span(0, 1, &content[MIB..]).unwrap());
         assert!(!rig.staged().join("x").exists());
         intake.span(1, 0, b"yyyy").unwrap();
@@ -615,14 +664,36 @@ mod tests {
             [(0, FailReason::Incomplete), (1, FailReason::Incomplete)]
         );
 
-        // A span that comes late, and a file that would be checked now.
+        // A span that comes late, a file that would be checked now, and a skip.
         assert!(matches!(
             intake.span(0, 1, &content[MIB..]),
             Err(Halt::Gone)
         ));
         assert!(matches!(intake.end(1, hash(b"")), Err(Halt::Gone)));
+        assert!(matches!(intake.skip(1), Err(Halt::Gone)));
         assert!(!rig.root().join("big").exists());
         assert!(!rig.root().join("empty").exists());
+    }
+
+    #[test]
+    fn a_book_gives_its_outcome_once() {
+        let rig = Rig::new(&[file("a", 3), file("b", 3)]);
+        let intake = rig.attempt();
+        intake.span(0, 0, b"aaa").unwrap();
+        assert!(!intake.end(0, hash(b"aaa")).unwrap());
+
+        let concluded = intake.conclude(FailReason::Incomplete).unwrap();
+        assert_eq!(failed(&concluded), [(1, FailReason::Incomplete)]);
+        assert_eq!(concluded.sent, (2, 6));
+
+        // A skip that comes late is not taken, so a second conclusion has nothing to say that the
+        // first did not, and it says nothing.
+        assert!(matches!(intake.skip(1), Err(Halt::Gone)));
+        assert!(matches!(
+            intake.conclude(FailReason::Incomplete),
+            Err(Halt::Gone)
+        ));
+        assert!(!intake.is_settled());
     }
 
     #[test]
@@ -694,5 +765,161 @@ mod tests {
             let placed = fs::read(rig.root().join(format!("f{i:03}"))).unwrap();
             assert_eq!(&placed, content, "file {i}");
         }
+    }
+
+    // Attempts that overlap.
+
+    #[test]
+    fn a_late_skip_or_end_of_a_retired_book_does_not_undo_what_the_next_attempt_checked() {
+        let rig = Rig::new(&[file("y", 3)]);
+        let old = rig.attempt();
+        let new = rig.attempt();
+        old.retire();
+        new.span(0, 0, b"yyy").unwrap();
+        assert!(new.end(0, hash(b"yyy")).unwrap());
+
+        // The lanes of the old attempt had these in hand when the attempt ended.
+        assert!(matches!(old.skip(0), Err(Halt::Gone)));
+        assert!(matches!(old.end(0, hash(b"other")), Err(Halt::Gone)));
+        assert!(matches!(old.span(0, 0, b"zzz"), Err(Halt::Gone)));
+
+        let concluded = new.conclude(FailReason::Incomplete).unwrap();
+        all_in_place(&concluded);
+        assert_eq!(fs::read(rig.root().join("y")).unwrap(), b"yyy");
+    }
+
+    #[test]
+    fn a_late_span_of_a_retired_book_does_not_take_the_check_from_the_next_attempt() {
+        let content = bytes(10, MIB + 5);
+        let rig = Rig::new(&[file("big", content.len() as u64)]);
+        let old = rig.attempt();
+        let new = rig.attempt();
+        old.retire();
+        // The new attempt has `End`, and span 1 is missing.
+        new.span(0, 0, &content[..MIB]).unwrap();
+        assert!(!new.end(0, hash(&content)).unwrap());
+
+        // The old attempt's lane was writing span 1 when the attempt ended.
+        assert!(matches!(old.span(0, 1, &content[MIB..]), Err(Halt::Gone)));
+        // So span 1 of the new attempt is the one that completes the file, and asks for the check.
+        assert!(new.span(0, 1, &content[MIB..]).unwrap());
+
+        let concluded = new.conclude(FailReason::Incomplete).unwrap();
+        all_in_place(&concluded);
+        assert_eq!(fs::read(rig.root().join("big")).unwrap(), content);
+    }
+
+    #[test]
+    fn a_retired_book_puts_nothing_in_place_and_leaves_what_it_checked_to_the_next_attempt() {
+        let rig = Rig::new(&[file("a", 3)]);
+        let old = rig.attempt();
+        old.span(0, 0, b"aaa").unwrap();
+        assert!(old.end(0, hash(b"aaa")).unwrap());
+
+        old.retire();
+        old.retire();
+
+        assert!(matches!(
+            old.conclude(FailReason::Incomplete),
+            Err(Halt::Gone)
+        ));
+        assert!(!rig.root().join("a").exists());
+        // The file the old attempt checked is still held, and the next attempt checks it again.
+        let new = rig.attempt();
+        assert!(!new.span(0, 0, b"aaa").unwrap(), "held already");
+        assert!(new.end(0, hash(b"aaa")).unwrap());
+        let concluded = new.conclude(FailReason::Incomplete).unwrap();
+        all_in_place(&concluded);
+        assert_eq!(fs::read(rig.root().join("a")).unwrap(), b"aaa");
+    }
+
+    #[test]
+    fn retiring_a_book_waits_for_the_calls_under_way() {
+        const FILES: usize = 300;
+        let contents: Vec<Vec<u8>> = (0..FILES)
+            .map(|i| bytes(u8::try_from(i % 251).unwrap(), 10 + i))
+            .collect();
+        let entries: Vec<ListEntry> = contents
+            .iter()
+            .enumerate()
+            .map(|(i, content)| file(&format!("f{i:03}"), content.len() as u64))
+            .collect();
+        let rig = Rig::new(&entries);
+        let intake = rig.attempt();
+        let start = Barrier::new(2);
+        // How many files hold all their spans.
+        let complete = || {
+            (0..FILES)
+                .filter(|&i| rig.staging.is_complete(u32::try_from(i).unwrap()).unwrap())
+                .count()
+        };
+
+        thread::scope(|scope| {
+            let writer = scope.spawn(|| {
+                start.wait();
+                let mut written = 0;
+                for (i, content) in contents.iter().enumerate() {
+                    match intake.span(u32::try_from(i).unwrap(), 0, content) {
+                        Ok(_) => written += 1,
+                        Err(Halt::Gone) => break,
+                        Err(other) => panic!("{other:?}"),
+                    }
+                }
+                written
+            });
+            start.wait();
+            // The writer is in the middle of its files, and a call of it is likely under way.
+            while complete() < 5 {
+                thread::yield_now();
+            }
+
+            intake.retire();
+            let at_retire = complete();
+            writer.join().unwrap();
+
+            assert_eq!(
+                complete(),
+                at_retire,
+                "a call went on after the book was retired"
+            );
+        });
+    }
+
+    // The gate.
+
+    #[test]
+    fn a_gate_lets_calls_in_until_it_is_closed_and_it_closes_once() {
+        let gate = Gate::new();
+
+        assert!(gate.enter().is_ok());
+        assert!(gate.close());
+        assert!(!gate.close());
+        assert!(matches!(gate.enter(), Err(Halt::Gone)));
+    }
+
+    #[test]
+    fn closing_a_gate_waits_for_the_calls_in_it() {
+        let gate = Gate::new();
+        let done = AtomicBool::new(false);
+
+        thread::scope(|scope| {
+            let inside = gate.enter().unwrap();
+            let waiting = scope.spawn(|| {
+                gate.close();
+                done.store(true, Ordering::SeqCst);
+            });
+            // Long enough for a gate that does not wait to have closed.
+            thread::sleep(Duration::from_millis(100));
+            assert!(
+                !done.load(Ordering::SeqCst),
+                "the gate closed with a call in it"
+            );
+
+            drop(inside);
+            waiting.join().unwrap();
+
+            assert!(done.load(Ordering::SeqCst));
+        });
+        assert!(matches!(gate.enter(), Err(Halt::Gone)));
     }
 }
