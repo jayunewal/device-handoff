@@ -25,14 +25,6 @@
 //! Every failure comes out as the [`SkipReason`] that the file is skipped with, since a file that
 //! fails fails alone.
 
-#![cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "used by the lanes that write these frames, which come next"
-    )
-)]
-
 use std::{
     fs::{self, File},
     io,

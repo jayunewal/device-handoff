@@ -19,14 +19,6 @@
 //!   that is full of frames the lane has written already, and a thread of the lane's can read the
 //!   next one while the lane writes the last.
 
-#![cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "used by the lanes that write these frames, which come next"
-    )
-)]
-
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, OnceLock},
