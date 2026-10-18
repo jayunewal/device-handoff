@@ -32,6 +32,9 @@ import time
 HUNG = 124
 # How often the output is looked at while the command runs.
 POLL = 0.2
+# How long the --cleanup command may take. The iPhone job prints what the simulator logged, which
+# takes some time.
+CLEANUP_SECONDS = 180
 
 
 def stop(process, grace):
@@ -115,9 +118,9 @@ def main():
         )
         if args.cleanup:
             try:
-                subprocess.run(args.cleanup, shell=True, check=False, timeout=60)
+                subprocess.run(args.cleanup, shell=True, check=False, timeout=CLEANUP_SECONDS)
             except subprocess.TimeoutExpired:
-                print("::warning::The cleanup command did not end within a minute.", flush=True)
+                print(f"::warning::The cleanup command did not end within {CLEANUP_SECONDS} seconds.", flush=True)
     print(f"::error::The command hung every time it started ({args.attempts}).", flush=True)
     return HUNG
 

@@ -74,6 +74,35 @@ guard -- bash "$work/slow.sh" > /dev/null || status=$?
 check "a slow command: status" "$status" 0
 check "a slow command: starts" "$(lines "$STARTS")" 1
 
+# A command that takes long before the line, as the build does, is not a hang: the wait counts
+# from the line and not from the start. The gap before the last line lets the guard see the first
+# one on its own.
+rm -f "$STARTS"
+cat > "$work/build.sh" <<'EOF'
+echo x >> "$STARTS"
+sleep 1.2
+echo "waiting for it"
+sleep 0.3
+echo "got it"
+EOF
+status=0
+guard -- bash "$work/build.sh" > /dev/null || status=$?
+check "a long build: status" "$status" 0
+check "a long build: starts" "$(lines "$STARTS")" 1
+
+# A command that runs on long after the line that ends the wait, as the tests do, is left alone.
+rm -f "$STARTS"
+cat > "$work/tests.sh" <<'EOF'
+echo x >> "$STARTS"
+echo "waiting for it"
+echo "got it"
+sleep 1.2
+EOF
+status=0
+guard -- bash "$work/tests.sh" > /dev/null || status=$?
+check "long tests: status" "$status" 0
+check "long tests: starts" "$(lines "$STARTS")" 1
+
 # A hang is followed by a second start, and the cleanup runs between the two.
 rm -f "$STARTS" "$work/cleaned"
 cat > "$work/flaky.sh" <<'EOF'

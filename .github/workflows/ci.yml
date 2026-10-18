@@ -351,9 +351,11 @@ jobs:
             nm -gU "$lib" | grep -q " _$symbol\$" || { echo "$symbol is missing from $lib" >&2; exit 1; }
           done
       - name: Wait for the simulator
-        # A simulator that does not come up should fail here, not use up the job's hour.
+        # A simulator that does not come up should fail here, not use up the job's hour. One that
+        # went down during the build is started again because of -b. Without it this step would
+        # wait its ten minutes for a boot that nothing starts.
         timeout-minutes: 10
-        run: xcrun simctl bootstatus "$SIMULATOR_UDID"
+        run: xcrun simctl bootstatus "$SIMULATOR_UDID" -b
       - name: Start the app in the simulator
         timeout-minutes: 25
         working-directory: apps/baton
@@ -368,29 +370,20 @@ jobs:
           # Now and then Flutter never finds the app that it started in the simulator, and says
           # nothing more until the 25 minutes of this step are over. In a run that passed it
           # printed the first of the two lines below and, 2.6 seconds later, the second. A second
-          # start nearly always finds the app.
+          # start nearly always finds the app. Before it starts again, the app is stopped and the
+          # report below is printed, so that a run that passed on the second start still says
+          # what went wrong in the first.
           python3 "$GITHUB_WORKSPACE/.github/scripts/hang-guard.py" \
             --waiting 'Waiting for VM Service port to be available' \
             --finished 'VM Service URL on device' \
             --seconds 120 \
-            --cleanup 'xcrun simctl terminate "$SIMULATOR_UDID" io.github.jayunewal.baton' \
+            --cleanup 'xcrun simctl terminate "$SIMULATOR_UDID" io.github.jayunewal.baton; bash "$GITHUB_WORKSPACE/.github/scripts/simulator-report.sh"' \
             -- flutter test integration_test -d "$SIMULATOR_UDID" -v
       - name: Show what the simulator logged about the app
-        # An app that closes as it opens leaves the test waiting for a window that never
-        # comes. Its crash report and its log say why. So does the log of tccd, which asks the
-        # questions that the system puts in front of an app, such as the one about the camera
-        # (it writes the service and the app on lines of their own). The help of simctl lists the
-        # permissions that a simulator can be given in advance.
+        # An app that closes as it opens leaves the test waiting for a window that never comes.
+        # The script says why it may have. The guard around the test runs it too.
         if: failure()
-        run: |
-          xcrun simctl list devices booted || true
-          ls -l ~/Library/Logs/DiagnosticReports || true
-          for report in ~/Library/Logs/DiagnosticReports/Runner*; do
-            if [ -f "$report" ]; then echo "== $report"; head -c 8000 "$report"; fi
-          done
-          xcrun simctl spawn "$SIMULATOR_UDID" log show --last 30m --style compact --predicate 'process == "Runner"' | tail -n 100 || true
-          xcrun simctl spawn "$SIMULATOR_UDID" log show --last 30m --style compact --predicate 'process == "tccd" AND (eventMessage CONTAINS "kTCCServiceCamera" OR eventMessage CONTAINS "io.github.jayunewal.baton")' | tail -n 60 || true
-          xcrun simctl help privacy || true
+        run: bash .github/scripts/simulator-report.sh
 
   build:
     name: Build (${{ matrix.name }})
