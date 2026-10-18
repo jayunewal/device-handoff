@@ -264,6 +264,8 @@ pub(crate) struct SessionServer {
 
 impl ProtocolHandler for SessionServer {
     async fn accept(&self, connection: Connection) -> std::result::Result<(), AcceptError> {
+        // The gate has checked that the device is paired. It may open unidirectional streams too.
+        self.shared.uni.spawn(connection.clone());
         contained(
             "session connection",
             serve_connection(Arc::clone(&self.shared), connection),
@@ -540,6 +542,8 @@ async fn connect(endpoint: &Endpoint, shared: &Shared, peer: &PairedDevice) -> R
         }
     };
     note_contact(shared, peer.id, contact_hints(&connection)).await;
+    // The device may open unidirectional streams on a connection that this device made too.
+    shared.uni.spawn(connection.clone());
     Ok(Session {
         connection,
         peer: Arc::new(reply),

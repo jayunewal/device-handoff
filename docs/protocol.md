@@ -294,6 +294,7 @@ The reference implementation also applies the following by default. They are not
 | Connection attempts through a relay from the key of one paired device | 20 every 10 seconds |
 | Connection attempts through a relay from keys that are not paired and have answered a retry token | 20 every 10 seconds, all together |
 | Time for a request to arrive once its stream is open. On a pairing connection the time runs from when the connection was made, so opening the stream counts | 10 seconds |
+| Time for the start of a unidirectional stream to arrive once the receiver has accepted it | 10 seconds |
 | Time to wait for the response to a request | 30 seconds |
 | Handoff ids remembered | 1024, for 10 minutes |
 | Items accepted from one paired device | 30 a minute (a setting, at most 600) |
@@ -309,7 +310,7 @@ The reference implementation does not take part in transfers yet: it advertises 
 
 | Behaviour | Default |
 | --- | --- |
-| Unidirectional streams (lanes) a peer may open on a connection | 0, raised to 8 once the peer is known to be paired |
+| Unidirectional streams a peer may open on a connection | 0, raised once the peer is known to be paired to the sum of the counts that the device allows for the kinds of stream it takes (8 for lanes) |
 | Transfers a paired device may have going at once, counted across its connections | 2; a further offer is declined with `RateLimited` |
 | Lanes granted to a transfer | 4 |
 | Time a person has to answer an offer | 2 minutes |
@@ -520,7 +521,7 @@ This revision has no way to say which spans the receiver holds, so a transfer th
 
 ## 9. Window streaming
 
-A device can show one of its windows to a paired device. The **source** (a Mac) sends the picture of the window as a run of encoded **frames**, one unidirectional stream for each frame, and the **viewer** (an iPhone or an iPad) decodes them and shows the newest. A frame that is late is reset and replaced, and never sent again. [ADR 0009](adr/0009-window-streaming.md) records the design and why it is shaped this way. This section specifies the start of every stream of a session and the header of a frame of video. The offer, the control streams and the rules for a receiver that takes part are specified when the types that carry them are added. Until then no version takes part, and a receiver stops a stream of kind 2 or 3 with code 400, like a stream of any other kind it does not know (section 8).
+A device can show one of its windows to a paired device. The **source** (a Mac) sends the picture of the window as a run of encoded **frames**, one unidirectional stream for each frame, and the **viewer** (an iPhone or an iPad) decodes them and shows the newest. A frame that is late is reset and replaced, and never sent again. [ADR 0009](adr/0009-window-streaming.md) records the design and why it is shaped this way. This section specifies the start of every unidirectional stream, how a receiver takes a stream, and the header of a frame of video. The offer, the control streams and the rules for a receiver that takes part are specified when the types that carry them are added. Until then no version takes part, and a receiver stops a stream of kind 2 or 3 with code 400, like a stream of any other kind it does not take (see Taking a stream).
 
 ### The start of a stream
 
@@ -533,7 +534,16 @@ kind 2  a frame of video   start | rest of the frame header | the encoded pictur
 kind 3  a control stream   start | messages (not specified yet)
 ```
 
-Numbers are big-endian. `kind` is the first byte of the stream, as in section 8, where kind 1 is a lane of a transfer. `session` is 16 random bytes chosen by the source when it makes the offer. Every stream of the session carries it, so that a receiver can recognise a stream of a session that is not running, which can arrive late, after the session has ended.
+Numbers are big-endian. `kind` is the first byte of the stream, as in section 8, where kind 1 is a lane of a transfer and the 16 bytes after it are the id of the transfer. `session` is 16 random bytes chosen by the source when it makes the offer. Every stream of the session carries it, so that a receiver can recognise a stream of a session that is not running, which can arrive late, after the session has ended.
+
+### Taking a stream
+
+A receiver reads the 17 bytes of the start of a unidirectional stream before it does anything else with the stream, and the rules of this subsection hold for every kind. What a stream means beyond its start, which transfer or session it belongs to and whether this peer is part of it, is for the rules of its kind (section 8 for a lane).
+
+- **Paired.** A receiver MUST check that the peer is still paired when it takes a stream, and not only when the connection was made, as it does for a request (section 3). If the peer is not paired it closes the connection with code 403.
+- **In time.** A stream whose start has not arrived whole within the time that a receiver allows for it is stopped with code 408. The reference implementation allows 10 seconds from when it accepted the stream.
+- **A kind that is not taken.** A stream of a kind that the receiver does not take, because it does not know the kind or does not take part in what the kind is for, is stopped with code 400 and not read any further.
+- **The count of a kind.** QUIC has one limit for the unidirectional streams of every kind and does not know what they carry, so a receiver also counts the open streams of each kind, and stops one beyond the count of its kind, which would take the place of a stream of another kind. A frame of video beyond the count is stopped with code 499, because the sender cannot see when the receiver stops counting a stream that it reset, so a frame can arrive just as the count is reached and no one is at fault. A stream of any other kind beyond the count is a violation and is stopped with code 400. How many streams of a kind are allowed is for the rules of the kind (section 8 for lanes, ADR 0009 for the others), and the limit that a receiver announces to QUIC is the sum of them.
 
 ### Frames
 
@@ -552,7 +562,7 @@ header = start (kind 2) | number u64 | depends on u64 | chain u32 | epoch u32 | 
 | `capture time` | When the picture was captured, in microseconds since the session began, on the source's clock. |
 | `flags` | Bit 0 (value 1): a key frame, which can be decoded alone and makes the decoder forget everything before it. Bit 1 (value 2): a recovery frame, which refers to a long-term reference that the viewer is known to hold and begins a new chain without a key frame. Bit 2 (value 4): another frame may refer to this one, so it cannot be skipped. |
 
-A receiver MUST treat a header as a violation (code 400) if it is cut short, if a bit of `flags` other than these three is set, if bits 0 and 1 are both set, if a key frame does not depend on itself, or if another frame depends on a frame whose number is not lower than its own. A receiver MUST also treat a frame as a violation (code 400) if it holds a frame with the same number, or has decoded one since the last key frame. A frame has a number of its own, and one that is reset is not sent again, so an honest source never repeats a number. A number that the receiver has forgotten is below the frames it has decoded, and its frame is dropped as late, which is no violation. The picture is at most the limit of section 6, and a stream whose picture goes beyond it is stopped with code 413 and not read any further. What the picture holds is what the session agreed on: the first version carries H.264 in Annex B form, with the parameter sets in front of every key frame.
+A receiver MUST treat a header as a violation (code 400) if it is cut short, if a bit of `flags` other than these three is set, if bits 0 and 1 are both set, if a key frame does not depend on itself, or if another frame depends on a frame whose number is not lower than its own. A receiver MUST also treat a frame as a violation (code 400) if it holds a frame with the same number, or has decoded one since the last key frame. A frame has a number of its own, and one that is reset is not sent again, so an honest source never repeats a number. A frame whose number the receiver neither holds nor has decoded since the last key frame is taken like any other, and is dropped as late if its number is below that of a frame that has been decoded. The picture is at most the limit of section 6, and a stream whose picture goes beyond it is stopped with code 413 and not read any further. What the picture holds is what the session agreed on: the first version carries H.264 in Annex B form, with the parameter sets in front of every key frame.
 
 ## 10. Planned extensions
 

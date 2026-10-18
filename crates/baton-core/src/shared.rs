@@ -15,6 +15,7 @@ use crate::{
     session::{HandoffHandler, Intake},
     slots::PairSlots,
     trust::TrustStore,
+    uni::Uni,
 };
 
 pub(crate) struct Shared {
@@ -34,6 +35,8 @@ pub(crate) struct Shared {
     pub(crate) pair_slots: Arc<PairSlots>,
     pub(crate) handler: Arc<dyn HandoffHandler>,
     pub(crate) intake: Intake,
+    /// What takes the unidirectional streams of session connections.
+    pub(crate) uni: Arc<Uni>,
 }
 
 impl fmt::Debug for Shared {

@@ -132,10 +132,19 @@ pub(crate) fn raise_window(connection: &Connection) {
     connection.set_receive_window(VarInt::from_u32(CONNECTION_WINDOW));
 }
 
+/// Lets the other end of a connection open `count` unidirectional streams at once, for a device
+/// that is paired. The peer learns of it in a `MAX_STREAMS` frame. Streams it opened before are
+/// not affected, and `count` is at most what the kinds of stream that are taken need
+/// ([`crate::uni::Sinks::quic_limit`]).
+pub(crate) fn raise_uni_streams(connection: &Connection, count: u32) {
+    connection.set_max_concurrent_uni_streams(VarInt::from_u32(count));
+}
+
 fn build(stream_window: u32, connection_window: u32, send_window: u64) -> QuicTransportConfig {
     QuicTransportConfig::builder()
         .max_concurrent_bidi_streams(VarInt::from_u32(MAX_CONCURRENT_REQUESTS))
-        // Nothing in the protocol uses these, so peers may not open them.
+        // A peer may not open these until the gate has seen that it is paired, and then only as
+        // many as the kinds of stream that this device takes need ([`raise_uni_streams`]).
         .max_concurrent_uni_streams(VarInt::from_u32(0))
         .datagram_receive_buffer_size(None)
         .stream_receive_window(VarInt::from_u32(stream_window))
