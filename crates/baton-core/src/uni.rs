@@ -136,6 +136,13 @@ pub(crate) trait Sink: Send + Sync + 'static {
     /// This does not wait. What takes time is done by a task of the sink's own, which keeps the
     /// arrival until it is done with it. A sink that refuses a stream stops it with the code that
     /// says why (`RecvStream::stop`, the codes of section 3), and drops the arrival.
+    ///
+    /// A sink lets go of the arrival, and with it the stream's place in the count, before it
+    /// answers anything that ends what the stream belongs to: `Done` or `Cancelled` for the lanes
+    /// of a transfer, the end of the session for a control stream. The limit that the gate
+    /// announces has room for the other kinds, so QUIC no longer holds a sender back, and the
+    /// next stream of the kind would find the place still taken and be stopped as a violation
+    /// (section 9, Taking a stream).
     fn take(&self, arrival: Arrival);
 }
 
