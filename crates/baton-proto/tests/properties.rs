@@ -10,16 +10,17 @@
 use std::{cmp::Ordering, collections::BTreeMap};
 
 use baton_proto::{
-    DeviceId, DeviceInfo, ItemId, Platform, TransferId, frame,
+    DeviceId, DeviceInfo, ItemId, Platform, SessionId, TransferId, frame,
     limits::{
-        MAX_CAPABILITY_BYTES, MAX_FAILURES_LISTED, MAX_FILE_BYTES, MAX_LANES,
-        MAX_LIST_FRAME_ENTRIES, MAX_PREVIEW_ITEMS,
+        MAX_CAPABILITY_BYTES, MAX_CODECS, MAX_FAILURES_LISTED, MAX_FILE_BYTES, MAX_FRAME_RATE,
+        MAX_LANES, MAX_LIST_FRAME_ENTRIES, MAX_PICTURE_EDGE, MAX_PREVIEW_ITEMS, MAX_WINDOW_EDGE,
     },
     message::{
         ClipboardText, DeclineReason, ErrorCode, ErrorReply, Handoff, HandoffReply, Hello, Item,
         Link, Outcome, Ping, Request, Response,
     },
     pair::{PairProof, PairRejection, PairRequest, PairResponse, PairSecret},
+    stream::{self, Codec, SourceKind, StopReason, StreamReply, StreamRequest},
     ticket::PairTicket,
     transfer::{
         Accepted, Cancel, Cancelled, Declined, Done, FailReason, Failure, Finish, Offer,
@@ -103,6 +104,7 @@ fn request() -> impl Strategy<Value = Request> {
             item
         })),
         transfer_request().prop_map(Request::Transfer),
+        stream_request().prop_map(Request::Stream),
     ]
 }
 
@@ -130,11 +132,81 @@ fn response() -> impl Strategy<Value = Response> {
             message
         })),
         transfer_reply().prop_map(Response::Transfer),
+        stream_reply().prop_map(Response::Stream),
     ]
 }
 
 fn transfer_id() -> impl Strategy<Value = TransferId> {
     any::<[u8; 16]>().prop_map(TransferId::from_bytes)
+}
+
+fn session_id() -> impl Strategy<Value = SessionId> {
+    any::<[u8; 16]>().prop_map(SessionId::from_bytes)
+}
+
+fn codec() -> impl Strategy<Value = Codec> {
+    prop_oneof![Just(Codec::H264), Just(Codec::Other)]
+}
+
+fn stream_request() -> impl Strategy<Value = StreamRequest> {
+    prop_oneof![
+        (
+            session_id(),
+            prop_oneof![Just(SourceKind::Window), Just(SourceKind::Other)],
+            // A title may be 512 bytes and an application name 256, and a character is up to four.
+            text(120),
+            text(60),
+            1..=MAX_WINDOW_EDGE,
+            1..=MAX_WINDOW_EDGE,
+            any::<bool>()
+        )
+            .prop_map(|(session, source, title, app, width, height, control)| {
+                StreamRequest::Offer(stream::Offer {
+                    session,
+                    source,
+                    title,
+                    app,
+                    width,
+                    height,
+                    control,
+                })
+            }),
+        (
+            session_id(),
+            prop_oneof![
+                Just(StopReason::Ended),
+                Just(StopReason::WindowClosed),
+                Just(StopReason::Failed),
+                Just(StopReason::Other)
+            ]
+        )
+            .prop_map(|(session, reason)| StreamRequest::Stop(stream::Stop { session, reason })),
+    ]
+}
+
+fn stream_reply() -> impl Strategy<Value = StreamReply> {
+    prop_oneof![
+        (
+            session_id(),
+            1..=MAX_PICTURE_EDGE,
+            1..=MAX_PICTURE_EDGE,
+            1..=MAX_FRAME_RATE,
+            proptest::collection::vec(codec(), 1..=MAX_CODECS)
+        )
+            .prop_map(|(session, max_width, max_height, max_fps, codecs)| {
+                StreamReply::Accepted(stream::Accepted {
+                    session,
+                    max_width,
+                    max_height,
+                    max_fps,
+                    codecs,
+                })
+            }),
+        (session_id(), decline_reason()).prop_map(|(session, reason)| StreamReply::Declined(
+            stream::Declined { session, reason }
+        )),
+        session_id().prop_map(|session| StreamReply::Stopped(stream::Stopped { session })),
+    ]
 }
 
 /// What a transfer holds, as the sender found it.
