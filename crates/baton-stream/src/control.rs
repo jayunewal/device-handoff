@@ -339,6 +339,17 @@ mod tests {
         }
     }
 
+    /// The key `a` going down, with the text that the system attached to it, if any.
+    fn key_a(text: Option<&str>) -> Event {
+        Event::Key {
+            code: 4,
+            down: true,
+            modifiers: Modifiers::NONE,
+            repeat: false,
+            text: text.map(str::to_owned),
+        }
+    }
+
     fn typed(text: &str) -> Event {
         Event::Key {
             code: 0,
@@ -433,6 +444,21 @@ mod tests {
             "00000048a165496e707574a1666576656e747381a167506f696e746572a5656672616d65076178\
              f938006179f93400696d6f646966696572730066616374696f6ea164446f776e644c656674"
         );
+        // A key with no text leaves `text` out, like the other optional fields, and does not
+        // write a null.
+        assert_eq!(
+            encoded(&batch(vec![key_a(None)])),
+            // {"Input": {"events": [{"Key": {"code": 4, "down": true, "modifiers": 0,
+            //                                "repeat": false}}]}}
+            "00000035a165496e707574a1666576656e747381a1634b6579a464636f64650464646f776ef5\
+             696d6f646966696572730066726570656174f4"
+        );
+        assert_eq!(
+            encoded(&batch(vec![key_a(Some("a"))])),
+            // The same with "text": "a" after "repeat".
+            "0000003ca165496e707574a1666576656e747381a1634b6579a564636f64650464646f776ef5\
+             696d6f646966696572730066726570656174f464746578746161"
+        );
     }
 
     #[test]
@@ -443,6 +469,83 @@ mod tests {
             frame::decode_payload::<SourceMessage>(&payload),
             Ok(SourceMessage::Resume)
         );
+    }
+
+    #[test]
+    fn a_number_with_a_fraction_is_a_float_of_any_width_and_never_an_integer() {
+        // Section 2 of the protocol. Each case writes one number of a known payload in another
+        // way: as a half, a single or a double float, or as an integer.
+        let payload_of =
+            |message: &ViewerMessage| frame::encode(message).unwrap()[frame::HEADER_LEN..].to_vec();
+        let with = |payload: &[u8], old: &[u8], new: &[u8]| {
+            let mut found = payload
+                .windows(old.len())
+                .enumerate()
+                .filter(|(_, window)| *window == old);
+            let (at, _) = found.next().expect("the number is in the payload");
+            assert!(found.next().is_none(), "the number is in the payload twice");
+            [&payload[..at], new, &payload[at + old.len()..]].concat()
+        };
+        let read = |payload: &[u8]| frame::decode_payload::<ViewerMessage>(payload);
+
+        // The `x` of a press is 0.5, which is the half float f93800 on the wire.
+        let payload = payload_of(&batch(vec![press(7)]));
+        let half = [0xf9, 0x38, 0x00];
+        for x in [
+            &half[..],
+            &[0xfa, 0x3f, 0x00, 0x00, 0x00],
+            &[0xfb, 0x3f, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        ] {
+            assert_eq!(
+                read(&with(&payload, &half, x)),
+                Ok(batch(vec![press(7)])),
+                "{}",
+                hex(x)
+            );
+        }
+        // 0 and 1 are the edges of the picture, and a position that is written as an integer is
+        // not read.
+        for x in [0x00, 0x01] {
+            assert!(
+                matches!(
+                    read(&with(&payload, &half, &[x])),
+                    Err(FrameError::Decode(_))
+                ),
+                "the integer {x} was taken for a position"
+            );
+        }
+
+        // A scroll step is the same: the `dx` of a scroll is 0.0, the half float f90000.
+        let scroll = || {
+            batch(vec![Event::Pointer {
+                frame: 7,
+                x: 0.5,
+                y: 0.25,
+                modifiers: Modifiers::NONE,
+                action: PointerAction::Scroll {
+                    dx: 0.0,
+                    dy: -120.0,
+                },
+            }])
+        };
+        let payload = payload_of(&scroll());
+        let zero = [0xf9, 0x00, 0x00];
+        for dx in [
+            &zero[..],
+            &[0xfa, 0x00, 0x00, 0x00, 0x00],
+            &[0xfb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        ] {
+            assert_eq!(
+                read(&with(&payload, &zero, dx)),
+                Ok(scroll()),
+                "{}",
+                hex(dx)
+            );
+        }
+        assert!(matches!(
+            read(&with(&payload, &zero, &[0x00])),
+            Err(FrameError::Decode(_))
+        ));
     }
 
     #[test]
