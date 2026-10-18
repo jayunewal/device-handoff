@@ -48,5 +48,5 @@ zeroize.workspace = true
 baton-core = { path = ".", features = ["test-support"] }
 ciborium.workspace = true
 proptest.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net", "test-util"] }
 

@@ -26,4 +26,13 @@ void main() {
       contains("environment.crateInfo.packageName.replaceAll('-', '_');"),
     );
   });
+
+  // CI keeps this folder from one run to the next, which saves building every dependency again.
+  test('Cargokit builds in the build folder of the app', () {
+    final script = File('rust_builder/cargokit/build_pod.sh');
+    expect(
+      script.readAsStringSync(),
+      contains(r'/${FLUTTER_BUILD_DIR:-build}/cargokit"'),
+    );
+  });
 }

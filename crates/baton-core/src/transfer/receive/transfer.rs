@@ -76,7 +76,7 @@ use std::{
         Arc, Mutex, Weak,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use baton_proto::{
@@ -86,7 +86,7 @@ use baton_proto::{
         list::{ListChecker, Listing},
     },
 };
-use tokio::{io::AsyncRead, sync::watch};
+use tokio::{io::AsyncRead, sync::watch, time::Instant};
 
 use super::{Concluded, Counted, Fault, Frame, Halt, Intake, LaneReader, Lanes, Violation};
 use crate::{
@@ -175,6 +175,27 @@ impl State {
             Phase::Dropped => Some(self.stop.unwrap_or(close_code::CANCELLED)),
             Phase::Concluding | Phase::Done(_) => Some(close_code::CANCELLED),
         }
+    }
+
+    /// Whether an attempt is going: it is the current one, nothing has stopped it, and it still has
+    /// files to settle.
+    fn moving(&self) -> bool {
+        self.attempt > 0
+            && matches!(self.phase, Phase::Receiving)
+            && self.stop.is_none()
+            && !self.settled
+    }
+
+    /// Whether the transfer is being received and no attempt is going: it has had none yet, or the
+    /// last was stopped or has nothing more to settle, and the transfer waits for the sender to come
+    /// back or to say it is done.
+    fn waiting(&self) -> bool {
+        matches!(self.phase, Phase::Receiving) && !self.moving()
+    }
+
+    /// Whether the transfer has ended: its items are in place, or it was given up.
+    fn over(&self) -> bool {
+        matches!(self.phase, Phase::Done(_) | Phase::Dropped)
     }
 
     /// `Finish` can be answered when every file has an outcome, or when the attempt was stopped
@@ -552,6 +573,56 @@ impl Transfer {
             // The transfer can be ended. If another `Finish` got there first, or the attempt
             // changed meanwhile, this does nothing, and the next wait is for the outcome.
             self.shared.start_conclusion(*finish);
+        }
+    }
+
+    /// Whether the transfer has ended: its items are in place, or it was given up.
+    pub fn is_over(&self) -> bool {
+        self.shared.state.borrow().over()
+    }
+
+    /// Waits until the transfer has ended, and gives how it ended: `Some` with the outcome when its
+    /// items were put in place, `None` when it was given up. The wait has no end of its own.
+    pub async fn closed(&self) -> Option<Done> {
+        let mut updates = self.shared.state.subscribe();
+        match updates.wait_for(State::over).await {
+            Ok(state) => match &state.phase {
+                Phase::Done(done) => Some(done.clone()),
+                _ => None,
+            },
+            Err(_) => None,
+        }
+    }
+
+    /// Waits until the transfer has had no attempt going for `limit` in one stretch, or has ended.
+    /// A transfer that was accepted and never got an attempt counts from the start, and one whose
+    /// attempt was stopped, as by a stall, from the stop. A new attempt starts the count again.
+    ///
+    /// It is for the owner of the transfer, who gives up on a sender that does not come back:
+    /// [`cancel`](Self::cancel) removes what was received.
+    pub async fn abandoned(&self, limit: Duration) {
+        let mut updates = self.shared.state.subscribe();
+        loop {
+            // A time when no attempt is going, or the end.
+            let over = match updates
+                .wait_for(|state| state.over() || state.waiting())
+                .await
+            {
+                Ok(state) => state.over(),
+                Err(_) => return,
+            };
+            if over {
+                return;
+            }
+            // For as long as `limit`, unless an attempt comes first.
+            tokio::select! {
+                () = tokio::time::sleep(limit) => return,
+                changed = updates.wait_for(|state| !state.waiting()) => {
+                    if changed.is_err() {
+                        return;
+                    }
+                }
+            }
         }
     }
 
@@ -1729,6 +1800,127 @@ mod tests {
         assert_eq!(run(&attempt, 1, &[]).await, LaneEnd::Stopped(499));
     }
 
+    // What the owner of a transfer asks.
+
+    #[tokio::test]
+    async fn a_transfer_says_whether_it_is_over_and_how_it_ended() {
+        let rig = Rig::new();
+        assert!(!rig.transfer.is_over());
+        let attempt = rig.attempt();
+        assert_eq!(run(&attempt, 0, &rig.everything()).await, LaneEnd::Finished);
+        assert!(!rig.transfer.is_over());
+
+        let done = rig.transfer.finish(&Rig::finish()).await.unwrap();
+
+        assert!(rig.transfer.is_over());
+        assert_eq!(within("closed", rig.transfer.closed()).await, Some(done));
+    }
+
+    #[tokio::test]
+    async fn closed_waits_for_the_end_and_gives_none_for_a_transfer_that_was_given_up() {
+        let rig = Rig::new();
+        let transfer = rig.transfer.clone();
+        let mut closed = tokio::spawn(async move { transfer.closed().await });
+        assert!(still_waiting(&mut closed).await);
+
+        rig.transfer.cancel().await;
+
+        assert_eq!(within("closed", closed).await.unwrap(), None);
+        assert!(rig.transfer.is_over());
+    }
+
+    const HOUR: Duration = Duration::from_secs(3600);
+
+    /// Lets the timers that are due fire and the tasks that wait for them go on. The clock is
+    /// paused, so this moves it by a millisecond and no more.
+    async fn settle() {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+    }
+
+    /// Spawns a task that waits for the transfer to be abandoned after an hour, and lets it start
+    /// to wait: a timer counts from the first time its task is polled, and not from the spawn.
+    async fn abandoned_after_an_hour(transfer: &Transfer) -> tokio::task::JoinHandle<()> {
+        let transfer = transfer.clone();
+        let waiting = tokio::spawn(async move { transfer.abandoned(HOUR).await });
+        settle().await;
+        waiting
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_transfer_that_gets_no_attempt_is_abandoned_once_the_limit_has_passed() {
+        let rig = Rig::new();
+        let abandoned = abandoned_after_an_hour(&rig.transfer).await;
+
+        tokio::time::advance(Duration::from_secs(3599)).await;
+        settle().await;
+        assert!(!abandoned.is_finished());
+
+        tokio::time::advance(Duration::from_secs(2)).await;
+        settle().await;
+        assert!(abandoned.is_finished());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_time_of_an_attempt_that_is_going_does_not_count_and_the_stop_starts_the_count() {
+        let rig = Rig::new();
+        let _attempt = rig.attempt();
+        settle().await;
+        let abandoned = abandoned_after_an_hour(&rig.transfer).await;
+
+        // The attempt moves no byte, and is stopped once 30 seconds have passed. The hour counts
+        // from the stop and not from the start.
+        tokio::time::advance(Duration::from_secs(40)).await;
+        settle().await;
+        assert_eq!(rig.transfer.shared.state.borrow().stop, Some(408));
+        assert!(!abandoned.is_finished());
+
+        tokio::time::advance(Duration::from_secs(3580)).await;
+        settle().await;
+        assert!(!abandoned.is_finished());
+
+        tokio::time::advance(Duration::from_secs(30)).await;
+        settle().await;
+        assert!(abandoned.is_finished());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_new_attempt_starts_the_count_again() {
+        let rig = Rig::new();
+        let first = rig.attempt();
+        settle().await;
+        let abandoned = abandoned_after_an_hour(&rig.transfer).await;
+        tokio::time::advance(Duration::from_secs(40)).await;
+        settle().await;
+        assert_eq!(run(&first, 0, &[]).await, LaneEnd::Stopped(408));
+
+        // Half an hour on, the sender comes back, and its attempt stalls in turn, 40 seconds later.
+        tokio::time::advance(HOUR / 2).await;
+        settle().await;
+        let _second = rig.transfer.begin_attempt(4).unwrap();
+        settle().await;
+        tokio::time::advance(Duration::from_secs(40)).await;
+        settle().await;
+        assert_eq!(rig.transfer.shared.state.borrow().stop, Some(408));
+
+        // The count of the first stop would have ended by now, and the count of the second has not.
+        tokio::time::advance(Duration::from_secs(3500)).await;
+        settle().await;
+        assert!(!abandoned.is_finished());
+
+        tokio::time::advance(Duration::from_secs(200)).await;
+        settle().await;
+        assert!(abandoned.is_finished());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_transfer_that_is_over_is_not_waited_for() {
+        let rig = Rig::new();
+        rig.transfer.cancel().await;
+
+        within("abandoned", rig.transfer.abandoned(HOUR)).await;
+    }
+
     // Finish.
 
     #[tokio::test]
@@ -2022,6 +2214,8 @@ mod tests {
         sendable(&attempt.lane(0, &mut stream));
         sendable(&rig.transfer.finish(&finish));
         sendable(&rig.transfer.cancel());
+        sendable(&rig.transfer.closed());
+        sendable(&rig.transfer.abandoned(SLOW));
     }
 
     #[tokio::test]
