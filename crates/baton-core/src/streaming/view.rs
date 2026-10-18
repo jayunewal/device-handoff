@@ -29,10 +29,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use baton_proto::{DeviceId, close_code, id::SessionId, stream::Codec};
+use baton_proto::{DeviceId, close_code, id::SessionId};
 use baton_stream::{
     KIND_VIDEO,
-    control::{Config, KeyFrame, Report, SourceMessage, Thermal, ViewerMessage, Want},
+    control::{KeyFrame, Report, SourceMessage, Thermal, ViewerMessage, Want},
     header::{FrameHeader, PREFIX_LEN, encode_prefix},
     viewer::{Action, Params as Rules, Refusal, Stats, StreamId, Viewer, Violation},
 };
@@ -40,7 +40,7 @@ use iroh::endpoint::{Connection, ReadExactError, RecvStream};
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
-use super::{ControlEnd, End, Streaming, WriteEnd, read_control, stop, write_control};
+use super::{ControlEnd, End, Streaming, Takes, WriteEnd, read_control, stop, write_control};
 use crate::{trust::PairedDevice, uni::Arrival, util::lock};
 
 /// How much of a picture to ask the transport for at a time.
@@ -76,31 +76,6 @@ impl Default for ViewParams {
             tick_every: Duration::from_millis(100),
             control_within: Duration::from_secs(10),
         }
-    }
-}
-
-/// What the viewer said it can take, in `Accepted`. The source keeps within it, and a source that
-/// sends a picture beyond it has broken the session.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Takes {
-    /// The widest picture in pixels.
-    pub(crate) max_width: u32,
-    /// The highest picture in pixels.
-    pub(crate) max_height: u32,
-    /// The most frames a second.
-    pub(crate) max_fps: u16,
-    /// The codecs it can decode. A codec that this version does not know is never one of them.
-    pub(crate) codecs: Vec<Codec>,
-}
-
-impl Takes {
-    /// Whether the viewer said that it can take the picture that `config` describes.
-    fn allows(&self, config: &Config) -> bool {
-        config.width <= self.max_width
-            && config.height <= self.max_height
-            && config.fps <= self.max_fps
-            && config.codec != Codec::Other
-            && self.codecs.contains(&config.codec)
     }
 }
 

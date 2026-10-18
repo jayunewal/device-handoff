@@ -17,7 +17,7 @@ use baton_proto::{
     stream::{Codec, Offer, SourceKind, Stop, StopReason, StreamReply, StreamRequest},
 };
 use baton_stream::{
-    control::{Config as Picture, Report, SourceMessage, Thermal, Want},
+    control::{Report, SourceMessage, Thermal, Want},
     header::FrameHeader,
 };
 use iroh::endpoint::Connection;
@@ -27,7 +27,7 @@ use crate::{
     Config,
     node::Tuning,
     session::call,
-    streaming::{Picture as Encoded, SourceEvents, SourceParams, SourceSetup},
+    streaming::SourceEvents,
     testing::{PATIENCE, QUIET, TestNode},
     util::{BoxFuture, lock},
 };
@@ -38,7 +38,7 @@ const WAIT: Duration = Duration::from_secs(10);
 
 /// What the application does with an offer.
 #[derive(Debug, Clone, Copy)]
-enum Plan {
+pub(super) enum Plan {
     Accept,
     Refuse,
     Block,
@@ -48,7 +48,7 @@ enum Plan {
 
 /// What a decoder of a test was told.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Told {
+pub(super) enum Told {
     Decode(u64),
     Show(u64),
     Source(SourceMessage),
@@ -56,14 +56,14 @@ enum Told {
 }
 
 #[derive(Clone, Default)]
-struct Log(Arc<Mutex<Vec<Told>>>);
+pub(super) struct Log(Arc<Mutex<Vec<Told>>>);
 
 impl Log {
-    fn all(&self) -> Vec<Told> {
+    pub(super) fn all(&self) -> Vec<Told> {
         lock(&self.0).clone()
     }
 
-    fn has(&self, told: &Told) -> bool {
+    pub(super) fn has(&self, told: &Told) -> bool {
         self.all().contains(told)
     }
 }
@@ -107,7 +107,7 @@ impl Drop for TakenBack<'_> {
 }
 
 /// An application that does what a test tells it, and writes down what happens to it.
-struct App {
+pub(super) struct App {
     plan: Mutex<Plan>,
     /// What the person was shown, in order.
     asked: Mutex<Vec<WindowOffer>>,
@@ -115,11 +115,11 @@ struct App {
     /// The sessions that were started.
     handles: Mutex<Vec<ViewHandle>>,
     /// What the decoders of those sessions were told.
-    log: Log,
+    pub(super) log: Log,
 }
 
 impl App {
-    fn new(plan: Plan) -> Arc<Self> {
+    pub(super) fn new(plan: Plan) -> Arc<Self> {
         Arc::new(Self {
             plan: Mutex::new(plan),
             asked: Mutex::default(),
@@ -129,19 +129,19 @@ impl App {
         })
     }
 
-    fn plan(&self, plan: Plan) {
+    pub(super) fn plan(&self, plan: Plan) {
         *lock(&self.plan) = plan;
     }
 
-    fn asked(&self) -> Vec<WindowOffer> {
+    pub(super) fn asked(&self) -> Vec<WindowOffer> {
         lock(&self.asked).clone()
     }
 
-    fn taken_back(&self) -> usize {
+    pub(super) fn taken_back(&self) -> usize {
         self.taken_back.load(Ordering::SeqCst)
     }
 
-    fn handle(&self, index: usize) -> ViewHandle {
+    pub(super) fn handle(&self, index: usize) -> ViewHandle {
         lock(&self.handles).remove(index)
     }
 
@@ -185,7 +185,7 @@ impl WindowHandler for App {
 }
 
 /// Times shortened, so that a test waits for them.
-fn quick() -> ViewParams {
+pub(super) fn quick() -> ViewParams {
     ViewParams {
         report_every: Duration::from_millis(40),
         tick_every: Duration::from_millis(20),
@@ -193,11 +193,11 @@ fn quick() -> ViewParams {
     }
 }
 
-fn session(byte: u8) -> SessionId {
+pub(super) fn session(byte: u8) -> SessionId {
     SessionId::from_bytes([byte; SessionId::LEN])
 }
 
-fn offer(byte: u8) -> Offer {
+pub(super) fn offer(byte: u8) -> Offer {
     Offer {
         session: session(byte),
         source: SourceKind::Window,
@@ -270,7 +270,7 @@ impl Rig {
 }
 
 /// Sends a request about a window and gives the answer.
-async fn ask(connection: &Connection, request: StreamRequest) -> StreamReply {
+pub(super) async fn ask(connection: &Connection, request: StreamRequest) -> StreamReply {
     match call(connection, &Request::Stream(request), WAIT)
         .await
         .unwrap()
@@ -280,20 +280,20 @@ async fn ask(connection: &Connection, request: StreamRequest) -> StreamReply {
     }
 }
 
-fn declined(byte: u8, reason: DeclineReason) -> StreamReply {
+pub(super) fn declined(byte: u8, reason: DeclineReason) -> StreamReply {
     StreamReply::Declined(baton_proto::stream::Declined {
         session: session(byte),
         reason,
     })
 }
 
-fn stopped(byte: u8) -> StreamReply {
+pub(super) fn stopped(byte: u8) -> StreamReply {
     StreamReply::Stopped(baton_proto::stream::Stopped {
         session: session(byte),
     })
 }
 
-fn stop(byte: u8) -> StreamRequest {
+pub(super) fn stop(byte: u8) -> StreamRequest {
     StreamRequest::Stop(Stop {
         session: session(byte),
         reason: StopReason::Ended,
@@ -599,15 +599,15 @@ async fn a_connection_that_ends_gives_back_what_was_kept_for_it() {
 
 /// What the platform of a test source hears.
 #[derive(Clone, Default)]
-struct Heard(Arc<Mutex<Vec<String>>>);
+pub(super) struct Heard(Arc<Mutex<Vec<String>>>);
 
 impl Heard {
-    fn count(&self, what: &str) -> usize {
+    pub(super) fn count(&self, what: &str) -> usize {
         lock(&self.0).iter().filter(|each| *each == what).count()
     }
 }
 
-struct Platform(Heard);
+pub(super) struct Platform(pub(super) Heard);
 
 impl SourceEvents for Platform {
     fn report(&mut self, _: Report) {
@@ -629,94 +629,6 @@ impl SourceEvents for Platform {
     fn ended(&mut self) {
         lock(&(self.0).0).push("ended".to_owned());
     }
-}
-
-#[tokio::test]
-async fn a_window_goes_through_from_the_offer_to_the_pictures_and_the_reports() {
-    // Both nodes can show windows, because a node that is to be a source takes the control
-    // stream of its viewer with the same sinks. Only the first is offered one.
-    let rig = Rig::new(Plan::Accept).await;
-    let other = App::new(Plan::Refuse);
-    let source = TestNode::with(|builder| builder.window_handler(Arc::clone(&other))).await;
-    source.pair_with(&rig.viewer);
-    let connection = source
-        .node
-        .pooled_session(&rig.viewer.id)
-        .await
-        .unwrap()
-        .connection;
-
-    let reply = ask(&connection, StreamRequest::Offer(offer(1))).await;
-    let StreamReply::Accepted(accepted) = reply else {
-        panic!("the offer was not accepted: {reply:?}");
-    };
-
-    // The test plays the part of the node that offers: it starts the source's side of the session
-    // on its own connection to the viewer.
-    let heard = Heard::default();
-    let paired = source.trust.get(&rig.viewer.id).unwrap();
-    let handle = source
-        .node
-        .streaming()
-        .source(
-            &paired,
-            connection,
-            session(1),
-            SourceSetup {
-                config: Picture {
-                    epoch: 0,
-                    codec: Codec::H264,
-                    width: accepted.max_width.min(1440),
-                    height: accepted.max_height.min(900),
-                    fps: 60,
-                },
-                control: false,
-                params: SourceParams::default(),
-            },
-            Platform(heard.clone()),
-        )
-        .unwrap();
-
-    // The source says what the picture is, and the viewer reports.
-    rig.until("the viewer to hear the picture format", |rig| {
-        rig.app
-            .log
-            .all()
-            .iter()
-            .any(|told| matches!(told, Told::Source(SourceMessage::Config(_))))
-    })
-    .await;
-    let deadline = Instant::now() + PATIENCE;
-    while heard.count("report") == 0 {
-        assert!(Instant::now() < deadline, "the source heard no report");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-
-    // A picture is decoded and shown.
-    handle.begin().expect("no picture was wanted");
-    handle
-        .sent(Encoded {
-            bytes: vec![0x42; 4096],
-            referenced: true,
-            ltr: None,
-            capture_time: 1000,
-        })
-        .unwrap()
-        .expect("the frame was dropped");
-    rig.until("the picture to be decoded and shown", |rig| {
-        rig.app.log.has(&Told::Decode(0)) && rig.app.log.has(&Told::Show(0))
-    })
-    .await;
-
-    // The person closes the window on the viewer, and the source hears of it.
-    rig.app.handle(0).end();
-    assert_eq!(
-        tokio::time::timeout(PATIENCE, handle.ended())
-            .await
-            .expect("the source did not hear that the session ended"),
-        End::Peer
-    );
-    assert!(heard.count("ended") >= 1);
 }
 
 #[test]
