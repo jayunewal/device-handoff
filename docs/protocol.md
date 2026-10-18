@@ -124,7 +124,7 @@ The same codes are used to close a connection and to reset a stream.
 | 400 | Protocol violation |
 | 403 | Not paired |
 | 408 | Timeout |
-| 413 | What the peer sends is larger than this device accepts: a list of files over its limit (section 8) |
+| 413 | What the peer sends is larger than this device accepts: a list of files over its limit (section 8), or the picture of a frame of video over its limit (section 9) |
 | 429 | Too many connections or pairing attempts at once, or a pairing connection that was pushed out by a newer one. A sender that is too fast is told so in the response (`Declined(RateLimited)`), not by closing |
 | 499 | A transfer was stopped on purpose, by the person or by the program. Used to stop or reset a lane (section 8) |
 | 500 | Internal error or shutting down |
@@ -287,6 +287,8 @@ The reference implementation also applies the following by default. They are not
 | Concurrent streams a peer may open on a connection | 16 |
 | Unread data a stream may hold, and so how much a sender may have in flight on it | 8 MiB |
 | Unread data a connection may hold | 64 KiB, raised to 16 MiB once the peer is known to be paired |
+| Frame streams that a viewer reads at once. One beyond the count is stopped with code 499 and not read | 12 |
+| Bytes of pictures that a viewer holds, those that streams are still delivering and those that wait to be decoded. A stream that would take it beyond the limit is stopped with code 499 and not read any further, because the bytes that a viewer has read no longer count against the connection window | 16 MiB, the connection window |
 | Connection attempts let through before a QUIC retry token is asked for, from addresses, and relayed keys that are not paired, that have not proven themselves | 64 a second, together |
 | Connection attempts from an address that has answered a retry token (for IPv6, from one /64) | 20 every 10 seconds |
 | Connection attempts through a relay from the key of one paired device | 20 every 10 seconds |
@@ -550,7 +552,7 @@ header = start (kind 2) | number u64 | depends on u64 | chain u32 | epoch u32 | 
 | `capture time` | When the picture was captured, in microseconds since the session began, on the source's clock. |
 | `flags` | Bit 0 (value 1): a key frame, which can be decoded alone and makes the decoder forget everything before it. Bit 1 (value 2): a recovery frame, which refers to a long-term reference that the viewer is known to hold and begins a new chain without a key frame. Bit 2 (value 4): another frame may refer to this one, so it cannot be skipped. |
 
-A receiver MUST treat a header as a violation (code 400) if it is cut short, if a bit of `flags` other than these three is set, if bits 0 and 1 are both set, if a key frame does not depend on itself, or if another frame depends on a frame whose number is not lower than its own. The picture is at most the limit of section 6. What the picture holds is what the session agreed on: the first version carries H.264 in Annex B form, with the parameter sets in front of every key frame.
+A receiver MUST treat a header as a violation (code 400) if it is cut short, if a bit of `flags` other than these three is set, if bits 0 and 1 are both set, if a key frame does not depend on itself, or if another frame depends on a frame whose number is not lower than its own. A receiver MUST also treat a frame as a violation (code 400) if it holds a frame with the same number, or has decoded one since the last key frame. A frame has a number of its own, and one that is reset is not sent again, so an honest source never repeats a number. A number that the receiver has forgotten is below the frames it has decoded, and its frame is dropped as late, which is no violation. The picture is at most the limit of section 6, and a stream whose picture goes beyond it is stopped with code 413 and not read any further. What the picture holds is what the session agreed on: the first version carries H.264 in Annex B form, with the parameter sets in front of every key frame.
 
 ## 10. Planned extensions
 
