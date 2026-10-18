@@ -370,6 +370,7 @@ mod tests {
     use super::*;
     use crate::{
         gate::{ConnectionRegistry, Gate},
+        testing::TestNode,
         transport,
     };
 
@@ -766,66 +767,34 @@ mod tests {
     }
 
     /// A node on loopback that takes the streams of `kinds`, and what it was given.
-    async fn node(
-        kinds: &[(Kind, u32)],
-    ) -> (
-        crate::Node,
-        crate::Identity,
-        TrustStore,
-        Vec<mpsc::UnboundedReceiver<Arrival>>,
-        tempfile::TempDir,
-    ) {
-        let dir = tempfile::tempdir().unwrap();
-        let identity = crate::Identity::generate();
-        let trust = TrustStore::load(dir.path().join("devices.json")).unwrap();
-        let mut config = crate::Config::default();
-        config.network.relay = crate::config::RelayMode::Disabled;
-        config.network.lan_discovery = false;
-        config.network.dns_discovery = false;
-        config.network.port_mapping = false;
-        let mut builder = crate::NodeBuilder::new(&identity, trust.clone(), config);
+    async fn node(kinds: &[(Kind, u32)]) -> (TestNode, Vec<mpsc::UnboundedReceiver<Arrival>>) {
         let mut receivers = Vec::new();
-        for &(kind, limit) in kinds {
-            let (sink, receiver) = collector();
-            builder = builder.take_streams(kind, limit, sink);
-            receivers.push(receiver);
-        }
-        let node = builder
-            .customize_endpoint(|builder| {
-                builder
-                    .clear_ip_transports()
-                    .bind_addr("127.0.0.1:0")
-                    .expect("loopback is a valid address")
-            })
-            .bind()
-            .await
-            .unwrap();
-        (node, identity, trust, receivers, dir)
+        let node = TestNode::with(|mut builder| {
+            for &(kind, limit) in kinds {
+                let (sink, receiver) = collector();
+                builder = builder.take_streams(kind, limit, sink);
+                receivers.push(receiver);
+            }
+            builder
+        })
+        .await;
+        (node, receivers)
     }
 
     #[tokio::test]
     async fn nodes_take_streams_on_the_connection_each_of_them_made_or_accepted() {
-        let (a, a_identity, a_trust, mut a_taken, _a_dir) = node(&[(Kind::Control, 2)]).await;
-        let (b, b_identity, b_trust, mut b_taken, _b_dir) = node(&[(Kind::Lane, 2)]).await;
-        let (a_id, b_id) = (a_identity.device_id(), b_identity.device_id());
-        // Two devices that were paired earlier, and know where to find each other.
-        for (trust, other, node) in [(&a_trust, b_id, &b), (&b_trust, a_id, &a)] {
-            trust.pair(other, &info(), 1).unwrap();
-            let hints = crate::ContactHints {
-                relay: None,
-                addrs: node.status().direct_addrs,
-            };
-            trust.record_contact(&other, 1, &hints).unwrap();
-        }
+        let (a, mut a_taken) = node(&[(Kind::Control, 2)]).await;
+        let (b, mut b_taken) = node(&[(Kind::Lane, 2)]).await;
+        a.pair_with(&b);
 
         // `a` dials `b` for a request, and then opens a lane on that connection: `b` accepted it.
-        a.ping(&b_id).await.unwrap();
-        let dialed = a.pooled_connection(&b_id).await.unwrap();
+        a.node.ping(&b.id).await.unwrap();
+        let dialed = a.node.pooled_session(&b.id).await.unwrap().connection;
         let mut lane = open(&dialed, &[start(KIND_LANE, 1).as_slice(), b"data"].concat()).await;
         lane.finish().unwrap();
         let mut arrival = next(&mut b_taken[0]).await;
         assert_eq!(arrival.kind, Kind::Lane);
-        assert_eq!(arrival.peer.id, a_id);
+        assert_eq!(arrival.peer.id, a.id);
         assert_eq!(arrival.recv.read_to_end(16).await.unwrap(), b"data");
 
         // `b` answers on the same connection, which `a` dialed: a stream from the device that
@@ -834,7 +803,7 @@ mod tests {
         control.finish().unwrap();
         let reply = next(&mut a_taken[0]).await;
         assert_eq!(reply.kind, Kind::Control);
-        assert_eq!(reply.peer.id, b_id);
+        assert_eq!(reply.peer.id, b.id);
 
         // `a` takes no lanes, so a lane that `b` opens on it anyway is stopped. The limit of `a` is
         // two streams and one is in use, so the lane reaches the dispatcher and is not held back.
@@ -842,8 +811,8 @@ mod tests {
         assert_eq!(stopped_with(&stray).await, 400);
         stray.reset(0_u8.into()).unwrap();
 
-        a.shutdown().await;
-        b.shutdown().await;
+        a.node.shutdown().await;
+        b.node.shutdown().await;
     }
 
     #[test]

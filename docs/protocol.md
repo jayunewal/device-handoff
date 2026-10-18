@@ -300,7 +300,7 @@ The reference implementation also applies the following by default. They are not
 | Items accepted from one paired device | 30 a minute (a setting, at most 600) |
 | Clipboard text accepted | 256 KiB (a setting) |
 | Connections kept open to or from one paired device | 8; the oldest are closed with 429 beyond that |
-| Idle session connection closed after | 2 minutes |
+| Idle session connection closed after | 2 minutes without a request. A connection that a transfer or a window that is shown is using is not idle, and the time starts again when it lets go |
 | Pairing connections served at once | 8; a newcomer pushes out the oldest one that has shown no valid proof |
 | Time a person has to approve a pairing request | 2 minutes |
 | Lifetime of a pairing ticket | 5 minutes (a setting, from 30 seconds to 15 minutes) |

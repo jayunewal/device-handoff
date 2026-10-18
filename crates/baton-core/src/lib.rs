@@ -58,6 +58,8 @@ mod machine;
 mod ratelimit;
 mod shared;
 mod slots;
+#[cfg(test)]
+mod testing;
 mod transport;
 mod uni;
 mod wire;
