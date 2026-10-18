@@ -11,11 +11,15 @@
 //! - [`staging`] is one transfer that is being received: the files written at their place from
 //!   spans that come in any order, and checked against their hashes. When the transfer has
 //!   ended it puts what was checked in the destination, without replacing anything.
+//! - [`receive`] applies the rules of the protocol for a receiver to what arrives on the lanes of
+//!   one transfer: which lanes may be opened, which frames may come when, and what became of every
+//!   file. It is built in pieces too, and so far has the bookkeeping and the reader of a lane.
 //!
 //! Nothing here is connected to the session yet, and `transfer.files` is not advertised.
 
 pub mod destination;
 pub mod names;
+pub mod receive;
 pub mod staging;
 
 #[cfg(test)]
