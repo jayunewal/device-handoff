@@ -242,7 +242,10 @@ impl Selection {
     ///
     /// It is the folder or file that was chosen with the names inside it added, so a link that
     /// was chosen is already resolved. What is at the place now may not be what the walk saw, and
-    /// whoever reads it compares size and time with the entry first.
+    /// whoever reads it compares size and time with the entry first. A link may have been put
+    /// there since, so the reader opens the place without following one (`O_NOFOLLOW`, and
+    /// `O_NOFOLLOW_ANY` on Apple systems, which covers the folders on the way) and takes the size
+    /// and time from the file it has open.
     pub fn source(&self, index: u32) -> Option<PathBuf> {
         let index = usize::try_from(index).ok()?;
         let entry = self.entries.get(index)?;
@@ -1015,6 +1018,21 @@ mod tests {
     }
 
     #[test]
+    fn a_chosen_name_that_is_too_long_is_left_out_as_a_name() {
+        // Linux cannot make such a file, but a Mac or a Windows can: HFS+, exFAT and NTFS allow 255
+        // UTF-16 units, which are up to 765 bytes. The name is checked before the disk is looked
+        // at, so the item need not exist.
+        let long = PathBuf::from("n".repeat(256));
+        assert_eq!(
+            Selection::walk(&[long]).unwrap_err(),
+            SelectionError::Empty(LeftOut {
+                names: 1,
+                ..LeftOut::default()
+            })
+        );
+    }
+
+    #[test]
     #[cfg(target_os = "linux")]
     fn a_name_that_is_not_text_is_left_out() {
         use std::os::unix::ffi::OsStrExt;
@@ -1098,6 +1116,21 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
+    fn a_link_and_what_it_points_to_are_two_items() {
+        use std::os::unix::fs::symlink;
+
+        let scratch = scratch();
+        let target = make(scratch.path(), "data/final.pdf", 11);
+        symlink("data/final.pdf", scratch.path().join("report")).unwrap();
+        // Each is sent under the name it was chosen by, so the person gets what they chose.
+        let selection = walk(&[&scratch.path().join("report"), &target]);
+        assert_eq!(paths(&selection), ["final.pdf", "report"]);
+        assert_eq!(selection.summary().items, 2);
+        assert_eq!(selection.summary().bytes, 22);
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn a_socket_is_not_sent() {
         let scratch = scratch();
         make(scratch.path(), "d/a.txt", 1);
@@ -1105,6 +1138,7 @@ mod tests {
         let selection = walk(&[&scratch.path().join("d")]);
         assert_eq!(paths(&selection), ["d", "d/a.txt"]);
         assert_eq!(selection.left_out().special, 1);
+        assert_eq!(selection.left_out().total(), 1);
         // Chosen itself, it is not sent either.
         assert_eq!(
             Selection::walk(&[scratch.path().join("d/s")]).unwrap_err(),
@@ -1162,9 +1196,11 @@ mod tests {
     #[test]
     fn what_a_folder_lists_is_limited_whether_it_is_sent_or_not() {
         let scratch = scratch();
-        for name in ["a", "b", "c", "d"] {
+        for name in ["a", "b", "c"] {
             make(scratch.path(), &format!("d/{name}"), 1);
         }
+        // Listed and read, but not sent and not counted as left out.
+        make_folder(scratch.path(), &format!("d/{STAGING_PREFIX}x"));
         let chosen = [scratch.path().join("d")];
         let few = Limits {
             looked_at: 3,
@@ -1186,7 +1222,7 @@ mod tests {
                 .unwrap()
                 .summary()
                 .files,
-            4
+            3
         );
     }
 

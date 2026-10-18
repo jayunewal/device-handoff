@@ -23,9 +23,10 @@ use baton_proto::{
     device::sanitize_display_name,
     message::{
         DeclineReason, ErrorCode, ErrorReply, Handoff, HandoffReply, Hello, Item, Outcome, Request,
-        Response,
+        Response, capability,
     },
-    transfer::{Declined, TransferReply},
+    stream::{self, StreamReply},
+    transfer::{Cancelled, Declined, TransferReply, TransferRequest},
 };
 use iroh::{
     Endpoint, EndpointAddr, RelayUrl,
@@ -44,6 +45,7 @@ use crate::{
     link::contact_hints,
     ratelimit::RateLimiter,
     shared::Shared,
+    transfer::incoming::{FinishError, Incoming, Link},
     trust::{ContactHints, MAX_DEVICES, PairedDevice},
     util::{BoxFuture, blocking, contained, lock},
     wire::{ReadFailure, connection_error, read_message, write_message},
@@ -94,15 +96,20 @@ impl HandoffHandler for NoHandoff {
 
 /// What this device says in a [`Hello`].
 pub(crate) fn our_hello(shared: &Shared) -> Hello {
+    let mut capabilities: Vec<String> = shared
+        .handler
+        .capabilities()
+        .iter()
+        .map(|capability| (*capability).to_owned())
+        .collect();
+    // A device that has a folder to receive into takes the requests and the lanes of section 8.
+    if shared.incoming.as_ref().is_some_and(Incoming::takes_files) {
+        capabilities.push(capability::TRANSFER_FILES.to_owned());
+    }
     Hello {
         protocol_minor: PROTOCOL_MINOR,
         device: shared.info.clone(),
-        capabilities: shared
-            .handler
-            .capabilities()
-            .iter()
-            .map(|capability| (*capability).to_owned())
-            .collect(),
+        capabilities,
     }
 }
 
@@ -180,7 +187,7 @@ impl Recent {
 /// Checks items that arrive from paired devices before the application sees them.
 pub(crate) struct Intake {
     max_clipboard_bytes: usize,
-    limiter: Mutex<RateLimiter<DeviceId>>,
+    limiter: Arc<Mutex<RateLimiter<DeviceId>>>,
     recent: Mutex<Recent>,
 }
 
@@ -188,11 +195,11 @@ impl Intake {
     pub(crate) fn new(config: &HandoffConfig) -> Self {
         Self {
             max_clipboard_bytes: config.max_clipboard_bytes,
-            limiter: Mutex::new(RateLimiter::new(
+            limiter: Arc::new(Mutex::new(RateLimiter::new(
                 config.max_items_per_minute,
                 Duration::from_mins(1),
                 MAX_DEVICES,
-            )),
+            ))),
             recent: Mutex::new(Recent::default()),
         }
     }
@@ -200,6 +207,14 @@ impl Intake {
     /// Forgets what is known about a device's recent behaviour, once it is unpaired.
     pub(crate) fn forget(&self, peer: &DeviceId) {
         lock(&self.limiter).forget(peer);
+    }
+
+    /// What charges a transfer to the device that offers it, as one item against the same limit as
+    /// the items that are handed over (section 8, Offer). It says whether the device may send one
+    /// more.
+    pub(crate) fn item_charge(&self) -> impl Fn(&DeviceId) -> bool + Send + Sync + 'static {
+        let limiter = Arc::clone(&self.limiter);
+        move |peer| lock(&limiter).allow(peer, Instant::now())
     }
 
     pub(crate) async fn handle(
@@ -265,17 +280,18 @@ pub(crate) struct SessionServer {
 impl ProtocolHandler for SessionServer {
     async fn accept(&self, connection: Connection) -> std::result::Result<(), AcceptError> {
         // The gate has checked that the device is paired. It may open unidirectional streams too.
-        self.shared.uni.spawn(connection.clone());
+        let link = Link::mint();
+        self.shared.uni.spawn(connection.clone(), link);
         contained(
             "session connection",
-            serve_connection(Arc::clone(&self.shared), connection),
+            serve_connection(Arc::clone(&self.shared), connection, link),
         )
         .await;
         Ok(())
     }
 }
 
-async fn serve_connection(shared: Arc<Shared>, connection: Connection) {
+async fn serve_connection(shared: Arc<Shared>, connection: Connection, link: Link) {
     let peer = remote_device(&connection);
     let mut streams = JoinSet::new();
     loop {
@@ -292,6 +308,7 @@ async fn serve_connection(shared: Arc<Shared>, connection: Connection) {
                 streams.spawn(serve_stream(
                     Arc::clone(&shared),
                     connection.clone(),
+                    link,
                     peer,
                     send,
                     recv,
@@ -312,6 +329,7 @@ async fn serve_connection(shared: Arc<Shared>, connection: Connection) {
 async fn serve_stream(
     shared: Arc<Shared>,
     connection: Connection,
+    link: Link,
     peer: DeviceId,
     mut send: SendStream,
     mut recv: RecvStream,
@@ -358,15 +376,78 @@ async fn serve_stream(
                 .handle(shared.handler.as_ref(), &paired, handoff)
                 .await,
         ),
-        // This version does not take part in transfers and does not say it does (it
-        // advertises no `transfer.files`), so a request for one is answered as protocol.md
-        // section 8 says for a device that does not.
-        Request::Transfer(transfer) => Response::Transfer(TransferReply::Declined(Declined {
-            id: transfer.id(),
+        Request::Transfer(request) => {
+            match serve_transfer(shared.incoming.as_ref(), &paired, link, request).await {
+                Answered::Reply(reply) => Response::Transfer(reply),
+                Answered::NotFound => Response::Error(ErrorReply {
+                    code: ErrorCode::NotFound,
+                    message: "no such transfer".to_owned(),
+                }),
+                Answered::TimedOut => {
+                    // The sender asks again, and gets the outcome when it is there.
+                    abandon(&mut send, &mut recv, close_code::TIMEOUT);
+                    return;
+                }
+            }
+        }
+        // This version neither shows a window nor shares one and advertises no `stream.view`, so
+        // every request of a session is declined (protocol.md section 9).
+        Request::Stream(request) => Response::Stream(StreamReply::Declined(stream::Declined {
+            session: request.session(),
             reason: DeclineReason::Unsupported,
         })),
     };
     respond(&mut send, &response).await;
+}
+
+/// How a request about a transfer is answered.
+enum Answered {
+    Reply(TransferReply),
+    /// The transfer is not known (section 8, Finish).
+    NotFound,
+    /// The files did not settle in time, and the request ends without an answer.
+    TimedOut,
+}
+
+/// Answers a request about a transfer that `paired` made on the connection `link`.
+///
+/// A device that takes no part in transfers declines every request about one as unsupported
+/// (section 8). That is a device that was given nothing to ask, and one that has no folder to
+/// receive into at the moment. A transfer that such a device took while it had a folder is still
+/// finished and cancelled as any other.
+async fn serve_transfer(
+    incoming: Option<&Incoming>,
+    paired: &PairedDevice,
+    link: Link,
+    request: TransferRequest,
+) -> Answered {
+    let id = request.id();
+    let unsupported = || {
+        Answered::Reply(TransferReply::Declined(Declined {
+            id,
+            reason: DeclineReason::Unsupported,
+        }))
+    };
+    let Some(incoming) = incoming else {
+        return unsupported();
+    };
+    match request {
+        TransferRequest::Offer(offer) => Answered::Reply(incoming.offer(paired, link, offer).await),
+        TransferRequest::Finish(finish) => match incoming.finish(&paired.id, &finish).await {
+            Ok(done) => Answered::Reply(TransferReply::Done(done)),
+            Err(FinishError::NotFound) if !incoming.takes_files() => unsupported(),
+            Err(FinishError::NotFound) => Answered::NotFound,
+            Err(FinishError::TimedOut) => Answered::TimedOut,
+        },
+        TransferRequest::Cancel(cancel) => {
+            let known = incoming.cancel(&paired.id, cancel.id).await;
+            if known || incoming.takes_files() {
+                Answered::Reply(TransferReply::Cancelled(Cancelled { id }))
+            } else {
+                unsupported()
+            }
+        }
+    }
 }
 
 async fn respond(send: &mut SendStream, response: &Response) {
@@ -619,7 +700,7 @@ async fn connect(endpoint: &Endpoint, shared: &Shared, peer: &PairedDevice) -> R
     };
     note_contact(shared, peer.id, contact_hints(&connection)).await;
     // The device may open unidirectional streams on a connection that this device made too.
-    shared.uni.spawn(connection.clone());
+    shared.uni.spawn(connection.clone(), Link::mint());
     Ok(Session {
         connection,
         peer: Arc::new(reply),

@@ -82,6 +82,22 @@ pub const MAX_FAILURES_LISTED: usize = 256;
 /// Largest encoded picture of one frame of video, header excluded, in bytes.
 pub const MAX_PICTURE_BYTES: usize = 8 * 1024 * 1024;
 
+/// Longest title of a shared window, in bytes.
+pub const MAX_STREAM_TITLE_BYTES: usize = 512;
+
+/// Longest edge of a window that is offered, in pixels. A window can be larger than any
+/// picture that is sent, because the source scales it down.
+pub const MAX_WINDOW_EDGE: u32 = 16_384;
+
+/// Longest edge of a picture, in pixels.
+pub const MAX_PICTURE_EDGE: u32 = 3840;
+
+/// Highest frame rate, in frames a second.
+pub const MAX_FRAME_RATE: u16 = 120;
+
+/// Most codecs that an accepted offer names.
+pub const MAX_CODECS: usize = 8;
+
 /// A field that does not satisfy the protocol's limits.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LimitError {
