@@ -46,6 +46,9 @@ jobs:
           fetch-depth: 0
       - name: Check the rules against the changes people really make
         run: bash .github/scripts/changed-paths-test.sh
+      # The iPhone job uses this script, and no other job could tell that it was broken.
+      - name: Check the script that starts a hung test again
+        run: bash .github/scripts/hang-guard-test.sh
       - name: Choose the jobs
         id: choose
         env:
@@ -360,7 +363,16 @@ jobs:
         run: |
           set -eu
           printf 'ARCHS[sdk=iphonesimulator*] = %s\n' "$(uname -m)" > "$XCODE_XCCONFIG_FILE"
-          flutter test integration_test -d "$SIMULATOR_UDID" -v
+          # Now and then Flutter never finds the app that it started in the simulator, and says
+          # nothing more until the 25 minutes of this step are over. In a run that passed it
+          # printed the first of the two lines below and, 2.6 seconds later, the second. A second
+          # start nearly always finds the app.
+          python3 "$GITHUB_WORKSPACE/.github/scripts/hang-guard.py" \
+            --waiting 'Waiting for VM Service port to be available' \
+            --finished 'VM Service URL on device' \
+            --seconds 120 \
+            --cleanup 'xcrun simctl terminate "$SIMULATOR_UDID" io.github.jayunewal.baton' \
+            -- flutter test integration_test -d "$SIMULATOR_UDID" -v
       - name: Show what the simulator logged about the app
         # An app that closes as it opens leaves the test waiting for a window that never
         # comes. Its crash report and its log say why. So does the log of tccd, which asks the

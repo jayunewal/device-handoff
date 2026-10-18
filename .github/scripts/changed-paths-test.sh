@@ -38,6 +38,8 @@ check "$all" LICENSE
 check "$all" .github/workflows/ci.yml
 check "$all" .github/scripts/changed-paths.sh
 check "$all" .github/scripts/changed-paths-test.sh
+check "$all" .github/scripts/hang-guard.py
+check "$all" .github/scripts/hang-guard-test.sh
 check "$all" tools/something.sh
 check "$all" new-file-at-the-top
 check "$all" apps/baton/ios/Runner/Info.plist apps/baton/macos/Runner/Info.plist crates/baton-core/src/lib.rs
