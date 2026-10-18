@@ -53,10 +53,13 @@
 //!
 //! A refusal and a transfer that ended are remembered for ten minutes, so that a repeat of the offer
 //! or of `Finish` is answered the same way. A transfer that is accepted and has had no attempt going
-//! for an hour is given up and what it received is removed (section 8, After a stop). The table holds
-//! at most [`CAPACITY`] entries and forgets the oldest of the ones that ended first. A device that is
-//! unpaired loses its entries ([`Incoming::forget`]), and a table that is shut down loses all of them
-//! and takes no more offers.
+//! for an hour is given up and what it received is removed (section 8, After a stop), and the table
+//! forgets it with that: a decision is remembered for as long as what was received is kept (section
+//! 8, A repeat), so a sender that comes back after the hour makes a new offer, and the person is
+//! asked again. A transfer that the sender cancelled, or broke a rule of, is remembered for ten
+//! minutes like the others. The table holds at most [`CAPACITY`] entries and forgets the oldest of
+//! the ones that ended first. A device that is unpaired loses its entries ([`Incoming::forget`]), and
+//! a table that is shut down loses all of them and takes no more offers.
 
 use std::{
     collections::HashMap,
@@ -588,9 +591,7 @@ impl Incoming {
                 .collect();
             keys.iter().filter_map(|key| entries.remove(key)).collect()
         };
-        for entry in &gone {
-            self.give_up(entry).await;
-        }
+        self.give_up_all(gone).await;
     }
 
     /// Gives up every transfer, as when the device stops. The table takes no offers after that.
@@ -600,8 +601,23 @@ impl Incoming {
             self.shared.closed.store(true, Ordering::Release);
             entries.drain().map(|(_, entry)| entry).collect()
         };
-        for entry in &gone {
-            self.give_up(entry).await;
+        self.give_up_all(gone).await;
+    }
+
+    /// Gives up `gone` all together, so that lanes that do not let go delay the answer by
+    /// `RELEASE_WAIT` once and not once for each entry. Each entry has a task of its own, which
+    /// finishes the job also if the caller stops waiting.
+    async fn give_up_all(&self, gone: Vec<Arc<Entry>>) {
+        let tasks: Vec<_> = gone
+            .into_iter()
+            .map(|entry| {
+                let table = self.clone();
+                tokio::spawn(async move { table.give_up(&entry).await })
+            })
+            .collect();
+        for task in tasks {
+            // A task that panicked has nothing more to give up.
+            let _ = task.await;
         }
     }
 
@@ -683,6 +699,11 @@ impl Incoming {
             }
         });
         lock(&entry.inner).asking = Some(task.abort_handle());
+        // `begin` put the entry in the table before the task existed. A cancel, an unpairing or a
+        // shutdown that came in that gap found no question to take back, so it is taken back here.
+        if !matches!(*entry.stage.borrow(), Stage::Deciding) {
+            entry.stop_asking();
+        }
     }
 
     /// Watches an accepted transfer until it ends, and tells the application how it did. A transfer
@@ -693,14 +714,15 @@ impl Incoming {
         drop(tokio::spawn(async move {
             // `abandoned` also returns when the transfer ends, so `closed` goes first: a transfer that
             // finished must not be given up as one that was left.
-            let outcome = tokio::select! {
+            let (outcome, left) = tokio::select! {
                 biased;
-                outcome = transfer.closed() => outcome,
+                outcome = transfer.closed() => (outcome, false),
                 () = transfer.abandoned(KEEP_IDLE) => {
-                    if !transfer.is_over() {
+                    let left = !transfer.is_over();
+                    if left {
                         transfer.cancel().await;
                     }
-                    transfer.closed().await
+                    (transfer.closed().await, left)
                 }
             };
             let ending = if let Some(done) = outcome {
@@ -710,7 +732,15 @@ impl Incoming {
                 entry.end(Stage::Dropped);
                 Ending::Dropped
             };
-            entry.forget_in(MEMORY);
+            // A transfer that was left for an hour has lost what the sender sent, and with it the
+            // decision (section 8, A repeat): a sender that comes back is a new offer, and the
+            // person is asked again. After a cancel or a broken rule no repeat is expected.
+            let kept = if left && ending == Ending::Dropped {
+                Duration::ZERO
+            } else {
+                MEMORY
+            };
+            entry.forget_in(kept);
             table
                 .shared
                 .handler
@@ -1744,6 +1774,27 @@ mod tests {
         assert_eq!(rig.fake.endings(), []);
     }
 
+    #[tokio::test]
+    async fn a_cancel_that_comes_before_the_question_is_recorded_still_takes_it_back() {
+        // The entry is in the table before the task that asks exists. A cancel in between finds a
+        // question that is not there yet, and the entry is already given up when the task is made.
+        let rig = Rig::new();
+        let from = device(2);
+        let Begun::New(entry) = rig.table.begin(&from, &offer(1)) else {
+            panic!("the offer is a new one");
+        };
+        assert!(rig.table.cancel(&from.id, id(1)).await);
+
+        rig.table.ask(&entry, rig.table.destination().unwrap());
+        settle().await;
+
+        assert_eq!(rig.fake.waiting(), 0);
+        assert_eq!(rig.fake.questions(), rig.fake.withdrawn());
+        let again = rig.table.offer(&from, Link(1), offer(1)).await;
+        assert_eq!(again, declined(id(1), DeclineReason::Refused));
+        assert_eq!(rig.fake.questions(), 0);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_cancelled_offer_is_asked_about_again_when_the_memory_of_it_has_gone() {
         let rig = Rig::new();
@@ -1863,6 +1914,67 @@ mod tests {
         let done = done.unwrap();
         assert!(done.failed.is_empty() && done.more_failed == 0, "{done:?}");
         within("the cancel", rig.table.cancel(&from.id, id(2))).await;
+    }
+
+    /// Takes the transfers `ns` that `from` offers, and holds a lane of each that is never let go.
+    async fn with_lanes_held(rig: &Rig, from: &PairedDevice, ns: &[u8]) -> Vec<LaneGuard> {
+        let mut held = Vec::new();
+        for &n in ns {
+            let link = Link(usize::from(n));
+            assert_eq!(rig.table.offer(from, link, offer(n)).await, accepted(id(n)));
+            held.push(rig.table.lane(&from.id, id(n), link).unwrap().1);
+        }
+        held
+    }
+
+    /// Checks that `give_up`, run on a table where two devices have two transfers each, with a lane
+    /// that is never let go in every one, waits for the lanes once for all the transfers it gives up.
+    async fn waits_once_for_lanes_that_are_never_let_go<Fut: Future<Output = ()>>(
+        give_up: impl FnOnce(Incoming) -> Fut,
+    ) {
+        let rig = Rig::new();
+        rig.fake.says(Verdict::Accept);
+        let _held = (
+            with_lanes_held(&rig, &device(2), &[1, 2]).await,
+            with_lanes_held(&rig, &device(3), &[1, 2]).await,
+        );
+        let started = Instant::now();
+
+        give_up(rig.table.clone()).await;
+
+        let took = started.elapsed();
+        assert!(
+            took >= RELEASE_WAIT,
+            "it did not wait for the lanes: {took:?}"
+        );
+        assert!(
+            took < RELEASE_WAIT + Duration::from_secs(1),
+            "it waited for the lanes of one transfer after the other: {took:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stopping_waits_once_for_lanes_that_are_never_let_go() {
+        waits_once_for_lanes_that_are_never_let_go(|table| async move { table.shutdown().await })
+            .await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unpairing_waits_once_for_lanes_that_are_never_let_go() {
+        let gone = device(2).id;
+        waits_once_for_lanes_that_are_never_let_go(
+            |table| async move { table.forget(&gone).await },
+        )
+        .await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn forgetting_the_devices_that_are_not_paired_waits_once_for_lanes_that_are_never_let_go()
+    {
+        waits_once_for_lanes_that_are_never_let_go(|table| async move {
+            table.forget_unless(|_| false).await;
+        })
+        .await;
     }
 
     // Unpairing and stopping.
@@ -2021,6 +2133,25 @@ mod tests {
         assert!(!entry.is_going());
     }
 
+    #[tokio::test]
+    async fn an_offer_repeated_for_a_transfer_that_was_given_up_before_its_entry_moved_on_is_refused()
+     {
+        // The entry still says `Accepted` for the moment between the transfer being given up and the
+        // task that watches it moving the entry on. A copy of the offer that comes then finds no
+        // attempt to begin, and is not told that the transfer is going.
+        let rig = Rig::new();
+        let from = device(2);
+        let entry = Arc::new(Entry::new(from, offer(1)));
+        let transfer = Transfer::new(rig.table.destination().unwrap(), offer(1));
+        assert!(entry.decide(Stage::Accepted(transfer.clone())));
+        transfer.cancel().await;
+
+        let reply = rig.table.answer(&entry, Link(1)).await;
+
+        assert_eq!(reply, declined(id(1), DeclineReason::Refused));
+        assert!(lock(&entry.inner).current.is_none());
+    }
+
     // Time.
 
     #[tokio::test(start_paused = true)]
@@ -2058,6 +2189,33 @@ mod tests {
         assert_eq!(rig.staging_folders(), 0);
         assert!(rig.table.lane(&from.id, id(1), Link(1)).is_none());
         drop(sender);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_sender_that_comes_back_after_the_hour_is_asked_about_again() {
+        let rig = Rig::new();
+        rig.fake.says(Verdict::Accept);
+        let from = device(2);
+        rig.table.offer(&from, Link(1), offer(1)).await;
+
+        // No byte comes, and the attempt is stopped. The hour passes, and the transfer is given up.
+        tokio::time::advance(Duration::from_secs(40)).await;
+        settle().await;
+        tokio::time::advance(Duration::from_secs(40)).await;
+        settle().await;
+        tokio::time::advance(Duration::from_secs(3500)).await;
+        settle().await;
+        tokio::time::advance(Duration::from_secs(200)).await;
+        rig.fake.until_ended(1).await;
+        assert_eq!(rig.fake.endings(), [(from.id, id(1), Ending::Dropped)]);
+
+        // What the decision was for is gone with it (section 8, A repeat): the same offer is a new
+        // one, and the person is not told "no" for ten minutes because the sender was away.
+        let again = rig.table.offer(&from, Link(2), offer(1)).await;
+
+        assert_eq!(again, accepted(id(1)));
+        assert_eq!(rig.fake.questions(), 2);
+        assert!(rig.table.lane(&from.id, id(1), Link(2)).is_some());
     }
 
     // What the types promise.
