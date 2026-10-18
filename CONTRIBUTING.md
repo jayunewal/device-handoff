@@ -48,6 +48,15 @@ The Rust jobs are Format, Clippy, Test, Minimum supported Rust version, Rustdoc,
 
 The rules are in `.github/scripts/changed-paths.sh`. `changed-paths-test.sh` next to it holds them to the changes people really make, and CI runs it first, so a rule that skips a job it should not fails there.
 
+### Why a run takes the time it does
+
+GitHub runs five Mac jobs at a time for the whole repository, and a full run needs four of them (App (macOS), App (iPhone), Test on macOS and Build for macOS). When several pull requests run together the Mac jobs wait their turn, and nothing is wrong. What CI does to ask less of them:
+
+- The two app jobs keep what Cargo builds for the library from one run to the next, in `apps/baton/build/cargokit`. `apps/baton/rust_builder/README.md` says how Cargokit is changed to build there. A run on `main` saves the cache that every pull request starts from, and a change to `Cargo.lock` builds the new dependencies once.
+- A push to a pull request cancels the run of the one before it. A run on `main` is not cancelled by the next merge, so that it gets to save its cache.
+- Rust is built without debug information (`CARGO_PROFILE_DEV_DEBUG` in `ci.yml`, and a file that the app jobs write for the builds that Xcode starts). It makes a build a third faster and a cache a third of the size, and a failed test still names its file and line.
+- The iPhone job builds its simulator for the processor of the Mac only and boots the simulator while the app is built. If Flutter never finds the app in the simulator, which has happened in about one job of eight, `.github/scripts/hang-guard.py` stops the test after two minutes and starts it again once, and the log says so in a warning. A test that fails is not started again.
+
 ## Code style
 
 - `cargo fmt` and `cargo clippy -D warnings` must be clean.
