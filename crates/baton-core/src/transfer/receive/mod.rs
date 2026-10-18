@@ -16,15 +16,19 @@
 //!   came out. [`done`] makes the outcome of the transfer from it.
 //! - [`LaneReader`] reads the frames of one lane off a stream, with the checks that need only the
 //!   list: where a piece of the list may come, and how many bytes a span has.
+//! - [`Intake`] joins the [`Ledger`] to the staging folder: what each frame does to the files, in
+//!   the order that keeps the two agreeing however the lanes interleave, and how the transfer ends.
 //!
-//! None of it touches the disk or the network, and nothing here is connected to the session yet.
+//! None of it touches the network, and nothing here is connected to the session yet.
 
 use baton_proto::{close_code, transfer::list::ListError};
 
 mod attempt;
+mod intake;
 mod lane;
 
 pub use attempt::{Lanes, Ledger, done};
+pub use intake::{Concluded, Halt, Intake};
 pub use lane::{Counted, Fault, Frame, LaneReader, SpanBuf};
 
 /// A rule of a transfer that the sender broke.

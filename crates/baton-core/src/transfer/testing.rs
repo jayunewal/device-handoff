@@ -4,7 +4,7 @@
 //! data to put in files.
 
 use baton_proto::{
-    id::TransferId,
+    id::{DeviceId, TransferId},
     limits::MAX_PREVIEW_ITEMS,
     transfer::{
         Offer, PreviewItem, Summary,
@@ -12,6 +12,16 @@ use baton_proto::{
         path,
     },
 };
+
+use super::destination::Destination;
+
+/// A destination in a folder of its own. The folder goes when the first is dropped.
+pub(crate) fn destination() -> (tempfile::TempDir, Destination) {
+    let scratch = tempfile::tempdir().unwrap();
+    let destination =
+        Destination::open(scratch.path(), &DeviceId::from_bytes([1; DeviceId::LEN])).unwrap();
+    (scratch, destination)
+}
 
 /// A file of the list, with a time that is a whole number of seconds (some volumes keep no more).
 pub(crate) fn file(path: &str, size: u64) -> ListEntry {
