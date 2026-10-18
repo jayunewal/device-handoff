@@ -8,7 +8,9 @@
 //! what it has to be, and which frames to give up on and when. This module carries them out on
 //! the streams of a connection. The platform captures and encodes: it asks
 //! [`SourceHandle::begin`] before it encodes a picture, hands over the picture with
-//! [`SourceHandle::sent`], and hears from the viewer through [`SourceEvents`].
+//! [`SourceHandle::sent`], and hears from the viewer through [`SourceEvents`]. Nothing tells it
+//! when a refusal by `begin` has stopped holding, so it asks on a frame clock of its own for as
+//! long as the window has changed since the last picture it handed over.
 //!
 //! A frame has a task of its own. It opens the stream, writes the header and the picture,
 //! finishes the stream, and waits for the viewer's transport to acknowledge all of it, which is
@@ -87,10 +89,17 @@ pub(crate) trait SourceEvents: Send + 'static {
     /// The largest picture and the highest frame rate that the viewer can take now.
     fn want(&mut self, want: Want);
 
-    /// What the person did on the viewer, in the order in which it happened. Only in a session
-    /// whose offer granted control; the events of any other session are dropped here, and the
-    /// viewer is told why.
-    fn input(&mut self, batch: InputBatch);
+    /// What the person did on the viewer, in the order in which it happened, and when the batch
+    /// arrived, on the clock of the session: the time since it began, which is the clock of the
+    /// capture times and the `now` of [`baton_stream::gate::Context`]. Only in a session whose
+    /// offer granted control; the events of any other session are dropped here, and the viewer
+    /// is told why.
+    ///
+    /// The platform runs each event through a [`baton_stream::gate::Gate`], which checks the
+    /// rate, the pause, the lock and the geometry, and tells the session what it dropped with
+    /// [`SourceHandle::dropped`]. So input still arrives while the session is paused: the gate
+    /// has to deliver the release of a press that it delivered.
+    fn input(&mut self, batch: InputBatch, arrived: Duration);
 
     /// The viewer holds these long-term references now, and the encoder may refer to them.
     fn held(&mut self, tokens: Vec<LtrToken>);
@@ -98,6 +107,13 @@ pub(crate) trait SourceEvents: Send + 'static {
     /// The next frame has to begin a chain, so a picture is wanted for it even if the screen has
     /// not changed: without one a frame that was lost would never be replaced. The first frame of
     /// a session is one too, so a session that has sent nothing yet says so at once.
+    ///
+    /// This is said once each time the next frame comes to begin a chain, to wake a platform that
+    /// waits for the screen to change. It is not said again when a refusal by
+    /// [`SourceHandle::begin`] stops holding (the viewer had gone quiet, the session was paused,
+    /// too many frames were in flight): for as long as
+    /// [`recovery_pending`](SourceHandle::recovery_pending) is true the platform asks `begin`
+    /// again on its own frame clock.
     fn recovery(&mut self);
 
     /// The session is over. The platform lets go of everything it holds for it, and is called no
@@ -254,6 +270,9 @@ pub(super) struct Source {
     viewer_control: AtomicBool,
     /// Cancelled when the session ends. The tokens of the frame streams are its children.
     ended: CancellationToken,
+    /// How the session ended, set before the platform is told. The platform is told of
+    /// everything with the lock of `core` held, so whatever is about to tell it something looks
+    /// here once it has the lock, and a session that has ended is told nothing more.
     end: OnceLock<End>,
 }
 
@@ -272,17 +291,25 @@ impl SourceHandle {
     /// Asks whether the next picture may be encoded, and what it has to be: a key frame, a
     /// recovery frame or a delta. `None` means no: too much is in flight, or a frame is still
     /// being made, or the session is paused or quiet or over. The platform then skips the
-    /// picture, and the next one is a newer one.
+    /// picture.
+    ///
+    /// A `None` is not remembered, and nothing says when it stops holding. A window that has
+    /// stopped changing delivers no newer picture, so a platform that waited for the next one
+    /// would leave the viewer with an old one. It asks again on its own frame clock, with the
+    /// newest picture that the capture API hands over when it is asked for one, for as long as
+    /// the window has changed since the last picture it handed over to [`sent`](Self::sent) or
+    /// [`recovery_pending`](Self::recovery_pending) is true.
     ///
     /// A `Some` is answered with [`sent`](Self::sent) or [`cancel`](Self::cancel).
     pub(crate) fn begin(&self) -> Option<FrameKind> {
         let source = &self.source;
-        if source.end.get().is_some() {
-            return None;
-        }
         let path = source.path();
         let mut core = lock(&source.core);
-        if core.paused || core.quiet || core.frames.len() >= MAX_FRAME_STREAMS {
+        if source.end.get().is_some()
+            || core.paused
+            || core.quiet
+            || core.frames.len() >= MAX_FRAME_STREAMS
+        {
             return None;
         }
         core.sender.begin(&path)
@@ -309,12 +336,12 @@ impl SourceHandle {
     /// The picture is larger than a viewer takes, or the session is over. Nothing was sent.
     pub(crate) fn sent(&self, picture: Picture) -> std::result::Result<Option<u64>, NotSent> {
         let source = &self.source;
-        if source.end.get().is_some() {
-            return Err(NotSent::Over);
-        }
         let path = source.path();
         let now = source.now();
         let mut core = lock(&source.core);
+        if source.end.get().is_some() {
+            return Err(NotSent::Over);
+        }
         if picture.bytes.len() > MAX_PICTURE_BYTES {
             core.sender.cancel();
             return Err(NotSent::TooLarge);
@@ -344,6 +371,9 @@ impl SourceHandle {
     /// the frames in flight, which are of the old size, and tells the viewer. A picture that is
     /// being made is of the old size too, and [`sent`](Self::sent) drops it.
     ///
+    /// Once the session is over this changes nothing: a platform cannot rule out that the end
+    /// comes while it is resizing, and it is told of the end anyway.
+    ///
     /// # Errors
     ///
     /// `config` is beyond a limit of the protocol. Nothing changed.
@@ -353,6 +383,9 @@ impl SourceHandle {
             .validate()
             .map_err(|error| Error::protocol(&error))?;
         let mut core = lock(&source.core);
+        if source.end.get().is_some() {
+            return Ok(());
+        }
         let reset = core.sender.new_epoch();
         core.reset(&reset);
         core.check_recovery();
@@ -362,8 +395,9 @@ impl SourceHandle {
         Ok(())
     }
 
-    /// Stops sending pictures for a while, and says why. Input is dropped until
-    /// [`resume`](Self::resume).
+    /// Stops sending pictures for a while, and says why. The platform's gate drops the events
+    /// of the viewer until [`resume`](Self::resume), except the release of a press that it
+    /// delivered, so [`SourceEvents::input`] is still called.
     pub(crate) fn pause(&self, reason: PauseReason) {
         lock(&self.source.core).paused = true;
         self.source.say(SourceMessage::Pause(Pause { reason }));
@@ -532,8 +566,7 @@ impl Source {
         }
     }
 
-    /// Looks at the clock a few times a second: gives up on the frames that are late, says what
-    /// the viewer's events were dropped for, and ends the session of a viewer that has gone quiet.
+    /// Looks at the clock a few times a second, until the session is over.
     async fn keep_time(self: Arc<Self>) {
         let mut tick = tokio::time::interval(self.params.tick_every);
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -542,23 +575,37 @@ impl Source {
                 () = self.ended.cancelled() => return,
                 _ = tick.tick() => {}
             }
-            let now = self.now();
-            let mut core = lock(&self.core);
-            let reset = core.sender.poll(now);
-            core.reset(&reset);
-            core.check_recovery();
-            let notice = core.notices.poll(now);
-            let silence = now.saturating_sub(core.last_report);
-            core.quiet = silence > self.params.quiet_after;
-            drop(core);
-            if let Some(notice) = notice {
-                self.say(SourceMessage::Notice(notice));
-            }
-            if silence > self.params.silent_after {
-                self.end(End::Silent);
+            if self.on_tick().is_break() {
                 return;
             }
         }
+    }
+
+    /// Looks at the clock: gives up on the frames that are late, says what the viewer's events
+    /// were dropped for, and ends the session of a viewer that has gone quiet. `Break` once the
+    /// session is over.
+    fn on_tick(&self) -> ControlFlow<()> {
+        let now = self.now();
+        let mut core = lock(&self.core);
+        // The end can land after the task woke up and before it had the lock.
+        if self.end.get().is_some() {
+            return ControlFlow::Break(());
+        }
+        let reset = core.sender.poll(now);
+        core.reset(&reset);
+        core.check_recovery();
+        let notice = core.notices.poll(now);
+        let silence = now.saturating_sub(core.last_report);
+        core.quiet = silence > self.params.quiet_after;
+        drop(core);
+        if let Some(notice) = notice {
+            self.say(SourceMessage::Notice(notice));
+        }
+        if silence > self.params.silent_after {
+            self.end(End::Silent);
+            return ControlFlow::Break(());
+        }
+        ControlFlow::Continue(())
     }
 
     /// Reads the viewer's control stream until the session ends.
@@ -609,7 +656,7 @@ impl Source {
             }
             ViewerMessage::Input(batch) => {
                 if self.control {
-                    core.events.input(batch);
+                    core.events.input(batch, now);
                 } else {
                     for _ in &batch.events {
                         core.notices.dropped(Reason::ControlOff);
@@ -756,11 +803,15 @@ mod tests {
     }
 
     #[derive(Clone, Default)]
-    struct Log(Arc<Mutex<Vec<Heard>>>);
+    struct Log {
+        heard: Arc<Mutex<Vec<Heard>>>,
+        /// When each batch of input arrived, by the clock of the session.
+        arrivals: Arc<Mutex<Vec<Duration>>>,
+    }
 
     impl Log {
         fn all(&self) -> Vec<Heard> {
-            lock(&self.0).clone()
+            lock(&self.heard).clone()
         }
 
         fn has(&self, heard: &Heard) -> bool {
@@ -770,13 +821,17 @@ mod tests {
         fn count(&self, heard: &Heard) -> usize {
             self.all().iter().filter(|each| *each == heard).count()
         }
+
+        fn arrivals(&self) -> Vec<Duration> {
+            lock(&self.arrivals).clone()
+        }
     }
 
     struct Recording(Log);
 
     impl Recording {
         fn note(&self, heard: Heard) {
-            lock(&(self.0).0).push(heard);
+            lock(&self.0.heard).push(heard);
         }
     }
 
@@ -789,7 +844,8 @@ mod tests {
             self.note(Heard::Want(want));
         }
 
-        fn input(&mut self, batch: InputBatch) {
+        fn input(&mut self, batch: InputBatch, arrived: Duration) {
+            lock(&self.0.arrivals).push(arrived);
             self.note(Heard::Input(batch));
         }
 
@@ -1058,6 +1114,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_frame_that_the_viewer_stops_breaks_the_chain_whatever_the_clock_says() {
+        // The clock gives up on nothing for a minute, so only the stop can break the chain.
+        let rules = Rules {
+            grace: Duration::from_secs(60),
+            longest: Duration::from_secs(60),
+            ..Rules::default()
+        };
+        let mut rig = Rig::with(setup(true, SourceParams { rules, ..quick() }), 1).await;
+        rig.frame(1000);
+        read_frame(&mut rig.frames).await;
+        rig.settled().await;
+        // A picture of the largest size does not fit in the window of its stream, so the write
+        // is still going when the viewer stops the stream.
+        assert_eq!(rig.frame(MAX_PICTURE_BYTES), (FrameKind::Delta, 1));
+        let before = rig.recoveries();
+        let mut stopped = next(&mut rig.frames).await.recv;
+        stopped.stop(code(close_code::CANCELLED)).unwrap();
+        rig.until("the platform to be told", |rig| rig.recoveries() > before)
+            .await;
+        assert_eq!(rig.handle.begin(), Some(FrameKind::Key));
+        assert_eq!(rig.handle.stats().frames.abandoned, 1);
+    }
+
+    #[tokio::test]
     async fn the_clock_resets_a_frame_that_is_late() {
         // Nothing is acknowledged within a millisecond, so a frame that does not begin a chain is
         // late by the next look at the clock.
@@ -1189,6 +1269,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reports_keep_the_session_going() {
+        let params = SourceParams {
+            quiet_after: Duration::from_millis(150),
+            silent_after: Duration::from_millis(400),
+            ..quick()
+        };
+        let mut rig = Rig::with(setup(true, params), 1).await;
+        let mut control = rig.source_control().await;
+        read_source_message(&mut control).await;
+        let mut send = rig.open_viewer_control().await;
+        let report = Report {
+            shown: None,
+            decode_us: 0,
+            dropped: 0,
+            thermal: Thermal::Nominal,
+        };
+        // Twice the time that ends a silent session, with a report every 50 ms.
+        for _ in 0..16 {
+            write_message(&mut send, &ViewerMessage::Report(report))
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(!rig.log.has(&Heard::Ended));
+        assert!(rig.picture_wanted());
+    }
+
+    #[tokio::test]
     async fn what_the_viewer_says_reaches_the_platform_in_order() {
         let mut rig = Rig::new().await;
         let mut control = rig.source_control().await;
@@ -1219,6 +1327,8 @@ mod tests {
                 action: PointerAction::Move,
             }],
         };
+        let source = Arc::clone(&rig.handle.source);
+        let before = source.now();
         for message in [
             ViewerMessage::Report(report),
             ViewerMessage::Want(want),
@@ -1230,6 +1340,12 @@ mod tests {
             rig.log.all().contains(&Heard::Input(batch.clone()))
         })
         .await;
+        // The batch comes with the time it arrived, on the clock of the session.
+        let after = source.now();
+        let [arrived] = rig.log.arrivals()[..] else {
+            panic!("the batch should have arrived once");
+        };
+        assert!(before <= arrived && arrived <= after);
         // First what the session told the platform itself, then the three things in the order in
         // which the viewer said them, and nothing else.
         assert_eq!(
@@ -1316,6 +1432,32 @@ mod tests {
         .await;
         assert!(rig.recoveries() > before);
         assert_eq!(rig.handle.begin(), Some(FrameKind::Key));
+    }
+
+    #[tokio::test]
+    async fn a_key_frame_resets_the_frames_on_their_way() {
+        // The clock gives up on nothing for a minute, so only the key frame can reset the delta.
+        let rules = Rules {
+            grace: Duration::from_secs(60),
+            longest: Duration::from_secs(60),
+            ..Rules::default()
+        };
+        let mut rig = Rig::with(setup(true, SourceParams { rules, ..quick() }), 1).await;
+        rig.frame(1000);
+        read_frame(&mut rig.frames).await;
+        rig.settled().await;
+        assert_eq!(rig.frame(8 * 1024 * 1024), (FrameKind::Delta, 1));
+        let mut on_its_way = next(&mut rig.frames).await.recv;
+        let mut send = rig.open_viewer_control().await;
+        write_message(&mut send, &ViewerMessage::KeyFrame(KeyFrame { tried: 0 }))
+            .await
+            .unwrap();
+        rig.until("a key frame to be wanted", |rig| {
+            rig.handle.recovery_pending()
+        })
+        .await;
+        assert_eq!(rig.frame(1000).0, FrameKind::Key);
+        assert_eq!(reset_with(&mut on_its_way).await, 499);
     }
 
     #[tokio::test]
@@ -1440,6 +1582,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_session_that_has_ended_tells_the_platform_nothing_more() {
+        let rig = Rig::new().await;
+        let source = Arc::clone(&rig.handle.source);
+        // A frame with a long-term reference is on its way.
+        assert_eq!(rig.handle.begin(), Some(FrameKind::Key));
+        let picture = Picture {
+            ltr: Some(LtrToken(7)),
+            ..Rig::picture(1000)
+        };
+        assert_eq!(rig.handle.sent(picture), Ok(Some(0)));
+        rig.handle.end();
+        let told = rig.log.all();
+        assert_eq!(told.last(), Some(&Heard::Ended));
+        // What the tasks that had passed their checks of the session when it ended can still do:
+        // carry out what the viewer said, settle a frame, and change the picture.
+        let report = Report {
+            shown: None,
+            decode_us: 0,
+            dropped: 0,
+            thermal: Thermal::Nominal,
+        };
+        let want = Want {
+            width: 2796,
+            height: 1290,
+            fps: 120,
+        };
+        let batch = InputBatch {
+            events: vec![Event::Pointer {
+                frame: 0,
+                x: 0.5,
+                y: 0.25,
+                modifiers: Modifiers::NONE,
+                action: PointerAction::Move,
+            }],
+        };
+        for message in [
+            ViewerMessage::Report(report),
+            ViewerMessage::Want(want),
+            ViewerMessage::Input(batch),
+            ViewerMessage::KeyFrame(KeyFrame { tried: 0 }),
+        ] {
+            assert!(source.viewer_said(message).is_continue());
+        }
+        source.settle(0, Outcome::Acked);
+        let bigger = Config {
+            width: 2048,
+            height: 1280,
+            ..config()
+        };
+        rig.handle.new_epoch(bigger).unwrap();
+        // And the tasks of the session, which run once the test waits.
+        tokio::time::sleep(3 * quick().tick_every).await;
+        assert_eq!(rig.log.all(), told);
+    }
+
+    #[tokio::test]
+    async fn the_clock_tells_the_platform_nothing_after_the_end() {
+        let rig = Rig::new().await;
+        let source = Arc::clone(&rig.handle.source);
+        // A first picture is still wanted, and the next look at the clock would say so.
+        assert!(rig.handle.recovery_pending());
+        lock(&source.core).recovery_told = false;
+        rig.handle.end();
+        let told = rig.log.all();
+        assert_eq!(told.last(), Some(&Heard::Ended));
+        assert!(source.on_tick().is_break());
+        assert_eq!(rig.log.all(), told);
+    }
+
+    #[tokio::test]
+    async fn a_picture_that_was_begun_when_the_session_ended_is_refused() {
+        let mut rig = Rig::new().await;
+        assert_eq!(rig.handle.begin(), Some(FrameKind::Key));
+        rig.handle.end();
+        assert_eq!(rig.handle.sent(Rig::picture(1000)), Err(NotSent::Over));
+        // Nothing was counted, and no stream was opened for it.
+        assert_eq!(rig.handle.stats().frames.sent, 0);
+        nothing_arrives(&mut rig.frames).await;
+        // With nothing in flight and nothing being made, the rules would want a picture: it is
+        // the end that says no.
+        rig.handle.cancel();
+        assert_eq!(rig.handle.begin(), None);
+    }
+
+    #[tokio::test]
     async fn pausing_stops_the_encoder_and_the_viewer_is_told_in_order() {
         let mut rig = Rig::new().await;
         let mut control = rig.source_control().await;
@@ -1495,6 +1722,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_new_epoch_resets_a_frame_that_is_on_its_way() {
+        // The clock gives up on nothing for a minute, so only the new epoch can reset the frame.
+        let rules = Rules {
+            grace: Duration::from_secs(60),
+            longest: Duration::from_secs(60),
+            ..Rules::default()
+        };
+        let mut rig = Rig::with(setup(true, SourceParams { rules, ..quick() }), 1).await;
+        let mut control = rig.source_control().await;
+        read_source_message(&mut control).await;
+        rig.frame(1000);
+        read_frame(&mut rig.frames).await;
+        rig.settled().await;
+        // A delta that is still on its way: the viewer takes its stream and does not read it.
+        assert_eq!(rig.frame(8 * 1024 * 1024), (FrameKind::Delta, 1));
+        let mut on_its_way = next(&mut rig.frames).await.recv;
+        let bigger = Config {
+            width: 2048,
+            height: 1280,
+            ..config()
+        };
+        rig.handle.new_epoch(bigger).unwrap();
+        assert_eq!(reset_with(&mut on_its_way).await, 499);
+    }
+
+    #[tokio::test]
     async fn a_stream_that_does_not_belong_to_the_session_is_stopped() {
         let rig = Rig::with(setup(true, quick()), 2).await;
         // A control stream for a session that is not running.
@@ -1516,6 +1769,21 @@ mod tests {
         assert_eq!(stopped_with(&frame).await, 400);
         // Nothing of this ended the session.
         assert!(!rig.streaming.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_control_stream_on_another_connection_of_the_viewer_is_not_taken() {
+        let rig = Rig::new().await;
+        // The same two devices, on a connection of their own.
+        let (_second_dialed, second_accepted) = connect(&rig.source, &rig.viewer).await;
+        let mut other = second_accepted.open_uni().await.unwrap();
+        other
+            .write_all(&encode_prefix(KIND_CONTROL, session_id()))
+            .await
+            .unwrap();
+        assert_eq!(stopped_with(&other).await, 499);
+        assert!(!rig.log.has(&Heard::Ended));
+        assert!(rig.streaming.sourcing(&session_id()).is_some());
     }
 
     #[tokio::test]
