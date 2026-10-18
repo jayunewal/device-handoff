@@ -206,6 +206,13 @@ impl Intake {
         self.gate.close();
     }
 
+    /// Stands in for a call that is under way and does not return, for the tests of what waits for
+    /// a book to be retired. The call returns when the guard is dropped.
+    #[cfg(test)]
+    pub(crate) fn call_under_way(&self) -> impl Drop + '_ {
+        self.gate.enter().expect("the gate is open")
+    }
+
     /// Ends the transfer: puts what was checked in place, and says how every file came out. A file
     /// that has no outcome yet gets `unsettled`.
     ///

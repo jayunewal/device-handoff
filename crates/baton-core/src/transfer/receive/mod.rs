@@ -18,6 +18,9 @@
 //!   list: where a piece of the list may come, and how many bytes a span has.
 //! - [`Intake`] joins the [`Ledger`] to the staging folder: what each frame does to the files, in
 //!   the order that keeps the two agreeing however the lanes interleave, and how the transfer ends.
+//! - [`Transfer`] is the whole receiver of one transfer: its attempts, the lanes of each read side
+//!   by side, the timer that ends an attempt that has stopped moving, and the answers to `Finish`
+//!   and `Cancel`. The session gives it streams and asks it for outcomes.
 //!
 //! None of it touches the network, and nothing here is connected to the session yet.
 
@@ -26,10 +29,12 @@ use baton_proto::{close_code, transfer::list::ListError};
 mod attempt;
 mod intake;
 mod lane;
+mod transfer;
 
 pub use attempt::{Lanes, Ledger, done};
 pub use intake::{Concluded, Halt, Intake};
 pub use lane::{Counted, Fault, Frame, LaneReader, SpanBuf};
+pub use transfer::{Attempt, Dropped, LaneEnd, Over, Transfer};
 
 /// A rule of a transfer that the sender broke.
 ///

@@ -115,8 +115,9 @@ pub enum Fault {
     /// The sender broke a rule of the transfer.
     #[error(transparent)]
     Violation(#[from] Violation),
-    /// The lane ended in the middle of a frame, without an error: the sender finished or reset
-    /// it too early. That is not a rule broken, but the frame is lost.
+    /// The lane ended in the middle of a frame, without an error: the sender finished it too
+    /// early. A sender that does that broke a rule of the transfer ([`Violation::Cut`]), and the
+    /// caller says so. A lane that is reset is [`Io`](Self::Io) instead.
     #[error("the lane ended in the middle of a frame")]
     Cut,
     /// The stream failed, as when the sender reset it or the connection was lost. The error is the
@@ -277,14 +278,13 @@ impl<R: AsyncRead + Unpin> LaneReader<R> {
 
 #[cfg(test)]
 mod tests {
-    use baton_proto::transfer::{
-        lane::{TAG_END, TAG_LIST, TAG_SKIP, TAG_SPAN},
-        list::ListEntry,
-    };
+    use baton_proto::transfer::lane::{TAG_END, TAG_LIST, TAG_SKIP, TAG_SPAN};
     use tokio::io::AsyncWriteExt;
 
     use super::*;
-    use crate::transfer::testing::{bytes, file, folder, listing};
+    use crate::transfer::testing::{
+        bytes, chunk, end, file, folder, lane, list, listing, skip, span,
+    };
 
     /// `a` (a folder), `a/x` (10 bytes), `a/y` (a mebibyte and 3 bytes), `z` (5 bytes), `zero`
     /// (empty).
@@ -303,44 +303,6 @@ mod tests {
             file("z", 5),
             file("zero", 0),
         ])
-    }
-
-    fn head(head: FrameHead) -> Vec<u8> {
-        let mut out = Vec::new();
-        head.encode_into(&mut out);
-        out
-    }
-
-    fn span(file: u32, span: u32, data: &[u8]) -> Vec<u8> {
-        let mut out = head(FrameHead::Span { file, span });
-        out.extend_from_slice(data);
-        out
-    }
-
-    fn end(file: u32, seed: u8) -> Vec<u8> {
-        head(FrameHead::End {
-            file,
-            hash: Hash::from_bytes([seed; blake3::OUT_LEN]),
-        })
-    }
-
-    fn skip(file: u32, reason: SkipReason) -> Vec<u8> {
-        head(FrameHead::Skip { file, reason })
-    }
-
-    fn chunk(entries: Vec<ListEntry>) -> ListChunk {
-        ListChunk { entries }
-    }
-
-    fn list(chunk: &ListChunk) -> Vec<u8> {
-        let mut out = vec![TAG_LIST];
-        out.extend_from_slice(&frame::encode(chunk).unwrap());
-        out
-    }
-
-    /// A lane made of `parts`, one after another.
-    fn lane(parts: &[&[u8]]) -> Vec<u8> {
-        parts.concat()
     }
 
     async fn next_of(
@@ -727,7 +689,9 @@ mod tests {
         };
 
         assert_eq!(data.len(), 5);
-        assert!(!format!("{data:?}").contains("abcde"));
+        assert_eq!(&*data, b"abcde");
+        // The print has the length and none of the bytes, in any form.
+        assert_eq!(format!("{data:?}"), "SpanBuf { len: 5, .. }");
     }
 
     #[tokio::test]
