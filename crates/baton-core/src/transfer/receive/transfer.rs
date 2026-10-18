@@ -44,8 +44,11 @@
 //! A lane ends because its stream ends, or because the attempt is stopped. The timer of the
 //! attempt stops it with 408 when no byte has been read from any of its lanes for
 //! thirty seconds, and a lane stops it with 507 when the disk is full. Neither drops the transfer:
-//! what was received stays, and the sender may try again on a new connection. A rule that the
-//! sender broke drops the transfer and removes the staging folder.
+//! what was received stays. After a 408 the sender may try again on a new connection. After a 507
+//! it does not. It sends `Finish`, and the files that were checked are put in place and the others
+//! are `NoSpace` in `Done`. A disk with no room for the staging folder is the one case that gives
+//! the transfer up, because nothing was received. A rule that the sender broke drops the transfer
+//! and removes the staging folder.
 //!
 //! An attempt that is over does nothing more, even to a file. A lane that was stopped may be in
 //! the middle of a write, or hold a frame that it has read and not applied yet, and the books of
@@ -464,6 +467,14 @@ impl Transfer {
     /// sender may open on it are numbered from 0 below that. The attempt before it, if there was
     /// one, is over: its lanes are stopped with 499.
     ///
+    /// Keep each attempt with its connection, because the header of a lane names no attempt and only
+    /// the connection tells the lanes of two attempts apart. A lane goes to the attempt begun on the
+    /// connection it came on, and not to the current attempt of the transfer: a late lane of the old
+    /// connection would be read into the book of the new attempt, and its `End` or `Skip` for a file,
+    /// followed by the new attempt's own, would be a second one, which is a violation. A connection
+    /// begins at most one attempt of a transfer (section 8, Resuming): a second would mix the books
+    /// in the same way, and its fresh lane numbers would let the old ones through.
+    ///
     /// It starts the timer of the attempt, so it has to be called where a Tokio runtime runs.
     ///
     /// # Errors
@@ -713,7 +724,7 @@ impl Attempt {
             Ok(prepared) => Ok(prepared),
             Err(Prepare::Gone) => Err(LaneEnd::Stopped(self.code_now())),
             Err(Prepare::Shutdown) => Err(LaneEnd::Failed),
-            Err(Prepare::Stage(StageError::NoSpace)) => Err(self.out_of_room()),
+            Err(Prepare::Stage(StageError::NoSpace)) => Err(self.out_of_room().await),
             Err(Prepare::Stage(error)) => {
                 tracing::error!(%error, "the staging folder of a transfer could not be made");
                 Err(self.give_up(close_code::INTERNAL).await)
@@ -833,7 +844,7 @@ impl Attempt {
                 tracing::debug!(kind = ?error.kind(), "a lane of a transfer failed");
                 LaneEnd::Failed
             }
-            Cause::Halt(Halt::NoSpace) => self.out_of_room(),
+            Cause::Halt(Halt::NoSpace) => self.out_of_room().await,
             // The files of the transfer are put in place, or removed, and some other part of this
             // module says why, in the state.
             Cause::Halt(Halt::Gone) => LaneEnd::Stopped(self.code_now()),
@@ -858,10 +869,18 @@ impl Attempt {
         }
     }
 
-    /// The disk is full: this attempt is stopped, and the transfer is kept.
-    fn out_of_room(&self) -> LaneEnd {
-        self.shared.stop(self.number, close_code::NO_SPACE);
-        LaneEnd::Stopped(self.code_now())
+    /// The disk is full: this attempt is stopped, and the transfer is kept, so that `Finish` puts
+    /// what was checked in place and names the rest `NoSpace`. A transfer that has no list yet has
+    /// received nothing, because the room for its staging folder is what ran out. It is given up:
+    /// there is nothing to answer a `Finish` with.
+    async fn out_of_room(&self) -> LaneEnd {
+        let received = self.shared.state.borrow().intake.is_some();
+        if received {
+            self.shared.stop(self.number, close_code::NO_SPACE);
+            LaneEnd::Stopped(self.code_now())
+        } else {
+            self.give_up(close_code::NO_SPACE).await
+        }
     }
 }
 
@@ -1792,14 +1811,17 @@ mod tests {
         );
         assert_eq!(run(&attempt, 0, &rig.everything()).await, LaneEnd::Finished);
 
-        // Dropped just after it began to put the items in place: a timeout of nothing polls the
-        // future once and then drops it.
-        let asked = tokio::time::timeout(Duration::ZERO, rig.transfer.finish(&finish)).await;
+        // Polled once by hand, which begins to put the items in place, and dropped. A timeout of
+        // nothing does not do this: it drops the future only after a later poll, and by then the
+        // thread that puts the items in place may have woken it.
+        {
+            let asked = std::pin::pin!(rig.transfer.finish(&finish));
+            let _ = asked.poll(&mut Context::from_waker(std::task::Waker::noop()));
+        }
         let done = within("finish", rig.transfer.finish(&finish))
             .await
             .unwrap();
 
-        assert!(asked.is_err() || asked.unwrap().is_ok());
         rig.assert_all_in_place(&done);
     }
 
@@ -1839,6 +1861,56 @@ mod tests {
             ]
         );
         drop(tx);
+    }
+
+    #[tokio::test]
+    async fn a_full_disk_after_the_list_keeps_the_transfer_for_finish() {
+        let rig = Rig::new();
+        let attempt = rig.attempt();
+        let (mut tx, mut rx) = duplex(MIB);
+        tx.write_all(&lane(&[&Rig::list(), &rig.x()]))
+            .await
+            .unwrap();
+        let lane0 = tokio::spawn({
+            let attempt = attempt.clone();
+            async move { attempt.lane(0, &mut rx).await }
+        });
+        until_the_list_is_in(&rig).await;
+
+        let end = attempt.out_of_room().await;
+
+        assert_eq!(end, LaneEnd::Stopped(507));
+        assert_eq!(
+            within("the lane", lane0).await.unwrap(),
+            LaneEnd::Stopped(507)
+        );
+        let done = within("finish", rig.transfer.finish(&Rig::finish()))
+            .await
+            .unwrap();
+        assert_eq!(done.failed.len(), 3, "{done:?}");
+        assert!(
+            failed(&done)
+                .iter()
+                .all(|(_, reason)| *reason == FailReason::NoSpace)
+        );
+        drop(tx);
+    }
+
+    #[tokio::test]
+    async fn a_full_disk_that_leaves_no_room_for_the_staging_folder_gives_the_transfer_up() {
+        let rig = Rig::new();
+        let attempt = rig.attempt();
+
+        // No list has come, so there is no staging folder and nothing was received.
+        let end = attempt.out_of_room().await;
+
+        assert_eq!(end, LaneEnd::Stopped(507));
+        assert_eq!(
+            within("finish", rig.transfer.finish(&Rig::finish())).await,
+            Err(Dropped)
+        );
+        assert_eq!(run(&attempt, 1, &[]).await, LaneEnd::Stopped(507));
+        assert_eq!(rig.staged(), Vec::<String>::new());
     }
 
     // Cancel.
