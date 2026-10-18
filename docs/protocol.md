@@ -47,7 +47,7 @@ CBOR encoding rules, as produced by the reference implementation:
 - Structs are maps with text keys. Receivers ignore unknown keys, so adding an optional field is compatible. Optional fields that are absent are omitted.
 - A unit enum variant (one without data) is its name as text (`"Accepted"`). A variant with data is a one-entry map from the name to the data (`{"Ping": {"nonce": 1}}`). Receivers also accept a unit variant as a one-entry map whose value is null (`{"Accepted": null}`), which is how some encoders write it, and reject any other value there.
 - Device ids, item ids, secrets and proofs are byte strings of fixed length.
-- Enums that a newer version may extend (`Platform`, `DeclineReason`, `ErrorCode`, `PairRejection`, `FailReason`) decode an unknown variant as `Other`. That works only for variants without data, so **new variants of these enums MUST be unit variants**: an older receiver cannot skip a variant that carries data, and fails to decode the message. Other enums do not tolerate unknown variants; a request with an unknown variant is answered with `Error { code: Malformed }`.
+- Enums that a newer version may extend (`Platform`, `DeclineReason`, `ErrorCode`, `PairRejection`, `FailReason`, `SourceKind`, `Codec`, `StopReason`, the reasons of a `Pause`, the thermal states of a `Report` and the reasons of a `Notice`) decode an unknown variant as `Other`. That works only for variants without data, so **new variants of these enums MUST be unit variants**: an older receiver cannot skip a variant that carries data, and fails to decode the message. Other enums do not tolerate unknown variants; a request with an unknown variant is answered with `Error { code: Malformed }`.
 
 String and list sizes are limited as well (see section 6). A message that breaks a limit MUST NOT be sent, and MUST be rejected when received.
 
@@ -81,8 +81,8 @@ Capabilities defined so far:
 | `handoff.link` | Accepts `Item::Link` |
 | `handoff.clipboard.text` | Accepts `Item::ClipboardText` |
 | `transfer.files` | Takes part in file transfers: accepts the requests and the lanes of section 8 |
-| `stream.share` | Can offer a window to a paired device, and takes part in the session that follows as the source (section 9) |
-| `stream.view` | Can show the window of a paired device: accepts the requests of section 9, and takes part in the session that follows as the viewer |
+| `stream.share` | Can offer a window to a paired device, and takes part in the session that follows as the source; accepts a `Stop` for that session (section 9) |
+| `stream.view` | Can show the window of a paired device: accepts an `Offer` (section 9), and takes part in the session that follows as the viewer; accepts a `Stop` for that session |
 | `stream.control` | Takes input from a viewer, in a session where the person at the source granted control (section 9) |
 
 A sender MUST NOT send an item whose capability the receiver did not advertise. A receiver that gets one anyway answers `Declined(Unsupported)`. A kind of item the receiver does not know at all cannot be decoded, and is answered with `Error { code: Malformed }`: the capability exchange is how new kinds are introduced, not an unannounced request.
@@ -591,7 +591,7 @@ The viewer decides once, and by default a person is asked: the offer is what the
 
 A session counts as one item against the receiver's limit on items, whatever it carries, and a peer can have one offer waiting for a person at a time, counted across its connections. The person has 2 minutes, as in pairing. The source waits for the answer for as long as the person may take and for the network, the time that section 6 gives for the offer of a transfer, instead of the 30 seconds of other requests.
 
-`Accepted` says what the viewer can take. `max_width` and `max_height` are the largest picture in pixels, each from 1 to 3840. `max_fps` is the highest frame rate it can decode and show, from 1 to 120. `codecs` are the codecs it can decode, from 1 to 8 of them. This version knows `H264`, and a codec that the reader does not know is read as `Other` and is never chosen. The source chooses what it sends within these.
+`Accepted` says what the viewer can take. `max_width` and `max_height` are the largest picture in pixels, each from 1 to 3840. `max_fps` is the highest frame rate it can decode and show, from 1 to 120. `codecs` are the codecs it can decode, from 1 to 8 of them. This version knows `H264`, and a codec that the reader does not know is read as `Other` and is never chosen. The source chooses what it sends within these. A source that can send none of them ends the session with a `Stop` whose reason is `Failed`.
 
 Nothing is repeated under a session id. A source that did not get the answer ends the offer with `Stop` and offers again under a new id. Either side ends a session, or withdraws an offer that has not been answered, with a request of its own:
 
