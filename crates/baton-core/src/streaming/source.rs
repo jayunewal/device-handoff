@@ -1193,6 +1193,11 @@ mod tests {
         let mut rig = Rig::new().await;
         let mut control = rig.source_control().await;
         read_source_message(&mut control).await;
+        // The platform is told that a first picture is wanted when the session first looks at the
+        // clock, not when it starts. A viewer on a fast path can say its three things before
+        // that, so the test waits for it and the order is the same on every machine.
+        rig.until("the platform to be told", |rig| rig.recoveries() == 1)
+            .await;
         let mut send = rig.open_viewer_control().await;
         let report = Report {
             shown: Some(3),
@@ -1225,8 +1230,8 @@ mod tests {
             rig.log.all().contains(&Heard::Input(batch.clone()))
         })
         .await;
-        // The platform was told at the start that a first picture is wanted, which is not what
-        // the viewer said.
+        // First what the session told the platform itself, then the three things in the order in
+        // which the viewer said them, and nothing else.
         assert_eq!(
             rig.log.all(),
             [
