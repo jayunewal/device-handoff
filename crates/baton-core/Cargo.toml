@@ -29,8 +29,8 @@ icu_normalizer.workspace = true
 iroh.workspace = true
 iroh-base.workspace = true
 iroh-mdns-address-lookup.workspace = true
-# Not used here: this only holds back the version of libc that the whole build uses (see
-# the workspace Cargo.toml).
+# Used to open a file for a transfer without following a link (`O_NOFOLLOW`). The bound on its
+# version also holds back libc for the whole build (see the workspace Cargo.toml).
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
