@@ -8,7 +8,11 @@ on:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push to a pull request ends the run of the older one. A run on main is left to end:
+  # the caches that every pull request starts from are saved when the run succeeds, and merges
+  # that come close together would cancel each run before it got there. At most one run waits
+  # behind the one that is running, so this costs one more run, not one for each merge.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -16,6 +20,10 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
+  # No debug information. A build takes a third less time and a cache is a third of the size,
+  # and a failed test still says where it failed, because that is not read from debug
+  # information. The builds that Xcode starts get the same through a file: see "Set up Cargo".
+  CARGO_PROFILE_DEV_DEBUG: "0"
 
 jobs:
   # Chooses which of the jobs below a change can affect, so that a change to the Mac app does not
@@ -243,7 +251,7 @@ jobs:
         # starts Cargo from one of them. A file that Cargo reads by itself gets there.
         run: |
           mkdir -p ~/.cargo
-          printf '[build]\nincremental = false\n' >> ~/.cargo/config.toml
+          printf '[build]\nincremental = false\n\n[profile.dev]\ndebug = 0\n' >> ~/.cargo/config.toml
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: 3.47.7
@@ -305,7 +313,7 @@ jobs:
         # starts Cargo from one of them. A file that Cargo reads by itself gets there.
         run: |
           mkdir -p ~/.cargo
-          printf '[build]\nincremental = false\n' >> ~/.cargo/config.toml
+          printf '[build]\nincremental = false\n\n[profile.dev]\ndebug = 0\n' >> ~/.cargo/config.toml
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: 3.47.7
