@@ -43,7 +43,7 @@ void main() {
     );
     await _see(tester, find.text('Name this device'));
 
-    await tester.enterText(find.byType(TextField), 'Test device');
+    await _type(tester, 'Test device');
     await tester.tap(find.text('Continue'));
     await _see(tester, find.text('No other devices yet'));
     await _expectScreenKeptOn(
@@ -120,10 +120,7 @@ void main() {
     await _see(tester, find.text('Second device'));
     await tester.tap(find.text('Second device'));
     await _see(tester, find.text('Send to Second device'));
-    await tester.enterText(
-      find.byType(TextField),
-      ' HTTPS://Example.com/plan ',
-    );
+    await _type(tester, ' HTTPS://Example.com/plan ');
     await tester.scrollUntilVisible(
       find.text('Send link'),
       200,
@@ -144,6 +141,34 @@ void main() {
 
     await tester.pumpWidget(const SizedBox());
   });
+
+  // Last, because the question that the system asks about the camera cannot be answered here. It
+  // stays in front of the app, which stays inactive for whatever runs after.
+  testWidgets('starts the camera view without taking the app down', (
+    tester,
+  ) async {
+    final folder = await _folder();
+    await RustBackend(dataDir: folder.path).setDeviceName('Test device');
+
+    await tester.pumpWidget(
+      BatonApp(backend: RustBackend(dataDir: folder.path)),
+    );
+    await _see(tester, find.text('No other devices yet'));
+    await tester.tap(find.text('Add a device'));
+    await _see(tester, find.text('Scan or enter a code'));
+    await tester.tap(find.text('Scan or enter a code'));
+    await _see(tester, find.text('Or paste the code', skipOffstage: false));
+
+    // The camera starts, and on a phone the system asks about it. Nothing here depends on what
+    // the camera sees, except that it must not take the app down, so give it time to do that.
+    final until = DateTime.now().add(const Duration(seconds: 3));
+    while (DateTime.now().isBefore(until)) {
+      await tester.pump(const Duration(milliseconds: 200));
+    }
+    expect(find.text('Or paste the code', skipOffstage: false), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+  });
 }
 
 /// Starts the app with a new device and pairs it with a second Baton in this process, through
@@ -151,7 +176,7 @@ void main() {
 /// and the second says yes. Returns the second Baton, which stops when the test ends. The app
 /// is left on its devices, where the second one is listed.
 ///
-/// The camera is the one thing left out: CI has none, so the code is pasted.
+/// The camera is the one thing left out: CI has none, so the code is pasted (see [_noCamera]).
 Future<Session> _pairThroughTheScreens(WidgetTester tester) async {
   // This device, and a second Baton in this process that plays the device with the code.
   final mine = await _folder();
@@ -169,7 +194,12 @@ Future<Session> _pairThroughTheScreens(WidgetTester tester) async {
   addTearDown(() => unawaited(events.cancel()));
   final offer = await second.offerPairing();
 
-  await tester.pumpWidget(BatonApp(backend: RustBackend(dataDir: mine.path)));
+  await tester.pumpWidget(
+    BatonApp(
+      backend: RustBackend(dataDir: mine.path),
+      scanner: _noCamera,
+    ),
+  );
   await _see(tester, find.text('No other devices yet'));
   await tester.tap(find.text('Add a device'));
   await _see(tester, find.text('Scan or enter a code'));
@@ -181,9 +211,7 @@ Future<Session> _pairThroughTheScreens(WidgetTester tester) async {
     when: 'while the screen waits for a code',
   );
 
-  // The camera is on the screen and sees what it sees. Nothing here depends on it, except
-  // that it must not take the app down. The screen can be longer than a small window, so
-  // scroll to what is wanted.
+  // The screen can be longer than a small window, so scroll to what is wanted.
   final list = find.byType(Scrollable).first;
   await tester.scrollUntilVisible(
     find.byType(TextField),
@@ -219,6 +247,15 @@ Future<Session> _pairThroughTheScreens(WidgetTester tester) async {
 
   return second;
 }
+
+/// What the pairing tests have in place of the camera view. The real one asks the system for
+/// permission the first time it starts, and on a phone the question stays in front of the app
+/// until someone answers it, which no one does here. The app is inactive for as long as that
+/// lasts, and Baton lets go of the screen of the device (see [_expectScreenKeptOn]), so a check
+/// of the screen would pass or fail on whether it came before the question did. The test that
+/// starts the real camera view is the last one.
+Widget _noCamera(BuildContext context, ValueChanged<String> onCode) =>
+    const SizedBox(height: 200, child: Center(child: Text('(camera)')));
 
 /// Checks what an iPhone or iPad itself says about whether its screen is being kept on: that
 /// Baton's request went through the code in the iOS app and reached the system. Elsewhere there
@@ -272,13 +309,30 @@ Future<void> _until(
   final deadline = DateTime.now().add(const Duration(seconds: 60));
   while (!await done()) {
     if (DateTime.now().isAfter(deadline)) {
-      fail('Never saw $what');
+      fail('Never saw $what (${_describeScreen(tester)})');
     }
     await tester.pump(const Duration(milliseconds: 200));
   }
   await tester.pump(const Duration(milliseconds: 500));
 }
 
+/// What there is to say about the app and its screen when a wait runs out, for the log: a
+/// failure that shows only what was missing does not show why.
+String _describeScreen(WidgetTester tester) {
+  final state = WidgetsBinding.instance.lifecycleState?.name ?? 'unknown';
+  final view = tester.view;
+  final fields = find.byType(TextField, skipOffstage: false).evaluate().length;
+  return 'the state of the app: $state, the view: ${view.physicalSize} at '
+      '${view.devicePixelRatio}x, text fields: $fields';
+}
+
 /// Waits until [finder] finds something.
 Future<void> _see(WidgetTester tester, Finder finder) =>
     _until(tester, () => finder.evaluate().isNotEmpty, '$finder');
+
+/// Types [text] into the text field on the screen, once the field is there. The title above it
+/// can be seen before the field is, and typing into a field that is not there throws.
+Future<void> _type(WidgetTester tester, String text) async {
+  await _see(tester, find.byType(EditableText));
+  await tester.enterText(find.byType(TextField), text);
+}

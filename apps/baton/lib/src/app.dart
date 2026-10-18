@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import 'backend.dart';
 import 'controller.dart';
+import 'scanner.dart';
 import 'screens/home_screen.dart';
 import 'screens/name_screen.dart';
 import 'screens/problem_screen.dart';
@@ -13,9 +14,16 @@ import 'screens/problem_screen.dart';
 /// The whole app. The first time it asks for a name for this device. Then it starts Baton and
 /// shows the devices and the inbox.
 class BatonApp extends StatefulWidget {
-  const BatonApp({required this.backend, super.key});
+  const BatonApp({
+    required this.backend,
+    this.scanner = cameraScanner,
+    super.key,
+  });
 
   final Backend backend;
+
+  /// Reads QR codes with the camera, for pairing. Tests give it one of their own.
+  final ScannerBuilder scanner;
 
   @override
   State<BatonApp> createState() => _BatonAppState();
@@ -50,7 +58,10 @@ class _BatonAppState extends State<BatonApp> {
             suggestion: _controller.suggestedName,
             onChosen: _controller.chooseName,
           ),
-          Phase.running => HomeScreen(session: _controller.session!),
+          Phase.running => HomeScreen(
+            session: _controller.session!,
+            scanner: widget.scanner,
+          ),
           Phase.failed => ProblemScreen(
             problem: _controller.problem,
             onTryAgain: _controller.begin,
