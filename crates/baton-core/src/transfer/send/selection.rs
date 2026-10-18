@@ -284,9 +284,16 @@ struct Root {
     name: String,
     /// The place it is at, with every link followed.
     real: PathBuf,
-    folder: bool,
-    size: u64,
-    modified_ms: Option<i64>,
+    kind: RootKind,
+}
+
+enum RootKind {
+    Folder,
+    /// A folder has no size and no time, and what is in it is found when it is walked.
+    File {
+        size: u64,
+        modified_ms: Option<i64>,
+    },
 }
 
 impl Root {
@@ -302,13 +309,18 @@ impl Root {
         if !metadata.is_dir() && !metadata.is_file() {
             return Err(Reason::Special);
         }
-        let folder = metadata.is_dir();
+        let kind = if metadata.is_dir() {
+            RootKind::Folder
+        } else {
+            RootKind::File {
+                size: metadata.len(),
+                modified_ms: modified_ms(&metadata),
+            }
+        };
         Ok(Self {
             name: name.to_owned(),
             real,
-            folder,
-            size: if folder { 0 } else { metadata.len() },
-            modified_ms: if folder { None } else { modified_ms(&metadata) },
+            kind,
         })
     }
 }
@@ -405,10 +417,9 @@ impl Walker {
     }
 
     fn root(&mut self, root: &Root) -> Result<(), SelectionError> {
-        if root.folder {
-            self.folder(&root.real, &root.name)
-        } else {
-            self.file(root.name.clone(), root.size, root.modified_ms)
+        match root.kind {
+            RootKind::Folder => self.folder(&root.real, &root.name),
+            RootKind::File { size, modified_ms } => self.file(root.name.clone(), size, modified_ms),
         }
     }
 
@@ -443,8 +454,8 @@ impl Walker {
                     Ok(metadata) if metadata.is_file() => {
                         self.file(child_path, metadata.len(), modified_ms(&metadata))?;
                     }
-                    Ok(_) => self.left_out.add(Reason::Special),
-                    Err(_) => self.left_out.add(Reason::Unreadable),
+                    // It was a file when the folder was read, and it is gone or something else now.
+                    _ => self.left_out.add(Reason::Unreadable),
                 }
             }
         }
@@ -681,6 +692,24 @@ mod tests {
                 "{pair:?}"
             );
         }
+    }
+
+    #[test]
+    fn what_a_folder_holds_is_in_the_order_of_the_names_whatever_their_case_and_kind() {
+        let scratch = scratch();
+        // Byte order puts the capitals first, and a file may sort before or after a folder.
+        make(scratch.path(), "d/zeta", 1);
+        make(scratch.path(), "d/alpha", 1);
+        make(scratch.path(), "d/mid/x", 1);
+        make(scratch.path(), "d/Zed", 1);
+        make(scratch.path(), "d/Beta", 1);
+        let selection = walk(&[&scratch.path().join("d")]);
+        assert_eq!(
+            paths(&selection),
+            [
+                "d", "d/Beta", "d/Zed", "d/alpha", "d/mid", "d/mid/x", "d/zeta"
+            ]
+        );
     }
 
     #[test]
@@ -1210,6 +1239,24 @@ mod tests {
                 ..LeftOut::default()
             })
         );
+    }
+
+    #[test]
+    fn an_item_that_is_left_out_whole_is_not_counted_or_shown() {
+        let scratch = scratch();
+        let kept = make(scratch.path(), "a-kept", 5);
+        let big = make(scratch.path(), "b-big", 6);
+        let limits = Limits {
+            file_bytes: 5,
+            ..Limits::PROTOCOL
+        };
+        let selection = Selection::walk_within(&[big, kept.clone()], limits).unwrap();
+        assert_eq!(paths(&selection), ["a-kept"]);
+        assert_eq!(selection.summary().items, 1);
+        assert_eq!(selection.offer(id()).preview.len(), 1);
+        assert_eq!(selection.source(0).unwrap(), kept.canonicalize().unwrap());
+        assert_eq!(selection.left_out().too_large, 1);
+        assert_eq!(selection.left_out().total(), 1);
     }
 
     #[test]
