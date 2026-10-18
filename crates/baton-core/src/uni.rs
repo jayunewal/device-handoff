@@ -359,174 +359,20 @@ pub(crate) fn stop(recv: &mut RecvStream, error: u32) {
 
 #[cfg(test)]
 mod tests {
-    use baton_proto::{ALPN_SESSION, DeviceInfo, Platform};
-    use iroh::{
-        Endpoint, EndpointAddr, SecretKey,
-        endpoint::{ConnectionError, SendStream, presets},
-    };
+    use iroh::endpoint::ConnectionError;
     use tokio::sync::mpsc;
 
     use super::*;
-    use crate::{
-        gate::{ConnectionRegistry, Gate},
-        testing::TestNode,
-        transport,
+    use crate::testing::{
+        Device, PATIENCE, QUIET, TestNode, collector, connect, next, nothing_arrives, open,
+        stopped_with,
     };
-
-    const PATIENCE: Duration = Duration::from_secs(10);
-
-    /// Long enough for something that should not happen to have happened.
-    const QUIET: Duration = Duration::from_millis(400);
 
     /// The start of a stream: a kind, and an id of 16 equal bytes.
     fn start(kind: u8, id: u8) -> Vec<u8> {
         let mut bytes = vec![kind];
         bytes.extend_from_slice(&[id; START_LEN - 1]);
         bytes
-    }
-
-    /// Passes on what it is given.
-    struct Collect(mpsc::UnboundedSender<Arrival>);
-
-    impl Sink for Collect {
-        fn take(&self, arrival: Arrival) {
-            let _ = self.0.send(arrival);
-        }
-    }
-
-    fn collector() -> (Arc<dyn Sink>, mpsc::UnboundedReceiver<Arrival>) {
-        let (sender, receiver) = mpsc::unbounded_channel();
-        (Arc::new(Collect(sender)), receiver)
-    }
-
-    async fn next(receiver: &mut mpsc::UnboundedReceiver<Arrival>) -> Arrival {
-        tokio::time::timeout(PATIENCE, receiver.recv())
-            .await
-            .expect("no stream arrived")
-            .expect("the sink was dropped")
-    }
-
-    async fn nothing_arrives(receiver: &mut mpsc::UnboundedReceiver<Arrival>) {
-        assert!(
-            tokio::time::timeout(QUIET, receiver.recv()).await.is_err(),
-            "a stream arrived that should have been stopped"
-        );
-    }
-
-    fn info() -> DeviceInfo {
-        DeviceInfo {
-            name: "Device".to_owned(),
-            platform: Platform::Linux,
-            app_version: "0.0.0-test".to_owned(),
-        }
-    }
-
-    /// A bare endpoint on loopback behind the gate, as a node has it, with the dispatcher for
-    /// the connections that it makes and accepts.
-    struct Device {
-        endpoint: Endpoint,
-        trust: TrustStore,
-        uni: Arc<Uni>,
-        id: DeviceId,
-        _dir: tempfile::TempDir,
-    }
-
-    impl Device {
-        async fn new(sinks: Sinks, start_deadline: Duration) -> Self {
-            let dir = tempfile::tempdir().unwrap();
-            let secret = SecretKey::generate();
-            let trust = TrustStore::load(dir.path().join("devices.json")).unwrap();
-            let uni = Arc::new(Uni::new(
-                sinks,
-                &trust,
-                &CancellationToken::new(),
-                start_deadline,
-            ));
-            let gate = Gate::new(
-                trust.clone(),
-                Arc::new(ConnectionRegistry::default()),
-                uni.quic_limit(),
-            );
-            let endpoint = Endpoint::builder(presets::Minimal)
-                .secret_key(secret.clone())
-                .alpns(vec![ALPN_SESSION.to_vec()])
-                .hooks(gate)
-                .transport_config(transport::config())
-                .clear_ip_transports()
-                .bind_addr("127.0.0.1:0")
-                .unwrap()
-                .bind()
-                .await
-                .unwrap();
-            Self {
-                endpoint,
-                trust,
-                uni,
-                id: DeviceId::from_bytes(*secret.public().as_bytes()),
-                _dir: dir,
-            }
-        }
-
-        /// A device that takes the streams of the kinds in `kinds`, with their limits.
-        async fn taking(kinds: &[(Kind, u32)]) -> (Self, Vec<mpsc::UnboundedReceiver<Arrival>>) {
-            Self::taking_within(kinds, PATIENCE).await
-        }
-
-        async fn taking_within(
-            kinds: &[(Kind, u32)],
-            start_deadline: Duration,
-        ) -> (Self, Vec<mpsc::UnboundedReceiver<Arrival>>) {
-            let mut sinks = Sinks::default();
-            let mut receivers = Vec::new();
-            for &(kind, limit) in kinds {
-                let (sink, receiver) = collector();
-                sinks = sinks.install(kind, limit, sink);
-                receivers.push(receiver);
-            }
-            (Self::new(sinks, start_deadline).await, receivers)
-        }
-
-        fn pair_with(&self, other: &Self) {
-            self.trust.pair(other.id, &info(), 1).unwrap();
-        }
-    }
-
-    /// Pairs two devices, connects `from` to `to`, and has each end take the streams of its
-    /// connection, as the session code does. Returns the connection as each end has it.
-    async fn connect(from: &Device, to: &Device) -> (Connection, Connection) {
-        from.pair_with(to);
-        to.pair_with(from);
-        let accepting = tokio::spawn({
-            let endpoint = to.endpoint.clone();
-            async move { endpoint.accept().await.unwrap().await.unwrap() }
-        });
-        let address =
-            EndpointAddr::new(to.endpoint.id()).with_ip_addr(to.endpoint.bound_sockets()[0]);
-        let dialed = from.endpoint.connect(address, ALPN_SESSION).await.unwrap();
-        let accepted = accepting.await.unwrap();
-        from.uni.spawn(dialed.clone(), Link(1));
-        to.uni.spawn(accepted.clone(), Link(2));
-        (dialed, accepted)
-    }
-
-    /// Opens a stream and writes `bytes` on it. The stream stays open.
-    async fn open(connection: &Connection, bytes: &[u8]) -> SendStream {
-        let mut send = tokio::time::timeout(PATIENCE, connection.open_uni())
-            .await
-            .expect("the stream could not be opened")
-            .unwrap();
-        send.write_all(bytes).await.unwrap();
-        send
-    }
-
-    /// The code that the other end stopped `send` with.
-    async fn stopped_with(send: &SendStream) -> u64 {
-        tokio::time::timeout(PATIENCE, send.stopped())
-            .await
-            .expect("the stream was never stopped")
-            .unwrap()
-            .expect("the stream was finished and not stopped")
-            .into_inner()
     }
 
     #[tokio::test]

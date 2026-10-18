@@ -59,6 +59,33 @@ async fn read_message_inner<M: Message>(recv: &mut RecvStream) -> Result<M, Read
     recv.read_exact(&mut header)
         .await
         .map_err(read_exact_failure)?;
+    read_payload(recv, header).await
+}
+
+/// Reads the next message of a stream that carries many, one after the other, and waits as long as
+/// it takes for it to begin. `None` means that the other end finished the stream between two
+/// messages. Once the length of a message has arrived, the rest of it has `deadline`.
+pub(crate) async fn read_next<M: Message>(
+    recv: &mut RecvStream,
+    deadline: Duration,
+) -> Result<Option<M>, ReadFailure> {
+    let mut header = [0u8; HEADER_LEN];
+    match recv.read_exact(&mut header).await {
+        Ok(()) => {}
+        Err(ReadExactError::FinishedEarly(0)) => return Ok(None),
+        Err(error) => return Err(read_exact_failure(error)),
+    }
+    match tokio::time::timeout(deadline, read_payload(recv, header)).await {
+        Ok(result) => result.map(Some),
+        Err(_) => Err(ReadFailure::TimedOut),
+    }
+}
+
+/// Reads the payload of a message whose header has been read.
+async fn read_payload<M: Message>(
+    recv: &mut RecvStream,
+    header: [u8; HEADER_LEN],
+) -> Result<M, ReadFailure> {
     let len = frame::payload_len::<M>(header).map_err(ReadFailure::BadHeader)?;
 
     // Grow the buffer as bytes actually arrive instead of trusting the declared length.
