@@ -43,7 +43,7 @@ void main() {
     );
     await _see(tester, find.text('Name this device'));
 
-    await tester.enterText(find.byType(TextField), 'Test device');
+    await _type(tester, 'Test device');
     await tester.tap(find.text('Continue'));
     await _see(tester, find.text('No other devices yet'));
     await _expectScreenKeptOn(
@@ -120,10 +120,7 @@ void main() {
     await _see(tester, find.text('Second device'));
     await tester.tap(find.text('Second device'));
     await _see(tester, find.text('Send to Second device'));
-    await tester.enterText(
-      find.byType(TextField),
-      ' HTTPS://Example.com/plan ',
-    );
+    await _type(tester, ' HTTPS://Example.com/plan ');
     await tester.scrollUntilVisible(
       find.text('Send link'),
       200,
@@ -282,3 +279,10 @@ Future<void> _until(
 /// Waits until [finder] finds something.
 Future<void> _see(WidgetTester tester, Finder finder) =>
     _until(tester, () => finder.evaluate().isNotEmpty, '$finder');
+
+/// Types [text] into the text field on the screen, once the field is there. The title above it
+/// can be seen before the field is, and typing into a field that is not there throws.
+Future<void> _type(WidgetTester tester, String text) async {
+  await _see(tester, find.byType(EditableText));
+  await tester.enterText(find.byType(TextField), text);
+}
