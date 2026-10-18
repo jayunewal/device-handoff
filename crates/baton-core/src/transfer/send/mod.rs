@@ -38,3 +38,10 @@ mod progress;
 pub mod selection;
 mod source;
 mod wire;
+
+#[cfg(test)]
+mod receiver_tests;
+#[cfg(test)]
+mod script_tests;
+#[cfg(test)]
+mod testing;
