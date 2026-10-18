@@ -7,9 +7,9 @@
 //! rules about frames (which one the viewer decodes next, which one the source gives up on) are
 //! in `baton-stream`, which has no input or output. This module carries them out on the streams
 //! of a connection. What only a platform can do, capture and encode a picture, decode it and show
-//! it, is behind traits that the platform implements: [`SourceEvents`] and [`Decoder`].
+//! it, is behind traits that the platform implements: `SourceEvents` and [`Decoder`].
 //!
-//! [`Streaming`] holds the sessions of a node, from either side, and is installed as the [`Sink`]
+//! `Streaming` holds the sessions of a node, from either side, and is installed as the `Sink`
 //! of the streams of kind frame and kind control (`crate::uni`). A stream is taken only if its
 //! start names a session that is running, that was made with the device that opened the stream,
 //! and that lives on the connection the stream came on: sessions live and die with their
@@ -28,7 +28,7 @@ use std::{
     time::Duration,
 };
 
-use baton_proto::{close_code, id::SessionId, message::Message};
+use baton_proto::{DeviceId, close_code, id::SessionId, message::Message};
 use baton_stream::{KIND_CONTROL, header::encode_prefix};
 use iroh::endpoint::{Connection, RecvStream};
 use tokio::sync::mpsc;
@@ -43,8 +43,31 @@ use crate::{
     wire::{ReadFailure, read_next, write_message},
 };
 
+mod answer;
+#[cfg(test)]
+mod answer_tests;
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the node offers a window when the source's side is connected to it, which comes next"
+    )
+)]
 mod source;
 mod view;
+
+/// How many frame streams a viewer takes at once from a source on a connection: six in flight and
+/// up to six more that were reset and are still counted (ADR 0009).
+pub(crate) const FRAME_STREAMS: u32 = 12;
+
+/// How many control streams a device takes from the other end of a session on a connection.
+pub(crate) const CONTROL_STREAMS: u32 = 1;
+
+const _: () = assert!(FRAME_STREAMS as usize == baton_stream::MAX_FRAME_STREAMS);
+
+use answer::Offers;
+pub(crate) use answer::Viewer;
+pub use answer::{Viewing, WindowHandler, WindowOffer, WindowVerdict};
 
 use source::Source;
 #[allow(
@@ -55,18 +78,18 @@ pub(crate) use source::{
     NotSent, Picture, SourceEvents, SourceHandle, SourceParams, SourceSetup, SourceStats,
 };
 use view::View;
-#[allow(
-    unused_imports,
-    reason = "used by the code that makes a session, which comes next"
-)]
-pub(crate) use view::{DecodeError, Decoder, DecoderState, ViewHandle, ViewParams, ViewStats};
+pub use view::{DecodeError, Decoder, DecoderState, ViewHandle, ViewStats};
+pub(crate) use view::{Takes, ViewParams};
 
 /// Why a session ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum End {
-    /// This device ended it, by dropping or ending the handle.
+#[non_exhaustive]
+pub enum End {
+    /// This device ended it: the handle was dropped or ended, the device was unpaired, or the
+    /// node stopped.
     Local,
-    /// The other device ended it: it finished or reset its control stream.
+    /// The other device ended it: it sent a `Stop` for it, or finished or reset its control
+    /// stream.
     Peer,
     /// The connection ended.
     Connection,
@@ -86,6 +109,13 @@ pub(crate) enum End {
 
 /// A session of this node, from one side or the other.
 #[derive(Clone)]
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the node offers a window when the source's side is connected to it, which comes next"
+    )
+)]
 enum Session {
     View(Arc<View>),
     Source(Arc<Source>),
@@ -99,27 +129,76 @@ impl Session {
             Self::Source(source) => source.belongs_to(peer, connection),
         }
     }
+
+    /// The device at the other end.
+    fn peer(&self) -> DeviceId {
+        match self {
+            Self::View(view) => view.peer(),
+            Self::Source(source) => source.peer(),
+        }
+    }
+
+    /// Ends the session, if it has not ended.
+    fn end(&self, how: End) {
+        match self {
+            Self::View(view) => view.end(how),
+            Self::Source(source) => source.end(how),
+        }
+    }
 }
 
-/// The window streaming sessions of a node, by the id that the source chose for each.
+/// What the node keeps about window streaming, under one lock so that a check of several parts is
+/// not undone by another task between them.
 #[derive(Default)]
+struct Table {
+    /// The sessions, by the id that the source chose for each.
+    sessions: HashMap<SessionId, Session>,
+    /// The offers that this device has been made as a viewer.
+    offers: Offers,
+}
+
+impl Table {
+    /// Whether a window is shown.
+    fn has_view(&self) -> bool {
+        self.sessions
+            .values()
+            .any(|session| matches!(session, Session::View(_)))
+    }
+}
+
+/// The window streaming sessions of a node, from either side.
 pub(crate) struct Streaming {
-    sessions: Mutex<HashMap<SessionId, Session>>,
+    table: Mutex<Table>,
+    /// What a device needs to show the windows of others, if it does.
+    viewer: Option<Viewer>,
 }
 
 impl Streaming {
-    /// An empty set of sessions, to be installed as the sink of frames and of control streams.
+    /// A set of sessions that takes part as a source only, to be installed as the sink of frames
+    /// and of control streams.
     pub(crate) fn new() -> Arc<Self> {
-        Arc::new(Self::default())
+        Arc::new(Self {
+            table: Mutex::default(),
+            viewer: None,
+        })
+    }
+
+    /// A set of sessions that also shows the windows that other devices offer.
+    pub(crate) fn showing(viewer: Viewer) -> Arc<Self> {
+        Arc::new(Self {
+            table: Mutex::default(),
+            viewer: Some(viewer),
+        })
     }
 
     /// Starts the viewer's side of a session that the person accepted: `peer` is the source, and
     /// `connection` is the connection that it offered the window on.
     ///
     /// The decoder is given the pictures in the order in which they are to be decoded, and the
-    /// messages of the source. The session ends, and the decoder is told, when the source ends
-    /// it, when it breaks a rule, when the connection ends, when the returned handle is dropped
-    /// and when the source does not open its control stream in time.
+    /// messages of the source. `takes` is what the viewer said it can take: a source that
+    /// describes a picture beyond it breaks a rule. The session ends, and the decoder is told,
+    /// when the source ends it, when it breaks a rule, when the connection ends, when the
+    /// returned handle is dropped and when the source does not open its control stream in time.
     ///
     /// # Errors
     ///
@@ -130,10 +209,11 @@ impl Streaming {
         connection: Connection,
         session: SessionId,
         decoder: impl Decoder,
+        takes: Takes,
         params: ViewParams,
     ) -> Result<ViewHandle> {
-        let mut sessions = lock(&self.sessions);
-        if sessions.contains_key(&session) {
+        let mut table = lock(&self.table);
+        if table.sessions.contains_key(&session) {
             return Err(Error::protocol("the session id is in use"));
         }
         let (view, handle) = View::start(
@@ -142,9 +222,10 @@ impl Streaming {
             peer.id,
             connection,
             Box::new(decoder),
+            takes,
             params,
         );
-        sessions.insert(session, Session::View(view));
+        table.sessions.insert(session, Session::View(view));
         Ok(handle)
     }
 
@@ -163,6 +244,13 @@ impl Streaming {
     /// # Errors
     ///
     /// The id is in use, or the picture format is beyond a limit of the protocol.
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "the node offers a window when the source's side is connected to it, which comes next"
+        )
+    )]
     pub(crate) fn source(
         self: &Arc<Self>,
         peer: &PairedDevice,
@@ -171,8 +259,8 @@ impl Streaming {
         setup: SourceSetup,
         events: impl SourceEvents,
     ) -> Result<SourceHandle> {
-        let mut sessions = lock(&self.sessions);
-        if sessions.contains_key(&session) {
+        let mut table = lock(&self.table);
+        if table.sessions.contains_key(&session) {
             return Err(Error::protocol("the session id is in use"));
         }
         let (source, handle) = Source::start(
@@ -185,18 +273,51 @@ impl Streaming {
             setup,
             Box::new(events),
         )?;
-        sessions.insert(session, Session::Source(source));
+        table.sessions.insert(session, Session::Source(source));
         Ok(handle)
     }
 
     /// Forgets a session that has ended, so that streams that arrive for it later are stopped.
     fn forget(&self, session: &SessionId) {
-        lock(&self.sessions).remove(session);
+        lock(&self.table).sessions.remove(session);
+    }
+
+    /// Ends every session with `peer` and withdraws its offer that waits, as when it is unpaired.
+    pub(crate) fn unpair(&self, peer: &DeviceId) {
+        self.end_where(|other| other == peer);
+    }
+
+    /// Does the same for every device that `paired` does not say is paired, as when the list of
+    /// paired devices changed and not every change was seen.
+    pub(crate) fn unpair_unless(&self, paired: impl Fn(&DeviceId) -> bool) {
+        self.end_where(|other| !paired(other));
+    }
+
+    /// Ends every session, as when the device stops.
+    pub(crate) fn shutdown(&self) {
+        self.end_where(|_| true);
+    }
+
+    fn end_where(&self, doomed: impl Fn(&DeviceId) -> bool) {
+        let ending: Vec<Session> = {
+            let table = lock(&self.table);
+            table.offers.withdraw_where(&doomed);
+            table
+                .sessions
+                .values()
+                .filter(|session| doomed(&session.peer()))
+                .cloned()
+                .collect()
+        };
+        // A session takes the lock itself when it ends, to forget itself.
+        for session in ending {
+            session.end(End::Local);
+        }
     }
 
     fn find(&self, arrival: &Arrival) -> Option<Session> {
         let session = SessionId::from_bytes(arrival.id);
-        let found = lock(&self.sessions).get(&session).cloned()?;
+        let found = lock(&self.table).sessions.get(&session).cloned()?;
         found
             .belongs_to(&arrival.peer, &arrival.connection)
             .then_some(found)
@@ -205,7 +326,7 @@ impl Streaming {
     /// The viewer's side of a session, if there is one.
     #[cfg(test)]
     fn viewing(&self, session: &SessionId) -> Option<Arc<View>> {
-        match lock(&self.sessions).get(session)? {
+        match lock(&self.table).sessions.get(session)? {
             Session::View(view) => Some(Arc::clone(view)),
             Session::Source(_) => None,
         }
@@ -214,7 +335,7 @@ impl Streaming {
     /// The source's side of a session, if there is one.
     #[cfg(test)]
     fn sourcing(&self, session: &SessionId) -> Option<Arc<Source>> {
-        match lock(&self.sessions).get(session)? {
+        match lock(&self.table).sessions.get(session)? {
             Session::Source(source) => Some(Arc::clone(source)),
             Session::View(_) => None,
         }
@@ -223,7 +344,7 @@ impl Streaming {
     /// Whether the node has no session.
     #[cfg(test)]
     fn is_empty(&self) -> bool {
-        lock(&self.sessions).is_empty()
+        lock(&self.table).sessions.is_empty()
     }
 }
 

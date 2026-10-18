@@ -29,10 +29,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use baton_proto::{DeviceId, close_code, id::SessionId};
+use baton_proto::{DeviceId, close_code, id::SessionId, stream::Codec};
 use baton_stream::{
     KIND_VIDEO,
-    control::{KeyFrame, Report, SourceMessage, Thermal, ViewerMessage, Want},
+    control::{Config, KeyFrame, Report, SourceMessage, Thermal, ViewerMessage, Want},
     header::{FrameHeader, PREFIX_LEN, encode_prefix},
     viewer::{Action, Params as Rules, Refusal, Stats, StreamId, Viewer, Violation},
 };
@@ -79,18 +79,43 @@ impl Default for ViewParams {
     }
 }
 
+/// What the viewer said it can take, in `Accepted`. The source keeps within it, and a source that
+/// sends a picture beyond it has broken the session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Takes {
+    /// The widest picture in pixels.
+    pub(crate) max_width: u32,
+    /// The highest picture in pixels.
+    pub(crate) max_height: u32,
+    /// The most frames a second.
+    pub(crate) max_fps: u16,
+    /// The codecs it can decode. A codec that this version does not know is never one of them.
+    pub(crate) codecs: Vec<Codec>,
+}
+
+impl Takes {
+    /// Whether the viewer said that it can take the picture that `config` describes.
+    fn allows(&self, config: &Config) -> bool {
+        config.width <= self.max_width
+            && config.height <= self.max_height
+            && config.fps <= self.max_fps
+            && config.codec != Codec::Other
+            && self.codecs.contains(&config.codec)
+    }
+}
+
 /// The decoder refused a frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the decoder refused the frame")]
-pub(crate) struct DecodeError;
+pub struct DecodeError;
 
 /// How the platform's decoder is doing, for the report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DecoderState {
+pub struct DecoderState {
     /// How long the decoder takes for a frame, in microseconds, as it smooths it.
-    pub(crate) decode_us: u32,
+    pub decode_us: u32,
     /// How hot the device is.
-    pub(crate) thermal: Thermal,
+    pub thermal: Thermal,
 }
 
 /// The decoder and the screen of a session, which the platform provides.
@@ -98,7 +123,7 @@ pub(crate) struct DecoderState {
 /// Every method is called with the session's lock held, so none of them waits: a decoder that
 /// takes time hands the picture to a thread of its own, and says if it fails afterwards through
 /// [`ViewHandle::decode_failed`].
-pub(crate) trait Decoder: Send + 'static {
+pub trait Decoder: Send + 'static {
     /// Takes the picture of a frame, in the order in which the frames are to be decoded. The
     /// picture is a frame of the format that the session agreed on, which is H.264 in Annex B
     /// form. Returns an error if the decoder cannot take it at all.
@@ -117,17 +142,40 @@ pub(crate) trait Decoder: Send + 'static {
     fn ended(&mut self);
 }
 
+impl Decoder for Box<dyn Decoder> {
+    fn decode(&mut self, frame: &FrameHeader, picture: Vec<u8>) -> Result<(), DecodeError> {
+        (**self).decode(frame, picture)
+    }
+
+    fn show(&mut self, number: u64) {
+        (**self).show(number);
+    }
+
+    fn source(&mut self, message: SourceMessage) {
+        (**self).source(message);
+    }
+
+    fn state(&self) -> DecoderState {
+        (**self).state()
+    }
+
+    fn ended(&mut self) {
+        (**self).ended();
+    }
+}
+
 /// What a session has counted, for the person and for tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ViewStats {
+#[non_exhaustive]
+pub struct ViewStats {
     /// What the rules of the viewer have counted.
-    pub(crate) frames: Stats,
+    pub frames: Stats,
     /// The newest frame that was shown.
-    pub(crate) shown: Option<u64>,
+    pub shown: Option<u64>,
     /// The bytes of pictures that the viewer holds.
-    pub(crate) held_bytes: usize,
+    pub held_bytes: usize,
     /// The frame streams that are being read.
-    pub(crate) streams: usize,
+    pub streams: usize,
 }
 
 /// A frame that waits to be decoded.
@@ -164,6 +212,7 @@ pub(super) struct View {
     session: SessionId,
     peer: DeviceId,
     connection: Connection,
+    takes: Takes,
     params: ViewParams,
     began: Instant,
     state: Mutex<State>,
@@ -179,7 +228,7 @@ pub(super) struct View {
 }
 
 /// What the owner of a session holds. Dropping it ends the session.
-pub(crate) struct ViewHandle {
+pub struct ViewHandle {
     view: Arc<View>,
 }
 
@@ -192,7 +241,7 @@ impl std::fmt::Debug for ViewHandle {
 impl ViewHandle {
     /// The decoder failed on a frame after it had taken it. Nothing can be decoded until a key
     /// frame comes, and the viewer asks for one.
-    pub(crate) fn decode_failed(&self) {
+    pub fn decode_failed(&self) {
         let view = &self.view;
         let mut state = lock(&view.state);
         let actions = state.viewer.decode_failed(view.now());
@@ -204,12 +253,13 @@ impl ViewHandle {
     }
 
     /// Tells the source what the viewer can take now, for example after the phone was turned.
-    pub(crate) fn want(&self, want: Want) {
+    pub fn want(&self, want: Want) {
         self.view.say(ViewerMessage::Want(want));
     }
 
     /// What has been counted so far.
-    pub(crate) fn stats(&self) -> ViewStats {
+    #[must_use]
+    pub fn stats(&self) -> ViewStats {
         let state = lock(&self.view.state);
         ViewStats {
             frames: state.viewer.stats(),
@@ -220,12 +270,12 @@ impl ViewHandle {
     }
 
     /// Ends the session.
-    pub(crate) fn end(&self) {
+    pub fn end(&self) {
         self.view.end(End::Local);
     }
 
     /// Waits until the session is over, and says why.
-    pub(crate) async fn ended(&self) -> End {
+    pub async fn ended(&self) -> End {
         self.view.ended.cancelled().await;
         self.view.end.get().copied().unwrap_or(End::Internal)
     }
@@ -245,6 +295,7 @@ impl View {
         peer: DeviceId,
         connection: Connection,
         decoder: Box<dyn Decoder>,
+        takes: Takes,
         params: ViewParams,
     ) -> (Arc<Self>, ViewHandle) {
         let (outbox, queue) = mpsc::channel(OUTBOX);
@@ -253,6 +304,7 @@ impl View {
             session,
             peer,
             connection,
+            takes,
             params,
             began: Instant::now(),
             state: Mutex::new(State {
@@ -276,6 +328,11 @@ impl View {
         (view, handle)
     }
 
+    /// The device at the other end.
+    pub(super) fn peer(&self) -> DeviceId {
+        self.peer
+    }
+
     /// Whether `peer` on `connection` is the other end of this session.
     pub(super) fn belongs_to(&self, peer: &PairedDevice, connection: &Connection) -> bool {
         self.peer == peer.id && self.connection.stable_id() == connection.stable_id()
@@ -286,7 +343,7 @@ impl View {
     }
 
     /// Ends the session, once. The caller does not hold the session's lock.
-    fn end(&self, how: End) {
+    pub(super) fn end(&self, how: End) {
         if self.end.set(how).is_err() {
             return;
         }
@@ -458,6 +515,12 @@ impl View {
         }
         self.control_taken.cancel();
         let ended = read_control(recv, self.params.stall, &self.ended, |message| {
+            // The source keeps within what the viewer said it can take.
+            if let SourceMessage::Config(config) = &message
+                && !self.takes.allows(config)
+            {
+                return ControlFlow::Break(());
+            }
             self.deliver(message);
             ControlFlow::Continue(())
         })
@@ -703,6 +766,16 @@ mod tests {
         SessionId::from_bytes([7; SessionId::LEN])
     }
 
+    /// What the viewer of most tests says it can take: everything the protocol allows.
+    fn takes() -> Takes {
+        Takes {
+            max_width: 3840,
+            max_height: 3840,
+            max_fps: 120,
+            codecs: vec![Codec::H264],
+        }
+    }
+
     /// Parameters with the times shortened, so that a test waits for them.
     fn quick() -> ViewParams {
         ViewParams {
@@ -735,6 +808,11 @@ mod tests {
 
         /// A rig whose viewer takes `control_streams` control streams at once.
         async fn with(params: ViewParams, control_streams: u32) -> Self {
+            Self::taking(takes(), params, control_streams).await
+        }
+
+        /// A rig whose viewer said that it can take `takes`.
+        async fn taking(takes: Takes, params: ViewParams, control_streams: u32) -> Self {
             let streaming = Streaming::new();
             let sinks = Sinks::default()
                 .install(Kind::Video, 12, streaming.clone())
@@ -755,6 +833,7 @@ mod tests {
                         log: log.clone(),
                         refuse: Arc::clone(&refuse),
                     },
+                    takes,
                     params,
                 )
                 .unwrap();
@@ -940,6 +1019,7 @@ mod tests {
                 accepted,
                 session_id(),
                 Keep(Arc::clone(&pictures)),
+                takes(),
                 ViewParams::default(),
             )
             .unwrap();
@@ -1329,6 +1409,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_picture_beyond_what_the_viewer_said_it_takes_is_a_violation() {
+        let said = Takes {
+            max_width: 1440,
+            max_height: 900,
+            max_fps: 60,
+            codecs: vec![Codec::H264],
+        };
+        let config = Config {
+            epoch: 0,
+            codec: Codec::H264,
+            width: 1440,
+            height: 900,
+            fps: 60,
+        };
+        // Exactly what the viewer said is within it.
+        let rig = Rig::taking(said.clone(), quick(), 2).await;
+        let mut send = rig.open_source_control().await;
+        write_message(&mut send, &SourceMessage::Config(config))
+            .await
+            .unwrap();
+        rig.until("the picture format to arrive", |rig| {
+            rig.log.source() == [SourceMessage::Config(config)]
+        })
+        .await;
+        drop(rig);
+
+        // Anything beyond it, or a codec that the viewer did not list, is not.
+        for (what, beyond) in [
+            (
+                "wider",
+                Config {
+                    width: 1441,
+                    ..config
+                },
+            ),
+            (
+                "higher",
+                Config {
+                    height: 901,
+                    ..config
+                },
+            ),
+            ("faster", Config { fps: 61, ..config }),
+            (
+                "a codec the viewer did not list",
+                Config {
+                    codec: Codec::Other,
+                    ..config
+                },
+            ),
+        ] {
+            let rig = Rig::taking(said.clone(), quick(), 2).await;
+            let mut send = rig.open_source_control().await;
+            write_message(&mut send, &SourceMessage::Config(beyond))
+                .await
+                .unwrap();
+            assert_eq!(rig.ended().await, End::Violation, "{what}");
+            assert_eq!(stopped_with(&send).await, 400, "{what}");
+            assert!(rig.log.source().is_empty(), "{what}");
+        }
+    }
+
+    #[tokio::test]
     async fn a_message_that_cannot_be_read_ends_the_session() {
         let rig = Rig::new().await;
         let mut send = rig.open_source_control().await;
@@ -1502,6 +1645,7 @@ mod tests {
                 log: Log::default(),
                 refuse: Arc::default(),
             },
+            takes(),
             quick(),
         );
         assert!(again.is_err());

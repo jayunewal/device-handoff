@@ -76,6 +76,7 @@ use crate::{
     session::{HandoffHandler, Intake, NoHandoff, Pool, SessionServer, call, worth_retrying},
     shared::Shared,
     slots::{MAX_PAIRING_CONNECTIONS, PairSlots},
+    streaming::{CONTROL_STREAMS, FRAME_STREAMS, Streaming, Viewer, WindowHandler},
     transfer::{
         incoming::{FINISH_WAIT, Incoming, LANE_STREAMS, TransferHandler},
         lanes::LaneSink,
@@ -91,6 +92,42 @@ const MDNS_SERVICE: &str = "baton";
 
 /// How long to wait for the relay before making a ticket without it.
 const RELAY_WAIT: Duration = Duration::from_secs(3);
+
+/// Installs what takes the unidirectional streams of the kinds that this node takes part in: the
+/// lanes of a transfer when it receives files, and the frames and control streams of window
+/// streaming when it shows windows. Returns them with the windows of the node.
+fn take_streams(
+    sinks: Sinks,
+    incoming: Option<&Incoming>,
+    windows: Option<Arc<dyn WindowHandler>>,
+    intake: &Intake,
+    tuning: &Tuning,
+) -> (Sinks, Arc<Streaming>) {
+    let sinks = match incoming {
+        Some(incoming) => sinks.install(
+            Kind::Lane,
+            LANE_STREAMS,
+            Arc::new(LaneSink::new(incoming.clone(), tuning.request_deadline)),
+        ),
+        None => sinks,
+    };
+    let streaming = match windows {
+        Some(handler) => Streaming::showing(Viewer::new(
+            handler,
+            intake.item_charge(),
+            tuning.approval_timeout,
+        )),
+        None => Streaming::new(),
+    };
+    let sinks = if streaming.views() {
+        sinks
+            .install(Kind::Video, FRAME_STREAMS, streaming.clone())
+            .install(Kind::Control, CONTROL_STREAMS, streaming.clone())
+    } else {
+        sinks
+    };
+    (sinks, streaming)
+}
 
 /// Time limits. The defaults suit real networks; tests shorten them.
 #[derive(Debug, Clone)]
@@ -150,11 +187,13 @@ pub struct NodeBuilder {
     handler: Arc<dyn HandoffHandler>,
     /// What the application says about the transfers that other devices offer, if it takes them.
     transfers: Option<Arc<dyn TransferHandler>>,
+    /// What the application says about the windows that other devices offer, if it shows them.
+    windows: Option<Arc<dyn WindowHandler>>,
     clock: Arc<dyn Clock>,
     tuning: Tuning,
     /// What takes the unidirectional streams that paired devices open, besides the lanes of the
-    /// transfers, which `bind` installs when there is a handler for them. Window streaming is
-    /// installed here as it is added.
+    /// transfers, which `bind` installs when there is a handler for them, and the frames and
+    /// control streams of window streaming, which it installs for a device that shows windows.
     sinks: Sinks,
     tweak: Option<Box<dyn FnOnce(Builder) -> Builder + Send>>,
     #[cfg(any(test, feature = "test-support"))]
@@ -176,6 +215,7 @@ impl NodeBuilder {
             config,
             handler: Arc::new(NoHandoff),
             transfers: None,
+            windows: None,
             clock: Arc::new(SystemClock),
             tuning: Tuning::default(),
             sinks: Sinks::default(),
@@ -200,6 +240,17 @@ impl NodeBuilder {
     #[must_use]
     pub fn transfer_handler(mut self, handler: impl TransferHandler) -> Self {
         self.transfers = Some(Arc::new(handler));
+        self
+    }
+
+    /// Has this device show the windows that paired devices offer, asking `handler` about each
+    /// offer and giving it the pictures to show.
+    ///
+    /// Without one, a device shows no window and declines every offer as unsupported. With one,
+    /// it advertises `stream.view`.
+    #[must_use]
+    pub fn window_handler(mut self, handler: impl WindowHandler) -> Self {
+        self.windows = Some(Arc::new(handler));
         self
     }
 
@@ -267,6 +318,7 @@ impl NodeBuilder {
             config,
             handler,
             transfers,
+            windows,
             clock,
             tuning,
             sinks,
@@ -284,14 +336,7 @@ impl NodeBuilder {
         let incoming = transfers.map(|handler| {
             Incoming::with_finish_wait(handler, intake.item_charge(), tuning.finish_wait)
         });
-        let sinks = match &incoming {
-            Some(incoming) => sinks.install(
-                Kind::Lane,
-                LANE_STREAMS,
-                Arc::new(LaneSink::new(incoming.clone(), tuning.request_deadline)),
-            ),
-            None => sinks,
-        };
+        let (sinks, streaming) = take_streams(sinks, incoming.as_ref(), windows, &intake, &tuning);
         let uni = Arc::new(Uni::new(sinks, &trust, &stop, tuning.request_deadline));
         let shared = Arc::new(Shared {
             id,
@@ -311,6 +356,7 @@ impl NodeBuilder {
             handler,
             intake,
             incoming,
+            streaming,
             uni: Arc::clone(&uni),
         });
 
@@ -641,6 +687,12 @@ impl Node {
         Ok(session)
     }
 
+    /// The window streaming sessions of this node.
+    #[cfg(test)]
+    pub(crate) fn streaming(&self) -> Arc<Streaming> {
+        Arc::clone(&self.shared.streaming)
+    }
+
     /// Sends one request to a paired device, connecting first if needed.
     ///
     /// If a connection from an earlier call turns out to have died, one retry is
@@ -701,6 +753,7 @@ impl Node {
         self.shared
             .registry
             .close_everything(close_code::INTERNAL, b"shutting down");
+        self.shared.streaming.shutdown();
         if let Some(incoming) = &self.shared.incoming {
             // The lanes ended with the connections, so this does not wait for them.
             incoming.shutdown().await;
@@ -826,6 +879,7 @@ async fn watch_trust(
                 Ok(TrustEvent::Removed(peer)) => {
                     pool.forget(&peer);
                     shared.intake.forget(&peer);
+                    shared.streaming.unpair(&peer);
                     let closed = shared.registry.close_peer(&peer, close_code::NOT_PAIRED, b"unpaired");
                     if let Some(incoming) = shared.incoming.clone() {
                         // The lanes end with the connections that were just closed, and the
@@ -843,6 +897,7 @@ async fn watch_trust(
                         close_code::NOT_PAIRED,
                         b"unpaired",
                     );
+                    shared.streaming.unpair_unless(|peer| trust.contains(peer));
                     if let Some(incoming) = shared.incoming.clone() {
                         let trust = shared.trust.clone();
                         drop(tokio::spawn(async move {
