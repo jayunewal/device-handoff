@@ -41,6 +41,7 @@ check "$all" .github/scripts/changed-paths-test.sh
 check "$all" .github/scripts/hang-guard.py
 check "$all" .github/scripts/hang-guard-test.sh
 check "$all" .github/scripts/simulator-report.sh
+check "$all" .github/scripts/cargokit-cache-report.sh
 check "$all" tools/something.sh
 check "$all" new-file-at-the-top
 check "$all" apps/baton/ios/Runner/Info.plist apps/baton/macos/Runner/Info.plist crates/baton-core/src/lib.rs

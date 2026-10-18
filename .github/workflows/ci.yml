@@ -233,7 +233,7 @@ jobs:
   # Mac jobs are the ones that wait: GitHub runs five of them at a time for the whole repository,
   # and a run needs four. So these two keep what Cargo builds for the library (the dependencies,
   # which are most of it) from one run to the next, and the iPhone job builds its simulator for
-  # one processor and boots it while the app builds.
+  # one processor.
   app-mac:
     name: App (macOS)
     needs: changes
@@ -256,6 +256,9 @@ jobs:
         run: |
           mkdir -p ~/.cargo
           printf '[build]\nincremental = false\n\n[profile.dev]\ndebug = 0\n' >> ~/.cargo/config.toml
+          # What the cache restored is older than this file, and the last step of the job counts
+          # what is newer.
+          touch "$RUNNER_TEMP/cargo-set-up"
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: 3.47.7
@@ -295,6 +298,9 @@ jobs:
           path: Baton-macos-app.zip
           if-no-files-found: error
           retention-days: 30
+      - name: Say how much of the Rust build came from the cache
+        if: always()
+        run: bash .github/scripts/cargokit-cache-report.sh
 
   app-iphone:
     name: App (iPhone)
@@ -318,6 +324,9 @@ jobs:
         run: |
           mkdir -p ~/.cargo
           printf '[build]\nincremental = false\n\n[profile.dev]\ndebug = 0\n' >> ~/.cargo/config.toml
+          # What the cache restored is older than this file, and the last step of the job counts
+          # what is newer.
+          touch "$RUNNER_TEMP/cargo-set-up"
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: 3.47.7
@@ -326,17 +335,6 @@ jobs:
       - name: Fetch the app's packages
         working-directory: apps/baton
         run: flutter pub get --enforce-lockfile
-      - name: Start an iPhone simulator
-        # It boots (two or three minutes) while the app is built, and the step after the build
-        # waits for it. It starts here and not at the top of the job because a boot there made the
-        # installation of Rust take three minutes, where the Mac app job needs twelve seconds. A
-        # simulator that cannot start fails this step, not the job's hour.
-        run: |
-          set -eu
-          udid=$(xcrun simctl list devices available | grep 'iPhone' | tail -n 1 | grep -oE '[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}')
-          echo "Simulator: $udid"
-          echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
-          xcrun simctl boot "$udid"
       - name: Build the app for an iPhone
         # Nothing signs it, so it cannot be installed from here. Whoever installs it builds it
         # on their own Mac, with their own Apple ID; docs/install-the-app.md says how.
@@ -350,12 +348,18 @@ jobs:
           for symbol in frb_get_rust_content_hash frb_pde_ffi_dispatcher_primary frb_init_frb_dart_api_dl; do
             nm -gU "$lib" | grep -q " _$symbol\$" || { echo "$symbol is missing from $lib" >&2; exit 1; }
           done
-      - name: Wait for the simulator
-        # A simulator that does not come up should fail here, not use up the job's hour. One that
-        # went down during the build is started again because of -b. Without it this step would
-        # wait its ten minutes for a boot that nothing starts.
+      - name: Start an iPhone simulator
+        # Booting it beside the other steps was tried, at the top of the job and before the build
+        # of the app. The steps beside it took about as much longer as the boot takes alone (the
+        # installation of Rust went from 12 seconds to 176), so nothing was gained. A simulator
+        # that cannot start fails this step, not the job's hour.
         timeout-minutes: 10
-        run: xcrun simctl bootstatus "$SIMULATOR_UDID" -b
+        run: |
+          set -eu
+          udid=$(xcrun simctl list devices available | grep 'iPhone' | tail -n 1 | grep -oE '[0-9A-F]{8}(-[0-9A-F]{4}){3}-[0-9A-F]{12}')
+          echo "Simulator: $udid"
+          echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
+          xcrun simctl bootstatus "$udid" -b
       - name: Start the app in the simulator
         timeout-minutes: 25
         working-directory: apps/baton
@@ -384,6 +388,9 @@ jobs:
         # The script says why it may have. The guard around the test runs it too.
         if: failure()
         run: bash .github/scripts/simulator-report.sh
+      - name: Say how much of the Rust build came from the cache
+        if: always()
+        run: bash .github/scripts/cargokit-cache-report.sh
 
   build:
     name: Build (${{ matrix.name }})
