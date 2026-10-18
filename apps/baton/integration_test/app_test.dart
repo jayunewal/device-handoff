@@ -44,7 +44,7 @@ void main() {
     await _see(tester, find.text('Name this device'));
 
     await _type(tester, 'Test device');
-    await tester.tap(find.text('Continue'));
+    await _tap(tester, find.text('Continue'));
     await _see(tester, find.text('No other devices yet'));
     await _expectScreenKeptOn(
       tester,
@@ -111,14 +111,14 @@ void main() {
     await second.sendText(firstId, 'The door code is 4711');
     await _see(tester, find.text('Second device sent you some text.'));
     expect(find.textContaining('4711'), findsNothing);
-    await tester.tap(find.text('View'));
+    await _tap(tester, find.text('View'));
     await _see(tester, find.text('The door code is 4711'));
     expect(find.text('Second device · just now'), findsOneWidget);
 
     // Back on the devices, this device sends the second one a link, through the send screen.
-    await tester.tap(find.text('Devices'));
+    await _tap(tester, find.text('Devices'));
     await _see(tester, find.text('Second device'));
-    await tester.tap(find.text('Second device'));
+    await _tap(tester, find.text('Second device'));
     await _see(tester, find.text('Send to Second device'));
     await _type(tester, ' HTTPS://Example.com/plan ');
     await tester.scrollUntilVisible(
@@ -126,7 +126,7 @@ void main() {
       200,
       scrollable: find.byType(Scrollable).first,
     );
-    await tester.tap(find.text('Send link'));
+    await _tap(tester, find.text('Send link'));
     await _see(tester, find.text('Sent the link to Second device.'));
 
     await _until(
@@ -154,9 +154,9 @@ void main() {
       BatonApp(backend: RustBackend(dataDir: folder.path)),
     );
     await _see(tester, find.text('No other devices yet'));
-    await tester.tap(find.text('Add a device'));
+    await _tap(tester, find.text('Add a device'));
     await _see(tester, find.text('Scan or enter a code'));
-    await tester.tap(find.text('Scan or enter a code'));
+    await _tap(tester, find.text('Scan or enter a code'));
     await _see(tester, find.text('Or paste the code', skipOffstage: false));
 
     // The camera starts, and on a phone the system asks about it. Nothing here depends on what
@@ -201,9 +201,9 @@ Future<Session> _pairThroughTheScreens(WidgetTester tester) async {
     ),
   );
   await _see(tester, find.text('No other devices yet'));
-  await tester.tap(find.text('Add a device'));
+  await _tap(tester, find.text('Add a device'));
   await _see(tester, find.text('Scan or enter a code'));
-  await tester.tap(find.text('Scan or enter a code'));
+  await _tap(tester, find.text('Scan or enter a code'));
   await _see(tester, find.text('Or paste the code', skipOffstage: false));
   await _expectScreenKeptOn(
     tester,
@@ -220,7 +220,7 @@ Future<Session> _pairThroughTheScreens(WidgetTester tester) async {
   );
   await tester.enterText(find.byType(TextField), offer.ticket);
   await tester.scrollUntilVisible(find.text('Connect'), 200, scrollable: list);
-  await tester.tap(find.text('Connect'));
+  await _tap(tester, find.text('Connect'));
 
   // This device shows six digits, and the second one is asked about the same ones.
   await _see(tester, find.text('Check the other device'));
@@ -235,7 +235,7 @@ Future<Session> _pairThroughTheScreens(WidgetTester tester) async {
     kept: false,
     when: 'once the pairing is over',
   );
-  await tester.tap(find.text('Done'));
+  await _tap(tester, find.text('Done'));
   await _see(tester, find.text('Second device'));
   expect(find.text('No other devices yet'), findsNothing);
   await _until(
@@ -323,12 +323,25 @@ String _describeScreen(WidgetTester tester) {
   final view = tester.view;
   final fields = find.byType(TextField, skipOffstage: false).evaluate().length;
   return 'the state of the app: $state, the view: ${view.physicalSize} at '
-      '${view.devicePixelRatio}x, text fields: $fields';
+      '${view.devicePixelRatio}x, covered at the bottom: ${view.viewInsets.bottom}, '
+      'text fields: $fields';
 }
 
 /// Waits until [finder] finds something.
 Future<void> _see(WidgetTester tester, Finder finder) =>
     _until(tester, () => finder.evaluate().isNotEmpty, '$finder');
+
+/// Taps what [finder] finds, once a tap can reach it. A widget that is on the screen can still
+/// have something in front of it for a moment, a page that is sliding in for one, and a tap that
+/// does not reach it goes to whatever is in front while the test goes on as if it had arrived.
+Future<void> _tap(WidgetTester tester, Finder finder) async {
+  await _until(
+    tester,
+    () => finder.hitTestable().evaluate().isNotEmpty,
+    'a place to tap on $finder',
+  );
+  await tester.tap(finder);
+}
 
 /// Types [text] into the text field on the screen, once the field is there. The title above it
 /// can be seen before the field is, and typing into a field that is not there throws.
