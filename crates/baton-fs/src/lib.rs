@@ -31,9 +31,9 @@
 //!   and Android before API 30 do not). macOS, iOS and iPadOS: `renamex_np` with `RENAME_EXCL`.
 //!   Windows: `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`. Any other system:
 //!   [`rename_noreplace`] reports [`ErrorKind::Unsupported`].
-//! - **Marking.** macOS: `setxattr` for the attribute `com.apple.quarantine`. Windows needs no
-//!   `unsafe` code: the mark is a stream of the file, which the standard library can write. The
-//!   other systems have no such mark, and [`mark_received`] does nothing there.
+//! - **Marking.** macOS: `getxattr` and `setxattr` for the attribute `com.apple.quarantine`.
+//!   Windows needs no `unsafe` code: the mark is a stream of the file, which the standard library
+//!   can write. The other systems have no such mark, and [`mark_received`] does nothing there.
 //! - **Hiding.** Windows: `GetFileAttributesW` and `SetFileAttributesW`. The other systems hide
 //!   a name that starts with a dot already, and [`hide`] does nothing there.
 //! - **Free space.** Linux and Android: `statvfs`. macOS, iOS and iPadOS: `statfs`. Windows:
@@ -118,9 +118,11 @@ pub fn rename_noreplace(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<
 /// Marks `file` as one that came from elsewhere, the way a web browser marks what it downloaded,
 /// so that the system is careful with it the first time the person opens it.
 ///
-/// - **macOS** sets the extended attribute `com.apple.quarantine` to `0083;<time>;Baton;`.
+/// - **macOS** sets the extended attribute `com.apple.quarantine` to `0083;<time>;Baton;`, unless
+///   the file has it already: a mark that is there stays as it is, whoever put it there.
 ///   Gatekeeper checks a program that has it and asks the person before it first runs, and other
 ///   programs read it as "downloaded". It makes no entry in the system's record of downloads.
+///   Apple does not document what the flags mean; they are the ones a browser's downloads have.
 /// - **Windows** writes the stream `Zone.Identifier` of the file, with `ZoneId=3`, which is the
 ///   Internet zone. It is the "mark of the web" that `SmartScreen` and Office look for, and it
 ///   stays with the file when it is moved or copied to another NTFS volume. There is no address
@@ -130,7 +132,8 @@ pub fn rename_noreplace(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<
 ///   is there, and does nothing else.
 ///
 /// The mark is meant to be put on once, when a file has been received and checked. Putting it on
-/// again replaces it.
+/// again changes nothing that matters: the Mac keeps the mark that is there, and Windows writes
+/// the same stream again.
 ///
 /// # Errors
 ///
@@ -201,8 +204,14 @@ pub fn hide(path: impl AsRef<Path>) -> Result<()> {
 /// later still gives `NoSpace` from the write.
 ///
 /// - Linux and Android: `statvfs`, in blocks that a user can use (`f_bavail`).
-/// - macOS, iOS and iPadOS: `statfs`. This does not count space that the system would make free
-///   when it is needed (purgeable space), so it is a little less than the Settings app shows.
+/// - macOS, iOS and iPadOS: `statfs`. This counts what is free now. It does not count what the
+///   system would make free when it is needed: caches, apps that can be offloaded, and photos
+///   that are kept in iCloud (purgeable space). On an iPhone or iPad that can be gigabytes, so
+///   the figure can be far below what can be written, and the Settings app shows more. A caller
+///   that refuses a transfer on this figure alone refuses some that would fit. What Apple
+///   recommends is `volumeAvailableCapacityForImportantUsage`, which counts the purgeable space.
+///   It is a key of Foundation and not a system call, so it is for the app to ask. This is from
+///   Apple's documentation and has not been measured on a device.
 /// - Windows: `GetDiskFreeSpaceExW`, the free bytes available to the user who calls it.
 /// - Any other system: [`ErrorKind::Unsupported`].
 ///

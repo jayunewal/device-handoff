@@ -8,6 +8,11 @@ pub(crate) use imp::mark_received;
 /// the person has not approved yet), the time in seconds since 1970 in hexadecimal, and the name of
 /// the program that got the file. The fourth field, the id of an entry in the system's record of
 /// downloads, is left out, since Baton makes no entry there.
+///
+/// What the flags mean is observed on files that a browser downloaded, and Apple does not document
+/// it. The supported way to read and set the mark is the URL resource key
+/// `NSURLQuarantinePropertiesKey` of Foundation, which is not a system call, and this crate keeps
+/// to system calls.
 //
 // Only the Mac uses it, and the tests check it on every system.
 #[cfg(any(target_os = "macos", test))]
@@ -26,6 +31,7 @@ const ZONE_IDENTIFIER: &str = "[ZoneTransfer]\r\nZoneId=3\r\n";
 #[cfg(target_os = "macos")]
 mod imp {
     use std::{
+        ffi::CStr,
         io::{Error, Result},
         path::Path,
         time::{SystemTime, UNIX_EPOCH},
@@ -36,10 +42,37 @@ mod imp {
     /// The name of the attribute, as a C string.
     const QUARANTINE: &[u8] = b"com.apple.quarantine\0";
 
-    /// `setxattr(file, "com.apple.quarantine", value, XATTR_NOFOLLOW)`. A mark that is there
-    /// already is replaced by this one.
+    /// `getxattr(file, "com.apple.quarantine", NULL, 0, XATTR_NOFOLLOW)`: whether the file has the
+    /// attribute, whatever its value is. Any answer but "yes" (no attribute, no file, no right to
+    /// look) is a "no", and the call that follows reports what is wrong, if anything is.
+    fn has_quarantine(file: &CStr) -> bool {
+        // SAFETY: `file` and `QUARANTINE` are NUL-terminated strings that are alive until the call
+        // returns. With a null buffer of size 0 the call only reports how long the value is and
+        // writes nothing. The position is 0, as it must be for any attribute but the resource
+        // fork, and `XATTR_NOFOLLOW` asks about a link itself and not what it points to.
+        let size = unsafe {
+            libc::getxattr(
+                file.as_ptr(),
+                QUARANTINE.as_ptr().cast(),
+                std::ptr::null_mut(),
+                0,
+                0,
+                libc::XATTR_NOFOLLOW,
+            )
+        };
+        size >= 0
+    }
+
+    /// `setxattr(file, "com.apple.quarantine", value, XATTR_NOFOLLOW)`, unless the file has the
+    /// attribute already, and then it is left as it is. The system may have marked the file when
+    /// this program made it (an app in the App Sandbox probably is marked this way, which has not
+    /// been checked on a Mac), and whether such an app may replace the attribute is not
+    /// documented, so a replacement could fail for every file.
     pub(crate) fn mark_received(file: &Path) -> Result<()> {
         let file = posix::c_string(file)?;
+        if has_quarantine(&file) {
+            return Ok(());
+        }
         let seconds = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |since| since.as_secs());
