@@ -498,7 +498,9 @@ name = "baton-stream"
 version = "0.1.0"
 dependencies = [
  "baton-proto",
+ "ciborium",
  "proptest",
+ "serde",
  "thiserror 2.0.21",
 ]
 
