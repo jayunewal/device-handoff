@@ -59,6 +59,7 @@ mod ratelimit;
 mod shared;
 mod slots;
 mod transport;
+mod uni;
 mod wire;
 
 pub use baton_proto::pair::ConfirmationCode;

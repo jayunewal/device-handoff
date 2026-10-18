@@ -169,6 +169,9 @@ pub(crate) type BeforeRegistering = Arc<dyn Fn(DeviceId) -> BoxFuture<'static, (
 pub(crate) struct Gate {
     trust: TrustStore,
     registry: Arc<ConnectionRegistry>,
+    /// How many unidirectional streams a paired device may have open at once, which is nothing
+    /// until a kind of stream is taken (see [`crate::uni`]).
+    uni_streams: u32,
     /// Runs after a connection has passed the first check and before it is registered,
     /// the one moment at which a device can be unpaired without the registry knowing the
     /// connection exists. Tests use it to unpair a device at exactly that moment, and to
@@ -184,10 +187,15 @@ impl fmt::Debug for Gate {
 }
 
 impl Gate {
-    pub(crate) fn new(trust: TrustStore, registry: Arc<ConnectionRegistry>) -> Self {
+    pub(crate) fn new(
+        trust: TrustStore,
+        registry: Arc<ConnectionRegistry>,
+        uni_streams: u32,
+    ) -> Self {
         Self {
             trust,
             registry,
+            uni_streams,
             #[cfg(any(test, feature = "test-support"))]
             before_registering: None,
         }
@@ -245,8 +253,12 @@ impl EndpointHooks for Gate {
         self.registry.register(peer, connection.weak_handle());
         if self.trust.contains(&peer) {
             // Until now the connection could make this device hold only a small window of
-            // data. The other end is paired, so it gets the one meant for paired devices.
+            // data, and open no stream but a request. The other end is paired, so it gets the
+            // window meant for paired devices and the streams that this device takes.
             transport::raise_window(connection);
+            if self.uni_streams > 0 {
+                transport::raise_uni_streams(connection, self.uni_streams);
+            }
             AfterHandshakeOutcome::Accept
         } else {
             Self::refuse_unpaired()
@@ -696,7 +708,7 @@ mod tests {
         Endpoint::builder(presets::Minimal)
             .secret_key(secret)
             .alpns(vec![ALPN_SESSION.to_vec(), ALPN_PAIR.to_vec()])
-            .hooks(Gate::new(trust, Arc::new(ConnectionRegistry::default())))
+            .hooks(Gate::new(trust, Arc::new(ConnectionRegistry::default()), 0))
             .transport_config(transport::config())
             .clear_ip_transports()
             .bind_addr("127.0.0.1:0")

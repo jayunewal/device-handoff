@@ -63,6 +63,8 @@ use tokio_util::sync::CancellationToken;
 
 #[cfg(any(test, feature = "test-support"))]
 use crate::gate::BeforeRegistering;
+#[cfg(test)]
+use crate::uni::{Kind, Sink};
 use crate::{
     clock::{Clock, SystemClock},
     config::{self, Config, NetworkConfig},
@@ -76,6 +78,7 @@ use crate::{
     slots::{MAX_PAIRING_CONNECTIONS, PairSlots},
     transport,
     trust::{PairedDevice, TrustEvent, TrustStore},
+    uni::{Sinks, Uni},
     util::random_bytes,
 };
 
@@ -139,6 +142,9 @@ pub struct NodeBuilder {
     handler: Arc<dyn HandoffHandler>,
     clock: Arc<dyn Clock>,
     tuning: Tuning,
+    /// What takes the unidirectional streams that paired devices open. Nothing yet: the receiver
+    /// of files and window streaming are installed here as they are added.
+    sinks: Sinks,
     tweak: Option<Box<dyn FnOnce(Builder) -> Builder + Send>>,
     #[cfg(any(test, feature = "test-support"))]
     before_registering: Option<BeforeRegistering>,
@@ -160,6 +166,7 @@ impl NodeBuilder {
             handler: Arc::new(NoHandoff),
             clock: Arc::new(SystemClock),
             tuning: Tuning::default(),
+            sinks: Sinks::default(),
             tweak: None,
             #[cfg(any(test, feature = "test-support"))]
             before_registering: None,
@@ -185,6 +192,15 @@ impl NodeBuilder {
     #[must_use]
     pub fn tuning(mut self, tuning: Tuning) -> Self {
         self.tuning = tuning;
+        self
+    }
+
+    /// Has `sink` take the unidirectional streams of `kind`, at most `limit` at once on a
+    /// connection.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn take_streams(mut self, kind: Kind, limit: u32, sink: Arc<dyn Sink>) -> Self {
+        self.sinks = self.sinks.install(kind, limit, sink);
         self
     }
 
@@ -229,6 +245,7 @@ impl NodeBuilder {
             handler,
             clock,
             tuning,
+            sinks,
             tweak,
             #[cfg(any(test, feature = "test-support"))]
             before_registering,
@@ -238,6 +255,8 @@ impl NodeBuilder {
         let id = DeviceId::from_bytes(*secret.public().as_bytes());
         let relay_enabled = config.network.relay != config::RelayMode::Disabled;
         let registry = Arc::new(ConnectionRegistry::default());
+        let stop = CancellationToken::new();
+        let uni = Arc::new(Uni::new(sinks, &trust, &stop, tuning.request_deadline));
         let shared = Arc::new(Shared {
             id,
             info: DeviceInfo {
@@ -249,15 +268,16 @@ impl NodeBuilder {
             clock,
             tuning,
             relay_enabled,
-            stop: CancellationToken::new(),
+            stop,
             registry: Arc::clone(&registry),
             offers: Offers::default(),
             pair_slots: PairSlots::new(MAX_PAIRING_CONNECTIONS),
             handler,
             intake: Intake::new(&config.handoff),
+            uni: Arc::clone(&uni),
         });
 
-        let gate = Gate::new(trust.clone(), registry);
+        let gate = Gate::new(trust.clone(), registry, uni.quic_limit());
         #[cfg(any(test, feature = "test-support"))]
         let gate = match before_registering {
             Some(hook) => gate.before_registering(hook),
@@ -561,6 +581,20 @@ impl Node {
                 "the answer to a handoff was not for that handoff",
             )),
         }
+    }
+
+    /// The connection that requests to `peer` go on, made if there is none.
+    #[cfg(test)]
+    pub(crate) async fn pooled_connection(
+        &self,
+        peer: &DeviceId,
+    ) -> Result<iroh::endpoint::Connection> {
+        let paired = self.shared.trust.get(peer).ok_or(Error::NotPaired(*peer))?;
+        let (session, _) = self
+            .pool
+            .session(&self.endpoint, &self.shared, &paired)
+            .await?;
+        Ok(session.connection)
     }
 
     /// Sends one request to a paired device, connecting first if needed.
