@@ -231,6 +231,10 @@ impl<'de> Deserialize<'de> for TransferId {
 ///
 /// Chosen at random by the device that offers the session, and carried by every stream that
 /// belongs to it so that a stream for a session that is not running can be refused.
+///
+/// A session belongs to the two devices that made it. A stream is taken only from the device
+/// the session was made with, never because it names an id that is running, since another
+/// paired device may have learned the id.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionId([u8; Self::LEN]);
 
