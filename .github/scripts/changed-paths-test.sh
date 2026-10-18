@@ -49,6 +49,7 @@ check "app mac iphone" apps/baton/pubspec.yaml
 check "app mac iphone" apps/baton/pubspec.lock
 check "app mac iphone" apps/baton/integration_test/app_test.dart
 check "app mac iphone" apps/baton/rust_builder/cargokit/build_tool/pubspec.yaml
+check "app mac iphone" apps/baton/rust_builder/cargokit/build_pod.sh
 check "app mac iphone" apps/baton/flutter_rust_bridge.yaml
 check "app mac iphone" apps/baton/ios/Runner/Info.plist apps/baton/macos/Runner/Info.plist
 check "app mac iphone" apps/baton/lib/main.dart README.md

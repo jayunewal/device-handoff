@@ -218,6 +218,10 @@ jobs:
   # The two jobs below build the app for the Mac and for the iPhone and iPad, and start it. They
   # are the only place where the build settings of apps/baton/ios and apps/baton/macos, and the
   # way Cargokit builds the Rust library into them, meet a real Xcode.
+  #
+  # Mac jobs are the ones that wait: GitHub runs five of them at a time for the whole repository,
+  # and a run needs four. So these two keep what Cargo builds for the library (the dependencies,
+  # which are most of it) from one run to the next.
   app-mac:
     name: App (macOS)
     needs: changes
@@ -230,6 +234,16 @@ jobs:
         with:
           # The app is built for both kinds of Mac, and Cargokit makes one library of the two.
           targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The folder that Cargokit builds in: apps/baton/rust_builder/README.md says why.
+          workspaces: ". -> apps/baton/build/cargokit"
+      - name: Set up Cargo
+        # Xcode does not hand the environment of this job to the scripts it runs, and Cargokit
+        # starts Cargo from one of them. A file that Cargo reads by itself gets there.
+        run: |
+          mkdir -p ~/.cargo
+          printf '[build]\nincremental = false\n' >> ~/.cargo/config.toml
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: 3.47.7
@@ -282,6 +296,16 @@ jobs:
         with:
           # An iPhone or iPad, and a simulator on either kind of Mac.
           targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The folder that Cargokit builds in: apps/baton/rust_builder/README.md says why.
+          workspaces: ". -> apps/baton/build/cargokit"
+      - name: Set up Cargo
+        # Xcode does not hand the environment of this job to the scripts it runs, and Cargokit
+        # starts Cargo from one of them. A file that Cargo reads by itself gets there.
+        run: |
+          mkdir -p ~/.cargo
+          printf '[build]\nincremental = false\n' >> ~/.cargo/config.toml
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: 3.47.7

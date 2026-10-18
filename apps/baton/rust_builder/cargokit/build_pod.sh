@@ -49,6 +49,12 @@ do
   fi
 done
 
+# Changed from the template (see ../README.md): Cargo builds in a folder of the app, the same one
+# for every configuration and platform, and not in the temporary folder that Xcode makes for each
+# of them, somewhere in DerivedData under a name that depends on the place of the project. CI
+# keeps this folder from one run to the next.
+export CARGOKIT_TARGET_TEMP_DIR="${FLUTTER_APPLICATION_PATH:-$PODS_ROOT/../..}/${FLUTTER_BUILD_DIR:-build}/cargokit"
+
 sh "$BASEDIR/run_build_tool.sh" build-pod "$@"
 
 # Make a symlink from built framework to phony file, which will be used as input to
