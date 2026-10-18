@@ -18,12 +18,14 @@ use super::Violation;
 // The lane numbers that were used are kept as the bits of a byte.
 const _: () = assert!(MAX_LANES <= 8);
 
-/// The lane numbers of one connection: how many were granted, and which have been used.
+/// The lane numbers that one transfer uses on one connection: how many were granted, and which have
+/// been used.
 ///
-/// Lane numbers are counted per connection, because the header of a lane names no attempt. A
-/// number that comes twice on a connection is a lane of a second attempt that was opened on the
-/// connection of the first, which the sender must not do (section 8, Resuming), or a sender that
-/// has lost count.
+/// Lane numbers are counted for each transfer on each connection, because the header of a lane
+/// names its transfer and no attempt, and a connection can carry two transfers at once. A number
+/// that comes twice for a transfer on a connection is a lane of a second attempt that was opened on
+/// the connection of the first, which the sender must not do (section 8, Resuming), or a sender
+/// that has lost count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Lanes {
     granted: u8,

@@ -11,13 +11,16 @@
 //! The receiving side is built in pieces, each with tests of its own and each used by the next:
 //!
 //! - [`Violation`] is a rule that a sender broke, and the code that the lanes are stopped with.
-//! - [`Lanes`] checks the numbers of the lanes that are opened on one connection.
+//! - [`Lanes`] checks the numbers of the lanes that a transfer opens on one connection.
 //! - [`Ledger`] is the book of an attempt: what the sender said of every file, and how each file
 //!   came out. [`done`] makes the outcome of the transfer from it.
 //! - [`LaneReader`] reads the frames of one lane off a stream, with the checks that need only the
 //!   list: where a piece of the list may come, and how many bytes a span has.
 //! - [`Intake`] joins the [`Ledger`] to the staging folder: what each frame does to the files, in
 //!   the order that keeps the two agreeing however the lanes interleave, and how the transfer ends.
+//! - [`Transfer`] is the whole receiver of one transfer: its attempts, the lanes of each read side
+//!   by side, the timer that ends an attempt that has stopped moving, and the answers to `Finish`
+//!   and `Cancel`. The session gives it streams and asks it for outcomes.
 //!
 //! None of it touches the network, and nothing here is connected to the session yet.
 
@@ -26,10 +29,12 @@ use baton_proto::{close_code, transfer::list::ListError};
 mod attempt;
 mod intake;
 mod lane;
+mod transfer;
 
 pub use attempt::{Lanes, Ledger, done};
 pub use intake::{Concluded, Halt, Intake};
 pub use lane::{Counted, Fault, Frame, LaneReader, SpanBuf};
+pub use transfer::{Attempt, Dropped, LaneEnd, Over, Transfer};
 
 /// A rule of a transfer that the sender broke.
 ///
@@ -42,8 +47,9 @@ pub enum Violation {
     /// A lane with a number that is not below the number of lanes that were granted.
     #[error("a lane with a number beyond the lanes that were granted")]
     LaneBeyond,
-    /// A lane with a number that another lane of the same connection used already.
-    #[error("a lane number was used twice on one connection")]
+    /// A lane with a number that another lane of the same transfer on the same connection used
+    /// already.
+    #[error("a lane number was used twice by one transfer on one connection")]
     LaneRepeated,
     /// A frame with a tag that this version does not know, so the length of what follows it is not
     /// known either.
@@ -67,6 +73,13 @@ pub enum Violation {
     /// A piece of the list that is not a frame of section 2 holding a list chunk.
     #[error("a piece of the list that is not valid")]
     BadChunk,
+    /// A lane that the sender finished in the middle of a frame. A lane that is reset is not this:
+    /// it is the stream's error.
+    #[error("a lane was finished in the middle of a frame")]
+    Cut,
+    /// Lane 0 finished before the list was complete.
+    #[error("lane 0 was finished before the list was complete")]
+    ShortList,
     /// A list that is not the one that was offered.
     #[error("the list is not the one that was offered: {0}")]
     List(#[from] ListError),
@@ -102,6 +115,8 @@ mod tests {
             Violation::NotAFile,
             Violation::Twice,
             Violation::BadChunk,
+            Violation::Cut,
+            Violation::ShortList,
             Violation::List(ListError::HashMismatch),
             Violation::List(ListError::OutOfOrder { index: 3 }),
             Violation::List(ListError::Entry(LimitError::Empty { field: "x" })),

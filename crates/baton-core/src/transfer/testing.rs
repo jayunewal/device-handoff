@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! What the tests of the transfer engine share: lists that were checked against an offer, and
-//! data to put in files.
+//! What the tests of the transfer engine share: lists that were checked against an offer, data to
+//! put in files, and the bytes of the frames of a lane.
 
 use baton_proto::{
+    frame,
     id::{DeviceId, TransferId},
     limits::MAX_PREVIEW_ITEMS,
     transfer::{
         Offer, PreviewItem, Summary,
+        lane::{FrameHead, SkipReason, TAG_LIST},
         list::{ListChecker, ListChunk, ListEntry, Listing, hash_list},
         path,
     },
 };
+use blake3::Hash;
 
 use super::destination::Destination;
 
@@ -59,8 +62,9 @@ pub(crate) fn listing(entries: &[ListEntry]) -> Listing {
     checker.finish().unwrap()
 }
 
-/// A summary, a preview and the hash worked out directly from a list that is in order.
-fn offer_for(entries: &[ListEntry]) -> Offer {
+/// The offer of `entries`, which must be in the order of the format: a summary, a preview and the
+/// hash worked out directly from the list. Its id is `[9; 16]`.
+pub(crate) fn offer_for(entries: &[ListEntry]) -> Offer {
     let count = |wanted: fn(&&ListEntry) -> bool| {
         u32::try_from(entries.iter().filter(wanted).count()).unwrap()
     };
@@ -112,4 +116,52 @@ pub(crate) fn bytes(seed: u8, len: usize) -> Vec<u8> {
         .finalize_xof()
         .fill(&mut out);
     out
+}
+
+// The bytes of the frames of a lane.
+
+/// The bytes of the head of a frame, which is its tag and what the tag says follows.
+pub(crate) fn head(head: FrameHead) -> Vec<u8> {
+    let mut out = Vec::new();
+    head.encode_into(&mut out);
+    out
+}
+
+/// A `Span` frame.
+pub(crate) fn span(file: u32, span: u32, data: &[u8]) -> Vec<u8> {
+    let mut out = head(FrameHead::Span { file, span });
+    out.extend_from_slice(data);
+    out
+}
+
+/// An `End` frame whose hash is `seed` repeated, which is no file's hash.
+pub(crate) fn end(file: u32, seed: u8) -> Vec<u8> {
+    end_with(file, Hash::from_bytes([seed; blake3::OUT_LEN]))
+}
+
+/// An `End` frame with the hash `hash`.
+pub(crate) fn end_with(file: u32, hash: Hash) -> Vec<u8> {
+    head(FrameHead::End { file, hash })
+}
+
+/// A `Skip` frame.
+pub(crate) fn skip(file: u32, reason: SkipReason) -> Vec<u8> {
+    head(FrameHead::Skip { file, reason })
+}
+
+/// A piece of the list.
+pub(crate) fn chunk(entries: Vec<ListEntry>) -> ListChunk {
+    ListChunk { entries }
+}
+
+/// A `List` frame holding `chunk`.
+pub(crate) fn list(chunk: &ListChunk) -> Vec<u8> {
+    let mut out = vec![TAG_LIST];
+    out.extend_from_slice(&frame::encode(chunk).unwrap());
+    out
+}
+
+/// A lane made of `parts`, one after another.
+pub(crate) fn lane(parts: &[&[u8]]) -> Vec<u8> {
+    parts.concat()
 }
