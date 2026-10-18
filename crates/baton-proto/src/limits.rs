@@ -98,6 +98,9 @@ pub const MAX_FRAME_RATE: u16 = 120;
 /// Most codecs that an accepted offer names.
 pub const MAX_CODECS: usize = 8;
 
+/// Largest message on a control stream of a session, header excluded.
+pub const MAX_CONTROL_MESSAGE_BYTES: usize = 64 * 1024;
+
 /// A field that does not satisfy the protocol's limits.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LimitError {

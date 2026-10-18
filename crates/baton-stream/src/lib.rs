@@ -19,12 +19,14 @@
 //!   frame streams it reads and the pictures it holds.
 //! - [`input`] holds the events that a viewer sends and the checks on their numbers.
 //! - [`gate`] holds the rules that confine a viewer's input to the shared window.
+//! - [`control`] holds the messages on the two control streams of a session.
 
 // This crate reads bytes that a paired device wrote. An index that is out of bounds panics, and
 // a panic on input from the network is a remote crash, so the code spells out what happens when
 // the data is short. Tests are exempt through `clippy.toml`.
 #![warn(clippy::indexing_slicing)]
 
+pub mod control;
 pub mod gate;
 pub mod header;
 pub mod input;
