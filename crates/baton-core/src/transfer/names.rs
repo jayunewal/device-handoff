@@ -107,10 +107,11 @@ const fn windows_rules(rules: Rules) -> bool {
 /// and `SS` the same, as full case folding does, and `ẞ` too: the capital sharp s is its own upper
 /// case, so it is only the lower case that takes it to `ß`. A key that matches too much only gives
 /// a name a number it did not need. One that matches too little is caught where the names are
-/// written, and fails that entry and no other: a top-level item is moved into place by a move that
-/// refuses to replace what it finds, and inside a folder the writer makes files with `create_new`
-/// and folders with `create_dir`, never `create_dir_all`, which would take two folders that the
-/// plan keeps apart for one.
+/// written, and never mixes two names: a top-level item is moved into place by a move that
+/// refuses to replace what it finds, and inside a folder the writer makes files with `create_new`,
+/// which fails that file, and folders with `create_dir`, never `create_dir_all`, which would take
+/// two folders that the plan keeps apart for one. A folder whose name is taken stops the whole
+/// transfer when it is staged, with nothing written.
 fn key(name: &str, rules: Rules) -> String {
     let folded: String = if rules.ignores_case {
         name.chars()
