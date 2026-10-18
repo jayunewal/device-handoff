@@ -9,10 +9,11 @@ use std::time::Duration;
 
 use baton_core::{Error, Identity, link::PathKind};
 use baton_proto::{
-    ALPN_SESSION, DeviceId, TransferId,
+    ALPN_SESSION, DeviceId, SessionId, TransferId,
     message::{
         ClipboardText, DeclineReason, Hello, Item, Link, Outcome, Request, Response, capability,
     },
+    stream::{SourceKind, Stop, StopReason, StreamReply, StreamRequest},
     transfer::{
         Cancel, Declined, Finish, Offer, PreviewItem, Summary, TransferReply, TransferRequest,
         list::ListHash,
@@ -404,6 +405,61 @@ async fn a_device_that_does_not_take_part_in_transfers_declines_every_request_of
             baton_proto::frame::decode::<Response>(&reply).unwrap(),
             Response::Transfer(TransferReply::Declined(Declined {
                 id,
+                reason: DeclineReason::Unsupported,
+            }))
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_device_that_does_not_take_part_in_window_streaming_declines_every_request_of_it() {
+    let a = device("Laptop").await;
+    let (_raw, connection) = paired_raw(&a).await;
+
+    // It neither shares a window nor shows one, and it does not say that it does.
+    let hello = Request::Hello(Hello {
+        protocol_minor: 0,
+        device: common::info("Raw"),
+        capabilities: vec![],
+    });
+    let reply = exchange_raw(&connection, &framed(&hello)).await.unwrap();
+    let Response::Hello(hello) = baton_proto::frame::decode::<Response>(&reply).unwrap() else {
+        panic!("not a hello");
+    };
+    assert!(
+        !hello
+            .capabilities
+            .iter()
+            .any(|name| name.starts_with("stream.")),
+        "{:?}",
+        hello.capabilities
+    );
+
+    // A device that asks anyway, with requests that are valid, is answered, not cut off. The
+    // answer to a stop is a decline too, as it is for the requests of a transfer.
+    let session = SessionId::from_bytes([7; 16]);
+    for request in [
+        StreamRequest::Offer(baton_proto::stream::Offer {
+            session,
+            source: SourceKind::Window,
+            title: "Report.pdf".into(),
+            app: "Preview".into(),
+            width: 1440,
+            height: 900,
+            control: true,
+        }),
+        StreamRequest::Stop(Stop {
+            session,
+            reason: StopReason::Ended,
+        }),
+    ] {
+        let reply = exchange_raw(&connection, &framed(&Request::Stream(request)))
+            .await
+            .unwrap();
+        assert_eq!(
+            baton_proto::frame::decode::<Response>(&reply).unwrap(),
+            Response::Stream(StreamReply::Declined(baton_proto::stream::Declined {
+                session,
                 reason: DeclineReason::Unsupported,
             }))
         );

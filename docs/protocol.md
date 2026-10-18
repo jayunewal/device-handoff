@@ -80,6 +80,9 @@ Capabilities defined so far:
 | `handoff.link` | Accepts `Item::Link` |
 | `handoff.clipboard.text` | Accepts `Item::ClipboardText` |
 | `transfer.files` | Takes part in file transfers: accepts the requests and the lanes of section 8 |
+| `stream.share` | Can offer a window to a paired device, and takes part in the session that follows as the source (section 9) |
+| `stream.view` | Can show the window of a paired device: accepts the requests of section 9, and takes part in the session that follows as the viewer |
+| `stream.control` | Takes input from a viewer, in a session where the person at the source granted control (section 9) |
 
 A sender MUST NOT send an item whose capability the receiver did not advertise. A receiver that gets one anyway answers `Declined(Unsupported)`. A kind of item the receiver does not know at all cannot be decoded, and is answered with `Error { code: Malformed }`: the capability exchange is how new kinds are introduced, not an unannounced request.
 
@@ -274,6 +277,12 @@ Anything else, including a new variant of a non-extensible enum without a capabi
 | One file in a transfer | 2^50 bytes (1 PiB) |
 | Lanes of one transfer | 8 |
 | The picture of one frame of video, header excluded | 8 MiB |
+| Title of a shared window | 512 bytes |
+| Name of the application of a shared window | 256 bytes |
+| Each edge of a shared window | 16384 pixels |
+| Each edge of the largest picture a viewer says it can take | 3840 pixels |
+| The highest frame rate a viewer says it can take | 120 a second |
+| Codecs in an `Accepted` | 8 |
 | Files that `Done` names | the first 256 that failed, and a count of the rest |
 | Ticket text | 2048 characters |
 | Ticket relay hint | 255 bytes |
@@ -381,6 +390,18 @@ Their hash, BLAKE3 in its key derivation mode with the context `baton 2026-10-15
 | Start of a frame stream for session `a0 a1 … af` | `02a0a1a2a3a4a5a6a7a8a9aaabacadaeaf` |
 | Header of key frame 5 (depends on itself), chain 1, epoch 0, captured at 200000 µs, flags `05` (key frame, referenced), for that session | the start above, then `0000000000000005` `0000000000000005` `00000001` `00000000` `0000000000030d40` `05` |
 | Header of frame `0102030405060708`, depends on `0102030405060707`, chain `0a0b0c0d`, epoch `11121314`, captured at `2122232425262728` µs, flags `04` (referenced), for that session | the start above, then `0102030405060708` `0102030405060707` `0a0b0c0d` `11121314` `2122232425262728` `04` |
+
+The frame of an `Offer` for session `a0 a1 … af` that shows the window `Report.pdf` of `Preview`, 1440 by 900 pixels, with control granted. Without control the key `control` and its value are left out, which makes the frame nine bytes shorter, and it starts `00000067`:
+
+```
+00000070a16653747265616da1654f66666572a76773657373696f6e50a0a1a2a3a4a5a6a7a8a9aaabacadaeaf66736f757263656657696e646f77657469746c656a5265706f72742e7064666361707067507265766965776577696474681905a06668656967687419038467636f6e74726f6cf5
+```
+
+The frame of the `Accepted` that answers it, for a viewer that takes pictures up to 2732 by 2048 at 60 frames a second and decodes H.264:
+
+```
+0000005ea16653747265616da1684163636570746564a56773657373696f6e50a0a1a2a3a4a5a6a7a8a9aaabacadaeaf696d61785f7769647468190aac6a6d61785f686569676874190800676d61785f667073183c66636f64656373816448323634
+```
 
 ## 8. File transfer
 
@@ -521,7 +542,44 @@ This revision has no way to say which spans the receiver holds, so a transfer th
 
 ## 9. Window streaming
 
-A device can show one of its windows to a paired device. The **source** (a Mac) sends the picture of the window as a run of encoded **frames**, one unidirectional stream for each frame, and the **viewer** (an iPhone or an iPad) decodes them and shows the newest. A frame that is late is reset and replaced, and never sent again. [ADR 0009](adr/0009-window-streaming.md) records the design and why it is shaped this way. This section specifies the start of every unidirectional stream, how a receiver takes a stream, and the header of a frame of video. The offer, the control streams and the rules for a receiver that takes part are specified when the types that carry them are added. Until then no version takes part, and a receiver stops a stream of kind 2 or 3 with code 400, like a stream of any other kind it does not take (see Taking a stream).
+A device can show one of its windows to a paired device. The **source** (a Mac) sends the picture of the window as a run of encoded **frames**, one unidirectional stream for each frame, and the **viewer** (an iPhone or an iPad) decodes them and shows the newest. A frame that is late is reset and replaced, and never sent again. [ADR 0009](adr/0009-window-streaming.md) records the design and why it is shaped this way. This section specifies the offer that starts a session and the request that ends it, the start of every unidirectional stream, how a receiver takes a stream, and the header of a frame of video. The control streams and the rules for a receiver that takes part are specified when the types that carry them are added. Until then no version takes part. A device advertises none of `stream.share`, `stream.view` and `stream.control`, answers every valid request of this section with `Declined(Unsupported)`, the reply that this section defines for it, and stops a stream of kind 2 or 3 with code 400, like a stream of any other kind it does not take (see Taking a stream). A device of a version before this section cannot read the request and answers `Error { code: Malformed }` (section 3), as it does for a transfer, so a source that ignored the capability is still told, not cut off.
+
+### The offer and the end of a session
+
+A session starts at the source: the person chose a window, a paired device to show it to, and whether that device may also control the window. The source makes one request on a stream of its own, like any request of section 3, and the viewer answers once.
+
+```
+Request  {"Stream": {"Offer": {"session": h'<16 random bytes>', "source": "Window",
+                               "title": "Report.pdf", "app": "Preview",
+                               "width": 1440, "height": 900, "control": true}}}
+Response {"Stream": {"Accepted": {"session": h'<same id>', "max_width": 2732, "max_height": 2048,
+                                  "max_fps": 60, "codecs": ["H264"]}}}
+Response {"Stream": {"Declined": {"session": h'<same id>', "reason": "Refused"}}}
+```
+
+`session` is chosen at random by the source for each offer and never used for another one, so that a request or a stream that arrives late cannot be taken for part of a later session. `source` says what is shared. This version knows `Window`, one window of one application, and a kind it does not know is read as `Other`. `title` and `app` are the title of the window and the name of its application, and either can be empty. `width` and `height` are the size of the window in pixels, each from 1 to 16384; the picture that is sent can be smaller, because the source scales it down. `control` says that the person at the source granted the viewer control of the window, and it is left out when they did not. A viewer cannot ask for control and cannot turn it on later, so a session that began without it becomes a controlled one only by a new offer. A source that sets `control` MUST have advertised `stream.control`, and a viewer MUST NOT send input to one that did not.
+
+A source MUST NOT make an offer to a device that did not advertise `stream.view`. It has one session at a time in this version, so it makes no offer while one is waiting for an answer or running. A session lives and dies with its connection: if the connection closes the session is over, and the person offers again.
+
+The viewer decides once, and by default a person is asked: the offer is what they see. `title` and `app` are text that another device wrote, so they are shown under the rules for a device name (`sanitize_display_name`, section 3) and are never written to a log. An offer that is not valid on its own, because a title or a name is beyond a limit of section 6 or a size is 0 or beyond it, breaks a limit and is answered with `Error { code: Malformed }` like any other request that does. A viewer SHOULD check an offer in this order:
+
+1. whether it takes part at all, which is whether it advertised `stream.view`, and whether it knows the kind of source (`Unsupported`);
+2. whether the session id is one that it has seen before on this connection (`Invalid`);
+3. whether another offer is waiting for its person or a session is running, or the peer is sending too many items (`RateLimited`);
+4. its policy for the sending device (`Blocked`), and then the person, who may say no or may not answer in time (`Refused`).
+
+A session counts as one item against the receiver's limit on items, whatever it carries, and a peer can have one offer waiting for a person at a time, counted across its connections. The person has 2 minutes, as in pairing. The source waits for the answer for as long as the person may take and for the network, the time that section 6 gives for the offer of a transfer, instead of the 30 seconds of other requests.
+
+`Accepted` says what the viewer can take. `max_width` and `max_height` are the largest picture in pixels, each from 1 to 3840. `max_fps` is the highest frame rate it can decode and show, from 1 to 120. `codecs` are the codecs it can decode, from 1 to 8 of them. This version knows `H264`, and a codec that the reader does not know is read as `Other` and is never chosen. The source chooses what it sends within these.
+
+Nothing is repeated under a session id. A source that did not get the answer ends the offer with `Stop` and offers again under a new id. Either side ends a session, or withdraws an offer that has not been answered, with a request of its own:
+
+```
+Request  {"Stream": {"Stop": {"session": h'<same id>', "reason": "Ended"}}}
+Response {"Stream": {"Stopped": {"session": h'<same id>'}}}
+```
+
+`reason` is `Ended` (the person stopped sharing or viewing), `WindowClosed` (the window that was shared is gone), `Failed` (something went wrong that the person did not choose, such as the permission for capture being taken away) or `Other` from a later version. Stopping changes nothing the second time: a device that never had the session, or has forgotten it, answers `Stopped` all the same, because there is nothing left to stop. A `Stop` that arrives while the offer waits for the person withdraws it, and the request of the offer is answered `Declined(Refused)`.
 
 ### The start of a stream
 
@@ -571,4 +629,4 @@ Nothing in this section is part of the protocol yet. It is written down so that 
 
 - **Pull.** Besides pushing an item to a device, a device can ask a paired device what it has ready to continue (`ListActivities`) and fetch one of them (`Fetch`). That lets a device that was asleep or locked when something was sent catch up when it wakes, and lets a phone pick up what was on a laptop without the laptop pushing it. Both requests are guarded by a capability, so older peers never see them. A device answers them while it is locked with the items that were sent to the asking device, and with staged items only if the person has turned that on for the asking device, which is off by default. See [Locked devices](architecture.md#locked-devices).
 - **A short code that a person types**, for pairing devices that can neither show nor scan a QR code. As explained in section 4, that needs a password-authenticated key exchange and a new ALPN.
-- **Window streaming** (milestone 5). A Mac offers one window to a paired iPhone or iPad with a single request that the viewer answers once, and the picture then moves as one unidirectional stream for each frame of video, at a priority between requests and the lanes of a file transfer. Two small control streams stay open, one in each direction, and carry the viewer's reports and, when the person at the Mac granted control with the offer, its input. A frame that is late is reset and replaced, and never sent again. Every unidirectional stream begins with a byte that says what it is, which also tells a lane from a frame. It is guarded by the capabilities `stream.share`, `stream.view` and `stream.control`. [ADR 0009](adr/0009-window-streaming.md) records the design. Section 9 specifies the start of a stream and the header of a frame so far, and the rest of this becomes a specification there, with the messages, limits and rules for the receiver, when the types that carry them are added.
+- **Window streaming** (milestone 5). A Mac offers one window to a paired iPhone or iPad with a single request that the viewer answers once, and the picture then moves as one unidirectional stream for each frame of video, at a priority between requests and the lanes of a file transfer. Two small control streams stay open, one in each direction, and carry the viewer's reports and, when the person at the Mac granted control with the offer, its input. A frame that is late is reset and replaced, and never sent again. Every unidirectional stream begins with a byte that says what it is, which also tells a lane from a frame. It is guarded by the capabilities `stream.share`, `stream.view` and `stream.control`. [ADR 0009](adr/0009-window-streaming.md) records the design. Section 9 specifies the offer, the end of a session, the start of a stream and the header of a frame so far, and the rest of this becomes a specification there, with the messages, limits and rules for the receiver, when the types that carry them are added.

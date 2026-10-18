@@ -13,6 +13,8 @@
 //! - [`frame`] turns messages into length-prefixed frames and back.
 //! - [`transfer`] holds file transfer: its requests, the list of files, the lanes that carry
 //!   the data and the hash of a file.
+//! - [`stream`] holds the requests of window streaming: the offer of a window and the end of a
+//!   session.
 //! - [`limits`] holds the size limits every message is checked against.
 
 // This crate parses bytes from strangers. An index or a slice range that is out of bounds
@@ -27,11 +29,12 @@ pub mod id;
 pub mod limits;
 pub mod message;
 pub mod pair;
+pub mod stream;
 pub mod ticket;
 pub mod transfer;
 
 pub use device::{DeviceInfo, Platform};
-pub use id::{DeviceId, Fingerprint, ItemId, TransferId};
+pub use id::{DeviceId, Fingerprint, ItemId, SessionId, TransferId};
 
 /// Major version of the Baton wire protocol.
 ///
