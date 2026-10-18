@@ -119,10 +119,10 @@ const NO_LINKS: libc::c_int = libc::O_NOFOLLOW;
 /// filter that owns its reparse point, whatever the tag, and links are only some of the tags. A
 /// file that is online only (`OneDrive`), compressed with `compact /exe` or by `CompactOS`, or on a
 /// volume with Data Deduplication has a reparse point that is not a link, and `plain` lets it
-/// through, because `is_file` is true for every tag that is not a name surrogate. The review of the
-/// change that added this expects such a file to be read as the sparse stream that the file system
-/// keeps under the filter, zeros where the data should be, with the size and time of the list. This
-/// has not been tried. What is owed: refuse a name surrogate as now, open the same handle again
+/// through, because `is_file` is true for every tag that is not a name surrogate. Such a file is
+/// expected to be read as the sparse stream that the file system keeps under the filter, zeros
+/// where the data should be, with the size and time of the list. This has not been tried. What is
+/// owed: refuse a name surrogate as now, open the same handle again
 /// without the flag (`ReOpenFile`) for any other reparse point, which opens the file with its
 /// filter and looks no name up again, and two tests that run on Windows: one that reads a file
 /// made with `compact /c /exe:xpress4k` and gets its bytes, and one that a link is refused
