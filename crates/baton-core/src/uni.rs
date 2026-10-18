@@ -44,6 +44,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     gate::{code, remote_device},
+    transfer::incoming::Link,
     trust::{PairedDevice, TrustStore},
     util::{contained, lock},
 };
@@ -58,7 +59,7 @@ pub(crate) const START_LEN: usize = PREFIX_LEN;
     not(test),
     allow(
         dead_code,
-        reason = "taken by the receiver of files and by window streaming, which come next"
+        reason = "the kinds of window streaming are taken when it is added"
     )
 )]
 pub(crate) enum Kind {
@@ -105,10 +106,7 @@ impl Kind {
 /// A stream that was accepted and whose start was read.
 #[cfg_attr(
     not(test),
-    allow(
-        dead_code,
-        reason = "read by the receiver of files and by window streaming, which come next"
-    )
+    allow(dead_code, reason = "the kind is read when window streaming is added")
 )]
 pub(crate) struct Arrival {
     /// What the stream carries.
@@ -122,6 +120,10 @@ pub(crate) struct Arrival {
     /// The connection that the stream came on. A device may keep several to one peer, and some
     /// things are counted for each (the numbers of lanes, section 8).
     pub(crate) connection: Connection,
+    /// The same connection, as what is kept for each connection tells it apart: the attempt of a
+    /// transfer is on one. The session made it with the connection, and uses it for the requests
+    /// that come on the connection too.
+    pub(crate) link: Link,
     /// The stream, read to the end of its start.
     pub(crate) recv: RecvStream,
     /// The stream's place in the count of its kind. It is given back when this is dropped, so the
@@ -161,13 +163,6 @@ pub(crate) struct Sinks {
 impl Sinks {
     /// Has `sink` take the streams of `kind`, at most `limit` of them at once on a connection.
     /// A limit of zero takes none.
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "called when the receiver of files and window streaming are installed"
-        )
-    )]
     pub(crate) fn install(mut self, kind: Kind, limit: u32, sink: Arc<dyn Sink>) -> Self {
         if let Some(slot) = self.by_kind.get_mut(kind.index()) {
             *slot = (limit > 0).then_some(Installed { sink, limit });
@@ -259,19 +254,19 @@ impl Uni {
     }
 
     /// Takes the unidirectional streams of `connection`, which is a connection to a paired
-    /// device, until it ends. Nothing is started when no kind is taken: QUIC lets no stream
-    /// through then either.
-    pub(crate) fn spawn(self: &Arc<Self>, connection: Connection) {
+    /// device and has the link `link`, until it ends. Nothing is started when no kind is taken:
+    /// QUIC lets no stream through then either.
+    pub(crate) fn spawn(self: &Arc<Self>, connection: Connection, link: Link) {
         if self.quic_limit() == 0 {
             return;
         }
         let uni = Arc::clone(self);
         tokio::spawn(contained("unidirectional streams", async move {
-            uni.serve(connection).await;
+            uni.serve(connection, link).await;
         }));
     }
 
-    async fn serve(self: Arc<Self>, connection: Connection) {
+    async fn serve(self: Arc<Self>, connection: Connection, link: Link) {
         let peer = remote_device(&connection);
         let counts = Arc::new(Counts::default());
         // Every stream that is open and has not sent its start yet is here. QUIC bounds how many
@@ -286,6 +281,7 @@ impl Uni {
                     let Ok(recv) = accepted else { break };
                     starting.spawn(Arc::clone(&self).route(
                         connection.clone(),
+                        link,
                         peer,
                         Arc::clone(&counts),
                         recv,
@@ -306,6 +302,7 @@ impl Uni {
     async fn route(
         self: Arc<Self>,
         connection: Connection,
+        link: Link,
         peer: DeviceId,
         counts: Arc<Counts>,
         mut recv: RecvStream,
@@ -347,13 +344,15 @@ impl Uni {
             id,
             peer: paired,
             connection,
+            link,
             recv,
             slot,
         });
     }
 }
 
-fn stop(recv: &mut RecvStream, error: u32) {
+/// Tells the peer to stop sending on a stream, with the code that says why.
+pub(crate) fn stop(recv: &mut RecvStream, error: u32) {
     // A stream that has ended already needs no stopping.
     let _ = recv.stop(code(error));
 }
@@ -505,8 +504,8 @@ mod tests {
             EndpointAddr::new(to.endpoint.id()).with_ip_addr(to.endpoint.bound_sockets()[0]);
         let dialed = from.endpoint.connect(address, ALPN_SESSION).await.unwrap();
         let accepted = accepting.await.unwrap();
-        from.uni.spawn(dialed.clone());
-        to.uni.spawn(accepted.clone());
+        from.uni.spawn(dialed.clone(), Link(1));
+        to.uni.spawn(accepted.clone(), Link(2));
         (dialed, accepted)
     }
 

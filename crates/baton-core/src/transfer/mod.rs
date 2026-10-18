@@ -20,14 +20,23 @@
 //! - [`incoming`] is the table of the transfers that other devices offer: the order in which an
 //!   offer is checked, what is remembered of each decision, and the connection that each attempt is
 //!   on. It asks the application, through a handler, for what only the application can say.
+//! - `lanes` takes the lanes of those transfers from the task that takes the unidirectional
+//!   streams of a connection, and gives each to the attempt it belongs to.
 //!
-//! Nothing here is connected to the session yet, and `transfer.files` is not advertised.
+//! A node takes part as a receiver once the application gives it a
+//! [`TransferHandler`](incoming::TransferHandler) (see
+//! [`NodeBuilder::transfer_handler`](crate::NodeBuilder::transfer_handler)), and advertises
+//! `transfer.files` for as long as the handler has a folder to receive into. The side that sends is
+//! not built yet.
 
 pub mod destination;
 pub mod incoming;
+pub(crate) mod lanes;
 pub mod names;
 pub mod receive;
 pub mod staging;
 
+#[cfg(test)]
+mod session_tests;
 #[cfg(test)]
 mod testing;

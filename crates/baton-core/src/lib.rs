@@ -74,4 +74,5 @@ pub use pairing::{PairApprovalRequest, PairApprover, PairOffer};
 pub use paths::{DataDir, DirLock, HOME_ENV};
 pub use policy::{ClipboardPolicy, DevicePolicy, LinkPolicy};
 pub use session::{HandoffHandler, NoHandoff};
+pub use transfer::incoming::{Ending, TransferHandler, Verdict};
 pub use trust::{ContactHints, PairOutcome, PairedDevice, Provenance, TrustEvent, TrustStore};

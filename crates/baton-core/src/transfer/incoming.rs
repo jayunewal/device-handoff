@@ -111,7 +111,7 @@ const MEMORY: Duration = Duration::from_mins(10);
 const KEEP_IDLE: Duration = Duration::from_hours(1);
 
 /// The longest `Finish` waits for the outcome. The sender waits for two minutes and asks again.
-const FINISH_WAIT: Duration = Duration::from_mins(3);
+pub(crate) const FINISH_WAIT: Duration = Duration::from_mins(3);
 
 /// The longest an answer waits for the lanes of a transfer to be let go.
 const RELEASE_WAIT: Duration = Duration::from_secs(5);
@@ -417,6 +417,8 @@ struct Shared {
     /// Charges one item to the device, and says whether it may send another: a whole transfer counts
     /// as one item against the limit on items (section 8, Offer).
     charge: Box<dyn Fn(&DeviceId) -> bool + Send + Sync>,
+    /// The longest `Finish` waits for the outcome.
+    finish_wait: Duration,
     entries: Mutex<HashMap<Key, Arc<Entry>>>,
     /// Numbers the offers in the order they arrive.
     arrivals: AtomicU64,
@@ -454,10 +456,21 @@ impl Incoming {
         handler: Arc<dyn TransferHandler>,
         charge: impl Fn(&DeviceId) -> bool + Send + Sync + 'static,
     ) -> Self {
+        Self::with_finish_wait(handler, charge, FINISH_WAIT)
+    }
+
+    /// Like [`Incoming::new`], with a `Finish` that waits for the outcome for `finish_wait` at most,
+    /// where it waits for three minutes otherwise.
+    pub fn with_finish_wait(
+        handler: Arc<dyn TransferHandler>,
+        charge: impl Fn(&DeviceId) -> bool + Send + Sync + 'static,
+        finish_wait: Duration,
+    ) -> Self {
         Self {
             shared: Arc::new(Shared {
                 handler,
                 charge: Box::new(charge),
+                finish_wait,
                 entries: Mutex::new(HashMap::new()),
                 arrivals: AtomicU64::new(0),
                 closed: AtomicBool::new(false),
@@ -521,7 +534,7 @@ impl Incoming {
             }
             Stage::Finished(done) => done,
             Stage::Accepted(transfer) => {
-                match tokio::time::timeout(FINISH_WAIT, transfer.finish(finish)).await {
+                match tokio::time::timeout(self.shared.finish_wait, transfer.finish(finish)).await {
                     Ok(Ok(done)) => done,
                     Ok(Err(_)) => return Err(FinishError::NotFound),
                     Err(_) => return Err(FinishError::TimedOut),
