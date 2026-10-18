@@ -34,6 +34,10 @@
 //!   mark ([`baton_fs::mark_received`]), before it takes its time, because on Windows the mark is
 //!   a stream of the file and writing it changes the time. A volume that cannot hold a mark does
 //!   not fail a file whose bytes are right.
+//! - **Every folder is marked too on a Mac,** when it is made, since an app is a folder there and
+//!   Gatekeeper reads the mark of the app's folder, not of the files in it. An app can be inside
+//!   another folder, so it is every folder and not only the ones at the top. Windows marks files
+//!   only.
 //! - **A transfer that is discarded stays discarded.** A lane that is late makes no file, even if
 //!   the same transfer is staged again and a folder is there. One that has been put in place takes
 //!   no more spans either.
@@ -463,12 +467,17 @@ impl Staging {
         let Ok(path) = self.staged_path(usize::try_from(file).unwrap_or(usize::MAX)) else {
             return;
         };
+        self.mark_path(path);
+    }
+
+    /// Marks the file or folder at `path`, and logs a failure once for the transfer.
+    fn mark_path(&self, path: PathBuf) {
         if let Err(error) = baton_fs::mark_received(path)
             && !self.mark_failed.swap(true, Ordering::Relaxed)
         {
             tracing::warn!(
                 kind = ?error.kind(),
-                "could not mark a received file as one that came from elsewhere"
+                "could not mark something received as having come from elsewhere"
             );
         }
     }
@@ -498,7 +507,14 @@ impl Staging {
         // The list puts a folder before what is inside it, so each one's folder is there.
         for (index, info) in self.info.iter().enumerate() {
             if info.folder {
-                make_dir(&self.staged_path(index)?, false)?;
+                let path = self.staged_path(index)?;
+                make_dir(&path, false)?;
+                // An app is a folder on a Mac, and Gatekeeper reads the mark of that folder and
+                // not of the files in it, so every folder gets the mark (an app can be inside
+                // another folder). Windows marks files only.
+                if cfg!(target_os = "macos") {
+                    self.mark_path(path);
+                }
             }
         }
         Ok(())
@@ -1079,6 +1095,51 @@ mod tests {
             assert!(value.starts_with("0083;"), "{name}: {value}");
         }
         assert!(!attribute("b").status.success());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn every_folder_is_marked_as_a_download_so_that_an_app_in_one_is_checked() {
+        use std::process::Command;
+        let (_scratch, destination) = destination();
+        // An app at the top, and one inside another folder. The list is in the order of the format.
+        let staging = staged(
+            &destination,
+            &[
+                folder("Tools"),
+                folder("Tools/x.app"),
+                folder("Tools/x.app/Contents"),
+                file("Tools/x.app/Contents/x", 3),
+                folder("y.app"),
+            ],
+        );
+
+        let attribute = |name: &str| {
+            Command::new("xattr")
+                .args(["-p", "com.apple.quarantine"])
+                .arg(staging.dir.join(name))
+                .output()
+                .unwrap()
+        };
+        for name in ["Tools", "Tools/x.app", "Tools/x.app/Contents", "y.app"] {
+            let shown = attribute(name);
+            assert!(shown.status.success(), "{name}: {shown:?}");
+            let value = String::from_utf8(shown.stdout).unwrap();
+            assert!(value.starts_with("0083;"), "{name}: {value}");
+        }
+        // A file is marked once it is checked, and not before.
+        assert!(!attribute("Tools/x.app/Contents/x").status.success());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_gets_no_zone_stream() {
+        let (_scratch, destination) = destination();
+        let staging = staged(&destination, &[folder("d"), file("d/f", 3)]);
+
+        let mut stream = staging.dir.join("d").into_os_string();
+        stream.push(":Zone.Identifier");
+        assert!(fs::read_to_string(stream).is_err());
     }
 
     #[cfg(windows)]

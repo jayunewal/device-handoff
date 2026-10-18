@@ -6,8 +6,8 @@
 //!
 //! - [`rename_noreplace`]: move a file or a folder to a new name, and refuse if something
 //!   already has that name.
-//! - [`mark_received`]: mark a file as one that came from elsewhere, the way a web browser marks
-//!   what it downloaded.
+//! - [`mark_received`]: mark a file or a folder as one that came from elsewhere, the way a web
+//!   browser marks what it downloaded.
 //! - [`hide`]: hide a file or a folder from the person who looks in the folder it is in.
 //! - [`free_space`]: how many bytes can still be written to the volume that a folder is on.
 //!
@@ -123,10 +123,13 @@ pub fn rename_noreplace(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result<
 ///   Gatekeeper checks a program that has it and asks the person before it first runs, and other
 ///   programs read it as "downloaded". It makes no entry in the system's record of downloads.
 ///   Apple does not document what the flags mean; they are the ones a browser's downloads have.
+///   A folder can be marked too, and an app is a folder: Gatekeeper reads the mark of the app's
+///   folder and not of the files in it, so a caller that receives folders marks them as well.
 /// - **Windows** writes the stream `Zone.Identifier` of the file, with `ZoneId=3`, which is the
 ///   Internet zone. It is the "mark of the web" that `SmartScreen` and Office look for, and it
 ///   stays with the file when it is moved or copied to another NTFS volume. There is no address
-///   in it, since a file from another device has none.
+///   in it, since a file from another device has none. It is read for files, so a caller has no
+///   use for it on a folder.
 /// - **Other systems** have no such mark (iOS and iPadOS do not quarantine what an app writes, and
 ///   Linux and Android have nothing that other programs look at). The call checks that the file
 ///   is there, and does nothing else.

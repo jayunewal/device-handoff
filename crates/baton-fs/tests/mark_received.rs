@@ -96,6 +96,27 @@ fn the_mac_gets_the_quarantine_attribute_of_a_download() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn a_folder_gets_the_attribute_too_which_is_what_gatekeeper_reads_for_an_app() {
+    use std::process::Command;
+
+    let dir = tempfile::tempdir().unwrap();
+    let app = dir.path().join("x.app");
+    fs::create_dir(&app).unwrap();
+
+    mark_received(&app).unwrap();
+
+    let shown = Command::new("xattr")
+        .args(["-p", "com.apple.quarantine"])
+        .arg(&app)
+        .output()
+        .unwrap();
+    assert!(shown.status.success(), "{shown:?}");
+    let value = String::from_utf8(shown.stdout).unwrap();
+    assert!(value.starts_with("0083;"), "{value}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn a_mark_that_is_there_already_stays_as_it_is() {
     use std::process::Command;
 
