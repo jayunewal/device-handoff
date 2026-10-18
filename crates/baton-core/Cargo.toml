@@ -35,7 +35,7 @@ serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "time"] }
 tokio-util.workspace = true
 toml.workspace = true
 tracing.workspace = true
