@@ -318,7 +318,8 @@ jobs:
         run: flutter test integration_test -d "$SIMULATOR_UDID" -v
       - name: Show what the simulator logged about the app
         # An app that closes as it opens leaves the test waiting for a window that never
-        # comes. Its crash report and its log say why.
+        # comes. Its crash report and its log say why. So does the log of tccd, which asks the
+        # questions that the system puts in front of an app, such as the one about the camera.
         if: failure()
         run: |
           xcrun simctl list devices booted || true
@@ -327,6 +328,7 @@ jobs:
             if [ -f "$report" ]; then echo "== $report"; head -c 8000 "$report"; fi
           done
           xcrun simctl spawn "$SIMULATOR_UDID" log show --last 30m --style compact --predicate 'process == "Runner"' | tail -n 100 || true
+          xcrun simctl spawn "$SIMULATOR_UDID" log show --last 30m --style compact --predicate 'process == "tccd" AND eventMessage CONTAINS "io.github.jayunewal.baton"' | tail -n 40 || true
 
   build:
     name: Build (${{ matrix.name }})
