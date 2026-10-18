@@ -25,6 +25,13 @@ env:
   # information. The builds that Xcode starts get the same through a file: see "Set up Cargo".
   CARGO_PROFILE_DEV_DEBUG: "0"
 
+# Every job that builds Rust keeps its dependencies from one run to the next (Swatinem/rust-cache),
+# and only a run on main saves them. GitHub keeps 10 GB of caches for the whole repository and
+# drops the ones that were used longest ago when there are more. The twelve entries of a set are
+# 200 to 700 MB each, and the Flutter SDK is another 2 GB, so a second set does not fit: when
+# every pull request saved a set of its own, the copies pushed each other out, and the set that
+# every pull request starts from. A pull request that changes Cargo.lock builds the new
+# dependencies in each of its runs, and the run on main after the merge saves them.
 jobs:
   # Chooses which of the jobs below a change can affect, so that a change to the Mac app does not
   # also run the Rust workspace on three systems. A push to main and a run started by hand run
@@ -104,6 +111,8 @@ jobs:
           # For the last step only.
           targets: x86_64-pc-windows-msvc,aarch64-apple-darwin,aarch64-apple-ios,aarch64-linux-android
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       # What people build has only the default features, and code that is compiled in one set
       # and not the other can hide a warning, so lint that set as well.
@@ -129,6 +138,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --workspace --all-features --locked
 
   msrv:
@@ -145,6 +156,8 @@ jobs:
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # rust-toolchain.toml pins "stable" for local work and takes precedence over the
       # toolchain the action installs as the rustup default. Naming the toolchain on the
       # command line overrides the file, so this really builds with the MSRV.
@@ -162,6 +175,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo doc --workspace --no-deps --all-features --locked
 
   deny:
@@ -185,6 +200,8 @@ jobs:
           # The code generator formats what it writes with rustfmt.
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: subosito/flutter-action@v2
         with:
           # The version in apps/baton/README.md. The app moves to a newer Flutter on purpose,
@@ -248,6 +265,7 @@ jobs:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           # The folder that Cargokit builds in: apps/baton/rust_builder/README.md says why.
           workspaces: ". -> apps/baton/build/cargokit"
       - name: Set up Cargo
@@ -316,6 +334,7 @@ jobs:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           # The folder that Cargokit builds in: apps/baton/rust_builder/README.md says why.
           workspaces: ". -> apps/baton/build/cargokit"
       - name: Set up Cargo
@@ -419,6 +438,8 @@ jobs:
           # Both kinds of Mac, joined into one program below.
           targets: ${{ matrix.name == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build and test (macOS)
         if: matrix.name == 'macOS'
         run: |
