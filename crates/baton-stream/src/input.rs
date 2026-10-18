@@ -11,6 +11,28 @@
 //! are down and, optionally, the text that the key produced. A pointer event names the frame of
 //! video that the person was looking at, because the position is a position in that picture.
 //!
+//! The code of a key is a USB HID usage of the keyboard page (0x07), where `a` is 0x04. It is
+//! what the viewer has (Flutter's `PhysicalKeyboardKey.usbHidUsage`, which is reported to carry
+//! the page above the usage, and `UIKey.keyCode` on iPadOS) and it belongs to no operating
+//! system, so each source translates from one published table to its own codes. [`NO_KEY`] means
+//! no key: the on-screen keyboard and dictation give text without one. An event with it types its
+//! text, goes down once, and is neither held, repeated nor released.
+//!
+//! The text of a key is at most [`MAX_KEY_TEXT_UNITS`] UTF-16 units, which is as much as one call
+//! of the Mac's function that attaches text to an event is reported to keep, so that text which
+//! passes the check is text that one event carries. A viewer splits a longer text (dictation, a
+//! paste, a long sequence of emoji) at character boundaries across several events.
+//!
+//! A position is from 0 to 1 across and down the picture. A finger or a pointer that leaves the
+//! picture for the bars around it gives a number outside that range, which ends the session, so a
+//! viewer clamps the position to the picture while a button is down and sends nothing outside it
+//! otherwise. The gate moves a position at the edge of the picture to the edge of the window.
+//!
+//! This crate has no clock, so [`validate_batch`] does not count events in time. The gate keeps
+//! the rate, from the time that it is given with each event, and drops what is over
+//! [`MAX_EVENTS_PER_SECOND`]. The session goes on: a viewer that sends too fast has lost events,
+//! and has not broken the format.
+//!
 //! Typed text and key codes are secrets (a password is typed one key at a time), so `Debug`
 //! does not print them: a key event shows whether it went down and how long its text is.
 
@@ -21,11 +43,17 @@ use serde::{Deserialize, Serialize};
 /// Most events in one batch.
 pub const MAX_BATCH: usize = 64;
 
-/// Most events a viewer may send in a second.
+/// Most events a viewer may send in a second. The gate keeps the count and drops what is over.
 pub const MAX_EVENTS_PER_SECOND: usize = 240;
 
-/// Longest text that a key can carry, in bytes.
-pub const MAX_KEY_TEXT_BYTES: usize = 32;
+/// Longest text that a key can carry, in UTF-16 units.
+pub const MAX_KEY_TEXT_UNITS: usize = 20;
+
+/// The code of an event that is no key and only types its text.
+pub const NO_KEY: u16 = 0;
+
+/// Largest code of a key: the last usage of the keyboard page that is defined (right GUI).
+pub const MAX_KEY_CODE: u16 = 0xE7;
 
 /// Largest scroll step in either direction, in points.
 pub const MAX_SCROLL: f32 = 10_000.0;
@@ -43,11 +71,17 @@ pub enum InputError {
     #[error("a scroll step is larger than {MAX_SCROLL}")]
     ScrollTooLarge,
     /// The text of a key is too long.
-    #[error("the text of a key is longer than {MAX_KEY_TEXT_BYTES} bytes")]
+    #[error("the text of a key is longer than {MAX_KEY_TEXT_UNITS} UTF-16 units")]
     TextTooLong,
     /// The text of a key holds a character that cannot be typed.
     #[error("the text of a key has a control character")]
     TextHasControl,
+    /// The code of a key is not one of the keyboard page.
+    #[error("the code of a key is above {MAX_KEY_CODE:#x}")]
+    KeyCode,
+    /// An event with no key does something other than type its text once.
+    #[error("an event with no key must go down once and carry text")]
+    TextOnly,
     /// The modifiers have bits that are not defined.
     #[error("the modifiers have bits that are not defined")]
     Modifiers,
@@ -140,9 +174,10 @@ pub enum Event {
     Pointer {
         /// The frame of video that the person was looking at.
         frame: u64,
-        /// Where, from 0 to 1 across the picture of that frame.
+        /// Where, from 0 to 1 across the picture of that frame. A viewer clamps it to the picture
+        /// while a button is down and sends nothing outside the picture otherwise.
         x: f32,
-        /// Where, from 0 to 1 down the picture of that frame.
+        /// Where, from 0 to 1 down the picture of that frame. Clamped like `x`.
         y: f32,
         /// The modifiers that are down.
         modifiers: Modifiers,
@@ -151,7 +186,8 @@ pub enum Event {
     },
     /// A key.
     Key {
-        /// The virtual key code.
+        /// A USB HID usage of the keyboard page (0x07), where `a` is 0x04, or [`NO_KEY`] for an
+        /// event that only types its text.
         code: u16,
         /// Whether the key went down (true) or came up (false).
         down: bool,
@@ -159,7 +195,8 @@ pub enum Event {
         modifiers: Modifiers,
         /// Whether the system repeats a key that is held.
         repeat: bool,
-        /// The text that the key produced, which the Mac attaches to the event.
+        /// The text that the key produced, which the Mac attaches to the event: at most
+        /// [`MAX_KEY_TEXT_UNITS`] UTF-16 units. An event with no key has some.
         text: Option<String>,
     },
 }
@@ -223,13 +260,29 @@ impl Event {
                 Ok(())
             }
             Self::Key {
-                modifiers, text, ..
+                code,
+                down,
+                modifiers,
+                repeat,
+                text,
             } => {
                 check_modifiers(*modifiers)?;
+                if *code > MAX_KEY_CODE {
+                    return Err(InputError::KeyCode);
+                }
+                if *code == NO_KEY
+                    && (!*down || *repeat || text.as_deref().is_none_or(str::is_empty))
+                {
+                    return Err(InputError::TextOnly);
+                }
                 let Some(text) = text else {
                     return Ok(());
                 };
-                if text.len() > MAX_KEY_TEXT_BYTES {
+                // A unit of UTF-16 takes at most three bytes of UTF-8, so a text that is longer
+                // than that is refused without counting it.
+                if text.len() > MAX_KEY_TEXT_UNITS * 3
+                    || text.encode_utf16().count() > MAX_KEY_TEXT_UNITS
+                {
                     return Err(InputError::TextTooLong);
                 }
                 // A tab, a line feed and a carriage return are what the Tab and Return keys
@@ -274,11 +327,22 @@ mod tests {
         }
     }
 
+    /// The key `a`, with the text that it produced, if any.
     fn key(modifiers: Modifiers, text: Option<&str>) -> Event {
         Event::Key {
-            code: 0,
+            code: 4,
             down: true,
             modifiers,
+            repeat: false,
+            text: text.map(str::to_owned),
+        }
+    }
+
+    fn typed(text: Option<&str>) -> Event {
+        Event::Key {
+            code: NO_KEY,
+            down: true,
+            modifiers: Modifiers::NONE,
             repeat: false,
             text: text.map(str::to_owned),
         }
@@ -311,17 +375,34 @@ mod tests {
     fn the_text_of_a_key_is_bounded_and_cannot_hold_control_characters() {
         assert_eq!(key(Modifiers::NONE, None).validate(), Ok(()));
         assert_eq!(key(Modifiers::NONE, Some("é\n")).validate(), Ok(()));
-        let exactly = "a".repeat(MAX_KEY_TEXT_BYTES);
+        let exactly = "a".repeat(MAX_KEY_TEXT_UNITS);
         assert_eq!(key(Modifiers::NONE, Some(&exactly)).validate(), Ok(()));
-        let long = "a".repeat(MAX_KEY_TEXT_BYTES + 1);
+        let long = "a".repeat(MAX_KEY_TEXT_UNITS + 1);
         assert_eq!(
             key(Modifiers::NONE, Some(&long)).validate(),
             Err(InputError::TextTooLong)
         );
-        // The limit is in bytes, not in characters.
-        let wide = "é".repeat(MAX_KEY_TEXT_BYTES / 2 + 1);
+        // The limit is in UTF-16 units, which is what one event of the Mac carries: neither
+        // bytes nor characters. Japanese text of 12 units is 36 bytes, and each emoji is two
+        // units.
+        let japanese = "こんにちは、お元気ですか";
+        assert_eq!(japanese.encode_utf16().count(), 12);
+        assert_eq!(key(Modifiers::NONE, Some(japanese)).validate(), Ok(()));
+        let emoji = "😀".repeat(MAX_KEY_TEXT_UNITS / 2);
+        assert_eq!(key(Modifiers::NONE, Some(&emoji)).validate(), Ok(()));
+        let too_many = "😀".repeat(MAX_KEY_TEXT_UNITS / 2 + 1);
         assert_eq!(
-            key(Modifiers::NONE, Some(&wide)).validate(),
+            key(Modifiers::NONE, Some(&too_many)).validate(),
+            Err(InputError::TextTooLong)
+        );
+        // A long sequence of emoji: 35 bytes and 15 units.
+        let family = "👩🏽\u{200d}❤\u{fe0f}\u{200d}💋\u{200d}👨🏻";
+        assert_eq!((family.len(), family.encode_utf16().count()), (35, 15));
+        assert_eq!(key(Modifiers::NONE, Some(family)).validate(), Ok(()));
+        // A text that is far too long is refused without being counted.
+        let huge = "é".repeat(100_000);
+        assert_eq!(
+            key(Modifiers::NONE, Some(&huge)).validate(),
             Err(InputError::TextTooLong)
         );
         for control in ["a\u{1b}", "\0", "\u{7f}", "\u{85}"] {
@@ -331,6 +412,65 @@ mod tests {
                 "{control:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_code_of_a_key_is_a_usage_of_the_keyboard_page() {
+        let with_code = |code| Event::Key {
+            code,
+            down: true,
+            modifiers: Modifiers::NONE,
+            repeat: false,
+            text: None,
+        };
+        assert_eq!(with_code(4).validate(), Ok(()));
+        assert_eq!(with_code(MAX_KEY_CODE).validate(), Ok(()));
+        assert_eq!(
+            with_code(MAX_KEY_CODE + 1).validate(),
+            Err(InputError::KeyCode)
+        );
+        assert_eq!(with_code(u16::MAX).validate(), Err(InputError::KeyCode));
+        // The code is checked on a key that comes up too.
+        let up = Event::Key {
+            code: 0x1000,
+            down: false,
+            modifiers: Modifiers::NONE,
+            repeat: false,
+            text: None,
+        };
+        assert_eq!(up.validate(), Err(InputError::KeyCode));
+    }
+
+    #[test]
+    fn an_event_with_no_key_types_its_text_once() {
+        assert_eq!(typed(Some("héllo")).validate(), Ok(()));
+        assert_eq!(typed(Some("é\n")).validate(), Ok(()));
+        // It needs text, it goes down, and nothing repeats or releases it.
+        assert_eq!(typed(None).validate(), Err(InputError::TextOnly));
+        assert_eq!(typed(Some("")).validate(), Err(InputError::TextOnly));
+        let released = Event::Key {
+            code: NO_KEY,
+            down: false,
+            modifiers: Modifiers::NONE,
+            repeat: false,
+            text: Some("a".into()),
+        };
+        assert_eq!(released.validate(), Err(InputError::TextOnly));
+        let repeated = Event::Key {
+            code: NO_KEY,
+            down: true,
+            modifiers: Modifiers::NONE,
+            repeat: true,
+            text: Some("a".into()),
+        };
+        assert_eq!(repeated.validate(), Err(InputError::TextOnly));
+        // The limits of the text hold for it too.
+        let long = "a".repeat(MAX_KEY_TEXT_UNITS + 1);
+        assert_eq!(typed(Some(&long)).validate(), Err(InputError::TextTooLong));
+        assert_eq!(
+            typed(Some("a\u{1b}")).validate(),
+            Err(InputError::TextHasControl)
+        );
     }
 
     #[test]
@@ -392,6 +532,7 @@ mod tests {
             pointer(0.0, 1.0, PointerAction::Scroll { dx: -3.5, dy: 12.0 }),
             key(Modifiers::SHIFT | Modifiers::COMMAND, Some("A")),
             key(Modifiers::NONE, None),
+            typed(Some("héllo")),
         ];
         let mut bytes = Vec::new();
         ciborium::into_writer(&events, &mut bytes).expect("encode");

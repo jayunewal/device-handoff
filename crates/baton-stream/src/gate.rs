@@ -14,7 +14,8 @@
 //!   names no frame and has no point, so it skips those conditions.
 //! - **A key goes only to the shared window**: it needs the keyboard to be in that window, and
 //!   no window of the same application in front of it that overlaps it (a menu takes keys
-//!   without being the focused window).
+//!   without being the focused window). An event with no key ([`NO_KEY`]) types text once, in
+//!   the same way, and is never held and never released.
 //! - **A press that was delivered always gets its release**, whatever the other rules say, and
 //!   [`Gate::release_all`] releases everything when the source stops delivering. A drag that
 //!   leaves the window goes on at its edge, and positions are put on the screen relative to
@@ -37,7 +38,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::input::{Button, Event, MAX_EVENTS_PER_SECOND, Modifiers, PointerAction};
+use crate::input::{Button, Event, MAX_EVENTS_PER_SECOND, Modifiers, NO_KEY, PointerAction};
 
 /// How long a picture may have been out of date when an event names it.
 pub const MAX_STALE: Duration = Duration::from_millis(500);
@@ -300,7 +301,8 @@ pub enum Post {
     },
     /// A key event.
     Key {
-        /// The virtual key code.
+        /// The key, as in the event: a USB HID usage of the keyboard page. With [`NO_KEY`] the
+        /// event types its text, goes down and up, and no release follows.
         code: u16,
         /// Whether the key went down.
         down: bool,
@@ -685,6 +687,10 @@ impl Gate {
         }) {
             return Decision::Drop(Reason::AppWindowInFront);
         }
+        // An event with no key types its text and is never released, so nothing is held.
+        if key.code == NO_KEY {
+            return Decision::Post(key.post(true));
+        }
         if !self.keys.contains(&key.code) && self.keys.len() >= MAX_HELD_KEYS {
             return Decision::Drop(Reason::TooManyHeld);
         }
@@ -850,6 +856,17 @@ mod tests {
             modifiers: Modifiers::NONE,
             repeat: false,
             text: None,
+        }
+    }
+
+    /// An event with no key, that only types its text.
+    fn typed(text: &str) -> Event {
+        Event::Key {
+            code: NO_KEY,
+            down: true,
+            modifiers: Modifiers::NONE,
+            repeat: false,
+            text: Some(text.to_owned()),
         }
     }
 
@@ -1263,7 +1280,7 @@ mod tests {
         let mut gate = gate_with_frame();
         let context = context(10 * MS, &[]);
         let event = Event::Key {
-            code: 0,
+            code: 4,
             down: true,
             modifiers: Modifiers::SHIFT | Modifiers::COMMAND,
             repeat: true,
@@ -1272,7 +1289,7 @@ mod tests {
         assert_eq!(
             posted(gate.handle(&context, &event)),
             Post::Key {
-                code: 0,
+                code: 4,
                 down: true,
                 modifiers: Modifiers::SHIFT | Modifiers::COMMAND,
                 repeat: true,
@@ -1632,15 +1649,63 @@ mod tests {
     fn a_viewer_cannot_hold_down_more_keys_than_a_person_has_fingers() {
         let mut gate = gate_with_frame();
         let context = context(10 * MS, &[]);
-        for code in 0..u16::try_from(MAX_HELD_KEYS).unwrap() {
+        for code in 4..4 + u16::try_from(MAX_HELD_KEYS).unwrap() {
             posted(gate.handle(&context, &key(code, true)));
         }
         assert_eq!(
-            dropped(gate.handle(&context, &key(1000, true))),
+            dropped(gate.handle(&context, &key(100, true))),
             Reason::TooManyHeld
         );
         // A key that is held already is a repeat, not another key.
-        posted(gate.handle(&context, &key(3, true)));
+        posted(gate.handle(&context, &key(5, true)));
+        // And text that is typed holds nothing, so it is not a key too many.
+        posted(gate.handle(&context, &typed("hello")));
+    }
+
+    #[test]
+    fn an_event_with_no_key_types_its_text_under_the_rules_of_a_key_and_is_never_held() {
+        let mut gate = gate_with_frame();
+        let context = context(10 * MS, &[]);
+        assert_eq!(
+            posted(gate.handle(&context, &typed("héllo"))),
+            Post::Key {
+                code: NO_KEY,
+                down: true,
+                modifiers: Modifiers::NONE,
+                repeat: false,
+                text: Some("héllo".into()),
+            }
+        );
+        assert!(!gate.is_pressing());
+        assert_eq!(gate.release_all(window()), [] as [Post; 0]);
+        // More than a person has fingers, one after the other, because none is held.
+        for _ in 0..MAX_HELD_KEYS * 2 {
+            posted(gate.handle(&context, &typed("a")));
+        }
+        // It follows the rules of a key.
+        let mut elsewhere = context;
+        elsewhere.keyboard = Keyboard::Elsewhere;
+        assert_eq!(
+            dropped(gate.handle(&elsewhere, &typed("a"))),
+            Reason::NoKeyboard
+        );
+        let mut off = context;
+        off.control = false;
+        assert_eq!(dropped(gate.handle(&off, &typed("a"))), Reason::ControlOff);
+        let fronts = [same_app(Rect::new(150.0, 150.0, 100.0, 100.0))];
+        assert_eq!(
+            dropped(gate.handle(&super::tests::context(10 * MS, &fronts), &typed("a"))),
+            Reason::AppWindowInFront
+        );
+        // A release of no key is no release: the event cannot be made and the gate refuses it.
+        let release = Event::Key {
+            code: NO_KEY,
+            down: false,
+            modifiers: Modifiers::NONE,
+            repeat: false,
+            text: Some("a".into()),
+        };
+        assert_eq!(dropped(gate.handle(&context, &release)), Reason::Malformed);
     }
 
     #[test]
@@ -1781,7 +1846,7 @@ mod tests {
         let shape = prop_oneof![
             3 => (0.0_f32..=1.0, 0.0_f32..=1.0, action)
                 .prop_map(|(x, y, action)| Shape::Pointer(x, y, action)),
-            1 => (0_u16..40, any::<bool>()).prop_map(|(code, down)| Shape::Key(code, down)),
+            1 => (4_u16..44, any::<bool>()).prop_map(|(code, down)| Shape::Key(code, down)),
         ];
         let keyboard = prop_oneof![
             8 => Just(Keyboard::Shared),
