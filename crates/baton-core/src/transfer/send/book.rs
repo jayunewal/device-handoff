@@ -19,14 +19,6 @@
 //! The book does no I/O and has no clock, so what it promises can be tested with many threads and
 //! no files. The reading of files is in [`produce`](super::produce).
 
-#![cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "used by the lanes that write these frames, which come next"
-    )
-)]
-
 use std::{collections::HashMap, sync::Mutex};
 
 use baton_proto::transfer::{

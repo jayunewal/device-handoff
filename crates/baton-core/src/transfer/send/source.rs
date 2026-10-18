@@ -25,14 +25,6 @@
 //! Every failure comes out as the [`SkipReason`] that the file is skipped with, since a file that
 //! fails fails alone.
 
-#![cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "used by the lanes that write these frames, which come next"
-    )
-)]
-
 use std::{
     fs::{self, File},
     io,
@@ -96,6 +88,10 @@ fn why(error: &io::Error) -> SkipReason {
 
 /// Opens a file to read, without following a link and without waiting on a pipe, and refuses
 /// anything that is not a plain file.
+///
+/// `O_NONBLOCK` is for the open: it is what keeps the open of a pipe from waiting for a writer.
+/// It would stay set for every read after, so it is taken off once the file is known to be plain,
+/// and the reads wait for their data as the reads of any file do.
 #[cfg(unix)]
 fn open_plain(path: &Path) -> io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -104,7 +100,9 @@ fn open_plain(path: &Path) -> io::Result<File> {
         .read(true)
         .custom_flags(NO_LINKS | libc::O_NONBLOCK)
         .open(path)?;
-    plain(file)
+    let file = plain(file)?;
+    baton_fs::clear_nonblocking(&file)?;
+    Ok(file)
 }
 
 /// The flag that makes `open` refuse a link. On Apple systems it is the one that covers every name
@@ -116,6 +114,19 @@ const NO_LINKS: libc::c_int = libc::O_NOFOLLOW_ANY;
 const NO_LINKS: libc::c_int = libc::O_NOFOLLOW;
 
 /// Opens a file to read, without following a link, and refuses anything that is not a plain file.
+///
+/// **Owed before a Windows device sends.** `FILE_FLAG_OPEN_REPARSE_POINT` opens a file without the
+/// filter that owns its reparse point, whatever the tag, and links are only some of the tags. A
+/// file that is online only (`OneDrive`), compressed with `compact /exe` or by `CompactOS`, or on a
+/// volume with Data Deduplication has a reparse point that is not a link, and `plain` lets it
+/// through, because `is_file` is true for every tag that is not a name surrogate. The review of the
+/// change that added this expects such a file to be read as the sparse stream that the file system
+/// keeps under the filter, zeros where the data should be, with the size and time of the list. This
+/// has not been tried. What is owed: refuse a name surrogate as now, open the same handle again
+/// without the flag (`ReOpenFile`) for any other reparse point, which opens the file with its
+/// filter and looks no name up again, and two tests that run on Windows: one that reads a file
+/// made with `compact /c /exe:xpress4k` and gets its bytes, and one that a link is refused
+/// (`symlink_file`, skipped if the runner cannot make a link).
 #[cfg(windows)]
 fn open_plain(path: &Path) -> io::Result<File> {
     use std::os::windows::fs::OpenOptionsExt;
@@ -411,6 +422,29 @@ mod tests {
             Source::open(&path, &entry).unwrap_err(),
             SkipReason::Unreadable
         );
+    }
+
+    // The flag that keeps the open of a pipe from waiting must not outlast the open. A plain file
+    // ignores it on a local volume, so no read shows whether it is set, and only Linux tells the
+    // flags of an open file without `unsafe` code. `baton-fs` tests the call that takes it off on
+    // every Unix system.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_file_is_not_left_set_to_fail_a_read_that_would_wait() {
+        use std::os::fd::AsRawFd;
+
+        let (_scratch, dir) = scratch();
+        let path = written(&dir, "f", b"data");
+        let source = Source::open(&path, &entry_of(&path)).unwrap();
+
+        let info =
+            fs::read_to_string(format!("/proc/self/fdinfo/{}", source.file.as_raw_fd())).unwrap();
+        let flags = info
+            .lines()
+            .find_map(|line| line.strip_prefix("flags:"))
+            .map(|flags| i32::from_str_radix(flags.trim(), 8).unwrap())
+            .unwrap();
+        assert_eq!(flags & libc::O_NONBLOCK, 0, "{info}");
     }
 
     #[test]

@@ -19,14 +19,6 @@
 //!   that is full of frames the lane has written already, and a thread of the lane's can read the
 //!   next one while the lane writes the last.
 
-#![cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "used by the lanes that write these frames, which come next"
-    )
-)]
-
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, OnceLock},
@@ -647,6 +639,36 @@ mod tests {
                 .any(|frame| matches!(frame, Frame::End { file: 2, .. }))
         );
         assert_eq!(producer.totals().skipped_files, 1);
+    }
+
+    #[test]
+    fn a_read_that_fails_after_another_lane_failed_the_file_sends_no_skip() {
+        let dir = tempfile::tempdir().unwrap();
+        let selection = tree(dir.path(), &[("a-big", 3 * MIB), ("b-after", 10)]);
+        let producer = Producer::new(Arc::clone(&selection));
+
+        // Two lanes hold a span of the big file each ...
+        let Claim::Piece(mine) = producer.book.claim(CHUNK_PAYLOAD) else {
+            panic!("the first piece");
+        };
+        let Claim::Piece(theirs) = producer.book.claim(CHUNK_PAYLOAD) else {
+            panic!("the second piece");
+        };
+        assert_eq!(
+            (mine.file, mine.span, theirs.file, theirs.span),
+            (1, 0, 1, 1)
+        );
+        // ... the other one fails the file first, and its `Skip` is that lane's. The file is gone
+        // before this lane reads, so that this read fails too. A second `Skip` for a file in one
+        // attempt is a violation that the receiver ends the transfer for (section 8), so this
+        // lane sends none.
+        assert!(producer.book.fail(1));
+        fs::remove_file(dir.path().join("t/a-big")).unwrap();
+        let mut chunk = Chunk::new();
+        producer.read(mine, &mut chunk);
+
+        assert!(chunk.is_empty(), "{:?}", frames(&selection, chunk.bytes()));
+        assert_eq!(producer.skipped(), Vec::new());
     }
 
     #[cfg(unix)]
