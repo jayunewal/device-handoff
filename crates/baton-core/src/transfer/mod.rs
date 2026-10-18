@@ -6,7 +6,17 @@
 //! The engine is built in pieces, each with tests of its own and each used by the next:
 //!
 //! - [`names`] chooses what everything in a received transfer is called.
+//! - [`destination`] is the folder that transfers are received into, and what its volume does
+//!   with names.
+//! - [`staging`] is one transfer that is being received: the files written at their place from
+//!   spans that come in any order, and checked against their hashes. When the transfer has
+//!   ended it puts what was checked in the destination, without replacing anything.
 //!
 //! Nothing here is connected to the session yet, and `transfer.files` is not advertised.
 
+pub mod destination;
 pub mod names;
+pub mod staging;
+
+#[cfg(test)]
+mod testing;

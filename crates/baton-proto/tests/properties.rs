@@ -12,7 +12,8 @@ use std::{cmp::Ordering, collections::BTreeMap};
 use baton_proto::{
     DeviceId, DeviceInfo, ItemId, Platform, TransferId, frame,
     limits::{
-        MAX_FAILURES_LISTED, MAX_FILE_BYTES, MAX_LANES, MAX_LIST_FRAME_ENTRIES, MAX_PREVIEW_ITEMS,
+        MAX_CAPABILITY_BYTES, MAX_FAILURES_LISTED, MAX_FILE_BYTES, MAX_LANES,
+        MAX_LIST_FRAME_ENTRIES, MAX_PREVIEW_ITEMS,
     },
     message::{
         ClipboardText, DeclineReason, ErrorCode, ErrorReply, Handoff, HandoffReply, Hello, Item,
@@ -37,6 +38,15 @@ fn text(max_chars: usize) -> impl Strategy<Value = String> {
 
 fn non_empty_text(max_chars: usize) -> impl Strategy<Value = String> {
     proptest::collection::vec(any::<char>(), 1..=max_chars).prop_map(|c| c.into_iter().collect())
+}
+
+/// A capability name that a `Hello` accepts, whatever its characters are. A character takes up to
+/// 4 bytes, so this many of them can never come to more than `MAX_CAPABILITY_BYTES`. (Twenty
+/// characters could, which made these tests fail on about one run in a hundred.)
+const CAPABILITY_CHARS: usize = MAX_CAPABILITY_BYTES / 4;
+
+fn capability() -> impl Strategy<Value = String> {
+    non_empty_text(CAPABILITY_CHARS)
 }
 
 fn device_id() -> impl Strategy<Value = DeviceId> {
@@ -78,7 +88,7 @@ fn request() -> impl Strategy<Value = Request> {
         (
             any::<u16>(),
             device_info(),
-            proptest::collection::vec(non_empty_text(20), 0..8)
+            proptest::collection::vec(capability(), 0..8)
         )
             .prop_map(
                 |(protocol_minor, device, capabilities)| Request::Hello(Hello {
@@ -101,7 +111,7 @@ fn response() -> impl Strategy<Value = Response> {
         (
             any::<u16>(),
             device_info(),
-            proptest::collection::vec(non_empty_text(20), 0..8)
+            proptest::collection::vec(capability(), 0..8)
         )
             .prop_map(
                 |(protocol_minor, device, capabilities)| Response::Hello(Hello {
@@ -399,6 +409,24 @@ fn ticket() -> impl Strategy<Value = PairTicket> {
             relay,
             addrs,
         })
+}
+
+/// The widest capability that the generator makes, to the byte: the longest one a `Hello` allows.
+#[test]
+fn the_widest_capability_the_generator_makes_is_accepted() {
+    let name = "\u{1F600}".repeat(CAPABILITY_CHARS);
+    assert!(name.len() <= MAX_CAPABILITY_BYTES, "{}", name.len());
+    let request = Request::Hello(Hello {
+        protocol_minor: 0,
+        device: DeviceInfo {
+            name: "phone".into(),
+            platform: Platform::Ios,
+            app_version: "1".into(),
+        },
+        capabilities: vec![name],
+    });
+    let frame = frame::encode(&request).unwrap();
+    assert_eq!(frame::decode::<Request>(&frame).unwrap(), request);
 }
 
 proptest! {
