@@ -38,6 +38,10 @@ check "$all" LICENSE
 check "$all" .github/workflows/ci.yml
 check "$all" .github/scripts/changed-paths.sh
 check "$all" .github/scripts/changed-paths-test.sh
+check "$all" .github/scripts/hang-guard.py
+check "$all" .github/scripts/hang-guard-test.sh
+check "$all" .github/scripts/simulator-report.sh
+check "$all" .github/scripts/cargokit-cache-report.sh
 check "$all" tools/something.sh
 check "$all" new-file-at-the-top
 check "$all" apps/baton/ios/Runner/Info.plist apps/baton/macos/Runner/Info.plist crates/baton-core/src/lib.rs
@@ -49,6 +53,7 @@ check "app mac iphone" apps/baton/pubspec.yaml
 check "app mac iphone" apps/baton/pubspec.lock
 check "app mac iphone" apps/baton/integration_test/app_test.dart
 check "app mac iphone" apps/baton/rust_builder/cargokit/build_tool/pubspec.yaml
+check "app mac iphone" apps/baton/rust_builder/cargokit/build_pod.sh
 check "app mac iphone" apps/baton/flutter_rust_bridge.yaml
 check "app mac iphone" apps/baton/ios/Runner/Info.plist apps/baton/macos/Runner/Info.plist
 check "app mac iphone" apps/baton/lib/main.dart README.md

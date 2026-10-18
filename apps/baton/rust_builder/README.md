@@ -8,12 +8,19 @@ Android is added here when the Android app is.
 
 `cargokit/` is copied from [Cargokit](https://github.com/irondash/cargokit) by Matej Knopp
 (MIT, see `cargokit/LICENSE`) as the `flutter_rust_bridge` integration template ships it,
-with two small changes. To update it, run the code generator's `integrate` command in a scratch
-project, copy the folder and make the change again.
+with three small changes. To update it, run the code generator's `integrate` command in a scratch
+project, copy the folder and make the changes again.
 
-The changes are one line each, in `cargokit/build_tool/lib/src`: `getArtifactNames` in
+Two are one line each, in `cargokit/build_tool/lib/src`: `getArtifactNames` in
 `artifacts_provider.dart`, and `libName` in `build_pod.dart`. Both turn each `-` of the package
 name into `_`, because Cargo names the library of the package `baton-ffi` `libbaton_ffi.a`, and
 the template looks for, and writes, `libbaton-ffi.a`. The crate in the template is called
 `rust_lib_` followed by the name of the app, so it has no `-` to trip over.
-`test/cargokit_test.dart` fails if either line is lost.
+
+The third is in `cargokit/build_pod.sh`. The template has Cargo build in the temporary folder that
+Xcode makes for each configuration and platform, in DerivedData, under a name that depends on
+where the project is. The script now builds in `build/cargokit` of the app, for all of them
+(Cargo keeps the targets and the profiles apart in it). CI keeps that folder from one run to the
+next, so the dependencies of the library are built once and not in every job.
+
+`test/cargokit_test.dart` fails if any of the three lines is lost.
