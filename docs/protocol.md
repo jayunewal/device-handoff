@@ -40,6 +40,7 @@ A receiver reads the whole item before it interprets any of it. That is a requir
 | Session (`Request`, `Response`) | 2 MiB |
 | Pairing (`PairRequest`, `PairResponse`) | 4 KiB |
 | A piece of the list of files of a transfer (`ListChunk`, on a lane, section 8) | 2 MiB |
+| A message on a control stream of a streaming session (`SourceMessage`, `ViewerMessage`, section 9) | 64 KiB |
 
 CBOR encoding rules, as produced by the reference implementation:
 
@@ -280,9 +281,15 @@ Anything else, including a new variant of a non-extensible enum without a capabi
 | Title of a shared window | 512 bytes |
 | Name of the application of a shared window | 256 bytes |
 | Each edge of a shared window | 16384 pixels |
-| Each edge of the largest picture a viewer says it can take | 3840 pixels |
-| The highest frame rate a viewer says it can take | 120 a second |
+| Each edge of a picture, and of the largest picture that a viewer says it can take or wants | 3840 pixels |
+| The frame rate that a viewer says it can take or wants, and that a source sends | 1 to 120 a second |
 | Codecs in an `Accepted` | 8 |
+| A message on a control stream | 64 KiB |
+| Events in one batch of input | 64 |
+| Events of input that a viewer sends | 240 a second |
+| The text that a key produced | 20 UTF-16 units |
+| The code of a key | 0 to 0xE7 |
+| One step of a scroll | 10,000 points in either direction |
 | Files that `Done` names | the first 256 that failed, and a count of the rest |
 | Ticket text | 2048 characters |
 | Ticket relay hint | 255 bytes |
@@ -402,6 +409,20 @@ The frame of the `Accepted` that answers it, for a viewer that takes pictures up
 ```
 0000005ea16653747265616da1684163636570746564a56773657373696f6e50a0a1a2a3a4a5a6a7a8a9aaabacadaeaf696d61785f7769647468190aac6a6d61785f686569676874190800676d61785f667073183c66636f64656373816448323634
 ```
+
+The frames of the messages on the control streams. Each is a frame of section 2, a length of 4 bytes and one CBOR item, and a control stream carries them behind the 17 bytes of its start:
+
+| Message | Frame |
+| --- | --- |
+| `Config`: the source tells the viewer about a picture of 1440 by 900 pixels at up to 60 frames a second, epoch 1, H.264 | `00000034a166436f6e666967a56565706f63680165636f64656364483236346577696474681905a06668656967687419038463667073183c` |
+| `Pause`: the Mac is locked | `00000016a1655061757365a166726561736f6e664c6f636b6564` |
+| `Resume`: pictures go on (a unit variant is its name as text) | `0000000766526573756d65` |
+| `Notice`: 3 events were dropped because another window was in front of them | `0000001fa1664e6f74696365a266726561736f6e67436f766572656465636f756e7403` |
+| `Report`: frame 41 is shown, decoding takes 2.5 ms, 3 frames were dropped so far, the device is `Fair` | `00000034a1665265706f7274a46573686f776e1829696465636f64655f75731909c46764726f707065640367746865726d616c6446616972` |
+| `Report` before the first picture: the same without `shown`, which is left out, so the frame is 8 bytes shorter | `0000002ca1665265706f7274a3696465636f64655f75731909c46764726f707065640367746865726d616c6446616972` |
+| `Want`: the viewer can take pictures up to 2796 by 1290 pixels at up to 120 frames a second | `00000020a16457616e74a3657769647468190aec6668656967687419050a636670731878` |
+| `KeyFrame`: the newest frame that the viewer handed to its decoder is 5 | `00000012a1684b65794672616d65a165747269656405` |
+| `Input`: a left button went down at 0.5 across and 0.25 down the picture of frame 7, no modifier down | `00000048a165496e707574a1666576656e747381a167506f696e746572a5656672616d65076178f938006179f93400696d6f646966696572730066616374696f6ea164446f776e644c656674` |
 
 ## 8. File transfer
 
@@ -542,7 +563,7 @@ This revision has no way to say which spans the receiver holds, so a transfer th
 
 ## 9. Window streaming
 
-A device can show one of its windows to a paired device. The **source** (a Mac) sends the picture of the window as a run of encoded **frames**, one unidirectional stream for each frame, and the **viewer** (an iPhone or an iPad) decodes them and shows the newest. A frame that is late is reset and replaced, and never sent again. [ADR 0009](adr/0009-window-streaming.md) records the design and why it is shaped this way. This section specifies the offer that starts a session and the request that ends it, the start of every unidirectional stream, how a receiver takes a stream, and the header of a frame of video. The control streams and the rules for a receiver that takes part are specified when the types that carry them are added. Until then no version takes part. A device advertises none of `stream.share`, `stream.view` and `stream.control`, answers every valid request of this section with `Declined(Unsupported)`, the reply that this section defines for it, and stops a stream of kind 2 or 3 with code 400, like a stream of any other kind it does not take (see Taking a stream). A device of a version before this section cannot read the request and answers `Error { code: Malformed }` (section 3), as it does for a transfer, so a source that ignored the capability is still told, not cut off.
+A device can show one of its windows to a paired device. The **source** (a Mac) sends the picture of the window as a run of encoded **frames**, one unidirectional stream for each frame, and the **viewer** (an iPhone or an iPad) decodes them and shows the newest. A frame that is late is reset and replaced, and never sent again. [ADR 0009](adr/0009-window-streaming.md) records the design and why it is shaped this way. This section specifies the offer that starts a session and the request that ends it, the start of every unidirectional stream, how a receiver takes a stream, the header of a frame of video, and the messages on the control streams. The rules for a receiver that takes part are specified when the code that applies them is added. Until then no version takes part. A device advertises none of `stream.share`, `stream.view` and `stream.control`, answers every valid request of this section with `Declined(Unsupported)`, the reply that this section defines for it, and stops a stream of kind 2 or 3 with code 400, like a stream of any other kind it does not take (see Taking a stream). A device of a version before this section cannot read the request and answers `Error { code: Malformed }` (section 3), as it does for a transfer, so a source that ignored the capability is still told, not cut off.
 
 ### The offer and the end of a session
 
@@ -589,7 +610,7 @@ Every unidirectional stream of a session starts with 17 bytes:
 start = kind u8 | session [16]
 
 kind 2  a frame of video   start | rest of the frame header | the encoded picture
-kind 3  a control stream   start | messages (not specified yet)
+kind 3  a control stream   start | messages, each a length and one CBOR item (section 2)
 ```
 
 Numbers are big-endian. `kind` is the first byte of the stream, as in section 8, where kind 1 is a lane of a transfer and the 16 bytes after it are the id of the transfer. `session` is 16 random bytes chosen by the source when it makes the offer. Every stream of the session carries it, so that a receiver can recognise a stream of a session that is not running, which can arrive late, after the session has ended.
@@ -623,10 +644,63 @@ header = start (kind 2) | number u64 | depends on u64 | chain u32 | epoch u32 | 
 
 A receiver MUST treat a header as a violation (code 400) if it is cut short, if a bit of `flags` other than these three is set, if bits 0 and 1 are both set, if a key frame does not depend on itself, or if another frame depends on a frame whose number is not lower than its own. A receiver MUST also treat a frame as a violation (code 400) if it holds a frame with the same number, or has decoded one since the last key frame. A frame has a number of its own, and one that is reset is not sent again, so an honest source never repeats a number. A frame whose number the receiver neither holds nor has decoded since the last key frame is taken like any other, and is dropped as late if its number is below that of a frame that has been decoded. The picture is at most the limit of section 6, and a stream whose picture goes beyond it is stopped with code 413 and not read any further. What the picture holds is what the session agreed on: the first version carries H.264 in Annex B form, with the parameter sets in front of every key frame.
 
+### Control streams
+
+After the viewer has accepted, each side opens one unidirectional stream of kind 3 to the other and keeps it open for as long as the session runs. The source's stream carries what the source has to say about the picture, and the viewer's carries how the viewer is doing, what it needs and, when the person at the source granted control, what the person did. Behind the 17 bytes of its start a control stream is a run of messages, each framed as in section 2: a length and one CBOR item, at most 64 KiB. These are not requests. Nothing answers a message, and none counts against the limits on requests (the 16 streams and the 30 seconds of section 6).
+
+The source writes messages of one family and the viewer messages of another, and a message of the other family on a stream is a violation:
+
+```
+Source: {"Config": {"epoch": 1, "codec": "H264", "width": 1440, "height": 900, "fps": 60}}
+        {"Pause": {"reason": "Locked"}}
+        "Resume"
+        {"Notice": {"reason": "Covered", "count": 3}}
+Viewer: {"Report": {"shown": 41, "decode_us": 2500, "dropped": 3, "thermal": "Fair"}}
+        {"Want": {"width": 2796, "height": 1290, "fps": 120}}
+        {"KeyFrame": {"tried": 5}}
+        {"Input": {"events": [ ... ]}}
+```
+
+| Message | Meaning |
+| --- | --- |
+| `Config` | The picture that the source sends from now on. `epoch` is the epoch of the frames it describes (Frames, above). `codec` is `H264`, or `Other` for a codec that the reader does not know, which a viewer cannot decode. `width` and `height` are the size of the picture in pixels, each from 1 to 3840, and the picture shows the whole window scaled to that size. `fps` is the most frames a second that the source sends, from 1 to 120. A frame and a message travel on streams of their own and arrive in any order, so a frame of an epoch can arrive before the `Config` that describes it. A viewer decodes it all the same, because the parameter sets are in the key frame, and uses the `Config` for its layout. |
+| `Pause` | The source has stopped sending pictures. `reason` is `Locked` (the Mac is locked or its display is off), `Hidden` (the shared window is minimised or not on screen), or `Other` from a later version. The source drops input until `Resume`. |
+| `Resume` | The source sends pictures again. |
+| `Notice` | Events of the viewer were dropped, so that a tap that did nothing has a reason that the person can read. `reason` is the rule that dropped the most of them since the last notice, and `count` is how many it dropped, at least 1. A source SHOULD send at most one in a second. A notice holds no title and no text that was typed. |
+| `Report` | How the viewer is doing. `shown` is the number of the newest frame that was decoded and shown, and is left out before the first picture. `decode_us` is how long the viewer takes to decode a frame, in microseconds, as it smooths it. `dropped` is how many frames the viewer received and did not decode in this session, counted from the start so that a report that is not read changes nothing. `thermal` is the thermal state of the device: `Nominal`, `Fair`, `Serious`, `Critical`, or `Other` from a later version. |
+| `Want` | The largest picture and the highest frame rate that the viewer can take now, which change when the phone is turned. `width` and `height` are each from 1 to 3840 and `fps` is from 1 to 120. The source never sends more than the viewer said in `Accepted`, whatever this says. |
+| `KeyFrame` | The viewer cannot decode and needs a key frame. `tried` is the number of the newest frame that the viewer handed to its decoder, whether the decoder took it or not. A key frame numbered above it answers the request, and one at or below it does not. |
+| `Input` | What the person did on the viewer, in the order in which it happened: `events`, from 1 to 64 of them. Only in a session whose offer set `control`: a source drops the events of any other session and says `ControlOff`. |
+
+The reasons of a `Notice` are the rules that drop an event:
+
+| `reason` | The event was dropped because |
+| --- | --- |
+| `ControlOff` | control is off for the session |
+| `Paused` | the session is paused |
+| `Locked` | the Mac is locked, or its display is off |
+| `NotOnScreen` | the shared window is not on screen |
+| `TooFast` | the viewer sent more events in a second than it may: 240, and one batch of 64 more for events that a stall on the way bunched |
+| `FrameUnknown` | the frame that the event names is not one that the source kept |
+| `PictureOutOfDate` | the picture of that frame went out of date more than 500 ms before the event arrived |
+| `WindowResized` | the window has changed its size since that frame |
+| `OutsideWindow` | the point is outside the window |
+| `Covered` | another window is in front of the window at that point |
+| `NoKeyboard` | the shared window does not have the keyboard |
+| `AppWindowInFront` | a window of the same application lies in front of the shared window and overlaps it, or is an open menu |
+| `TooManyHeld` | more than 32 keys are held down |
+| `NotPressed` | the event releases a button or a key that this session did not press |
+| `Malformed` | the event holds a value that is not allowed |
+| `Other` | a rule of a later version |
+
+An event is one of two kinds. A pointer event is `{"Pointer": {"frame", "x", "y", "modifiers", "action"}}`: `frame` is the number of the frame of video that the person was looking at, `x` and `y` are finite numbers from 0 to 1 across and down the picture of that frame (a viewer whose finger or pointer leaves the picture clamps the position to the picture while a button is down, and sends nothing outside the picture otherwise, because a position outside it is a violation), `modifiers` is a byte with bit 0 for Shift, bit 1 for Control, bit 2 for Option, bit 3 for Command and bit 4 for Caps Lock (the other bits MUST be 0), and `action` is `"Move"`, `{"Down": button}`, `{"Up": button}` or `{"Scroll": {"dx", "dy"}}`. A `button` is `Left` (which is also a touch), `Right` or `Middle`. A scroll step is in points, finite, and at most 10,000 in either direction. A key event is `{"Key": {"code", "down", "modifiers", "repeat", "text"}}`: `code` is a USB HID usage of the keyboard page (0x07), where `a` is 0x04, from 0 to 0xE7: it is what the viewer has, and each source translates it to its own codes. Code 0 means no key, for text that was typed with no key, as the on-screen keyboard and dictation give it. An event with code 0 MUST go down, MUST NOT repeat and MUST carry text; the source types the text and no release follows. `down` says that the key went down and not up, `modifiers` are those that are down after the event, `repeat` says that the system repeats a key that is held, and `text`, which is left out when there is none, is the text that the key produced, at most 20 UTF-16 units (one call of the Mac's function that attaches text to an event is reported to keep no more), with no control character other than tab, line feed and carriage return. A viewer splits a longer text, from dictation, a paste or a long sequence of emoji, at character boundaries across several key events.
+
+A sender MUST NOT send a message that breaks a limit of this section, and a receiver MUST treat one as a violation (code 400), also a message that it cannot read and a message of a kind that it does not know. The rate of events is not a property of a message: the source counts events from the time they arrive, and drops those over 240 and one batch of 64 in a second (the viewer counts 240 by its own clock, and a stall on the way bunches events that it sent apart) with a `Notice` (`TooFast`) and without a violation, since a viewer that sends too fast has lost events and has not broken the format. A later version adds a kind of message only with a capability that the other side advertised (section 5), so a receiver has nothing to skip. A later version may add reasons and states as unit variants of the enums above, which an older reader takes as `Other`, and optional fields, which it ignores. Typed text and key codes are secrets, since a password is typed one key at a time: a device MUST NOT write them to a log, and the reference implementation prints a key event without its code and without its text.
+
 ## 10. Planned extensions
 
 Nothing in this section is part of the protocol yet. It is written down so that the rules above leave room for it, and so that the reasons are on record before any of it is built.
 
 - **Pull.** Besides pushing an item to a device, a device can ask a paired device what it has ready to continue (`ListActivities`) and fetch one of them (`Fetch`). That lets a device that was asleep or locked when something was sent catch up when it wakes, and lets a phone pick up what was on a laptop without the laptop pushing it. Both requests are guarded by a capability, so older peers never see them. A device answers them while it is locked with the items that were sent to the asking device, and with staged items only if the person has turned that on for the asking device, which is off by default. See [Locked devices](architecture.md#locked-devices).
 - **A short code that a person types**, for pairing devices that can neither show nor scan a QR code. As explained in section 4, that needs a password-authenticated key exchange and a new ALPN.
-- **Window streaming** (milestone 5). A Mac offers one window to a paired iPhone or iPad with a single request that the viewer answers once, and the picture then moves as one unidirectional stream for each frame of video, at a priority between requests and the lanes of a file transfer. Two small control streams stay open, one in each direction, and carry the viewer's reports and, when the person at the Mac granted control with the offer, its input. A frame that is late is reset and replaced, and never sent again. Every unidirectional stream begins with a byte that says what it is, which also tells a lane from a frame. It is guarded by the capabilities `stream.share`, `stream.view` and `stream.control`. [ADR 0009](adr/0009-window-streaming.md) records the design. Section 9 specifies the offer, the end of a session, the start of a stream and the header of a frame so far, and the rest of this becomes a specification there, with the messages, limits and rules for the receiver, when the types that carry them are added.
+- **Window streaming** (milestone 5). A Mac offers one window to a paired iPhone or iPad with a single request that the viewer answers once, and the picture then moves as one unidirectional stream for each frame of video, at a priority between requests and the lanes of a file transfer. Two small control streams stay open, one in each direction, and carry the viewer's reports and, when the person at the Mac granted control with the offer, its input. A frame that is late is reset and replaced, and never sent again. Every unidirectional stream begins with a byte that says what it is, which also tells a lane from a frame. It is guarded by the capabilities `stream.share`, `stream.view` and `stream.control`. [ADR 0009](adr/0009-window-streaming.md) records the design. Section 9 specifies the offer, the end of a session, the start of a stream, the header of a frame and the messages on the control streams so far, and the rest of this becomes a specification there, with the rules for the receiver, when the code that applies them is added.
