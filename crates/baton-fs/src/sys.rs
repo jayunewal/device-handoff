@@ -2,20 +2,22 @@
 
 //! The system calls: one short function for each platform.
 //!
-//! Each function hands a path (two, for a move) to one system call and turns the answer into an
-//! `io::Error`. That is all that `unsafe` is used for in this crate, and each block says why it
-//! is sound. The move is in this file. The other calls have a module each, next to it: `hide`,
-//! `mark` and `space`.
+//! Each function hands a path (two, for a move) or an open file to one system call and turns the
+//! answer into an `io::Error`. That is all that `unsafe` is used for in this crate, and each
+//! block says why it is sound. The move is in this file. The other calls have a module each, next
+//! to it: `blocking`, `hide`, `mark` and `space`.
 
 use std::{
     io::{Error, ErrorKind, Result},
     path::Path,
 };
 
+mod blocking;
 mod hide;
 mod mark;
 mod space;
 
+pub(crate) use blocking::clear_nonblocking;
 pub(crate) use hide::hide;
 pub(crate) use imp::rename_noreplace;
 pub(crate) use mark::mark_received;

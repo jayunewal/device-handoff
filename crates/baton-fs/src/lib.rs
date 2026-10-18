@@ -2,7 +2,7 @@
 
 //! File system calls that Baton needs and the standard library does not have. A file transfer
 //! (see `docs/adr/0008-file-transfer.md`) uses them to put what it received where the person
-//! looks.
+//! looks, and to read what it sends.
 //!
 //! - [`rename_noreplace`]: move a file or a folder to a new name, and refuse if something
 //!   already has that name.
@@ -10,6 +10,8 @@
 //!   browser marks what it downloaded.
 //! - [`hide`]: hide a file or a folder from the person who looks in the folder it is in.
 //! - [`free_space`]: how many bytes can still be written to the volume that a folder is on.
+//! - [`clear_nonblocking`]: make an open file wait for its data, if it was opened so that a read
+//!   would fail instead.
 //!
 //! # Moving without replacing
 //!
@@ -38,6 +40,9 @@
 //!   a name that starts with a dot already, and [`hide`] does nothing there.
 //! - **Free space.** Linux and Android: `statvfs`. macOS, iOS and iPadOS: `statfs`. Windows:
 //!   `GetDiskFreeSpaceExW`. Any other system: [`free_space`] reports [`ErrorKind::Unsupported`].
+//! - **Waiting.** Unix: `fcntl`, to read the flags of an open file and set them again without
+//!   `O_NONBLOCK`. A file that the standard library opens on any other system has no such flag,
+//!   and [`clear_nonblocking`] does nothing there.
 //!
 //! A volume that cannot move without replacing (some network and removable file systems) gives
 //! the same answer as a system that cannot. This crate does not work around that on purpose.
@@ -56,7 +61,7 @@
 //! folder) is a file system whose daemon may refuse the flag, which would make every move there
 //! [`ErrorKind::Unsupported`].
 
-use std::{io::Result, path::Path};
+use std::{fs::File, io::Result, path::Path};
 
 // Only the documentation names the kinds of error, so only the documentation needs the import.
 #[cfg(doc)]
@@ -236,4 +241,48 @@ pub fn hide(path: impl AsRef<Path>) -> Result<()> {
 /// ```
 pub fn free_space(dir: impl AsRef<Path>) -> Result<u64> {
     sys::free_space(dir.as_ref())
+}
+
+/// Makes reads of `file` wait for their data, if the file was opened so that they fail with
+/// [`ErrorKind::WouldBlock`] instead.
+///
+/// A program that opens a name it cannot trust opens it with `O_NONBLOCK`: if the name has become
+/// a pipe, the open does not wait for a program at the other end, which may never come. Once the
+/// program has looked at what it opened and found a plain file, the flag has done its work, but
+/// it stays set for every read that follows. Pipes and sockets are what it is for, and a plain
+/// file on a local volume ignores it. A volume that does not ignore it (this has not been
+/// measured, on a network share or on a file that a cloud service keeps off the disk until it is
+/// read) could fail a read with `WouldBlock` where it should wait. This call takes the flag off,
+/// so that the reads of a file that is known to be plain wait for the data on every volume.
+///
+/// - **Unix:** the flag is taken off the open file, and every other flag is kept: the access
+///   mode, `O_APPEND`, and the rest. A file that does not have the flag is left as it is. The
+///   flag belongs to the open file and not to the descriptor, so a copy of the descriptor (from
+///   [`File::try_clone`]) sees the change as well.
+/// - **Other systems:** a file that the standard library opens has no such flag. Nothing is
+///   done, and the answer is `Ok`.
+///
+/// # Errors
+///
+/// Whatever the system says if it cannot change the flags. A `File` is an open descriptor, so
+/// there is no cause for an error that a caller can give it.
+///
+/// # Examples
+///
+/// ```
+/// # use std::{fs::File, io::Read};
+/// # let dir = tempfile::tempdir()?;
+/// # let path = dir.path().join("photo.jpg");
+/// # std::fs::write(&path, "the bytes")?;
+/// let mut file = File::open(&path)?;
+/// baton_fs::clear_nonblocking(&file)?;
+///
+/// // Nothing else about the file changed.
+/// let mut read = String::new();
+/// file.read_to_string(&mut read)?;
+/// assert_eq!(read, "the bytes");
+/// # Ok::<(), std::io::Error>(())
+/// ```
+pub fn clear_nonblocking(file: &File) -> Result<()> {
+    sys::clear_nonblocking(file)
 }
