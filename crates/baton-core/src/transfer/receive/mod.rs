@@ -11,7 +11,7 @@
 //! The receiving side is built in pieces, each with tests of its own and each used by the next:
 //!
 //! - [`Violation`] is a rule that a sender broke, and the code that the lanes are stopped with.
-//! - [`Lanes`] checks the numbers of the lanes that are opened on one connection.
+//! - [`Lanes`] checks the numbers of the lanes that a transfer opens on one connection.
 //! - [`Ledger`] is the book of an attempt: what the sender said of every file, and how each file
 //!   came out. [`done`] makes the outcome of the transfer from it.
 //! - [`LaneReader`] reads the frames of one lane off a stream, with the checks that need only the
@@ -42,8 +42,9 @@ pub enum Violation {
     /// A lane with a number that is not below the number of lanes that were granted.
     #[error("a lane with a number beyond the lanes that were granted")]
     LaneBeyond,
-    /// A lane with a number that another lane of the same connection used already.
-    #[error("a lane number was used twice on one connection")]
+    /// A lane with a number that another lane of the same transfer on the same connection used
+    /// already.
+    #[error("a lane number was used twice by one transfer on one connection")]
     LaneRepeated,
     /// A frame with a tag that this version does not know, so the length of what follows it is not
     /// known either.
@@ -67,6 +68,13 @@ pub enum Violation {
     /// A piece of the list that is not a frame of section 2 holding a list chunk.
     #[error("a piece of the list that is not valid")]
     BadChunk,
+    /// A lane that the sender finished in the middle of a frame. A lane that is reset is not this:
+    /// it is the stream's error.
+    #[error("a lane was finished in the middle of a frame")]
+    Cut,
+    /// Lane 0 finished before the list was complete.
+    #[error("lane 0 was finished before the list was complete")]
+    ShortList,
     /// A list that is not the one that was offered.
     #[error("the list is not the one that was offered: {0}")]
     List(#[from] ListError),
@@ -102,6 +110,8 @@ mod tests {
             Violation::NotAFile,
             Violation::Twice,
             Violation::BadChunk,
+            Violation::Cut,
+            Violation::ShortList,
             Violation::List(ListError::HashMismatch),
             Violation::List(ListError::OutOfOrder { index: 3 }),
             Violation::List(ListError::Entry(LimitError::Empty { field: "x" })),
