@@ -218,7 +218,8 @@ Future<Session> _pairThroughTheScreens(WidgetTester tester) async {
     200,
     scrollable: list,
   );
-  await tester.enterText(find.byType(TextField), offer.ticket);
+  // The field grows to fit the code, so Connect is further down once the code is in.
+  await _type(tester, offer.ticket);
   await tester.scrollUntilVisible(find.text('Connect'), 200, scrollable: list);
   await _tap(tester, find.text('Connect'));
 
@@ -334,18 +335,36 @@ Future<void> _see(WidgetTester tester, Finder finder) =>
 /// Taps what [finder] finds, once a tap can reach it. A widget that is on the screen can still
 /// have something in front of it for a moment, a page that is sliding in for one, and a tap that
 /// does not reach it goes to whatever is in front while the test goes on as if it had arrived.
+///
+/// The tap follows the check in the same frame. A frame that comes between them can move the
+/// widget, and the layout that the check saw is no longer the one that the tap lands on.
 Future<void> _tap(WidgetTester tester, Finder finder) async {
-  await _until(
-    tester,
-    () => finder.hitTestable().evaluate().isNotEmpty,
-    'a place to tap on $finder',
-  );
-  await tester.tap(finder);
+  final target = finder.hitTestable();
+  final deadline = DateTime.now().add(const Duration(seconds: 60));
+  do {
+    if (DateTime.now().isAfter(deadline)) {
+      fail('Never saw a place to tap on $finder (${_describeScreen(tester)})');
+    }
+    await tester.pump(const Duration(milliseconds: 200));
+  } while (target.evaluate().isEmpty);
+  await tester.tap(target);
 }
 
-/// Types [text] into the text field on the screen, once the field is there. The title above it
-/// can be seen before the field is, and typing into a field that is not there throws.
+/// Types [text] into the text field on the screen, once the field is there, and then puts the
+/// keyboard away and lets the screen settle. The title above the field can be seen before the
+/// field is, and typing into a field that is not there throws.
+///
+/// What the text changes on the screen changes after the typing: a field grows to fit what is in
+/// it, a line of help appears under it, and on a phone the keyboard comes up and covers the
+/// bottom of the screen. A button below the field is not where it was, and a scroll that aims at
+/// it before the screen has settled aims at where it was. So look for the button after this.
 Future<void> _type(WidgetTester tester, String text) async {
   await _see(tester, find.byType(EditableText));
   await tester.enterText(find.byType(TextField), text);
+  FocusManager.instance.primaryFocus?.unfocus();
+  await _until(
+    tester,
+    () => tester.view.viewInsets.bottom == 0,
+    'the keyboard to go away',
+  );
 }
