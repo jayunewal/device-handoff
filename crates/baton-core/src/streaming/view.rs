@@ -14,9 +14,10 @@
 //! stream that the viewer opens then is never one for a session that is not there yet.
 //!
 //! A session ends when the source ends it, when it breaks a rule, when the connection ends, when
-//! the person ends it, and when the source does not open its control stream in time. It ends once:
-//! the decoder is told, the pictures that are held are dropped, and later streams of the session
-//! are stopped with code 499.
+//! the person ends it, when the source does not open its control stream in time, and when a message
+//! of the source stalls. It ends once: the decoder is told, the pictures that are held are dropped,
+//! and later streams of the session are stopped with code 499. The decoder is told nothing after
+//! that, whatever was on its way.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -134,6 +135,9 @@ pub(crate) enum End {
     Violation,
     /// The source did not open its control stream in time.
     NoControl,
+    /// The source began a message of its control stream and did not finish it in time. The time is
+    /// this device's choice and the source broke no rule, so the viewer finishes its own stream.
+    Stalled,
     /// Something here went wrong that should not be able to.
     Internal,
 }
@@ -163,6 +167,10 @@ struct State {
     /// holds, and no others.
     pictures: HashMap<u64, Picture>,
     decoder: Box<dyn Decoder>,
+    /// Whether the decoder was told that the session is over. It is set under the lock that every
+    /// call to the decoder is made with, and the decoder is called no more once it is set, whatever
+    /// was on its way: a frame that was whole as the session ended, a message of the source, a tick.
+    closed: bool,
 }
 
 /// Why a frame stream is not read any further.
@@ -276,6 +284,7 @@ impl View {
                 viewer: Viewer::new(params.rules),
                 pictures: HashMap::new(),
                 decoder,
+                closed: false,
             }),
             outbox,
             source_control: AtomicBool::new(false),
@@ -311,6 +320,7 @@ impl View {
             registry.forget(&self.session);
         }
         let mut state = lock(&self.state);
+        state.closed = true;
         state.pictures.clear();
         state.decoder.ended();
         drop(state);
@@ -376,6 +386,9 @@ impl View {
             return;
         }
         let state = lock(&self.state);
+        if state.closed {
+            return;
+        }
         let decoder = state.decoder.state();
         let report = Report {
             shown: state.viewer.shown(),
@@ -387,9 +400,13 @@ impl View {
         self.say(ViewerMessage::Report(report));
     }
 
-    /// Carries out what the rules of the viewer say, in order. Returns false if they named a
-    /// picture that the viewer does not hold, which they cannot do, and the session is to end.
+    /// Carries out what the rules of the viewer say, in order, unless the session is over. Returns
+    /// false if they named a picture that the viewer does not hold, which they cannot do, and the
+    /// session is to end.
     fn apply(&self, state: &mut State, actions: Vec<Action>) -> bool {
+        if state.closed {
+            return true;
+        }
         let mut queue: VecDeque<Action> = actions.into();
         let mut consistent = true;
         while let Some(action) = queue.pop_front() {
@@ -497,7 +514,7 @@ impl View {
                 next = read_next::<SourceMessage>(&mut recv, self.params.stall) => next,
             };
             match next {
-                Ok(Some(message)) => lock(&self.state).decoder.source(message),
+                Ok(Some(message)) => self.deliver(message),
                 // The source finished its stream between two messages, or reset it, or the
                 // connection went: it has ended the session.
                 Ok(None) | Err(ReadFailure::Transport(_)) => {
@@ -509,12 +526,21 @@ impl View {
                     self.end(End::Violation);
                     return;
                 }
+                // The time is this device's own choice, so the source broke no rule.
                 Err(ReadFailure::TimedOut) => {
                     stop(&mut recv, close_code::TIMEOUT);
-                    self.end(End::Violation);
+                    self.end(End::Stalled);
                     return;
                 }
             }
+        }
+    }
+
+    /// Gives a message of the source to the decoder, unless the session is over.
+    fn deliver(&self, message: SourceMessage) {
+        let mut state = lock(&self.state);
+        if !state.closed {
+            state.decoder.source(message);
         }
     }
 
@@ -604,6 +630,10 @@ impl View {
     /// The frame of a stream is whole.
     fn frame_arrived(&self, stream: StreamId, header: FrameHeader, bytes: Vec<u8>) {
         let mut state = lock(&self.state);
+        // A frame that was whole as the session ended is not kept, and not decoded.
+        if state.closed {
+            return;
+        }
         match state.viewer.arrived(self.now(), stream, header) {
             Ok(actions) => {
                 state
@@ -646,6 +676,7 @@ mod tests {
         Decode(u64),
         Show(u64),
         Source(SourceMessage),
+        State,
         Ended,
     }
 
@@ -718,6 +749,7 @@ mod tests {
         }
 
         fn state(&self) -> DecoderState {
+            lock(&self.log.0).push(Told::State);
             DecoderState {
                 decode_us: 1234,
                 thermal: Thermal::Fair,
@@ -842,11 +874,7 @@ mod tests {
 
         /// Waits until `condition` holds.
         async fn until(&self, what: &str, condition: impl Fn(&Self) -> bool) {
-            let deadline = Instant::now() + PATIENCE;
-            while !condition(self) {
-                assert!(Instant::now() < deadline, "timed out waiting for {what}");
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
+            wait_until(what, || condition(self)).await;
         }
 
         /// The viewer's control stream, as the source sees it. The source's must be open.
@@ -855,6 +883,15 @@ mod tests {
             assert!(matches!(arrival.kind, Kind::Control));
             assert_eq!(arrival.id, *session_id().as_bytes());
             arrival.recv
+        }
+    }
+
+    /// Waits until `condition` holds.
+    async fn wait_until(what: &str, condition: impl Fn() -> bool) {
+        let deadline = Instant::now() + PATIENCE;
+        while !condition() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
     }
 
@@ -884,6 +921,23 @@ mod tests {
         FrameHeader {
             depends_on: needs,
             ..delta(number)
+        }
+    }
+
+    /// How the viewer's control stream ends, as the source sees it: `Ok` if it was finished, and
+    /// the code if it was reset.
+    async fn ends(recv: &mut RecvStream) -> Result<(), u64> {
+        let mut buffer = [0_u8; 256];
+        loop {
+            let read = tokio::time::timeout(PATIENCE, recv.read(&mut buffer))
+                .await
+                .expect("the stream did not end");
+            match read {
+                Ok(Some(_)) => {}
+                Ok(None) => return Ok(()),
+                Err(iroh::endpoint::ReadError::Reset(code)) => return Err(code.into_inner()),
+                Err(other) => panic!("the stream failed in another way: {other:?}"),
+            }
         }
     }
 
@@ -1085,7 +1139,18 @@ mod tests {
 
     #[tokio::test]
     async fn a_stream_on_another_connection_of_the_same_device_is_not_taken() {
-        let rig = Rig::new().await;
+        // The source opens its control stream, so that the session goes on, and the time that a
+        // stream may deliver nothing is short, so that it would not go on waiting if the stream
+        // were taken.
+        let mut params = quick();
+        params.stall = Duration::from_millis(200);
+        let rig = Rig::with(params, 2).await;
+        let _source_control = rig.open_source_control().await;
+        rig.until(
+            "the source's control stream to be taken",
+            Rig::control_taken,
+        )
+        .await;
         // The same two devices, on a connection of their own.
         let (second, _) = connect(&rig.source, &rig.viewer).await;
         let mut send = second.open_uni().await.unwrap();
@@ -1148,6 +1213,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_picture_that_stops_arriving_is_stopped_with_408() {
+        let mut params = quick();
+        params.stall = Duration::from_millis(200);
+        let rig = Rig::with(params, 2).await;
+        // The whole header and a part of the picture, and then nothing.
+        let send = rig.partial_frame(&key(0), &[0; 100]).await;
+        assert_eq!(stopped_with(&send).await, 408);
+        rig.until("what was read to be forgotten", |rig| {
+            let stats = rig.handle.stats();
+            stats.streams == 0 && stats.held_bytes == 0
+        })
+        .await;
+        assert_eq!(rig.log.decoded(), Vec::<u64>::new());
+        // It was no fault of the session.
+        rig.frame(&key(1), &[0; 100]).await;
+        rig.until("frame 1 to be decoded", |rig| rig.log.decoded() == [1])
+            .await;
+    }
+
+    #[tokio::test]
     async fn a_decoder_that_refuses_a_frame_makes_the_viewer_ask_for_a_key_frame() {
         let mut rig = Rig::new().await;
         let mut source_control = rig.open_source_control().await;
@@ -1196,6 +1281,27 @@ mod tests {
             }
         }
         assert_eq!(asked, Some(KeyFrame { tried: 1 }));
+    }
+
+    #[tokio::test]
+    async fn frames_that_were_decoded_together_with_a_refused_one_are_not_decoded() {
+        let rig = Rig::new().await;
+        lock(&rig.refuse).insert(1);
+        // Frames 1 and 2 arrive before the key frame that they need, and wait for it.
+        rig.frame(&delta(1), &[0; 100]).await;
+        rig.frame(&delta(2), &[0; 100]).await;
+        rig.until("both frames to wait", |rig| {
+            rig.handle.stats().held_bytes == 200
+        })
+        .await;
+        // The key frame frees both at once. The decoder refuses frame 1, and frame 2 refers to it.
+        rig.frame(&key(0), &[0; 100]).await;
+        rig.until("what waited to be let go of", |rig| {
+            rig.handle.stats().held_bytes == 0
+        })
+        .await;
+        assert_eq!(rig.log.decoded(), [0]);
+        assert!(!rig.log.shown().contains(&2), "{:?}", rig.log.shown());
     }
 
     #[tokio::test]
@@ -1269,6 +1375,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_message_of_the_source_that_stalls_ends_the_session_and_blames_no_one() {
+        let mut params = quick();
+        params.stall = Duration::from_millis(200);
+        let mut rig = Rig::with(params, 2).await;
+        let mut source_control = rig.open_source_control().await;
+        let mut viewer_control = rig.viewer_control().await;
+        // The length of a message of 20 bytes, and then nothing.
+        source_control.write_all(&[0, 0, 0, 20]).await.unwrap();
+        assert_eq!(stopped_with(&source_control).await, 408);
+        assert_eq!(rig.ended().await, End::Stalled);
+        assert!(rig.log.has_ended());
+        // The source broke no rule, so the viewer's stream is finished and not reset.
+        assert_eq!(ends(&mut viewer_control).await, Ok(()));
+    }
+
+    #[tokio::test]
     async fn a_message_that_cannot_be_read_ends_the_session() {
         let rig = Rig::new().await;
         let mut send = rig.open_source_control().await;
@@ -1323,6 +1445,7 @@ mod tests {
         let mut rig = Rig::new().await;
         let _source_control = rig.open_source_control().await;
         let mut viewer_control = rig.viewer_control().await;
+        let streaming = Arc::clone(&rig.streaming);
         let Rig {
             handle,
             log,
@@ -1331,12 +1454,58 @@ mod tests {
         } = rig;
         drop(handle);
         // The stream ends where a message would have started, and is not reset.
-        while read_message_from(&mut viewer_control).await.is_some() {}
+        assert_eq!(ends(&mut viewer_control).await, Ok(()));
         assert!(log.has_ended());
+        // The session is forgotten, so that its id is free again.
+        wait_until("the session to be forgotten", || {
+            lock(&streaming.views).is_empty()
+        })
+        .await;
         // Frames that come after are for a session that is not running.
         let mut send = dialed.open_uni().await.unwrap();
         send.write_all(&key(0).encode().unwrap()).await.unwrap();
         assert_eq!(stopped_with(&send).await, 499);
+    }
+
+    #[tokio::test]
+    async fn a_frame_that_is_whole_after_the_end_is_not_decoded() {
+        let rig = Rig::new().await;
+        let view = &rig.handle.view;
+        let stream = lock(&view.state).viewer.stream_started().unwrap();
+        lock(&view.state).viewer.stream_read(stream, 10).unwrap();
+        rig.handle.end();
+        view.frame_arrived(stream, key(0), vec![0; 10]);
+        assert_eq!(rig.log.all(), [Told::Ended]);
+        // And the picture is not kept.
+        assert!(lock(&view.state).pictures.is_empty());
+    }
+
+    #[tokio::test]
+    async fn nothing_else_that_was_on_its_way_reaches_the_decoder_after_the_end() {
+        let rig = Rig::new().await;
+        let _source_control = rig.open_source_control().await;
+        rig.until(
+            "the source's control stream to be taken",
+            Rig::control_taken,
+        )
+        .await;
+        rig.frame(&key(0), &[0; 10]).await;
+        rig.until("frame 0 to be shown", |rig| rig.log.shown() == [0])
+            .await;
+        let view = &rig.handle.view;
+        rig.handle.end();
+        let told = rig.log.all();
+        assert_eq!(told.last(), Some(&Told::Ended));
+        // What a task that had passed its check of the session when it ended can still do.
+        view.deliver(SourceMessage::Resume);
+        view.report();
+        view.tick();
+        rig.handle.decode_failed();
+        // And whatever the rules of the viewer still ask for.
+        let mut state = lock(&view.state);
+        assert!(view.apply(&mut state, vec![Action::Show(0)]));
+        drop(state);
+        assert_eq!(rig.log.all(), told);
     }
 
     #[tokio::test]
@@ -1368,15 +1537,7 @@ mod tests {
         *bytes.last_mut().unwrap() = 0x80;
         let mut send = rig.dialed.open_uni().await.unwrap();
         send.write_all(&bytes).await.unwrap();
-        let reset = loop {
-            let mut buffer = [0_u8; 256];
-            match viewer_control.read(&mut buffer).await {
-                Err(iroh::endpoint::ReadError::Reset(code)) => break code.into_inner(),
-                Ok(Some(_)) => {}
-                other => panic!("expected the stream to be reset, got {other:?}"),
-            }
-        };
-        assert_eq!(reset, 400);
+        assert_eq!(ends(&mut viewer_control).await, Err(400));
     }
 
     #[tokio::test]
