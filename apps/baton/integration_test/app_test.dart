@@ -25,6 +25,14 @@ import 'package:integration_test/integration_test.dart';
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
+  // The system takes the screen away from the app for a moment now and then, and Baton lets go
+  // of the screen of the device then. If a check of it fails, the log shows when that was.
+  AppLifecycleListener(
+    onStateChange: (state) => debugPrint(
+      '${DateTime.now().toIso8601String()} the app is ${state.name}',
+    ),
+  );
+
   testWidgets('names the device, starts Baton and shows the device', (
     tester,
   ) async {
@@ -38,7 +46,11 @@ void main() {
     await tester.enterText(find.byType(TextField), 'Test device');
     await tester.tap(find.text('Continue'));
     await _see(tester, find.text('No other devices yet'));
-    await _expectScreenKeptOn(isFalse, 'when no one is pairing');
+    await _expectScreenKeptOn(
+      tester,
+      kept: false,
+      when: 'when no one is pairing',
+    );
 
     // The name went through the library and came back, and so did the fingerprint.
     expect(find.text('Test device'), findsOneWidget);
@@ -163,7 +175,11 @@ Future<Session> _pairThroughTheScreens(WidgetTester tester) async {
   await _see(tester, find.text('Scan or enter a code'));
   await tester.tap(find.text('Scan or enter a code'));
   await _see(tester, find.text('Or paste the code', skipOffstage: false));
-  await _expectScreenKeptOn(isTrue, 'while the screen waits for a code');
+  await _expectScreenKeptOn(
+    tester,
+    kept: true,
+    when: 'while the screen waits for a code',
+  );
 
   // The camera is on the screen and sees what it sees. Nothing here depends on it, except
   // that it must not take the app down. The screen can be longer than a small window, so
@@ -186,7 +202,11 @@ Future<Session> _pairThroughTheScreens(WidgetTester tester) async {
 
   expect(second.answerPairing(request.id, accept: true), isTrue);
   await _see(tester, find.text('Paired with Second device'));
-  await _expectScreenKeptOn(isFalse, 'once the pairing is over');
+  await _expectScreenKeptOn(
+    tester,
+    kept: false,
+    when: 'once the pairing is over',
+  );
   await tester.tap(find.text('Done'));
   await _see(tester, find.text('Second device'));
   expect(find.text('No other devices yet'), findsNothing);
@@ -203,12 +223,30 @@ Future<Session> _pairThroughTheScreens(WidgetTester tester) async {
 /// Checks what an iPhone or iPad itself says about whether its screen is being kept on: that
 /// Baton's request went through the code in the iOS app and reached the system. Elsewhere there
 /// is no such screen, and this checks nothing.
-Future<void> _expectScreenKeptOn(Matcher matcher, String when) async {
+///
+/// Baton lets go of the screen whenever its app is not the active one, such as while the system
+/// asks a question in front of it, and asks again once the app is back (see
+/// ios/Runner/AppDelegate.swift). So a screen that should be [kept] on is given a while to be,
+/// and a failure says what state the app was in. A screen that should not be kept on is checked
+/// at once, because nothing but Baton turns it on.
+Future<void> _expectScreenKeptOn(
+  WidgetTester tester, {
+  required bool kept,
+  required String when,
+}) async {
   if (defaultTargetPlatform != TargetPlatform.iOS) return;
+  const screen = PlatformScreenKeeper();
+  final deadline = DateTime.now().add(const Duration(seconds: 30));
+  var isOn = await screen.isKeptOn();
+  while (kept && !isOn && DateTime.now().isBefore(deadline)) {
+    await tester.pump(const Duration(milliseconds: 200));
+    isOn = await screen.isKeptOn();
+  }
+  final state = WidgetsBinding.instance.lifecycleState?.name ?? 'unknown';
   expect(
-    await const PlatformScreenKeeper().isKeptOn(),
-    matcher,
-    reason: 'the screen of the device $when',
+    isOn,
+    kept,
+    reason: 'the screen of the device $when (the state of the app: $state)',
   );
 }
 

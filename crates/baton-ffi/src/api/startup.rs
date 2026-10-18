@@ -2,6 +2,8 @@
 
 //! What runs once, when the Dart side starts the library, and the log it leaves.
 
+use std::sync::OnceLock;
+
 use flutter_rust_bridge::frb;
 use tracing_subscriber::{fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
@@ -13,21 +15,29 @@ use crate::logbuf;
 /// Baton's own messages at `info` level. Set `RUST_LOG` to see more. The same lines are also
 /// kept in memory for [`recent_log`], because on a phone, or in a Mac app opened from the
 /// Finder, nobody sees standard error. A panic is one of those lines too.
+///
+/// The setup is done once per process, so a second start (a hot restart of the app) changes
+/// nothing. A call that comes while another is still doing it waits for that one, so whichever
+/// call returns, a line logged or a panic raised after it is in the log.
 #[frb(init)]
 pub fn init_app() {
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        tracing_subscriber::EnvFilter::new("warn,baton_app=info,baton_core=info")
+    static SET_UP: OnceLock<()> = OnceLock::new();
+    SET_UP.get_or_init(|| {
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+            tracing_subscriber::EnvFilter::new("warn,baton_app=info,baton_core=info")
+        });
+        // Logging that something else has set up already is left as it is, and then so is the
+        // way panics are shown.
+        let first = tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt::layer().with_ansi(false).with_writer(std::io::stderr))
+            .with(fmt::layer().with_ansi(false).with_writer(logbuf::capture()))
+            .try_init()
+            .is_ok();
+        if first {
+            logbuf::log_panics();
+        }
     });
-    // A second start in the same process (a hot restart) finds it set up already.
-    let first = tracing_subscriber::registry()
-        .with(filter)
-        .with(fmt::layer().with_ansi(false).with_writer(std::io::stderr))
-        .with(fmt::layer().with_ansi(false).with_writer(logbuf::capture()))
-        .try_init()
-        .is_ok();
-    if first {
-        logbuf::log_panics();
-    }
 }
 
 /// The last lines Baton logged since the library loaded, oldest first, as they were printed.
