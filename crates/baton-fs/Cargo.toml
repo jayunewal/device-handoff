@@ -1,6 +1,6 @@
 [package]
 name = "baton-fs"
-description = "File system calls that Baton needs and the standard library does not have: moving a file or a folder without replacing, marking a received file, hiding a folder, and asking how much room a volume has."
+description = "File system calls that Baton needs and the standard library does not have: moving a file or a folder without replacing, marking a received file, hiding a folder, asking how much room a volume has, and making an open file wait for its data."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 authors.workspace = true
 publish.workspace = true
 
-# This crate holds the `unsafe` code of the three system calls it makes (see lib.rs). Unlike
+# This crate holds the `unsafe` code of the system calls it makes (see lib.rs). Unlike
 # most of the workspace it therefore cannot say `workspace = true`: the workspace forbids
 # `unsafe_code`, and a forbid cannot be lifted. Here it is denied everywhere except in the one
 # module that makes the calls (`sys`). Keep every other line equal to [workspace.lints] in the
