@@ -563,6 +563,37 @@ async fn an_outcome_that_was_lost_on_its_way_is_asked_for_and_nothing_is_sent_ag
 }
 
 #[tokio::test]
+async fn an_outcome_that_is_slow_to_come_is_waited_for_and_the_transfer_is_not_offered_again() {
+    let rig = Rig::new();
+    let content = bytes(1, 2_500_000);
+    rig.files.make("big", &content);
+    let selection = rig.files.select(&["big"]);
+    rig.wire
+        .on_call(|call| match (call.conn, call.kind, call.nth) {
+            (1, Kind::Finish, 0) => Fate::LoseReply,
+            // The question about the outcome is handled, and its answer does not arrive in time.
+            (2, Kind::Finish, 0) => Fate::Swallow,
+            _ => Fate::Pass,
+        });
+
+    let outcome = ended(rig.start(&selection, steady(), rig.id())).await;
+
+    let Outcome::Done(sent) = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert!(sent.done.failed.is_empty(), "{:?}", sent.done);
+    assert_eq!((sent.files, sent.bytes), (1, 2_500_000));
+    let log = rig.wire.log();
+    // The question was asked again on the second connection, and nothing was offered or sent.
+    assert_eq!(log.connections(), 2);
+    assert_eq!(log.requests(Kind::Offer), 1);
+    assert_eq!(log.requests(Kind::Finish), 3);
+    assert!(log.opened().iter().all(|(conn, _)| *conn == 1));
+    assert_eq!(rig.person.questions(), 1);
+    assert_eq!(tree(&rig.received), expect(&[("big", Some(&content))]));
+}
+
+#[tokio::test]
 async fn an_outcome_that_is_asked_for_again_on_the_same_connection_is_the_same_outcome() {
     let rig = Rig::new();
     let content = bytes(1, 100_000);
@@ -614,6 +645,39 @@ async fn a_receiver_that_forgot_the_transfer_is_asked_again_and_sent_everything_
     // It knew nothing of the transfer, so the person is asked again.
     assert_eq!(rig.person.questions(), 2);
     assert_eq!(tree(&rig.received), expect(&[("a", Some(&content))]));
+}
+
+#[tokio::test]
+async fn a_receiver_that_gives_the_transfer_up_after_the_lanes_ended_declines_the_repeat() {
+    let rig = Rig::new();
+    let id = rig.id();
+    rig.files.make("a", &bytes(1, 1000));
+    let selection = rig.files.select(&["a"]);
+    let wait = Gate::new();
+    let held_up = wait.clone();
+    rig.wire.on_call(move |call| {
+        if call.conn == 1 && call.kind == Kind::Finish && call.nth == 0 {
+            Fate::After(held_up.clone())
+        } else {
+            Fate::Pass
+        }
+    });
+    let sending = rig.start(&selection, steady(), id);
+    let log = rig.wire.log();
+    until("the finish", || log.requests(Kind::Finish) == 1).await;
+
+    // The person on the receiving device gives the transfer up after every lane has ended. A stop
+    // on a lane that has ended is not seen, so the sender learns of it from the answer to `Finish`,
+    // and then offers the transfer again.
+    rig.incoming.cancel(&sender_device().id, id).await;
+    wait.open();
+    let outcome = ended(sending).await;
+
+    assert_eq!(outcome, Outcome::Declined(DeclineReason::Refused));
+    assert_eq!(log.connections(), 2);
+    assert_eq!(log.requests(Kind::Offer), 2);
+    assert_eq!(rig.person.questions(), 1);
+    assert!(tree(&rig.received).is_empty());
 }
 
 // More than one transfer.

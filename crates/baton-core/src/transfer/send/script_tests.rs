@@ -17,7 +17,7 @@ use baton_proto::{
     close_code,
     id::TransferId,
     message::{DeclineReason, ErrorCode},
-    transfer::{FailReason, Failure},
+    transfer::{FailReason, Failure, Finish, TransferRequest},
 };
 
 use super::{
@@ -88,6 +88,18 @@ fn lanes_on(log: &Log, conn: usize) -> Vec<u8> {
     lanes
 }
 
+/// The `Finish` requests that were made, in order.
+fn finishes_of(script: &Script) -> Vec<Finish> {
+    script
+        .requests()
+        .into_iter()
+        .filter_map(|request| match request {
+            TransferRequest::Finish(finish) => Some(finish),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Waits until the engine is pausing before its next attempt.
 async fn until_waiting(sending: &Sending) {
     let mut progress = sending.progress();
@@ -139,6 +151,16 @@ async fn a_receiver_that_takes_everything_ends_the_transfer_with_its_outcome() {
         ]
     );
     assert_eq!(events.last(), Some(&Event::Request(1, Kind::Finish)));
+    // `Finish` says how many files were sent in full and how many bytes they hold, which is what the
+    // receiver compares with what it has.
+    assert_eq!(
+        finishes_of(&script),
+        [Finish {
+            id: me,
+            files: 3,
+            bytes: 30
+        }]
+    );
 }
 
 // The offer.
@@ -231,7 +253,10 @@ async fn an_answer_about_another_transfer_is_not_taken() {
             matches!(outcome, Outcome::Failed(Error::Protocol(_))),
             "{outcome:?}"
         );
-        assert_eq!(script.log().connections(), 1);
+        let log = script.log();
+        assert_eq!(log.connections(), 1);
+        // An accept for another transfer is no reason to open a lane.
+        assert_eq!(log.opened(), Vec::new());
     }
     for wrong in [done(other, Vec::new()), accepted(me, 4), cancelled(me)] {
         let script = Arc::new(Script::new(move |call| match call.kind {
@@ -753,6 +778,25 @@ async fn a_finish_that_the_receiver_does_not_understand_ends_the_transfer() {
     assert_eq!(script.log().connections(), 1);
 }
 
+#[tokio::test]
+async fn a_receiver_that_fails_inside_on_finish_is_asked_for_the_outcome_on_a_new_connection() {
+    let (_folder, selection) = sample(&[10]);
+    let me = id(1);
+    let script = answering_finish(me, move |conn, _| match conn {
+        1 => error(ErrorCode::Internal),
+        _ => done(me, Vec::new()),
+    });
+
+    let outcome = ended(start(&script, &selection, Policy::quick(), me)).await;
+
+    assert!(matches!(outcome, Outcome::Done(_)), "{outcome:?}");
+    let log = script.log();
+    assert_eq!(log.connections(), 2);
+    // The outcome is asked for, and nothing is offered or sent again.
+    assert_eq!(log.requests(Kind::Offer), 1);
+    assert_eq!(log.requests(Kind::Finish), 2);
+}
+
 // A finish whose answer was never heard.
 
 /// A receiver that takes everything, except that the answers to the `Finish` of each connection are
@@ -788,6 +832,49 @@ async fn the_outcome_of_a_finish_that_was_not_heard_is_asked_for_before_anything
     assert_eq!(log.requests(Kind::Offer), 1);
     assert_eq!(log.requests(Kind::Finish), 2);
     assert!(log.opened().iter().all(|(conn, _)| *conn == 1));
+    // The question on the second connection is the one that was lost, word for word.
+    let lost = Finish {
+        id: me,
+        files: 3,
+        bytes: 60,
+    };
+    assert_eq!(finishes_of(&script), [lost, lost]);
+}
+
+/// The waits of `Policy::quick()`, each different from the others, so that a request which is given
+/// the wait of another kind is seen.
+fn told_apart() -> Policy {
+    Policy {
+        offer_wait: Duration::from_millis(410),
+        finish_wait: Duration::from_millis(420),
+        cancel_wait: Duration::from_millis(230),
+        ..Policy::quick()
+    }
+}
+
+#[tokio::test]
+async fn every_request_is_given_the_wait_that_is_meant_for_it() {
+    let (_folder, selection) = sample(&[10]);
+    let me = id(1);
+    // The answer to the first `Finish` is lost, so that the second connection asks for the outcome.
+    let script = answering_finish(me, move |conn, _| match conn {
+        1 => Step::Lost,
+        _ => done(me, Vec::new()),
+    });
+    let policy = told_apart();
+
+    let outcome = ended(start(&script, &selection, policy.clone(), me)).await;
+
+    assert!(matches!(outcome, Outcome::Done(_)), "{outcome:?}");
+    assert_eq!(
+        script.deadlines(),
+        [
+            (Kind::Offer, policy.offer_wait),
+            (Kind::Finish, policy.finish_wait),
+            // The question about the outcome is a `Finish`, and it is waited for like one.
+            (Kind::Finish, policy.finish_wait),
+        ]
+    );
 }
 
 #[tokio::test]
@@ -796,9 +883,7 @@ async fn a_receiver_that_does_not_have_the_outcome_is_offered_the_transfer() {
     let me = id(1);
     for probe_gets in [
         error(ErrorCode::NotFound),
-        Step::Silent,
         declined(me, DeclineReason::Refused),
-        error(ErrorCode::Internal),
     ] {
         let script = answering_finish(me, move |conn, nth| match (conn, nth) {
             (1, _) => Step::Lost,
@@ -815,6 +900,135 @@ async fn a_receiver_that_does_not_have_the_outcome_is_offered_the_transfer() {
         assert_eq!(log.requests(Kind::Offer), 2);
         assert_eq!(lanes_on(&log, 2), [0, 1, 2, 3]);
         assert_eq!(log.requests(Kind::Finish), 3);
+    }
+}
+
+#[tokio::test]
+async fn a_receiver_that_does_not_know_the_transfer_is_not_asked_about_it_again() {
+    let (_folder, selection) = sample(&[10; 6]);
+    let me = id(1);
+    let script = Arc::new(
+        Script::new(move |call| match (call.conn, call.kind) {
+            (1, Kind::Finish) => Step::Lost,
+            (2, Kind::Finish) => error(ErrorCode::NotFound),
+            _ => normal(me, call),
+        })
+        // The second attempt ends in its first write, before it gets to `Finish`.
+        .lanes(|conn, lane| match (conn, lane) {
+            (2, 0) => Take::StopAfter {
+                after: 0,
+                code: close_code::TIMEOUT,
+            },
+            _ => Take::All,
+        }),
+    );
+
+    let outcome = ended(start(&script, &selection, Policy::quick(), me)).await;
+
+    assert!(matches!(outcome, Outcome::Done(_)), "{outcome:?}");
+    let log = script.log();
+    assert_eq!(log.connections(), 3);
+    // Every attempt offers. The third does not ask for the outcome first, because the second was
+    // told that the receiver has no such transfer: the `Finish` lost, the probe, and the last.
+    assert_eq!(log.requests(Kind::Offer), 3);
+    assert_eq!(lanes_on(&log, 3), [0, 1, 2, 3]);
+    assert_eq!(log.requests(Kind::Finish), 3);
+}
+
+#[tokio::test]
+async fn a_probe_that_gets_no_answer_is_made_again_and_the_transfer_is_not_offered() {
+    let (_folder, selection) = sample(&[10, 20, 30]);
+    let me = id(1);
+    // On the second connection the receiver is slow: it is still putting the files in place.
+    let script = answering_finish(me, move |conn, nth| match (conn, nth) {
+        (1, _) => Step::Lost,
+        (2, 0 | 1) => Step::Silent,
+        _ => done(me, Vec::new()),
+    });
+
+    let outcome = ended(start(&script, &selection, Policy::quick(), me)).await;
+
+    let Outcome::Done(sent) = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!((sent.files, sent.bytes), (3, 60));
+    let log = script.log();
+    assert_eq!(log.connections(), 2);
+    assert_eq!(log.requests(Kind::Offer), 1);
+    // The `Finish` that was lost, and the probe three times on the second connection.
+    assert_eq!(log.requests(Kind::Finish), 4);
+    assert!(log.opened().iter().all(|(conn, _)| *conn == 1));
+}
+
+#[tokio::test]
+async fn a_probe_that_is_never_answered_ends_the_transfer_with_no_outcome() {
+    let (_folder, selection) = sample(&[10]);
+    let me = id(1);
+    let policy = Policy::quick();
+    let script = answering_finish(me, move |conn, _| match conn {
+        1 => Step::Lost,
+        _ => Step::Silent,
+    });
+
+    let outcome = ended(start(&script, &selection, policy.clone(), me)).await;
+
+    // The receiver is asked as often as for any `Finish`, and the sender does not know if the files
+    // are in place.
+    assert_eq!(outcome, Outcome::Failed(Error::NoOutcome));
+    let log = script.log();
+    assert_eq!(log.connections(), 2);
+    assert_eq!(log.requests(Kind::Offer), 1);
+    assert_eq!(
+        log.requests(Kind::Finish),
+        1 + usize::try_from(policy.finish_tries).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn a_probe_that_the_receiver_could_not_process_is_made_again_on_the_next_connection() {
+    let (_folder, selection) = sample(&[10]);
+    let me = id(1);
+    for trouble in [ErrorCode::Internal, ErrorCode::Other] {
+        let script = answering_finish(me, move |conn, _| match conn {
+            1 => Step::Lost,
+            2 => error(trouble),
+            _ => done(me, Vec::new()),
+        });
+
+        let outcome = ended(start(&script, &selection, Policy::quick(), me)).await;
+
+        assert!(matches!(outcome, Outcome::Done(_)), "{outcome:?}");
+        let log = script.log();
+        assert_eq!(log.connections(), 3);
+        assert_eq!(log.requests(Kind::Offer), 1);
+        assert_eq!(log.requests(Kind::Finish), 3);
+    }
+}
+
+#[tokio::test]
+async fn a_probe_that_the_receiver_does_not_understand_ends_the_transfer() {
+    let (_folder, selection) = sample(&[10]);
+    let me = id(1);
+    let other = id(2);
+    for answer in [
+        error(ErrorCode::Malformed),
+        cancelled(me),
+        accepted(me, 4),
+        // The outcome of another transfer is not the outcome of this one.
+        done(other, Vec::new()),
+    ] {
+        let script = answering_finish(me, move |conn, _| match conn {
+            1 => Step::Lost,
+            _ => answer.clone(),
+        });
+
+        let outcome = ended(start(&script, &selection, Policy::quick(), me)).await;
+
+        assert!(
+            matches!(outcome, Outcome::Failed(Error::Protocol(_))),
+            "{outcome:?}"
+        );
+        assert_eq!(script.log().requests(Kind::Offer), 1);
     }
 }
 
@@ -903,8 +1117,9 @@ async fn cancelling_between_attempts_tells_a_receiver_that_may_know_the_transfer
     assert_eq!(log.connections(), 2);
     assert_eq!(log.requests(Kind::Cancel), 1);
 
-    // The connection cannot be made, and the receiver is not known to have been told.
-    for fails in [Connect::Lost, Connect::TimedOut] {
+    // The connection cannot be made, or does not come, and the receiver is not known to have been
+    // told. A cancel does not wait for a connection for longer than `Cancel` is waited for.
+    for fails in [Connect::Lost, Connect::TimedOut, Connect::Hang] {
         let script = Arc::new(
             Script::new(offers_go_unanswered)
                 .connects(move |n| if n == 1 { Connect::Ok } else { fails }),
@@ -928,6 +1143,7 @@ async fn cancelling_while_the_offer_waits_for_its_answer_tells_the_receiver() {
         (cancelled(me), true),
         (declined(me, DeclineReason::Unsupported), true),
         (cancelled(other), false),
+        (declined(other, DeclineReason::Unsupported), false),
         (error(ErrorCode::NotFound), false),
         (Step::Silent, false),
         (Step::Lost, false),
@@ -946,6 +1162,11 @@ async fn cancelling_while_the_offer_waits_for_its_answer_tells_the_receiver() {
         assert_eq!(outcome, Outcome::Cancelled { told });
         assert_eq!(log.requests(Kind::Cancel), 1);
         assert_eq!(log.opened(), Vec::new());
+        // `Cancel` is waited for as long as the policy says, and not as long as an offer is.
+        assert_eq!(
+            script.deadlines().last(),
+            Some(&(Kind::Cancel, Policy::quick().cancel_wait))
+        );
     }
 }
 
@@ -1064,7 +1285,9 @@ async fn attempts_that_get_nowhere_are_given_up_after_the_patience() {
     assert!((3..=8).contains(&tried), "{tried} attempts");
 }
 
-#[tokio::test]
+// The clock is paused: no file is read here, so nothing but the pauses takes time, and the time that
+// they take is exact.
+#[tokio::test(start_paused = true)]
 async fn the_pause_between_attempts_doubles_up_to_the_most() {
     let (_folder, selection) = sample(&[10]);
     let me = id(1);
@@ -1076,23 +1299,18 @@ async fn the_pause_between_attempts_doubles_up_to_the_most() {
         backoff_max: Duration::from_millis(160),
         ..Policy::quick()
     };
+    let begun = tokio::time::Instant::now();
 
     ended(start(&script, &selection, policy, me)).await;
 
-    let times: Vec<Instant> = script
-        .log()
-        .times()
-        .into_iter()
-        .filter(|(_, event)| matches!(event, Event::ConnectFailed(_)))
-        .map(|(time, _)| time)
-        .collect();
-    assert_eq!(times.len(), 5);
-    let gaps: Vec<Duration> = times.windows(2).map(|pair| pair[1] - pair[0]).collect();
-    // A pause is never shorter than it was asked to be, and a little slack is left for the clocks.
-    let slack = Duration::from_millis(5);
-    for (gap, least) in gaps.iter().zip([40, 80, 160, 160]) {
-        assert!(*gap + slack >= Duration::from_millis(least), "{gaps:?}");
-    }
+    assert_eq!(script.log().refused_connections(), 5);
+    // Four pauses between five attempts: 40, 80, and 160 twice. A pause that does not double, that
+    // has no most, or that begins at the most, takes a different time in all.
+    let taken = begun.elapsed();
+    assert!(
+        (Duration::from_millis(440)..Duration::from_millis(450)).contains(&taken),
+        "{taken:?}"
+    );
 }
 
 /// Lanes that take everything and are stopped with 408 when they are ended: every attempt gets the
