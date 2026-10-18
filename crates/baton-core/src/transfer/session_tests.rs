@@ -248,12 +248,21 @@ async fn stopped_with(send: &SendStream) -> u64 {
         .into_inner()
 }
 
-/// Whether the receiver read `send` to its end, which is what it does with a lane it takes.
-async fn read_to_the_end(send: &SendStream) -> bool {
-    within("the lane to be read", send.stopped())
+/// Checks that the receiver let go of `send` the way it may once a transfer is done: it read the lane
+/// to its end, or it stopped the lane with 499 because the transfer was over before it saw the end.
+/// The end of a lane can reach the receiver after `Finish` has, and QUIC tells the sender of a stop
+/// for as long as it has not had the end acknowledged. Another code would be a fault.
+async fn assert_let_go(send: &SendStream) {
+    let stopped = within("the lane to be let go", send.stopped())
         .await
-        .unwrap()
-        .is_none()
+        .unwrap();
+    if let Some(code) = stopped {
+        assert_eq!(
+            code.into_inner(),
+            u64::from(close_code::CANCELLED),
+            "the lane was stopped with a fault"
+        );
+    }
 }
 
 /// The sample up to the middle of `x`: the list and a span, and no end to the file.
@@ -328,7 +337,7 @@ async fn a_transfer_goes_from_the_offer_to_done_and_its_files_are_in_place() {
     };
 
     assert!(done.failed.is_empty() && done.more_failed == 0, "{done:?}");
-    assert!(read_to_the_end(&lane).await);
+    assert_let_go(&lane).await;
     assert_eq!(fs::read(rig.scratch.path().join("x")).unwrap(), sample_x());
     assert_eq!(fs::read(rig.scratch.path().join("zero")).unwrap(), b"");
     // The application is told once, with the same outcome.
@@ -601,9 +610,12 @@ async fn one_transfer(connection: &Connection, transfer: TransferId) {
         lanes.push(send);
     }
     let reply = finish(connection, transfer).await;
-    assert!(matches!(reply, TransferReply::Done(_)), "{reply:?}");
+    assert!(
+        matches!(&reply, TransferReply::Done(done) if done.failed.is_empty() && done.more_failed == 0),
+        "{reply:?}"
+    );
     for send in &lanes {
-        assert!(read_to_the_end(send).await, "a lane was stopped");
+        assert_let_go(send).await;
     }
 }
 
