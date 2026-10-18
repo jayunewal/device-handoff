@@ -6,11 +6,12 @@
 //! The engine is built in pieces, each with tests of its own and each used by the next:
 //!
 //! - [`names`] chooses what everything in a received transfer is called.
-//! - [`destination`] is the folder that transfers are received into, and what its volume does
-//!   with names.
+//! - [`destination`] is the folder that transfers are received into, what its volume does with
+//!   names, and whether a transfer fits on it.
 //! - [`staging`] is one transfer that is being received: the files written at their place from
-//!   spans that come in any order, and checked against their hashes. When the transfer has
-//!   ended it puts what was checked in the destination, without replacing anything.
+//!   spans that come in any order, and checked against their hashes and marked as received. When
+//!   the transfer has ended it puts what was checked in the destination, without replacing
+//!   anything.
 //! - [`receive`] applies the rules of the protocol for a receiver to what arrives on the lanes of
 //!   one transfer: which lanes may be opened, which frames may come when, and what became of every
 //!   file. It is built in pieces too, and so far has the bookkeeping and the reader of a lane.

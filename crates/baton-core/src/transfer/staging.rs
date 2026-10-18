@@ -30,6 +30,10 @@
 //!   fails that file and never gets the bytes of another.
 //! - **A file that fails is removed,** and can start again from its first span.
 //! - **A received file is never executable,** and takes the time that the sender gave it.
+//! - **A checked file is marked** as one that came from elsewhere, where the system has such a
+//!   mark ([`baton_fs::mark_received`]), before it takes its time, because on Windows the mark is
+//!   a stream of the file and writing it changes the time. A volume that cannot hold a mark does
+//!   not fail a file whose bytes are right.
 //! - **A transfer that is discarded stays discarded.** A lane that is late makes no file, even if
 //!   the same transfer is staged again and a folder is there. One that has been put in place takes
 //!   no more spans either.
@@ -45,7 +49,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, SystemTime},
 };
@@ -241,6 +245,8 @@ pub struct Staging {
     /// The number that the next start of a file takes. It counts the starts of every file of the
     /// transfer, so no two have the same one.
     starts: AtomicU64,
+    /// Whether a file of the transfer could not be marked, so that only the first is logged.
+    mark_failed: AtomicBool,
     state: Mutex<State>,
 }
 
@@ -291,6 +297,7 @@ impl Staging {
             max_open: MAX_OPEN_FILES,
             max_name_tries: MAX_NAME_TRIES,
             starts: AtomicU64::new(0),
+            mark_failed: AtomicBool::new(false),
             state: Mutex::new(State::default()),
         };
         if let Err(e) = staging.make_folders() {
@@ -367,11 +374,13 @@ impl Staging {
 
     /// Checks file number `file` against `expected`, the hash its sender gave with `End`.
     ///
-    /// The spans' values are merged and compared. If they match, the file takes the time the
-    /// list gave it and is closed, and stays in staging where [`Staging`] keeps it; it can be
-    /// checked again, and a resumed transfer does that for every file. If they do not, the file
-    /// is removed and [`StageError::Mismatch`] says so, and the file can start again. An empty
-    /// file is made here, since it has no span to make it.
+    /// The spans' values are merged and compared. If they match, the file is marked as one that
+    /// came from elsewhere (where the system has such a mark), takes the time the list gave it
+    /// and is closed, and stays in staging where [`Staging`] keeps it; it can be checked again,
+    /// and a resumed transfer does that for every file. A mark that cannot be put on, because the
+    /// volume cannot hold one, does not fail the file. If the values do not match, the file is
+    /// removed and [`StageError::Mismatch`] says so, and the file can start again. An empty file
+    /// is made here, since it has no span to make it.
     pub fn verify(&self, file: u32, expected: &blake3::Hash) -> Result<(), StageError> {
         let info = self.file_info(file)?;
         let mut state = lock(&self.state);
@@ -393,6 +402,9 @@ impl Staging {
             return Err(StageError::Mismatch);
         }
         if !slot.verified {
+            // The mark comes before the time. On Windows it is a stream of the file, and writing
+            // the stream changes the time that is set next.
+            self.mark(file);
             if let Some(time) = info.modified_ms.and_then(system_time) {
                 // A time that cannot be set (a volume that does not keep one, a date it cannot
                 // hold) does not fail a file whose bytes are right.
@@ -441,6 +453,24 @@ impl Staging {
             state.open.clear();
         }
         fs::remove_dir_all(&self.dir)
+    }
+
+    /// Marks file number `file`, which has passed its check, as one that came from elsewhere. A
+    /// volume that cannot hold a mark (FAT and exFAT, most network shares) does not fail a file
+    /// whose bytes are right: the first time that happens in a transfer it is logged, with the
+    /// kind of error and no name, and the files stay as they are.
+    fn mark(&self, file: u32) {
+        let Ok(path) = self.staged_path(usize::try_from(file).unwrap_or(usize::MAX)) else {
+            return;
+        };
+        if let Err(error) = baton_fs::mark_received(path)
+            && !self.mark_failed.swap(true, Ordering::Relaxed)
+        {
+            tracing::warn!(
+                kind = ?error.kind(),
+                "could not mark a received file as one that came from elsewhere"
+            );
+        }
     }
 
     /// A slot for a file that starts, with the number of this start.
@@ -1017,6 +1047,64 @@ mod tests {
                 .unwrap();
             assert_eq!(modified, wanted, "{name}");
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_checked_file_is_marked_as_a_download_and_one_that_is_not_checked_is_not() {
+        use std::process::Command;
+        let (_scratch, destination) = destination();
+        let content = bytes(12, 100);
+        // The list is in the order of the format: `a` is number 0, `b` is 1, `empty` is 2.
+        let staging = staged(
+            &destination,
+            &[file("a", 100), file("b", 100), file("empty", 0)],
+        );
+        staging.write_span(0, 0, &content).unwrap();
+        staging.verify(0, &blake3::hash(&content)).unwrap();
+        staging.write_span(1, 0, &content).unwrap();
+        staging.verify(2, &blake3::hash(b"")).unwrap();
+
+        let attribute = |name: &str| {
+            Command::new("xattr")
+                .args(["-p", "com.apple.quarantine"])
+                .arg(staging.dir.join(name))
+                .output()
+                .unwrap()
+        };
+        for name in ["a", "empty"] {
+            let shown = attribute(name);
+            assert!(shown.status.success(), "{name}: {shown:?}");
+            let value = String::from_utf8(shown.stdout).unwrap();
+            assert!(value.starts_with("0083;"), "{name}: {value}");
+        }
+        assert!(!attribute("b").status.success());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_checked_file_gets_the_zone_stream_and_still_has_the_time_the_list_gave_it() {
+        let (_scratch, destination) = destination();
+        let content = bytes(12, 100);
+        let staging = staged(&destination, &[file("a", 100), file("b", 100)]);
+        staging.write_span(0, 0, &content).unwrap();
+        staging.verify(0, &blake3::hash(&content)).unwrap();
+        staging.write_span(1, 0, &content).unwrap();
+
+        let stream = |name: &str| {
+            let mut path = staging.dir.join(name).into_os_string();
+            path.push(":Zone.Identifier");
+            fs::read_to_string(path)
+        };
+        assert_eq!(stream("a").unwrap(), "[ZoneTransfer]\r\nZoneId=3\r\n");
+        assert!(stream("b").is_err());
+        // Writing a stream counts as a write to the file, so the time has to be set after it.
+        let wanted = SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+        let modified = fs::metadata(staging.dir.join("a"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(modified, wanted);
     }
 
     #[test]

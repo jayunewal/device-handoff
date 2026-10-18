@@ -6,13 +6,19 @@
 //! to, so that each top-level item can be moved into place in one step that never replaces
 //! anything (ADR 0008). The staging folder is a hidden folder inside the destination, named for
 //! the device that owns it, and every transfer has a folder of its own in it, which is a
-//! [`Staging`]. A person never finds a transfer that is still being received.
+//! [`Staging`]. A person never finds a transfer that is still being received. A name that starts
+//! with a dot hides the folder on the Mac, the iPhone and the iPad, and on Linux and Android;
+//! Windows is told to hide it ([`baton_fs::hide`]).
 //!
 //! What a volume does with names decides how the names of a transfer are chosen (see
 //! [`names`](super::names)): whether two names that differ only in case are one name, and whether
 //! two names that differ only in the form of their Unicode text are. That depends on the volume
 //! and not only on the system, so [`Destination::open`] asks the volume, with two files that it
 //! makes in the staging folder and removes again.
+//!
+//! Whether a transfer fits is asked of the volume too: [`Destination::room_for`]. The figure that
+//! a system gives for free space is not the same kind of number everywhere, and the answer says
+//! when it is one to refuse a transfer on.
 //!
 //! What an earlier run left in the staging folder is removed when the destination is opened. A
 //! device runs one process at a time (it holds the lock of its data directory), so what is in its
@@ -57,6 +63,33 @@ pub enum OpenError {
     Io(#[from] io::Error),
 }
 
+/// What a volume can say, before anything is written, about whether a transfer fits on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Room {
+    /// The volume has the room.
+    Enough,
+    /// The volume has less than is needed, and the figure is one to refuse a transfer on: the
+    /// offer is declined with `NoSpace`.
+    Short,
+    /// The volume cannot be asked, or its figure is too small to refuse on. A Mac, an iPhone or an
+    /// iPad counts only the space that is free now, and not what the system clears when it needs
+    /// the room (caches, apps that can be offloaded, photos kept in iCloud), which can be many
+    /// gigabytes. A transfer that is refused on such a figure alone would be refused when it
+    /// would fit, so it is tried, and a write that finds the disk full ends it with `NoSpace`.
+    Unknown,
+}
+
+/// What `free` bytes say about a need of `needed` bytes. `understates` is true where the figure can
+/// be far below what can be written, and a figure that is too small is not a reason to refuse
+/// there.
+fn judge(free: Option<u64>, needed: u64, understates: bool) -> Room {
+    match free {
+        Some(free) if free >= needed => Room::Enough,
+        Some(_) if !understates => Room::Short,
+        _ => Room::Unknown,
+    }
+}
+
 /// Where received transfers are put, and what the volume under it is like.
 #[derive(Clone)]
 pub struct Destination {
@@ -77,8 +110,9 @@ impl fmt::Debug for Destination {
 impl Destination {
     /// Opens the folder `root`, which must exist, for the device `owner`.
     ///
-    /// It makes the staging folder of the device in it if there is none, removes what an earlier
-    /// run left there, and finds out what the volume does with names.
+    /// It makes the staging folder of the device in it if there is none, hides it where its name
+    /// does not (on Windows), removes what an earlier run left there, and finds out what the
+    /// volume does with names.
     ///
     /// Open each folder once per run, when the app starts or when the person picks another one,
     /// and clone the `Destination` for each transfer. Opening it again would remove the staging
@@ -100,6 +134,10 @@ impl Destination {
             }
             Err(e) => return Err(e.into()),
         }
+        // Hiding is for tidiness, and a volume that cannot hide a folder still receives.
+        if let Err(error) = baton_fs::hide(&staging_root) {
+            tracing::warn!(kind = ?error.kind(), "could not hide the staging folder");
+        }
         sweep(&staging_root);
         let (ignores_case, ignores_normalisation) = probe(&staging_root)?;
         Ok(Self {
@@ -117,6 +155,31 @@ impl Destination {
     /// What the volume does with names, which is what the names of a transfer are chosen by.
     pub fn rules(&self) -> Rules {
         self.rules
+    }
+
+    /// How many bytes the volume under the destination can still take, by the figure the system
+    /// gives ([`baton_fs::free_space`]).
+    ///
+    /// On a Mac, an iPhone or an iPad this counts only what is free now, and can be far below what
+    /// can be written. To decide whether a transfer fits, ask [`room_for`](Self::room_for), which
+    /// knows that.
+    pub fn free_space(&self) -> io::Result<u64> {
+        baton_fs::free_space(&self.root)
+    }
+
+    /// Whether `needed` bytes fit on the volume under the destination: what a transfer brings, and
+    /// whatever else the caller wants to keep free.
+    ///
+    /// A [`Room::Short`] is the answer to refuse a transfer on. Where the figure of the system can
+    /// be far too small (a Mac, an iPhone or an iPad), a figure that is below the need is
+    /// [`Room::Unknown`], and the transfer is tried: a write that finds the disk full ends it
+    /// with `NoSpace` ([`StageError::NoSpace`]). So is a volume that cannot say.
+    pub fn room_for(&self, needed: u64) -> Room {
+        judge(
+            self.free_space().ok(),
+            needed,
+            cfg!(target_vendor = "apple"),
+        )
     }
 
     /// Starts receiving the transfer `id`, whose list has been checked against its offer: makes
@@ -284,6 +347,64 @@ mod tests {
             Destination::open(scratch.path(), &owner(1)),
             Err(OpenError::NotAFolder)
         ));
+    }
+
+    #[test]
+    fn the_staging_folder_has_a_name_that_hides_it_where_a_dot_does() {
+        let scratch = tempfile::tempdir().unwrap();
+        let destination = Destination::open(scratch.path(), &owner(1)).unwrap();
+        let name = destination.staging_root.file_name().unwrap();
+        assert!(name.to_str().unwrap().starts_with('.'), "{name:?}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_staging_folder_is_hidden_on_windows_also_when_it_was_there_before() {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+        let scratch = tempfile::tempdir().unwrap();
+        for opened in ["new", "again"] {
+            let destination = Destination::open(scratch.path(), &owner(1)).unwrap();
+            let attributes = fs::metadata(&destination.staging_root)
+                .unwrap()
+                .file_attributes();
+            assert_ne!(
+                attributes & FILE_ATTRIBUTE_HIDDEN,
+                0,
+                "{opened}: {attributes:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_figure_that_is_too_small_is_a_reason_to_refuse_only_where_it_can_be_trusted() {
+        // Where the figure is trusted, below the need is short, and the need itself fits.
+        assert_eq!(judge(Some(10), 10, false), Room::Enough);
+        assert_eq!(judge(Some(11), 10, false), Room::Enough);
+        assert_eq!(judge(Some(9), 10, false), Room::Short);
+        // Where it can be far below what can be written, below the need is not known.
+        assert_eq!(judge(Some(10), 10, true), Room::Enough);
+        assert_eq!(judge(Some(9), 10, true), Room::Unknown);
+        // A volume that cannot say never gives a reason to refuse.
+        assert_eq!(judge(None, 10, false), Room::Unknown);
+        assert_eq!(judge(None, 10, true), Room::Unknown);
+    }
+
+    #[test]
+    fn the_volume_of_the_destination_is_asked_how_much_room_it_has() {
+        let scratch = tempfile::tempdir().unwrap();
+        let destination = Destination::open(scratch.path(), &owner(1)).unwrap();
+        // A volume has something to give, though not how much.
+        destination.free_space().unwrap();
+        assert_eq!(destination.room_for(0), Room::Enough);
+        // More than any volume has: refused where the figure is trusted, and tried on a Mac or an
+        // iPhone, which is what the CI job of the Mac checks.
+        let expected = if cfg!(target_vendor = "apple") {
+            Room::Unknown
+        } else {
+            Room::Short
+        };
+        assert_eq!(destination.room_for(u64::MAX), expected);
     }
 
     #[test]
