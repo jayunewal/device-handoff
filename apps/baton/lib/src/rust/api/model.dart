@@ -10,7 +10,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'model.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// A device that is paired with this one.
 class Device {
@@ -118,6 +118,40 @@ sealed class Event with _$Event {
     /// How it ended.
     required TransferEnd end,
   }) = Event_TransferEnded;
+
+  /// A paired device offers a window to show on this one. Show the request and answer it with
+  /// `Baton.answerWindow`.
+  const factory Event.windowRequested({
+    /// The request.
+    required WindowRequest request,
+  }) = Event_WindowRequested;
+
+  /// A window request no longer needs an answer: the other device withdrew it, the time ran
+  /// out, the connection ended, or the person answered. Take the question off the screen.
+  const factory Event.windowRequestEnded({
+    /// The `WindowRequest.id` that ended.
+    required PlatformInt64 id,
+
+    /// One sentence to show when the person said yes and this device could not show the
+    /// window after all; `null` otherwise.
+    String? failure,
+  }) = Event_WindowRequestEnded;
+
+  /// A window is shown on this device or shared from it. When it is shown here,
+  /// `WindowSession.screen` names the screen to draw it with.
+  const factory Event.windowStarted({
+    /// The session.
+    required WindowSession session,
+  }) = Event_WindowStarted;
+
+  /// A window that was shown or shared is over.
+  const factory Event.windowEnded({
+    /// The `WindowSession.id` that ended.
+    required PlatformInt64 id,
+
+    /// How.
+    required WindowEnd end,
+  }) = Event_WindowEnded;
 
   /// Events were missed because they came faster than they were read. Read the devices and
   /// the inbox again.
@@ -749,4 +783,231 @@ sealed class TransferResult with _$TransferResult {
   /// The transfer was given up, and nothing of it is kept: the sender stopped, the device
   /// was unpaired, or the sender did not come back.
   const factory TransferResult.dropped() = TransferResult_Dropped;
+}
+
+/// What this device does with windows, so that a screen offers only what is possible.
+class WindowAbilities {
+  /// This device shows the windows that paired devices offer.
+  final bool canShow;
+
+  /// This device shares its windows with paired devices.
+  final bool canShare;
+
+  /// The person can let another device control a window that this one shares.
+  final bool canControl;
+
+  const WindowAbilities({
+    required this.canShow,
+    required this.canShare,
+    required this.canControl,
+  });
+
+  @override
+  int get hashCode =>
+      canShow.hashCode ^ canShare.hashCode ^ canControl.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WindowAbilities &&
+          runtimeType == other.runtimeType &&
+          canShow == other.canShow &&
+          canShare == other.canShare &&
+          canControl == other.canControl;
+}
+
+@freezed
+sealed class WindowEnd with _$WindowEnd {
+  const WindowEnd._();
+
+  /// This device ended it, or the device was unpaired, or Baton stopped.
+  const factory WindowEnd.thisDevice() = WindowEnd_ThisDevice;
+
+  /// The other device ended it.
+  const factory WindowEnd.otherDevice() = WindowEnd_OtherDevice;
+
+  /// The connection to the other device was lost, or the other device stopped answering.
+  const factory WindowEnd.lost() = WindowEnd_Lost;
+
+  /// Something went wrong.
+  const factory WindowEnd.failed({
+    /// One sentence that says what.
+    required String message,
+  }) = WindowEnd_Failed;
+}
+
+/// A window that a paired device offers to show on this one, for the person to answer.
+///
+/// Show what the window is and which device offers it, and whether that device lets this one
+/// control the window. The title and the name of the application were written by the other
+/// device: they are labels, and nothing else. Answer with `Baton.answerWindow`.
+class WindowRequest {
+  /// Names this request when answering it with `Baton.answerWindow`.
+  final PlatformInt64 id;
+
+  /// The id of the device that offers the window.
+  final String deviceId;
+
+  /// The name this device shows for it.
+  final String deviceName;
+
+  /// The title of the window, or `null` if it has none.
+  final String? title;
+
+  /// The name of the application the window belongs to, or `null`.
+  final String? app;
+
+  /// The width of the window in pixels.
+  final int width;
+
+  /// The height of the window in pixels.
+  final int height;
+
+  /// Whether the person at the other device lets this one control the window.
+  final bool control;
+
+  const WindowRequest({
+    required this.id,
+    required this.deviceId,
+    required this.deviceName,
+    this.title,
+    this.app,
+    required this.width,
+    required this.height,
+    required this.control,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      deviceId.hashCode ^
+      deviceName.hashCode ^
+      title.hashCode ^
+      app.hashCode ^
+      width.hashCode ^
+      height.hashCode ^
+      control.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WindowRequest &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          deviceId == other.deviceId &&
+          deviceName == other.deviceName &&
+          title == other.title &&
+          app == other.app &&
+          width == other.width &&
+          height == other.height &&
+          control == other.control;
+}
+
+/// Which end of a window this device is.
+enum WindowRole {
+  /// The window is on another device, and this one shows it.
+  viewing,
+
+  /// The window is on this device, and another one shows it.
+  sharing,
+}
+
+/// A window that is shown on this device or shared from it.
+class WindowSession {
+  /// Names this session when ending it with `Baton.endWindow`, and in `Event.windowEnded`.
+  /// Counts up from 1 while Baton runs and is not reused.
+  final PlatformInt64 id;
+
+  /// Which end this device is.
+  final WindowRole role;
+
+  /// The id of the other device.
+  final String deviceId;
+
+  /// The name this device shows for it.
+  final String deviceName;
+
+  /// The title of the window, or `null`.
+  final String? title;
+
+  /// The name of the application the window belongs to, or `null`.
+  final String? app;
+
+  /// The width of the window in pixels, as it was offered. The picture may differ from it, and
+  /// change while the session runs.
+  final int width;
+
+  /// The height of the window in pixels, as it was offered.
+  final int height;
+
+  /// Whether the viewer may control the window.
+  final bool control;
+
+  /// What to draw the picture with when the window is shown on this device: the number of
+  /// the screen, which on Flutter is the id of a `Texture`. `null` when the window is shared
+  /// from this device.
+  final PlatformInt64? screen;
+
+  const WindowSession({
+    required this.id,
+    required this.role,
+    required this.deviceId,
+    required this.deviceName,
+    this.title,
+    this.app,
+    required this.width,
+    required this.height,
+    required this.control,
+    this.screen,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      role.hashCode ^
+      deviceId.hashCode ^
+      deviceName.hashCode ^
+      title.hashCode ^
+      app.hashCode ^
+      width.hashCode ^
+      height.hashCode ^
+      control.hashCode ^
+      screen.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WindowSession &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          role == other.role &&
+          deviceId == other.deviceId &&
+          deviceName == other.deviceName &&
+          title == other.title &&
+          app == other.app &&
+          width == other.width &&
+          height == other.height &&
+          control == other.control &&
+          screen == other.screen;
+}
+
+@freezed
+sealed class WindowShared with _$WindowShared {
+  const WindowShared._();
+
+  /// The person gave up choosing a window, so nothing was offered.
+  const factory WindowShared.nothingChosen() = WindowShared_NothingChosen;
+
+  /// The person at the other device said yes, and the window is shared. Its end comes as
+  /// `Event.windowEnded`.
+  const factory WindowShared.started({
+    /// The session.
+    required WindowSession session,
+  }) = WindowShared_Started;
+
+  /// The other device did not take the window.
+  const factory WindowShared.declined({
+    /// One sentence that says why, in words that name the device.
+    required String message,
+  }) = WindowShared_Declined;
 }

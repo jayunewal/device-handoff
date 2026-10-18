@@ -489,9 +489,167 @@ pub struct FilesSent {
     pub left_out: u32,
 }
 
+/// What a device does with windows, as a screen needs to know it to offer only what is possible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowAbilities {
+    /// This device shows the windows that paired devices offer.
+    pub can_show: bool,
+    /// This device shares its windows with paired devices.
+    pub can_share: bool,
+    /// The person can let another device control a window that this one shares.
+    pub can_control: bool,
+}
+
+/// A window that a paired device offers to show on this one, for the person to answer.
+///
+/// Show what the window is and which device offers it, and whether that device lets this one
+/// control the window. The title and the name of the application were written by the other
+/// device and are cleaned for display, but they are labels and nothing more. Answer with
+/// [`App::answer_window`](crate::App::answer_window).
+#[derive(Clone, PartialEq, Eq)]
+pub struct WindowRequest {
+    /// Names this request when answering it.
+    pub id: u64,
+    /// The id of the device that offers the window.
+    pub device_id: String,
+    /// The name this device shows for it.
+    pub device_name: String,
+    /// The title of the window, or `None` if it has none.
+    pub title: Option<String>,
+    /// The name of the application the window belongs to, or `None`.
+    pub app: Option<String>,
+    /// The width of the window in pixels.
+    pub width: u32,
+    /// The height of the window in pixels.
+    pub height: u32,
+    /// Whether the person at the other device lets this one control the window. It cannot be
+    /// asked for and cannot be turned on later.
+    pub control: bool,
+}
+
+// What a window is called can name a document, a person or a page.
+impl fmt::Debug for WindowRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WindowRequest")
+            .field("id", &self.id)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("control", &self.control)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Which end of a window this device is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowRole {
+    /// The window is on another device, and this one shows it.
+    Viewing,
+    /// The window is on this device, and another one shows it.
+    Sharing,
+}
+
+/// A window that is shown on this device or shared from it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct WindowSession {
+    /// Names this session when ending it with [`App::end_window`](crate::App::end_window),
+    /// and in [`Event::WindowEnded`](crate::Event::WindowEnded). Counts up from 1 while the app
+    /// runs and is not reused.
+    pub id: u64,
+    /// Which end this device is.
+    pub role: WindowRole,
+    /// The id of the other device.
+    pub device_id: String,
+    /// The name this device shows for it.
+    pub device_name: String,
+    /// The title of the window, or `None`.
+    pub title: Option<String>,
+    /// The name of the application the window belongs to, or `None`.
+    pub app: Option<String>,
+    /// The width of the window in pixels, as it was offered. The picture may differ from it, and
+    /// change while the session runs.
+    pub width: u32,
+    /// The height of the window in pixels, as it was offered.
+    pub height: u32,
+    /// Whether the viewer may control the window.
+    pub control: bool,
+    /// What to draw the picture with, when the window is shown on this device: the number that the
+    /// platform gave the screen. `None` when the window is shared from this device.
+    pub screen: Option<i64>,
+}
+
+// What a window is called can name a document, a person or a page.
+impl fmt::Debug for WindowSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WindowSession")
+            .field("id", &self.id)
+            .field("role", &self.role)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("control", &self.control)
+            .field("screen", &self.screen)
+            .finish_non_exhaustive()
+    }
+}
+
+/// How a window session ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WindowEnd {
+    /// This device ended it, or the device was unpaired, or the app stopped.
+    ThisDevice,
+    /// The other device ended it.
+    OtherDevice,
+    /// The connection to the other device was lost, or the other device stopped answering.
+    Lost,
+    /// Something went wrong; the sentence says what.
+    Failed(String),
+}
+
+/// What came of offering a window to a paired device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WindowShared {
+    /// The person gave up choosing a window, so nothing was offered.
+    NothingChosen,
+    /// The person at the other device said yes, and the window is shared. Its end comes as
+    /// [`Event::WindowEnded`](crate::Event::WindowEnded).
+    Started(WindowSession),
+    /// The other device did not take the window; the sentence says why, in words that name the
+    /// device.
+    Declined(String),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_a_window_is_called_is_not_printed() {
+        let request = WindowRequest {
+            id: 1,
+            device_id: "ab".repeat(32),
+            device_name: "Studio Mac".to_owned(),
+            title: Some("Salary 2027.xlsx".to_owned()),
+            app: Some("Numbers".to_owned()),
+            width: 1440,
+            height: 900,
+            control: false,
+        };
+        let session = WindowSession {
+            id: 1,
+            role: WindowRole::Viewing,
+            device_id: "ab".repeat(32),
+            device_name: "Studio Mac".to_owned(),
+            title: Some("Salary 2027.xlsx".to_owned()),
+            app: Some("Numbers".to_owned()),
+            width: 1440,
+            height: 900,
+            control: false,
+            screen: Some(7),
+        };
+        for shown in [format!("{request:?}"), format!("{session:?}")] {
+            assert!(!shown.contains("Salary"), "{shown}");
+            assert!(!shown.contains("Numbers"), "{shown}");
+        }
+    }
 
     #[test]
     fn what_was_received_is_not_printed() {

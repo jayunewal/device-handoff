@@ -213,6 +213,25 @@ impl Error {
         }
     }
 
+    /// A failure while offering a window to the paired device called `device`.
+    pub(crate) fn sharing(error: &Core, device: &str) -> Self {
+        match error {
+            Core::Busy => Self::new(
+                ErrorKind::Other,
+                "A window is being shared or shown already. End it first.",
+            ),
+            Core::Unsupported(_) => Self::new(
+                ErrorKind::Declined,
+                format!("{device} cannot show windows. It may need a newer version of Baton."),
+            ),
+            Core::BadItem(_) => Self::new(
+                ErrorKind::BadItem,
+                "That window cannot be shared: its title or size is beyond what Baton allows.",
+            ),
+            other => Self::reaching(other, device),
+        }
+    }
+
     /// The device `device` answered and did not take the `what` that was sent.
     pub(crate) fn declined(device: &str, what: &str, reason: DeclineReason) -> Self {
         let why = match reason {

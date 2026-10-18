@@ -18,7 +18,7 @@ use super::{
     error::BatonError,
     model::{
         Device, Event, FileProgress, FilesSent, JoinProgress, Me, Network, Offer, Reach, Received,
-        Receiving,
+        Receiving, WindowAbilities, WindowShared,
     },
 };
 use crate::convert::signed;
@@ -167,6 +167,45 @@ impl Baton {
     /// Checks that a paired device answers, and how its traffic gets here.
     pub async fn ping(&self, id: String) -> Result<Reach, BatonError> {
         Ok(self.app.ping(&id).await?.into())
+    }
+
+    /// What this device does with windows: whether it shows the windows of other devices,
+    /// shares its own, and lets the person grant control of the ones it shares. Offer only what
+    /// is possible.
+    #[frb(sync)]
+    pub fn window_abilities(&self) -> WindowAbilities {
+        self.app.window_abilities().into()
+    }
+
+    /// Answers a `WindowRequest`. Returns `false` if it is not waiting any more, because it
+    /// was answered already or the other device gave up. A yes starts the window if this
+    /// device can show it: `Event.windowStarted` says so, and `Event.windowRequestEnded` says
+    /// why not.
+    #[frb(sync)]
+    pub fn answer_window(&self, request: i64, accept: bool) -> bool {
+        u64::try_from(request).is_ok_and(|request| self.app.answer_window(request, accept))
+    }
+
+    /// Lets the person pick a window of this device, and offers it to the paired device `id`.
+    /// The call returns when the person at the other device has answered, which can take as
+    /// long as a person takes to decide. `control` lets the other device control the window,
+    /// if `windowAbilities().control` says that this device can grant it. Throws
+    /// `ErrorKind.notPaired`, `ErrorKind.unreachable`, `ErrorKind.declined` if the device does
+    /// not show windows, and `ErrorKind.other` if this device does not share windows or a
+    /// window is shared or shown already.
+    pub async fn share_window(
+        &self,
+        id: String,
+        control: bool,
+    ) -> Result<WindowShared, BatonError> {
+        Ok(self.app.share_window(&id, control).await?.into())
+    }
+
+    /// Ends the window `session`, which is shown here or shared from here, and tells the other
+    /// device. `Event.windowEnded` follows. Returns whether there was such a window.
+    #[frb(sync)]
+    pub fn end_window(&self, session: i64) -> bool {
+        u64::try_from(session).is_ok_and(|session| self.app.end_window(session))
     }
 
     /// Sends a web link to a paired device.

@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1275744035;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1590989335;
 
 // Section: executor
 
@@ -143,6 +143,58 @@ fn wire__crate__api__baton__Baton_answer_transfer_impl(
                 }
                 let api_that_guard = api_that_guard.unwrap();
                 let output_ok = Ok::<_, ()>(crate::api::baton::Baton::answer_transfer(
+                    &*api_that_guard,
+                    api_request,
+                    api_accept,
+                ))?;
+                std::result::Result::Ok(output_ok)
+            })())
+        },
+    )
+}
+fn wire__crate__api__baton__Baton_answer_window_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Baton_answer_window",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Baton>,
+            >>::sse_decode(&mut deserializer);
+            let api_request = <i64>::sse_decode(&mut deserializer);
+            let api_accept = <bool>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let mut api_that_guard = None;
+                let decode_indices_ =
+                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                            &api_that, 0, false,
+                        ),
+                    ]);
+                for i in decode_indices_ {
+                    match i {
+                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                        _ => unreachable!(),
+                    }
+                }
+                let api_that_guard = api_that_guard.unwrap();
+                let output_ok = Ok::<_, ()>(crate::api::baton::Baton::answer_window(
                     &*api_that_guard,
                     api_request,
                     api_accept,
@@ -344,6 +396,56 @@ fn wire__crate__api__baton__Baton_devices_impl(
                     std::result::Result::Ok(output_ok)
                 })())
             }
+        },
+    )
+}
+fn wire__crate__api__baton__Baton_end_window_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Baton_end_window",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Baton>,
+            >>::sse_decode(&mut deserializer);
+            let api_session = <i64>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let mut api_that_guard = None;
+                let decode_indices_ =
+                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                            &api_that, 0, false,
+                        ),
+                    ]);
+                for i in decode_indices_ {
+                    match i {
+                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                        _ => unreachable!(),
+                    }
+                }
+                let api_that_guard = api_that_guard.unwrap();
+                let output_ok = Ok::<_, ()>(crate::api::baton::Baton::end_window(
+                    &*api_that_guard,
+                    api_session,
+                ))?;
+                std::result::Result::Ok(output_ok)
+            })())
         },
     )
 }
@@ -1015,6 +1117,68 @@ fn wire__crate__api__baton__Baton_send_text_impl(
         },
     )
 }
+fn wire__crate__api__baton__Baton_share_window_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Baton_share_window",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Baton>,
+            >>::sse_decode(&mut deserializer);
+            let api_id = <String>::sse_decode(&mut deserializer);
+            let api_control = <bool>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::api::error::BatonError>(
+                    (move || async move {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_that_guard =
+                                        Some(api_that.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok = crate::api::baton::Baton::share_window(
+                            &*api_that_guard,
+                            api_id,
+                            api_control,
+                        )
+                        .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__baton__Baton_start_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1164,6 +1328,53 @@ fn wire__crate__api__baton__Baton_unpair_impl(
                     std::result::Result::Ok(output_ok)
                 })())
             }
+        },
+    )
+}
+fn wire__crate__api__baton__Baton_window_abilities_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Baton_window_abilities",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Baton>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let mut api_that_guard = None;
+                let decode_indices_ =
+                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                            &api_that, 0, false,
+                        ),
+                    ]);
+                for i in decode_indices_ {
+                    match i {
+                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                        _ => unreachable!(),
+                    }
+                }
+                let api_that_guard = api_that_guard.unwrap();
+                let output_ok =
+                    Ok::<_, ()>(crate::api::baton::Baton::window_abilities(&*api_that_guard))?;
+                std::result::Result::Ok(output_ok)
+            })())
         },
     )
 }
@@ -1673,6 +1884,34 @@ impl SseDecode for crate::api::model::Event {
                 return crate::api::model::Event::TransferEnded { end: var_end };
             }
             8 => {
+                let mut var_request = <crate::api::model::WindowRequest>::sse_decode(deserializer);
+                return crate::api::model::Event::WindowRequested {
+                    request: var_request,
+                };
+            }
+            9 => {
+                let mut var_id = <i64>::sse_decode(deserializer);
+                let mut var_failure = <Option<String>>::sse_decode(deserializer);
+                return crate::api::model::Event::WindowRequestEnded {
+                    id: var_id,
+                    failure: var_failure,
+                };
+            }
+            10 => {
+                let mut var_session = <crate::api::model::WindowSession>::sse_decode(deserializer);
+                return crate::api::model::Event::WindowStarted {
+                    session: var_session,
+                };
+            }
+            11 => {
+                let mut var_id = <i64>::sse_decode(deserializer);
+                let mut var_end = <crate::api::model::WindowEnd>::sse_decode(deserializer);
+                return crate::api::model::Event::WindowEnded {
+                    id: var_id,
+                    end: var_end,
+                };
+            }
+            12 => {
                 return crate::api::model::Event::Resync;
             }
             _ => {
@@ -2175,6 +2414,138 @@ impl SseDecode for usize {
     }
 }
 
+impl SseDecode for crate::api::model::WindowAbilities {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_canShow = <bool>::sse_decode(deserializer);
+        let mut var_canShare = <bool>::sse_decode(deserializer);
+        let mut var_canControl = <bool>::sse_decode(deserializer);
+        return crate::api::model::WindowAbilities {
+            can_show: var_canShow,
+            can_share: var_canShare,
+            can_control: var_canControl,
+        };
+    }
+}
+
+impl SseDecode for crate::api::model::WindowEnd {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                return crate::api::model::WindowEnd::ThisDevice;
+            }
+            1 => {
+                return crate::api::model::WindowEnd::OtherDevice;
+            }
+            2 => {
+                return crate::api::model::WindowEnd::Lost;
+            }
+            3 => {
+                let mut var_message = <String>::sse_decode(deserializer);
+                return crate::api::model::WindowEnd::Failed {
+                    message: var_message,
+                };
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
+impl SseDecode for crate::api::model::WindowRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_id = <i64>::sse_decode(deserializer);
+        let mut var_deviceId = <String>::sse_decode(deserializer);
+        let mut var_deviceName = <String>::sse_decode(deserializer);
+        let mut var_title = <Option<String>>::sse_decode(deserializer);
+        let mut var_app = <Option<String>>::sse_decode(deserializer);
+        let mut var_width = <u32>::sse_decode(deserializer);
+        let mut var_height = <u32>::sse_decode(deserializer);
+        let mut var_control = <bool>::sse_decode(deserializer);
+        return crate::api::model::WindowRequest {
+            id: var_id,
+            device_id: var_deviceId,
+            device_name: var_deviceName,
+            title: var_title,
+            app: var_app,
+            width: var_width,
+            height: var_height,
+            control: var_control,
+        };
+    }
+}
+
+impl SseDecode for crate::api::model::WindowRole {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::model::WindowRole::Viewing,
+            1 => crate::api::model::WindowRole::Sharing,
+            _ => unreachable!("Invalid variant for WindowRole: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::model::WindowSession {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_id = <i64>::sse_decode(deserializer);
+        let mut var_role = <crate::api::model::WindowRole>::sse_decode(deserializer);
+        let mut var_deviceId = <String>::sse_decode(deserializer);
+        let mut var_deviceName = <String>::sse_decode(deserializer);
+        let mut var_title = <Option<String>>::sse_decode(deserializer);
+        let mut var_app = <Option<String>>::sse_decode(deserializer);
+        let mut var_width = <u32>::sse_decode(deserializer);
+        let mut var_height = <u32>::sse_decode(deserializer);
+        let mut var_control = <bool>::sse_decode(deserializer);
+        let mut var_screen = <Option<i64>>::sse_decode(deserializer);
+        return crate::api::model::WindowSession {
+            id: var_id,
+            role: var_role,
+            device_id: var_deviceId,
+            device_name: var_deviceName,
+            title: var_title,
+            app: var_app,
+            width: var_width,
+            height: var_height,
+            control: var_control,
+            screen: var_screen,
+        };
+    }
+}
+
+impl SseDecode for crate::api::model::WindowShared {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                return crate::api::model::WindowShared::NothingChosen;
+            }
+            1 => {
+                let mut var_session = <crate::api::model::WindowSession>::sse_decode(deserializer);
+                return crate::api::model::WindowShared::Started {
+                    session: var_session,
+                };
+            }
+            2 => {
+                let mut var_message = <String>::sse_decode(deserializer);
+                return crate::api::model::WindowShared::Declined {
+                    message: var_message,
+                };
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
 fn pde_ffi_dispatcher_primary_impl(
     func_id: i32,
     port: flutter_rust_bridge::for_generated::MessagePort,
@@ -2184,27 +2555,28 @@ fn pde_ffi_dispatcher_primary_impl(
 ) {
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
-        5 => wire__crate__api__baton__Baton_clear_inbox_impl(port, ptr, rust_vec_len, data_len),
-        6 => wire__crate__api__baton__Baton_devices_impl(port, ptr, rust_vec_len, data_len),
-        7 => wire__crate__api__baton__Baton_events_impl(port, ptr, rust_vec_len, data_len),
-        8 => wire__crate__api__baton__Baton_inbox_impl(port, ptr, rust_vec_len, data_len),
-        9 => wire__crate__api__baton__Baton_join_pairing_impl(port, ptr, rust_vec_len, data_len),
-        11 => wire__crate__api__baton__Baton_network_impl(port, ptr, rust_vec_len, data_len),
-        12 => wire__crate__api__baton__Baton_offer_pairing_impl(port, ptr, rust_vec_len, data_len),
-        13 => wire__crate__api__baton__Baton_ping_impl(port, ptr, rust_vec_len, data_len),
-        15 => {
+        6 => wire__crate__api__baton__Baton_clear_inbox_impl(port, ptr, rust_vec_len, data_len),
+        7 => wire__crate__api__baton__Baton_devices_impl(port, ptr, rust_vec_len, data_len),
+        9 => wire__crate__api__baton__Baton_events_impl(port, ptr, rust_vec_len, data_len),
+        10 => wire__crate__api__baton__Baton_inbox_impl(port, ptr, rust_vec_len, data_len),
+        11 => wire__crate__api__baton__Baton_join_pairing_impl(port, ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__baton__Baton_network_impl(port, ptr, rust_vec_len, data_len),
+        14 => wire__crate__api__baton__Baton_offer_pairing_impl(port, ptr, rust_vec_len, data_len),
+        15 => wire__crate__api__baton__Baton_ping_impl(port, ptr, rust_vec_len, data_len),
+        17 => {
             wire__crate__api__baton__Baton_remove_received_impl(port, ptr, rust_vec_len, data_len)
         }
-        16 => wire__crate__api__baton__Baton_send_files_impl(port, ptr, rust_vec_len, data_len),
-        17 => wire__crate__api__baton__Baton_send_link_impl(port, ptr, rust_vec_len, data_len),
-        18 => wire__crate__api__baton__Baton_send_text_impl(port, ptr, rust_vec_len, data_len),
-        19 => wire__crate__api__baton__Baton_start_impl(port, ptr, rust_vec_len, data_len),
-        20 => wire__crate__api__baton__Baton_stop_impl(port, ptr, rust_vec_len, data_len),
-        21 => wire__crate__api__baton__Baton_unpair_impl(port, ptr, rust_vec_len, data_len),
-        23 => wire__crate__api__baton__FileSend_outcome_impl(port, ptr, rust_vec_len, data_len),
-        25 => wire__crate__api__baton__device_name_impl(port, ptr, rust_vec_len, data_len),
-        26 => wire__crate__api__startup__init_app_impl(port, ptr, rust_vec_len, data_len),
-        28 => wire__crate__api__baton__set_device_name_impl(port, ptr, rust_vec_len, data_len),
+        18 => wire__crate__api__baton__Baton_send_files_impl(port, ptr, rust_vec_len, data_len),
+        19 => wire__crate__api__baton__Baton_send_link_impl(port, ptr, rust_vec_len, data_len),
+        20 => wire__crate__api__baton__Baton_send_text_impl(port, ptr, rust_vec_len, data_len),
+        21 => wire__crate__api__baton__Baton_share_window_impl(port, ptr, rust_vec_len, data_len),
+        22 => wire__crate__api__baton__Baton_start_impl(port, ptr, rust_vec_len, data_len),
+        23 => wire__crate__api__baton__Baton_stop_impl(port, ptr, rust_vec_len, data_len),
+        24 => wire__crate__api__baton__Baton_unpair_impl(port, ptr, rust_vec_len, data_len),
+        27 => wire__crate__api__baton__FileSend_outcome_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__crate__api__baton__device_name_impl(port, ptr, rust_vec_len, data_len),
+        30 => wire__crate__api__startup__init_app_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__api__baton__set_device_name_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -2219,14 +2591,17 @@ fn pde_ffi_dispatcher_sync_impl(
     match func_id {
         1 => wire__crate__api__baton__Baton_answer_pairing_impl(ptr, rust_vec_len, data_len),
         2 => wire__crate__api__baton__Baton_answer_transfer_impl(ptr, rust_vec_len, data_len),
-        3 => wire__crate__api__baton__Baton_cancel_join_impl(ptr, rust_vec_len, data_len),
-        4 => wire__crate__api__baton__Baton_cancel_offer_impl(ptr, rust_vec_len, data_len),
-        10 => wire__crate__api__baton__Baton_me_impl(ptr, rust_vec_len, data_len),
-        14 => wire__crate__api__baton__Baton_receiving_impl(ptr, rust_vec_len, data_len),
-        22 => wire__crate__api__baton__FileSend_cancel_impl(ptr, rust_vec_len, data_len),
-        24 => wire__crate__api__baton__FileSend_progress_impl(ptr, rust_vec_len, data_len),
-        27 => wire__crate__api__startup__recent_log_impl(ptr, rust_vec_len, data_len),
-        29 => wire__crate__api__baton__web_address_impl(ptr, rust_vec_len, data_len),
+        3 => wire__crate__api__baton__Baton_answer_window_impl(ptr, rust_vec_len, data_len),
+        4 => wire__crate__api__baton__Baton_cancel_join_impl(ptr, rust_vec_len, data_len),
+        5 => wire__crate__api__baton__Baton_cancel_offer_impl(ptr, rust_vec_len, data_len),
+        8 => wire__crate__api__baton__Baton_end_window_impl(ptr, rust_vec_len, data_len),
+        12 => wire__crate__api__baton__Baton_me_impl(ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__baton__Baton_receiving_impl(ptr, rust_vec_len, data_len),
+        25 => wire__crate__api__baton__Baton_window_abilities_impl(ptr, rust_vec_len, data_len),
+        26 => wire__crate__api__baton__FileSend_cancel_impl(ptr, rust_vec_len, data_len),
+        28 => wire__crate__api__baton__FileSend_progress_impl(ptr, rust_vec_len, data_len),
+        31 => wire__crate__api__startup__recent_log_impl(ptr, rust_vec_len, data_len),
+        33 => wire__crate__api__baton__web_address_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -2357,7 +2732,25 @@ impl flutter_rust_bridge::IntoDart for crate::api::model::Event {
             crate::api::model::Event::TransferEnded { end } => {
                 [7.into_dart(), end.into_into_dart().into_dart()].into_dart()
             }
-            crate::api::model::Event::Resync => [8.into_dart()].into_dart(),
+            crate::api::model::Event::WindowRequested { request } => {
+                [8.into_dart(), request.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::model::Event::WindowRequestEnded { id, failure } => [
+                9.into_dart(),
+                id.into_into_dart().into_dart(),
+                failure.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
+            crate::api::model::Event::WindowStarted { session } => {
+                [10.into_dart(), session.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::model::Event::WindowEnded { id, end } => [
+                11.into_dart(),
+                id.into_into_dart().into_dart(),
+                end.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
+            crate::api::model::Event::Resync => [12.into_dart()].into_dart(),
             _ => {
                 unimplemented!("");
             }
@@ -2805,6 +3198,154 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::model::TransferResult>
         self
     }
 }
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::model::WindowAbilities {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.can_show.into_into_dart().into_dart(),
+            self.can_share.into_into_dart().into_dart(),
+            self.can_control.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::model::WindowAbilities
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::model::WindowAbilities>
+    for crate::api::model::WindowAbilities
+{
+    fn into_into_dart(self) -> crate::api::model::WindowAbilities {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::model::WindowEnd {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::api::model::WindowEnd::ThisDevice => [0.into_dart()].into_dart(),
+            crate::api::model::WindowEnd::OtherDevice => [1.into_dart()].into_dart(),
+            crate::api::model::WindowEnd::Lost => [2.into_dart()].into_dart(),
+            crate::api::model::WindowEnd::Failed { message } => {
+                [3.into_dart(), message.into_into_dart().into_dart()].into_dart()
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::model::WindowEnd {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::model::WindowEnd>
+    for crate::api::model::WindowEnd
+{
+    fn into_into_dart(self) -> crate::api::model::WindowEnd {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::model::WindowRequest {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.id.into_into_dart().into_dart(),
+            self.device_id.into_into_dart().into_dart(),
+            self.device_name.into_into_dart().into_dart(),
+            self.title.into_into_dart().into_dart(),
+            self.app.into_into_dart().into_dart(),
+            self.width.into_into_dart().into_dart(),
+            self.height.into_into_dart().into_dart(),
+            self.control.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::model::WindowRequest
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::model::WindowRequest>
+    for crate::api::model::WindowRequest
+{
+    fn into_into_dart(self) -> crate::api::model::WindowRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::model::WindowRole {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Viewing => 0.into_dart(),
+            Self::Sharing => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::model::WindowRole {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::model::WindowRole>
+    for crate::api::model::WindowRole
+{
+    fn into_into_dart(self) -> crate::api::model::WindowRole {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::model::WindowSession {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.id.into_into_dart().into_dart(),
+            self.role.into_into_dart().into_dart(),
+            self.device_id.into_into_dart().into_dart(),
+            self.device_name.into_into_dart().into_dart(),
+            self.title.into_into_dart().into_dart(),
+            self.app.into_into_dart().into_dart(),
+            self.width.into_into_dart().into_dart(),
+            self.height.into_into_dart().into_dart(),
+            self.control.into_into_dart().into_dart(),
+            self.screen.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::model::WindowSession
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::model::WindowSession>
+    for crate::api::model::WindowSession
+{
+    fn into_into_dart(self) -> crate::api::model::WindowSession {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::model::WindowShared {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::api::model::WindowShared::NothingChosen => [0.into_dart()].into_dart(),
+            crate::api::model::WindowShared::Started { session } => {
+                [1.into_dart(), session.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::model::WindowShared::Declined { message } => {
+                [2.into_dart(), message.into_into_dart().into_dart()].into_dart()
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::model::WindowShared
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::model::WindowShared>
+    for crate::api::model::WindowShared
+{
+    fn into_into_dart(self) -> crate::api::model::WindowShared {
+        self
+    }
+}
 
 impl SseEncode for flutter_rust_bridge::for_generated::anyhow::Error {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -2965,8 +3506,26 @@ impl SseEncode for crate::api::model::Event {
                 <i32>::sse_encode(7, serializer);
                 <crate::api::model::TransferEnd>::sse_encode(end, serializer);
             }
-            crate::api::model::Event::Resync => {
+            crate::api::model::Event::WindowRequested { request } => {
                 <i32>::sse_encode(8, serializer);
+                <crate::api::model::WindowRequest>::sse_encode(request, serializer);
+            }
+            crate::api::model::Event::WindowRequestEnded { id, failure } => {
+                <i32>::sse_encode(9, serializer);
+                <i64>::sse_encode(id, serializer);
+                <Option<String>>::sse_encode(failure, serializer);
+            }
+            crate::api::model::Event::WindowStarted { session } => {
+                <i32>::sse_encode(10, serializer);
+                <crate::api::model::WindowSession>::sse_encode(session, serializer);
+            }
+            crate::api::model::Event::WindowEnded { id, end } => {
+                <i32>::sse_encode(11, serializer);
+                <i64>::sse_encode(id, serializer);
+                <crate::api::model::WindowEnd>::sse_encode(end, serializer);
+            }
+            crate::api::model::Event::Resync => {
+                <i32>::sse_encode(12, serializer);
             }
             _ => {
                 unimplemented!("");
@@ -3383,6 +3942,107 @@ impl SseEncode for usize {
             .cursor
             .write_u64::<NativeEndian>(self as _)
             .unwrap();
+    }
+}
+
+impl SseEncode for crate::api::model::WindowAbilities {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.can_show, serializer);
+        <bool>::sse_encode(self.can_share, serializer);
+        <bool>::sse_encode(self.can_control, serializer);
+    }
+}
+
+impl SseEncode for crate::api::model::WindowEnd {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {
+            crate::api::model::WindowEnd::ThisDevice => {
+                <i32>::sse_encode(0, serializer);
+            }
+            crate::api::model::WindowEnd::OtherDevice => {
+                <i32>::sse_encode(1, serializer);
+            }
+            crate::api::model::WindowEnd::Lost => {
+                <i32>::sse_encode(2, serializer);
+            }
+            crate::api::model::WindowEnd::Failed { message } => {
+                <i32>::sse_encode(3, serializer);
+                <String>::sse_encode(message, serializer);
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
+impl SseEncode for crate::api::model::WindowRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i64>::sse_encode(self.id, serializer);
+        <String>::sse_encode(self.device_id, serializer);
+        <String>::sse_encode(self.device_name, serializer);
+        <Option<String>>::sse_encode(self.title, serializer);
+        <Option<String>>::sse_encode(self.app, serializer);
+        <u32>::sse_encode(self.width, serializer);
+        <u32>::sse_encode(self.height, serializer);
+        <bool>::sse_encode(self.control, serializer);
+    }
+}
+
+impl SseEncode for crate::api::model::WindowRole {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::model::WindowRole::Viewing => 0,
+                crate::api::model::WindowRole::Sharing => 1,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::model::WindowSession {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i64>::sse_encode(self.id, serializer);
+        <crate::api::model::WindowRole>::sse_encode(self.role, serializer);
+        <String>::sse_encode(self.device_id, serializer);
+        <String>::sse_encode(self.device_name, serializer);
+        <Option<String>>::sse_encode(self.title, serializer);
+        <Option<String>>::sse_encode(self.app, serializer);
+        <u32>::sse_encode(self.width, serializer);
+        <u32>::sse_encode(self.height, serializer);
+        <bool>::sse_encode(self.control, serializer);
+        <Option<i64>>::sse_encode(self.screen, serializer);
+    }
+}
+
+impl SseEncode for crate::api::model::WindowShared {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {
+            crate::api::model::WindowShared::NothingChosen => {
+                <i32>::sse_encode(0, serializer);
+            }
+            crate::api::model::WindowShared::Started { session } => {
+                <i32>::sse_encode(1, serializer);
+                <crate::api::model::WindowSession>::sse_encode(session, serializer);
+            }
+            crate::api::model::WindowShared::Declined { message } => {
+                <i32>::sse_encode(2, serializer);
+                <String>::sse_encode(message, serializer);
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
     }
 }
 

@@ -204,6 +204,20 @@ class _RustSession implements Session {
   Future<Reach> ping(String id) => _baton.ping(id: id);
 
   @override
+  WindowAbilities windowAbilities() => _baton.windowAbilities();
+
+  @override
+  bool answerWindow(int request, {required bool accept}) =>
+      _baton.answerWindow(request: request, accept: accept);
+
+  @override
+  Future<WindowShared> shareWindow(String id, {bool control = false}) =>
+      _baton.shareWindow(id: id, control: control);
+
+  @override
+  bool endWindow(int session) => _baton.endWindow(session: session);
+
+  @override
   Future<List<Received>> inbox() => _baton.inbox();
 
   @override

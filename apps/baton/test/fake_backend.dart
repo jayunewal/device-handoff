@@ -291,6 +291,68 @@ class FakeSession implements Session {
     return pingResult;
   }
 
+  /// What `windowAbilities` gives: a device that does nothing with windows, as a build without
+  /// platform code is.
+  WindowAbilities abilities = const WindowAbilities(
+    canShow: false,
+    canShare: false,
+    canControl: false,
+  );
+
+  @override
+  WindowAbilities windowAbilities() => abilities;
+
+  /// What `answerWindow` was asked, in order.
+  final List<({int request, bool accept})> windowAnswers = [];
+
+  /// What `answerWindow` says: whether the request was still waiting.
+  bool windowRequestWaiting = true;
+
+  @override
+  bool answerWindow(int request, {required bool accept}) {
+    windowAnswers.add((request: request, accept: accept));
+    return windowRequestWaiting;
+  }
+
+  /// What `shareWindow` was asked, in order.
+  final List<({String id, bool control})> windowsShared = [];
+
+  /// What `shareWindow` gives.
+  WindowShared sharing = const WindowShared.nothingChosen();
+
+  /// What `shareWindow` throws, if it should fail.
+  Object? shareFailure;
+
+  /// Makes `shareWindow` wait until [releaseShare], as it does while the person chooses a
+  /// window and the person at the other device answers.
+  void holdShare() => _shareReady = Completer<void>();
+
+  /// Lets the held `shareWindow` answer.
+  void releaseShare() => _shareReady?.complete();
+
+  Completer<void>? _shareReady;
+
+  @override
+  Future<WindowShared> shareWindow(String id, {bool control = false}) async {
+    windowsShared.add((id: id, control: control));
+    await _shareReady?.future;
+    final failure = shareFailure;
+    if (failure != null) throw failure;
+    return sharing;
+  }
+
+  /// The sessions that `endWindow` was asked to end, in order.
+  final List<int> windowsEnded = [];
+
+  /// What `endWindow` says: whether there was such a window.
+  bool windowRuns = true;
+
+  @override
+  bool endWindow(int session) {
+    windowsEnded.add(session);
+    return windowRuns;
+  }
+
   /// What `inbox` gives, newest first.
   List<Received> received = [];
 
@@ -507,6 +569,18 @@ const sampleRequest = PairingRequest(
   platform: Platform.ios,
   fingerprint: 'iphn-abcd-efgh-ijkl-mnop',
   code: '514 643',
+);
+
+/// A window that a paired device offers, for a test to show.
+const sampleWindowRequest = WindowRequest(
+  id: 3,
+  deviceId: 'b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0',
+  deviceName: 'Anna’s Mac',
+  title: 'Budget.numbers',
+  app: 'Numbers',
+  width: 1440,
+  height: 900,
+  control: false,
 );
 
 /// An item in the inbox that a test can show.

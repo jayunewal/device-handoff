@@ -20,6 +20,10 @@ export 'rust/api/model.dart'
         Event_TransferEnded,
         Event_TransferRequestEnded,
         Event_TransferRequested,
+        Event_WindowEnded,
+        Event_WindowRequestEnded,
+        Event_WindowRequested,
+        Event_WindowStarted,
         FileProgress,
         FilesSent,
         JoinProgress,
@@ -54,7 +58,20 @@ export 'rust/api/model.dart'
         TransferRequest,
         TransferResult,
         TransferResult_Dropped,
-        TransferResult_Received;
+        TransferResult_Received,
+        WindowAbilities,
+        WindowEnd,
+        WindowEnd_Failed,
+        WindowEnd_Lost,
+        WindowEnd_OtherDevice,
+        WindowEnd_ThisDevice,
+        WindowRequest,
+        WindowRole,
+        WindowSession,
+        WindowShared,
+        WindowShared_Declined,
+        WindowShared_NothingChosen,
+        WindowShared_Started;
 
 /// Opens the folder where Baton keeps its files and starts Baton in it.
 abstract interface class Backend {
@@ -156,6 +173,28 @@ abstract interface class Session {
   /// Checks that a paired device answers, and how its traffic gets here. Throws a
   /// `BatonError` of kind `notPaired` or `unreachable`.
   Future<Reach> ping(String id);
+
+  /// What this device does with windows: whether it shows the windows of other devices, shares
+  /// its own, and lets the person grant control of the ones it shares. Offer only what is
+  /// possible. A build that has no platform code for windows says no to all three.
+  WindowAbilities windowAbilities();
+
+  /// Answers a [WindowRequest]. Returns `false` if it is not waiting any more, because it was
+  /// answered already or the other device gave up. A yes starts the window if this device can
+  /// show it: `Event_WindowStarted` says so, and `Event_WindowRequestEnded` says why not.
+  bool answerWindow(int request, {required bool accept});
+
+  /// Lets the person pick a window of this device, and offers it to the paired device [id]. It
+  /// returns when the person at the other device has answered, which can take as long as a
+  /// person takes to decide. [control] lets the other device control the window, if
+  /// [windowAbilities] says that this device can grant it. Throws a `BatonError` of kind
+  /// `notPaired`, `unreachable`, `declined` if the device does not show windows, or `other` if
+  /// this device does not share windows or a window is shared or shown already.
+  Future<WindowShared> shareWindow(String id, {bool control = false});
+
+  /// Ends the window [session], which is shown here or shared from here, and tells the other
+  /// device. `Event_WindowEnded` follows. Returns whether there was such a window.
+  bool endWindow(int session);
 
   /// What other devices have sent, newest first.
   Future<List<Received>> inbox();
