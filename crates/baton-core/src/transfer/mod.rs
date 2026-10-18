@@ -14,7 +14,8 @@
 //!   anything.
 //! - [`receive`] applies the rules of the protocol for a receiver to what arrives on the lanes of
 //!   one transfer: which lanes may be opened, which frames may come when, and what became of every
-//!   file. It is built in pieces too, and so far has the bookkeeping and the reader of a lane.
+//!   file. It is built in pieces too, and so far has the bookkeeping, the reader of a lane, and
+//!   the intake that applies the frames of the lanes to the staging folder.
 //!
 //! Nothing here is connected to the session yet, and `transfer.files` is not advertised.
 
