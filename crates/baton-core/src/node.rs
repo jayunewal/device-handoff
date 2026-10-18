@@ -64,7 +64,7 @@ use tokio_util::sync::CancellationToken;
 #[cfg(any(test, feature = "test-support"))]
 use crate::gate::BeforeRegistering;
 #[cfg(test)]
-use crate::uni::{Kind, Sink};
+use crate::uni::Sink;
 use crate::{
     clock::{Clock, SystemClock},
     config::{self, Config, NetworkConfig},
@@ -76,9 +76,13 @@ use crate::{
     session::{HandoffHandler, Intake, NoHandoff, Pool, SessionServer, call, worth_retrying},
     shared::Shared,
     slots::{MAX_PAIRING_CONNECTIONS, PairSlots},
+    transfer::{
+        incoming::{FINISH_WAIT, Incoming, LANE_STREAMS, TransferHandler},
+        lanes::LaneSink,
+    },
     transport,
     trust::{PairedDevice, TrustEvent, TrustStore},
-    uni::{Sinks, Uni},
+    uni::{Kind, Sinks, Uni},
     util::random_bytes,
 };
 
@@ -106,6 +110,9 @@ pub struct Tuning {
     pub invalid_delay: Duration,
     /// How long an unused connection to a paired device is kept open.
     pub idle_connection: Duration,
+    /// How long a `Finish` of a transfer waits for the files to settle. When they have not by
+    /// then, the request ends without an answer (a stop with 408) and the sender asks again.
+    pub finish_wait: Duration,
 }
 
 impl Default for Tuning {
@@ -117,6 +124,7 @@ impl Default for Tuning {
             approval_timeout: Duration::from_mins(2),
             invalid_delay: Duration::from_millis(250),
             idle_connection: Duration::from_mins(2),
+            finish_wait: FINISH_WAIT,
         }
     }
 }
@@ -140,10 +148,13 @@ pub struct NodeBuilder {
     trust: TrustStore,
     config: Config,
     handler: Arc<dyn HandoffHandler>,
+    /// What the application says about the transfers that other devices offer, if it takes them.
+    transfers: Option<Arc<dyn TransferHandler>>,
     clock: Arc<dyn Clock>,
     tuning: Tuning,
-    /// What takes the unidirectional streams that paired devices open. Nothing yet: the receiver
-    /// of files and window streaming are installed here as they are added.
+    /// What takes the unidirectional streams that paired devices open, besides the lanes of the
+    /// transfers, which `bind` installs when there is a handler for them. Window streaming is
+    /// installed here as it is added.
     sinks: Sinks,
     tweak: Option<Box<dyn FnOnce(Builder) -> Builder + Send>>,
     #[cfg(any(test, feature = "test-support"))]
@@ -164,6 +175,7 @@ impl NodeBuilder {
             trust,
             config,
             handler: Arc::new(NoHandoff),
+            transfers: None,
             clock: Arc::new(SystemClock),
             tuning: Tuning::default(),
             sinks: Sinks::default(),
@@ -177,6 +189,17 @@ impl NodeBuilder {
     #[must_use]
     pub fn handoff_handler(mut self, handler: impl HandoffHandler) -> Self {
         self.handler = Arc::new(handler);
+        self
+    }
+
+    /// Has this device take the files and folders that other devices offer, asking `handler` about
+    /// each offer and where to put what is received.
+    ///
+    /// Without one, a device takes no files and says nothing about them. With one, it advertises
+    /// `transfer.files` for as long as [`TransferHandler::destination`] has a folder to give.
+    #[must_use]
+    pub fn transfer_handler(mut self, handler: impl TransferHandler) -> Self {
+        self.transfers = Some(Arc::new(handler));
         self
     }
 
@@ -243,6 +266,7 @@ impl NodeBuilder {
             trust,
             config,
             handler,
+            transfers,
             clock,
             tuning,
             sinks,
@@ -256,6 +280,18 @@ impl NodeBuilder {
         let relay_enabled = config.network.relay != config::RelayMode::Disabled;
         let registry = Arc::new(ConnectionRegistry::default());
         let stop = CancellationToken::new();
+        let intake = Intake::new(&config.handoff);
+        let incoming = transfers.map(|handler| {
+            Incoming::with_finish_wait(handler, intake.item_charge(), tuning.finish_wait)
+        });
+        let sinks = match &incoming {
+            Some(incoming) => sinks.install(
+                Kind::Lane,
+                LANE_STREAMS,
+                Arc::new(LaneSink::new(incoming.clone(), tuning.request_deadline)),
+            ),
+            None => sinks,
+        };
         let uni = Arc::new(Uni::new(sinks, &trust, &stop, tuning.request_deadline));
         let shared = Arc::new(Shared {
             id,
@@ -273,7 +309,8 @@ impl NodeBuilder {
             offers: Offers::default(),
             pair_slots: PairSlots::new(MAX_PAIRING_CONNECTIONS),
             handler,
-            intake: Intake::new(&config.handoff),
+            intake,
+            incoming,
             uni: Arc::clone(&uni),
         });
 
@@ -283,25 +320,7 @@ impl NodeBuilder {
             Some(hook) => gate.before_registering(hook),
             None => gate,
         };
-        let mut builder = Endpoint::builder(presets::Minimal)
-            .secret_key(secret)
-            .relay_mode(relay_mode(&config.network)?)
-            .hooks(gate)
-            .transport_config(transport::config())
-            .portmapper_config(portmapper_config(&config.network));
-        if config.network.dns_discovery && relay_enabled {
-            builder = builder
-                .address_lookup(PkarrPublisher::n0_dns())
-                .address_lookup(PkarrResolver::n0_dns())
-                .address_lookup(DnsAddressLookup::n0_dns());
-        }
-        if let Some(tweak) = tweak {
-            builder = tweak(builder);
-        }
-        let endpoint = builder
-            .bind()
-            .await
-            .map_err(|e| Error::network("starting the network endpoint", &e))?;
+        let endpoint = bind_endpoint(secret, &config, gate, tweak).await?;
         let lan_discovery = config.network.lan_discovery && start_lan_discovery(&endpoint);
 
         // Subscribe before the first connection can arrive, so no unpairing is missed.
@@ -342,6 +361,34 @@ impl NodeBuilder {
             max_clipboard_bytes: config.handoff.max_clipboard_bytes,
         })
     }
+}
+
+/// Binds the network endpoint of a node, behind `gate`, which admits the paired devices only.
+async fn bind_endpoint(
+    secret: SecretKey,
+    config: &Config,
+    gate: Gate,
+    tweak: Option<Box<dyn FnOnce(Builder) -> Builder + Send>>,
+) -> Result<Endpoint> {
+    let mut builder = Endpoint::builder(presets::Minimal)
+        .secret_key(secret)
+        .relay_mode(relay_mode(&config.network)?)
+        .hooks(gate)
+        .transport_config(transport::config())
+        .portmapper_config(portmapper_config(&config.network));
+    if config.network.dns_discovery && config.network.relay != config::RelayMode::Disabled {
+        builder = builder
+            .address_lookup(PkarrPublisher::n0_dns())
+            .address_lookup(PkarrResolver::n0_dns())
+            .address_lookup(DnsAddressLookup::n0_dns());
+    }
+    if let Some(tweak) = tweak {
+        builder = tweak(builder);
+    }
+    builder
+        .bind()
+        .await
+        .map_err(|e| Error::network("starting the network endpoint", &e))
 }
 
 /// A device taking part in Baton: reachable by its paired devices, able to pair
@@ -654,6 +701,10 @@ impl Node {
         self.shared
             .registry
             .close_everything(close_code::INTERNAL, b"shutting down");
+        if let Some(incoming) = &self.shared.incoming {
+            // The lanes ended with the connections, so this does not wait for them.
+            incoming.shutdown().await;
+        }
         if let Err(e) = self.router.shutdown().await {
             tracing::warn!(error = %e, "the network task did not stop cleanly");
         }
@@ -776,6 +827,11 @@ async fn watch_trust(
                     pool.forget(&peer);
                     shared.intake.forget(&peer);
                     let closed = shared.registry.close_peer(&peer, close_code::NOT_PAIRED, b"unpaired");
+                    if let Some(incoming) = shared.incoming.clone() {
+                        // The lanes end with the connections that were just closed, and the
+                        // answers wait for them, so this is not waited for here.
+                        drop(tokio::spawn(async move { incoming.forget(&peer).await }));
+                    }
                     tracing::info!(peer = %peer.short(), closed, "a device was unpaired");
                 }
                 Ok(TrustEvent::Added(_) | TrustEvent::Updated(_)) => {}
@@ -787,6 +843,12 @@ async fn watch_trust(
                         close_code::NOT_PAIRED,
                         b"unpaired",
                     );
+                    if let Some(incoming) = shared.incoming.clone() {
+                        let trust = shared.trust.clone();
+                        drop(tokio::spawn(async move {
+                            incoming.forget_unless(|peer| trust.contains(peer)).await;
+                        }));
+                    }
                 }
                 Err(broadcast::error::RecvError::Closed) => return,
             }

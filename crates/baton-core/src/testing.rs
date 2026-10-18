@@ -25,6 +25,14 @@ impl TestNode {
 
     /// A node whose builder `build` has changed first, for example to give it a `Tuning`.
     pub(crate) async fn with(build: impl FnOnce(NodeBuilder) -> NodeBuilder) -> Self {
+        Self::configured(|_| {}, build).await
+    }
+
+    /// A node whose settings `configure` has changed, and then its builder `build`.
+    pub(crate) async fn configured(
+        configure: impl FnOnce(&mut Config),
+        build: impl FnOnce(NodeBuilder) -> NodeBuilder,
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let identity = Identity::generate();
         let trust = TrustStore::load(dir.path().join("devices.json")).unwrap();
@@ -33,6 +41,7 @@ impl TestNode {
         config.network.lan_discovery = false;
         config.network.dns_discovery = false;
         config.network.port_mapping = false;
+        configure(&mut config);
         let builder = build(NodeBuilder::new(&identity, trust.clone(), config));
         let node = builder
             .customize_endpoint(|builder| {
