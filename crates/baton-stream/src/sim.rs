@@ -531,7 +531,10 @@ impl World<'_> {
                 continue;
             };
             self.report.max_held = self.report.max_held.max(self.viewer.held_bytes());
-            let actions = self.viewer.arrived(self.t, id, header);
+            let actions = self
+                .viewer
+                .arrived(self.t, id, header)
+                .expect("the sender gives each frame a number of its own");
             self.apply(actions);
         }
     }

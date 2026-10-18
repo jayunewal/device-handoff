@@ -26,6 +26,12 @@
 //! stream of a session that is not running: that is no fault of the source, because a stream can
 //! arrive just as the viewer reaches its count, and the source treats the frame as lost.
 //!
+//! A frame has a number of its own, and the viewer names a frame by its number in every action, so
+//! a number that comes twice is a [`Violation`] and ends the session: the viewer could not say which
+//! of two pictures an action means. Only a number that it still holds, or has decoded since the last
+//! key frame, can be recognised. One that it has forgotten is below the frames it has decoded, and
+//! its frame is dropped as late.
+//!
 //! Like the sender, this is a state machine without input or output. It is told when a frame
 //! stream starts, how much of a picture has been read, and when a frame has arrived or its stream
 //! broke off, and says what to do with the frames.
@@ -90,6 +96,21 @@ pub enum Refusal {
     /// The viewer has no such stream: it never started, or it has ended or been refused.
     #[error("no such frame stream")]
     Unknown,
+}
+
+/// What a source did that no source that follows the protocol does. The session is over: the
+/// viewer ends it with code 400 and lets go of every picture it holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum Violation {
+    /// A frame number came a second time, while the viewer still held the first frame or had
+    /// decoded it since the last key frame. A frame has a number of its own and a frame that was
+    /// reset is not sent again. The actions name a frame by its number, so the viewer could not
+    /// say which of two pictures with one number to decode or to drop.
+    #[error("frame {number} came a second time")]
+    RepeatedNumber {
+        /// The number of the frame.
+        number: u64,
+    },
 }
 
 /// What the viewer is to do.
@@ -246,25 +267,48 @@ impl Viewer {
     ///
     /// A stream that the viewer does not have, which means one that was refused, aborted or has
     /// ended, brings a frame that is dropped: the viewer holds nothing that it has not counted.
-    pub fn arrived(&mut self, now: Duration, id: StreamId, header: FrameHeader) -> Vec<Action> {
+    ///
+    /// A frame whose number the viewer holds, or has decoded since the last key frame, is a
+    /// [`Violation`], whatever its header says. The session is to end, and the picture that came
+    /// with it, which is no longer counted, goes with the others. A number that the viewer has
+    /// forgotten is below the frames it has decoded, so its frame is dropped as late.
+    ///
+    /// # Errors
+    ///
+    /// [`Violation::RepeatedNumber`], as above.
+    pub fn arrived(
+        &mut self,
+        now: Duration,
+        id: StreamId,
+        header: FrameHeader,
+    ) -> Result<Vec<Action>, Violation> {
         if let Some(bytes) = self.arriving.remove(&id) {
             return self.arrive(now, header, bytes);
         }
         let mut actions = Vec::new();
         self.discard(header.number, &mut actions);
-        actions
+        Ok(actions)
     }
 
-    fn arrive(&mut self, now: Duration, header: FrameHeader, bytes: usize) -> Vec<Action> {
+    fn arrive(
+        &mut self,
+        now: Duration,
+        header: FrameHeader,
+        bytes: usize,
+    ) -> Result<Vec<Action>, Violation> {
+        // Before the epoch and the order: every other way out of here either names this frame in
+        // an action or keeps it in `pending`, and a number that is already held would make an
+        // action that names it say which of two pictures it means.
+        if self.pending.contains_key(&header.number) || self.decoded.contains(&header.number) {
+            return Err(Violation::RepeatedNumber {
+                number: header.number,
+            });
+        }
         let mut actions = Vec::new();
         if header.epoch < self.epoch {
             // The picture has changed its size since.
             self.discard(header.number, &mut actions);
-            return actions;
-        }
-        if self.pending.contains_key(&header.number) || self.decoded.contains(&header.number) {
-            // The same frame twice. A stream is never read twice, so this is a broken source.
-            return actions;
+            return Ok(actions);
         }
         if self
             .frontier
@@ -273,7 +317,7 @@ impl Viewer {
             // Late, and a decoder does not go back: a frame that was encoded before one that has
             // been decoded would change what the frames after that one are decoded against.
             self.discard(header.number, &mut actions);
-            return actions;
+            return Ok(actions);
         }
         match header.kind() {
             FrameKind::Key => {
@@ -289,7 +333,7 @@ impl Viewer {
         self.pending
             .insert(header.number, Waiting { header, bytes });
         self.drain(now, &mut actions);
-        actions
+        Ok(actions)
     }
 
     /// The decoder could not decode a frame. Nothing can be decoded until a key frame comes.
@@ -395,6 +439,12 @@ impl Viewer {
                 self.decoded.clear();
                 self.last_key = Some(number);
                 self.broken = false;
+                // The wait for a key frame is over. A decode error from here on, of this key
+                // frame or of a later frame, is a new wait whose first request goes out at once;
+                // the interval is for asking again while a key frame does not come. A source that
+                // is asked too often keeps the request that comes early and answers it when its
+                // own spacing of key frames allows (ADR 0009), so asking at once costs nothing.
+                self.last_request = None;
             }
             self.decoded.insert(number);
             while self.decoded.len() > MAX_DECODED {
@@ -494,6 +544,16 @@ mod tests {
         header: FrameHeader,
         bytes: usize,
     ) -> Vec<Action> {
+        try_arrive_sized(v, now, header, bytes).expect("a number that is new")
+    }
+
+    /// As [`arrive_sized`], for a frame whose number may have come before.
+    fn try_arrive_sized(
+        v: &mut Viewer,
+        now: Duration,
+        header: FrameHeader,
+        bytes: usize,
+    ) -> Result<Vec<Action>, Violation> {
         let id = v.stream_started().expect("room for a stream");
         v.stream_read(id, bytes).expect("room for the picture");
         v.arrived(now, id, header)
@@ -718,12 +778,35 @@ mod tests {
         let mut v = viewer();
         arrive(&mut v, MS, key(0, 0));
         assert_eq!(v.decode_failed(2 * MS), vec![RequestKeyFrame { tried: 0 }]);
-        // The next key frame is decoded and mends it. If it fails too, it is named in turn.
+        // The next key frame is decoded and mends it. If it fails too, it is named in turn, and
+        // at once: the wait that the first request began is over.
         assert_eq!(arrive(&mut v, 3 * MS, key(4, 1)), vec![Decode(4), Show(4)]);
+        assert_eq!(v.decode_failed(4 * MS), vec![RequestKeyFrame { tried: 4 }]);
+    }
+
+    #[test]
+    fn a_decode_error_soon_after_a_key_frame_is_asked_about_at_once() {
+        let mut v = viewer();
+        arrive(&mut v, MS, key(0, 0));
+        assert_eq!(v.decode_failed(10 * MS), vec![RequestKeyFrame { tried: 0 }]);
         assert_eq!(
-            v.decode_failed(4 * MS + Duration::from_millis(600)),
-            vec![RequestKeyFrame { tried: 4 }]
+            arrive(&mut v, 100 * MS, key(4, 1)),
+            vec![Decode(4), Show(4)]
         );
+        assert_eq!(
+            arrive(&mut v, 150 * MS, delta(5, 4, 0)),
+            vec![Decode(5), Show(5)]
+        );
+        // Less than the interval after the request of 10 ms, but the request was answered, and
+        // this is a new wait. The picture does not stay frozen for the rest of the interval.
+        assert_eq!(
+            v.decode_failed(200 * MS),
+            vec![RequestKeyFrame { tried: 5 }]
+        );
+        // Asking again while no key frame comes keeps its interval, counted from the last ask.
+        assert_eq!(v.tick(300 * MS), vec![]);
+        assert_eq!(v.tick(700 * MS), vec![RequestKeyFrame { tried: 5 }]);
+        assert_eq!(v.stats().key_requests, 3);
     }
 
     #[test]
@@ -795,13 +878,62 @@ mod tests {
         );
     }
 
+    fn repeated(number: u64) -> Result<Vec<Action>, Violation> {
+        Err(Violation::RepeatedNumber { number })
+    }
+
     #[test]
-    fn a_frame_seen_twice_is_ignored() {
+    fn a_number_that_comes_twice_is_a_violation_whether_the_first_waits_or_was_decoded() {
         let mut v = viewer();
         arrive(&mut v, MS, key(0, 0));
-        assert_eq!(arrive(&mut v, 2 * MS, key(0, 0)), vec![]);
-        arrive(&mut v, 3 * MS, delta(3, 2, 0));
-        assert_eq!(arrive(&mut v, 4 * MS, delta(3, 2, 0)), vec![]);
+        // The first frame 0 was decoded.
+        assert_eq!(try_arrive_sized(&mut v, 2 * MS, key(0, 0), 7), repeated(0));
+        // The first frame 3 waits for frame 2, and its picture is held. The second is a
+        // violation, and its bytes are not counted: the session ends and the caller lets go of
+        // every picture it has.
+        arrive_sized(&mut v, 3 * MS, delta(3, 2, 0), 40);
+        assert_eq!(
+            try_arrive_sized(&mut v, 4 * MS, delta(3, 2, 0), 60),
+            repeated(3)
+        );
+        assert_eq!(v.held_bytes(), 40);
+        assert_eq!(v.streams(), 0);
+        // What header the second one has makes no difference: a key frame is a frame too.
+        assert_eq!(try_arrive_sized(&mut v, 5 * MS, key(3, 1), 60), repeated(3));
+        assert_eq!(v.held_bytes(), 40);
+    }
+
+    #[test]
+    fn a_number_that_comes_twice_in_an_older_size_is_a_violation_too() {
+        let mut v = viewer();
+        arrive(&mut v, MS, key(0, 0));
+        // Frame 7 waits for frame 6. Then a key frame of a new size is decoded, and the old size
+        // is over. Frame 7 is still held, because nothing numbered above it has been decoded.
+        arrive_sized(&mut v, 2 * MS, delta(7, 6, 0), 40);
+        let mut new_key = key(5, 1);
+        new_key.epoch = 1;
+        assert_eq!(arrive(&mut v, 3 * MS, new_key), vec![Decode(5), Show(5)]);
+        assert_eq!(v.held_bytes(), 40);
+        // A second frame 7 of the old size would have been dropped as of the old size, and the
+        // action would have named the number of the frame that waits.
+        assert_eq!(
+            try_arrive_sized(&mut v, 4 * MS, delta(7, 6, 0), 40),
+            repeated(7)
+        );
+        assert_eq!(v.held_bytes(), 40);
+    }
+
+    #[test]
+    fn a_number_that_the_viewer_has_forgotten_is_late_and_not_a_violation() {
+        let mut v = viewer();
+        arrive(&mut v, MS, key(0, 0));
+        arrive(&mut v, 2 * MS, delta(1, 0, 0));
+        // A key frame ends what the decoder knew, and the viewer forgets the numbers before it.
+        // Frame 1 is below the key frame, so it is dropped as late, and the action names a
+        // frame of which the viewer holds nothing.
+        arrive(&mut v, 3 * MS, key(4, 1));
+        assert_eq!(arrive(&mut v, 4 * MS, delta(1, 0, 0)), vec![Discard(1)]);
+        assert_eq!(v.held_bytes(), 0);
     }
 
     #[test]
@@ -839,7 +971,7 @@ mod tests {
         // A stream that was refused is not counted, and the count is not shifted by it.
         assert_eq!(v.streams(), 3);
         // A frame that arrives ends its stream, and so does one that broke off.
-        v.arrived(MS, first, key(0, 0));
+        v.arrived(MS, first, key(0, 0)).unwrap();
         assert_eq!(v.streams(), 2);
         v.stream_started().unwrap();
         assert_eq!(v.stream_started(), Err(Refusal::OverBudget));
@@ -874,7 +1006,7 @@ mod tests {
         v.stream_read(id, 100).unwrap();
         assert_eq!(v.stream_started(), Err(Refusal::OverBudget));
         // The frame is decoded, so its picture is the decoder's, and the next stream is taken.
-        assert_eq!(v.arrived(MS, id, key(0, 0)), vec![Decode(0), Show(0)]);
+        assert_eq!(v.arrived(MS, id, key(0, 0)), Ok(vec![Decode(0), Show(0)]));
         assert_eq!(v.held_bytes(), 0);
         v.stream_started().unwrap();
     }
@@ -915,10 +1047,6 @@ mod tests {
             vec![Discard(1)]
         );
         assert_eq!(v.held_bytes(), 0);
-        // So is a frame seen twice, which is no frame that the viewer keeps.
-        arrive_sized(&mut v, 4 * MS, delta(5, 4, 0), 40);
-        assert_eq!(arrive_sized(&mut v, 5 * MS, delta(5, 4, 0), 40), vec![]);
-        assert_eq!(v.held_bytes(), 40);
     }
 
     #[test]
@@ -961,11 +1089,14 @@ mod tests {
         let mut v = small();
         let id = v.stream_started().unwrap();
         v.stream_aborted(id);
-        assert_eq!(v.arrived(MS, id, key(0, 0)), vec![Discard(0)]);
+        assert_eq!(v.arrived(MS, id, key(0, 0)), Ok(vec![Discard(0)]));
         // Nor does one stream bring two frames.
         let id = v.stream_started().unwrap();
-        assert_eq!(v.arrived(2 * MS, id, key(1, 0)), vec![Decode(1), Show(1)]);
-        assert_eq!(v.arrived(3 * MS, id, delta(2, 1, 0)), vec![Discard(2)]);
+        assert_eq!(
+            v.arrived(2 * MS, id, key(1, 0)),
+            Ok(vec![Decode(1), Show(1)])
+        );
+        assert_eq!(v.arrived(3 * MS, id, delta(2, 1, 0)), Ok(vec![Discard(2)]));
         assert_eq!(v.held_bytes(), 0);
     }
 
@@ -982,9 +1113,15 @@ mod tests {
                 .collect();
             let mut v = viewer();
             let mut decoded = Vec::new();
+            // A frame arrives once, in some order. What a number that comes twice does is
+            // another property.
+            let mut seen = BTreeSet::new();
             for (i, pick) in order.into_iter().enumerate() {
                 let now = Duration::from_millis(u64::try_from(i).unwrap());
                 let Some(h) = frames.get(pick) else { continue };
+                if !seen.insert(pick) {
+                    continue;
+                }
                 for action in arrive(&mut v, now, *h) {
                     if let Decode(n) = action {
                         decoded.push(n);
@@ -1002,19 +1139,24 @@ mod tests {
             proptest::prop_assert_eq!(v.stats().key_requests, 0);
         }
 
-        /// Whatever a source does with its streams, the viewer holds no more than its limits
-        /// allow, and what it holds is exactly the pictures of the streams that are open and of
-        /// the frames that wait: nothing is counted twice, and nothing is lost track of.
+        /// Whatever a source does with its streams, numbers that come twice included, the viewer
+        /// holds no more than its limits allow, and what it holds is exactly the pictures of the
+        /// streams that are open and of the frames that wait: nothing is counted twice, and
+        /// nothing is lost track of. A number that the viewer holds or has decoded since the last
+        /// key frame is a violation, which ends the session, and the next event begins another.
         #[test]
         fn whatever_the_source_does_the_viewer_stays_within_its_limits_and_counts_exactly(
             events in proptest::collection::vec(event(), 1..300)
         ) {
             let mut v = small();
             let mut open: Vec<(StreamId, usize)> = Vec::new();
-            let mut waiting: BTreeMap<u64, usize> = BTreeMap::new();
-            let mut used = BTreeSet::new();
-            let held = |open: &[(StreamId, usize)], waiting: &BTreeMap<u64, usize>| {
-                open.iter().map(|(_, b)| b).sum::<usize>() + waiting.values().sum::<usize>()
+            // The frames that wait, with their bytes and whether they are key frames.
+            let mut waiting: BTreeMap<u64, (usize, bool)> = BTreeMap::new();
+            // The numbers that the viewer has decoded since the last key frame.
+            let mut decoded = BTreeSet::new();
+            let held = |open: &[(StreamId, usize)], waiting: &BTreeMap<u64, (usize, bool)>| {
+                open.iter().map(|(_, b)| b).sum::<usize>()
+                    + waiting.values().map(|(b, _)| b).sum::<usize>()
             };
             for (i, event) in events.into_iter().enumerate() {
                 let now = Duration::from_millis(u64::try_from(i).unwrap());
@@ -1065,22 +1207,47 @@ mod tests {
                         }
                     }
                     Event::Arrive { which, number, key: is_key } => {
-                        if !open.is_empty() && used.insert(number) {
+                        if !open.is_empty() {
                             let (id, bytes) = open.remove(which % open.len());
-                            waiting.insert(number, bytes);
                             let h = if is_key || number == 0 {
                                 key(number, 0)
                             } else {
                                 delta(number, number - 1, 0)
                             };
-                            actions = v.arrived(now, id, h);
+                            let repeated = waiting.contains_key(&number) || decoded.contains(&number);
+                            match v.arrived(now, id, h) {
+                                Ok(taken) => {
+                                    proptest::prop_assert!(!repeated);
+                                    waiting.insert(number, (bytes, h.is_key()));
+                                    actions = taken;
+                                }
+                                Err(violation) => {
+                                    proptest::prop_assert!(repeated);
+                                    proptest::prop_assert_eq!(
+                                        violation,
+                                        Violation::RepeatedNumber { number }
+                                    );
+                                    // What the viewer counts is still what it held before, and
+                                    // the picture that came is not in it.
+                                    proptest::prop_assert_eq!(v.streams(), open.len());
+                                    proptest::prop_assert_eq!(
+                                        v.held_bytes(),
+                                        held(&open, &waiting)
+                                    );
+                                    // The session is over. Another one begins.
+                                    v = small();
+                                    open.clear();
+                                    waiting.clear();
+                                    decoded.clear();
+                                }
+                            }
                         }
                     }
                     Event::Stale { number } => {
                         let h = if number == 0 { key(0, 0) } else { delta(number, number - 1, 0) };
                         proptest::prop_assert_eq!(
                             v.arrived(now, StreamId(10_000), h),
-                            vec![Discard(number)]
+                            Ok(vec![Discard(number)])
                         );
                     }
                     Event::Fail => actions = v.decode_failed(now),
@@ -1088,8 +1255,19 @@ mod tests {
                 }
                 // Every frame that is decoded or dropped was one that was held, and is given back.
                 for action in actions {
-                    if let Decode(n) | Discard(n) = action {
-                        proptest::prop_assert!(waiting.remove(&n).is_some());
+                    match action {
+                        Decode(n) => {
+                            let Some((_, was_key)) = waiting.remove(&n) else {
+                                proptest::prop_assert!(false, "decoded a frame that was not held");
+                                continue;
+                            };
+                            if was_key {
+                                decoded.clear();
+                            }
+                            decoded.insert(n);
+                        }
+                        Discard(n) => proptest::prop_assert!(waiting.remove(&n).is_some()),
+                        Show(_) | RequestKeyFrame { .. } => {}
                     }
                 }
                 proptest::prop_assert!(v.streams() <= 3);
