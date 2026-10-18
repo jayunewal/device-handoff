@@ -23,7 +23,8 @@
 //!   `a_b` and `a:b` becomes `a_b 2` where the colon is replaced.
 //!
 //! [`plan`] chooses the name of every entry of a list. [`numbered`] is the numbering on its own,
-//! for the code that moves the items of a transfer into place and finds a name taken there.
+//! for the code that moves the items of a transfer into place and finds a name taken there, and
+//! [`Reserved`] holds the names of the transfer's own items, which those numbers step over.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -237,11 +238,23 @@ fn replace_trailing(name: &mut String) {
     name.extend(std::iter::repeat_n(REPLACEMENT, trailing));
 }
 
-/// The part of `text` that is at most `max` bytes long and ends at a character.
+/// The part of `text` that is at most `max` bytes long and ends at a character, and not inside one
+/// of the [`SUBDIVISION_FLAGS`]: a flag is cut whole or not at all. The tags of a flag that was cut
+/// would be left without the character that ends them, and a name that is clean would not be
+/// clean any more.
 fn cut(text: &str, max: usize) -> &str {
     let mut end = text.len().min(max);
     while !text.is_char_boundary(end) {
         end -= 1;
+    }
+    // A flag has one black flag, at its start, so the last one before the cut is the start of any
+    // flag that the cut would split.
+    if let Some(start) = text[..end].rfind('\u{1F3F4}')
+        && SUBDIVISION_FLAGS
+            .iter()
+            .any(|flag| text[start..].starts_with(flag) && start + flag.len() > end)
+    {
+        end = start;
     }
     &text[..end]
 }
@@ -489,6 +502,46 @@ pub fn plan(entries: &[ListEntry], rules: Rules) -> Result<Plan, PlanError> {
         }
     }
     Ok(Plan { items })
+}
+
+/// The names that the top-level items of one transfer are planned to take, for the numbers that
+/// an item is given when it is put in place.
+///
+/// A name that the destination has already gets a number, as a name that clashes in the plan does.
+/// The number can be one that another item of the same transfer is called: `notes.txt` meets a
+/// `notes.txt` that was there, and the transfer has a file called `notes 2.txt` as well. That file
+/// keeps its name, as it does in [`plan`], so `notes.txt` takes `notes 3.txt`.
+pub struct Reserved {
+    keys: HashSet<String>,
+    rules: Rules,
+}
+
+impl fmt::Debug for Reserved {
+    // What people call their files is theirs, so only how many there are is shown.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Reserved")
+            .field("names", &self.keys.len())
+            .field("rules", &self.rules)
+            .finish()
+    }
+}
+
+impl Reserved {
+    /// The planned names `names` of the top-level items of a transfer, as `rules` compare them.
+    pub fn new<'a>(names: impl IntoIterator<Item = &'a str>, rules: Rules) -> Self {
+        Self {
+            keys: names.into_iter().map(|name| key(name, rules)).collect(),
+            rules,
+        }
+    }
+
+    /// `name 2`, `name 3` and so on, in this order, without the ones that an item of the transfer
+    /// is planned to take. The numbers are those of [`numbered`], so they end at the largest.
+    pub fn numbered(&self, name: &str) -> impl Iterator<Item = String> {
+        (2..=u32::MAX)
+            .map(move |number| numbered(name, number))
+            .filter(move |candidate| !self.keys.contains(&key(candidate, self.rules)))
+    }
 }
 
 #[cfg(test)]
@@ -754,6 +807,29 @@ mod tests {
     }
 
     #[test]
+    fn the_cut_of_a_device_name_does_not_leave_half_a_flag() {
+        for flag in SUBDIVISION_FLAGS {
+            // This name is as long as a name can be, and the `_` after `CON` is one byte more than
+            // the end of the name has room for: the cut falls inside the flag, which goes whole.
+            let filler = "x".repeat(MAX_FILE_NAME_BYTES - "CON.".len() - flag.len());
+            let name = format!("CON.{filler}{flag}");
+            assert_eq!(name.len(), MAX_FILE_NAME_BYTES);
+            let cleaned = clean(&name, WINDOWS);
+            assert_eq!(cleaned, format!("CON_.{filler}"));
+            assert_eq!(clean(&cleaned, WINDOWS), cleaned);
+
+            // A flag that ends before the cut is kept.
+            let filler = "x".repeat(MAX_FILE_NAME_BYTES - "CON.".len() - flag.len() - 30);
+            let name = format!("CON.{filler}{flag}{}", "y".repeat(30));
+            assert_eq!(name.len(), MAX_FILE_NAME_BYTES);
+            let cleaned = clean(&name, WINDOWS);
+            assert_eq!(cleaned.len(), MAX_FILE_NAME_BYTES);
+            assert_eq!(cleaned, format!("CON_.{filler}{flag}{}", "y".repeat(29)));
+            assert_eq!(clean(&cleaned, WINDOWS), cleaned);
+        }
+    }
+
+    #[test]
     fn cleaning_a_name_twice_is_cleaning_it_once() {
         for rules in [WINDOWS, MAC, IPHONE, LINUX] {
             for name in [
@@ -825,6 +901,90 @@ mod tests {
         let long = "z".repeat(MAX_FILE_NAME_BYTES);
         let cut_at = |number| numbered(&long, number).split(' ').next().unwrap().len();
         assert_eq!(cut_at(2), cut_at(u32::MAX));
+    }
+
+    /// Checks that the first number of `name` is a name that fits and that cleaning would not
+    /// change, on every system.
+    fn assert_first_number_is_clean(name: &str) {
+        let result = numbered(name, 2);
+        assert!(
+            result.len() <= MAX_FILE_NAME_BYTES,
+            "{} bytes for {name:?}",
+            result.len()
+        );
+        for rules in [WINDOWS, MAC, IPHONE, LINUX] {
+            assert!(
+                has_only_allowed_characters(&result, rules),
+                "{result:?} on {rules:?}"
+            );
+            assert_eq!(clean(&result, rules), result, "{result:?} on {rules:?}");
+        }
+    }
+
+    #[test]
+    fn a_number_does_not_cut_a_flag_in_two() {
+        for extension in ["", ".jpg"] {
+            // What the stem has room for once the number and the extension are there.
+            let room = MAX_FILE_NAME_BYTES - MAX_NUMBER_BYTES - extension.len();
+            for flag in SUBDIVISION_FLAGS {
+                // The flag starts before the cut, at it and after it, and in each place the cut
+                // falls in a different one of its characters.
+                for before in 150..=MAX_FILE_NAME_BYTES - flag.len() - extension.len() {
+                    let name = format!("{}{flag}{extension}", "x".repeat(before));
+                    assert_first_number_is_clean(&name);
+                    // A flag that ends before the cut is kept whole and one that does not is gone.
+                    assert_eq!(
+                        numbered(&name, 2).contains(flag),
+                        before + flag.len() <= room,
+                        "{before} bytes before the flag"
+                    );
+                }
+            }
+            // Two flags in a row, with the cut in the first, between them or in the second.
+            let pair = format!("{}{}", SUBDIVISION_FLAGS[0], SUBDIVISION_FLAGS[2]);
+            for before in 150..=MAX_FILE_NAME_BYTES - pair.len() - extension.len() {
+                assert_first_number_is_clean(&format!("{}{pair}{extension}", "x".repeat(before)));
+            }
+        }
+    }
+
+    #[test]
+    fn the_numbers_of_a_name_step_over_the_names_of_the_transfer() {
+        let reserved = Reserved::new(["notes.txt", "notes 2.txt", "notes 4.txt", "plain"], MAC);
+        let numbers: Vec<String> = reserved.numbered("notes.txt").take(3).collect();
+        assert_eq!(numbers, ["notes 3.txt", "notes 5.txt", "notes 6.txt"]);
+        // A name that nothing in the transfer shares starts at 2, as `numbered` does.
+        assert_eq!(
+            reserved.numbered("plain").next().as_deref(),
+            Some("plain 2")
+        );
+        assert_eq!(
+            Reserved::new([], MAC)
+                .numbered("notes.txt")
+                .next()
+                .as_deref(),
+            Some("notes 2.txt")
+        );
+    }
+
+    #[test]
+    fn the_names_of_the_transfer_are_compared_as_the_volume_compares_names() {
+        let first = |names: [&str; 1], rules, name: &str| {
+            Reserved::new(names, rules).numbered(name).next().unwrap()
+        };
+        // Case.
+        assert_eq!(first(["NOTES 2.TXT"], MAC, "notes.txt"), "notes 3.txt");
+        assert_eq!(first(["NOTES 2.TXT"], LINUX, "notes.txt"), "notes 2.txt");
+        // The form of the text: `é` as one character, and as an `e` and an accent.
+        assert_eq!(first(["e\u{301} 2"], IPHONE, "é"), "é 3");
+        assert_eq!(first(["e\u{301} 2"], LINUX, "é"), "é 2");
+    }
+
+    #[test]
+    fn the_reserved_names_are_not_in_the_debug_output() {
+        let text = format!("{:?}", Reserved::new(["secret plans.txt", "other"], MAC));
+        assert!(!text.contains("secret"), "{text}");
+        assert!(text.contains('2'), "{text}");
     }
 
     #[test]

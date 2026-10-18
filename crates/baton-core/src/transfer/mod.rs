@@ -9,7 +9,8 @@
 //! - [`destination`] is the folder that transfers are received into, and what its volume does
 //!   with names.
 //! - [`staging`] is one transfer that is being received: the files written at their place from
-//!   spans that come in any order, and checked against their hashes.
+//!   spans that come in any order, and checked against their hashes. When the transfer has
+//!   ended it puts what was checked in the destination, without replacing anything.
 //!
 //! Nothing here is connected to the session yet, and `transfer.files` is not advertised.
 
