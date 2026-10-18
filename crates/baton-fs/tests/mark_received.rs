@@ -94,6 +94,53 @@ fn the_mac_gets_the_quarantine_attribute_of_a_download() {
     assert_eq!(fields[2], "Baton");
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn a_folder_gets_the_attribute_too_which_is_what_gatekeeper_reads_for_an_app() {
+    use std::process::Command;
+
+    let dir = tempfile::tempdir().unwrap();
+    let app = dir.path().join("x.app");
+    fs::create_dir(&app).unwrap();
+
+    mark_received(&app).unwrap();
+
+    let shown = Command::new("xattr")
+        .args(["-p", "com.apple.quarantine"])
+        .arg(&app)
+        .output()
+        .unwrap();
+    assert!(shown.status.success(), "{shown:?}");
+    let value = String::from_utf8(shown.stdout).unwrap();
+    assert!(value.starts_with("0083;"), "{value}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_mark_that_is_there_already_stays_as_it_is() {
+    use std::process::Command;
+
+    let (_dir, file) = received();
+    // The kind of value Safari writes for a download, which is not the one this crate writes.
+    let theirs = "0081;5f0e4b2a;Safari;5E3B2C1D-0000-4000-8000-000000000000";
+    let set = Command::new("xattr")
+        .args(["-w", "com.apple.quarantine", theirs])
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert!(set.status.success(), "{set:?}");
+
+    mark_received(&file).unwrap();
+
+    let shown = Command::new("xattr")
+        .args(["-p", "com.apple.quarantine"])
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert!(shown.status.success(), "{shown:?}");
+    assert_eq!(String::from_utf8(shown.stdout).unwrap().trim_end(), theirs);
+}
+
 #[cfg(windows)]
 #[test]
 fn windows_gets_the_zone_stream_of_a_file_from_the_internet() {
