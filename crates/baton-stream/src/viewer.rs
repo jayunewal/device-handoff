@@ -29,8 +29,10 @@
 //! A frame has a number of its own, and the viewer names a frame by its number in every action, so
 //! a number that comes twice is a [`Violation`] and ends the session: the viewer could not say which
 //! of two pictures an action means. Only a number that it still holds, or has decoded since the last
-//! key frame, can be recognised. One that it has forgotten is below the frames it has decoded, and
-//! its frame is dropped as late.
+//! key frame, can be recognised. A frame with any other number is taken like any other, and is
+//! dropped as late if its number is below that of a frame that has been decoded. That includes the
+//! number of a frame that was dropped while it waited: the caller let go of the first copy when the
+//! `Discard` told it to, so the second is counted as a new frame.
 //!
 //! Like the sender, this is a state machine without input or output. It is told when a frame
 //! stream starts, how much of a picture has been read, and when a frame has arrived or its stream
@@ -267,11 +269,14 @@ impl Viewer {
     ///
     /// A stream that the viewer does not have, which means one that was refused, aborted or has
     /// ended, brings a frame that is dropped: the viewer holds nothing that it has not counted.
+    /// The `Discard` for such a stream names the picture of that stream, whatever its number, and
+    /// is not looked up by number: a frame with the same number may be waiting, and it stays.
     ///
     /// A frame whose number the viewer holds, or has decoded since the last key frame, is a
     /// [`Violation`], whatever its header says. The session is to end, and the picture that came
-    /// with it, which is no longer counted, goes with the others. A number that the viewer has
-    /// forgotten is below the frames it has decoded, so its frame is dropped as late.
+    /// with it, which is no longer counted, goes with the others. A frame with any other number is
+    /// taken like any other, and is dropped as late if its number is below that of a frame that has
+    /// been decoded.
     ///
     /// # Errors
     ///

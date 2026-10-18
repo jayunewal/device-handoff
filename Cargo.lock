@@ -433,6 +433,7 @@ dependencies = [
  "baton-core",
  "baton-fs",
  "baton-proto",
+ "baton-stream",
  "blake3",
  "ciborium",
  "data-encoding",
