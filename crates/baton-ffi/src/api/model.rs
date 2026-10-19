@@ -256,7 +256,7 @@ impl std::fmt::Debug for PreviewName {
 }
 
 /// How a transfer that this device took has ended.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TransferEnd {
     /// The `TransferRequest.id` of the transfer.
     pub request: i64,
@@ -270,8 +270,32 @@ pub struct TransferEnd {
     pub bytes: i64,
     /// The first of the items that were offered, as the request showed them.
     pub preview: Vec<PreviewName>,
+    /// Where the items that arrived are: the files and folders at the top of what was offered, in
+    /// the order they were offered, each at the full path it was put at. A name that was taken in
+    /// the folder has a number, so these are the names to look for, and not the ones in
+    /// `preview`. An item that could not be saved is not among them, and none are when the
+    /// transfer was dropped.
+    pub saved: Vec<String>,
     /// How it ended.
     pub result: TransferResult,
+}
+
+// A path has the name of a file in it, and the folder that the person keeps their files in, so
+// only how many there are is printed. That does not carry over to Dart, where the generated class
+// prints them: see "The bridge" in docs/architecture.md.
+impl std::fmt::Debug for TransferEnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TransferEnd")
+            .field("request", &self.request)
+            .field("device_id", &self.device_id)
+            .field("device_name", &self.device_name)
+            .field("files", &self.files)
+            .field("bytes", &self.bytes)
+            .field("preview", &self.preview)
+            .field("saved", &self.saved.len())
+            .field("result", &self.result)
+            .finish()
+    }
 }
 
 /// How a transfer that this device took has ended.

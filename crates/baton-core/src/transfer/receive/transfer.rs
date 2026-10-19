@@ -72,6 +72,7 @@ use std::{
     fmt,
     future::Future,
     io::ErrorKind,
+    path::PathBuf,
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicU64, Ordering},
@@ -592,6 +593,17 @@ impl Transfer {
             },
             Err(_) => None,
         }
+    }
+
+    /// Where the top-level items of the transfer are in the destination, in the order of the list:
+    /// those that were put in place, at the names they got. It is empty until the transfer has
+    /// ended with an outcome, and when it was given up. The paths are for the screen that shows
+    /// the person where their files are, and not for a log.
+    pub fn placed(&self) -> Vec<PathBuf> {
+        let prepared = lock(&self.shared.prepared).clone();
+        prepared
+            .map(|prepared| prepared.staging.placed())
+            .unwrap_or_default()
     }
 
     /// Waits until the transfer has had no attempt going for `limit` in one stretch, or has ended.
@@ -1988,6 +2000,43 @@ mod tests {
         }
         assert_eq!(rig.transfer.finish(&finish).await.unwrap(), first);
         rig.assert_all_in_place(&first);
+    }
+
+    #[tokio::test]
+    async fn where_the_items_are_is_known_only_once_they_are_in_place() {
+        let rig = Rig::new();
+        let attempt = rig.attempt();
+        let nowhere = Vec::<PathBuf>::new();
+        assert_eq!(rig.transfer.placed(), nowhere, "before the list");
+        assert_eq!(run(&attempt, 0, &rig.everything()).await, LaneEnd::Finished);
+        assert_eq!(rig.transfer.placed(), nowhere, "before Finish");
+
+        let done = within("finish", rig.transfer.finish(&Rig::finish()))
+            .await
+            .unwrap();
+
+        rig.assert_all_in_place(&done);
+        // The three items at the top of the list: the folder with x and y in it, and two files.
+        let root = rig.root();
+        let places = [root.join("a"), root.join("z"), root.join("zero")];
+        assert_eq!(rig.transfer.placed(), places);
+        assert_eq!(
+            rig.transfer.clone().placed(),
+            places,
+            "a clone is the same transfer"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_transfer_that_is_given_up_has_no_places_for_its_items() {
+        let rig = Rig::new();
+        let attempt = rig.attempt();
+        assert_eq!(run(&attempt, 0, &rig.everything()).await, LaneEnd::Finished);
+
+        rig.transfer.cancel().await;
+
+        assert_eq!(rig.transfer.placed(), Vec::<PathBuf>::new());
+        assert_eq!(rig.received("a/x"), None);
     }
 
     #[tokio::test]

@@ -629,6 +629,13 @@ class TransferEnd {
   /// The first of the items that were offered, as the request showed them.
   final List<PreviewName> preview;
 
+  /// Where the items that arrived are: the files and folders at the top of what was offered, in
+  /// the order they were offered, each at the full path it was put at. A name that was taken in
+  /// the folder has a number, so these are the names to look for, and not the ones in
+  /// `preview`. An item that could not be saved is not among them, and none are when the
+  /// transfer was dropped.
+  final List<String> saved;
+
   /// How it ended.
   final TransferResult result;
 
@@ -639,6 +646,7 @@ class TransferEnd {
     required this.files,
     required this.bytes,
     required this.preview,
+    required this.saved,
     required this.result,
   });
 
@@ -650,6 +658,7 @@ class TransferEnd {
       files.hashCode ^
       bytes.hashCode ^
       preview.hashCode ^
+      saved.hashCode ^
       result.hashCode;
 
   @override
@@ -663,6 +672,7 @@ class TransferEnd {
           files == other.files &&
           bytes == other.bytes &&
           preview == other.preview &&
+          saved == other.saved &&
           result == other.result;
 }
 
