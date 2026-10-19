@@ -21,6 +21,7 @@ class DevicesScreen extends StatefulWidget {
     this.now = DateTime.now,
     this.scanner = cameraScanner,
     this.chooser = const SystemFileChooser(),
+    this.onShareWindow,
     super.key,
   });
 
@@ -34,6 +35,10 @@ class DevicesScreen extends StatefulWidget {
 
   /// Lets the person choose files and folders to send. Tests give it one of their own.
   final FileChooser chooser;
+
+  /// Starts sharing a window with a device, or `null` on a device that does not share windows,
+  /// which then offers no button for it.
+  final void Function(Device device)? onShareWindow;
 
   @override
   State<DevicesScreen> createState() => _DevicesScreenState();
@@ -154,6 +159,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
               controller: _controller,
               now: widget.now(),
               onSend: _send,
+              onShareWindow: widget.onShareWindow,
               onForget: _forget,
             ),
           ),
@@ -168,12 +174,14 @@ class _Devices extends StatelessWidget {
     required this.controller,
     required this.now,
     required this.onSend,
+    required this.onShareWindow,
     required this.onForget,
   });
 
   final DevicesController controller;
   final DateTime now;
   final void Function(Device device) onSend;
+  final void Function(Device device)? onShareWindow;
   final void Function(Device device) onForget;
 
   @override
@@ -213,6 +221,7 @@ class _Devices extends StatelessWidget {
               device: device,
               now: now,
               onSend: onSend,
+              onShareWindow: onShareWindow,
               onForget: onForget,
             ),
         ],
@@ -327,12 +336,14 @@ class _DeviceTile extends StatelessWidget {
     required this.device,
     required this.now,
     required this.onSend,
+    required this.onShareWindow,
     required this.onForget,
   });
 
   final Device device;
   final DateTime now;
   final void Function(Device device) onSend;
+  final void Function(Device device)? onShareWindow;
   final void Function(Device device) onForget;
 
   @override
@@ -353,6 +364,12 @@ class _DeviceTile extends StatelessWidget {
               icon: const Icon(Icons.send_outlined),
               onPressed: () => onSend(device),
             ),
+            if (onShareWindow != null)
+              IconButton(
+                tooltip: 'Share a window with ${device.name}',
+                icon: const Icon(Icons.screen_share_outlined),
+                onPressed: () => onShareWindow!(device),
+              ),
             PopupMenuButton<_DeviceAction>(
               tooltip: 'More about ${device.name}',
               onSelected: (_) => onForget(device),

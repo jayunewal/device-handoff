@@ -4,19 +4,25 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../awake.dart';
 import '../backend.dart';
 import '../file_chooser.dart';
 import '../file_shower.dart';
+import '../format.dart';
 import '../inbox_controller.dart';
 import '../links.dart';
 import '../scanner.dart';
 import '../transfers_controller.dart';
+import '../windows_controller.dart';
 import 'devices_screen.dart';
 import 'inbox_screen.dart';
 import 'transfers_panel.dart';
+import 'window_screen.dart';
+import 'windows_panel.dart';
 
 /// The two places the person starts from: the devices, to pair them and send to them, and the
-/// inbox, for what they sent. The files that other devices send show at the bottom of both.
+/// inbox, for what they sent. The files that other devices send, and the windows that they offer
+/// to show or that this device shares, show at the bottom of both.
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
     required this.session,
@@ -25,6 +31,7 @@ class HomeScreen extends StatefulWidget {
     this.openLink = openInBrowser,
     this.chooser = const SystemFileChooser(),
     this.shower = const SystemFileShower(),
+    this.screen = const PlatformScreenKeeper(),
     super.key,
   });
 
@@ -45,6 +52,10 @@ class HomeScreen extends StatefulWidget {
   /// Takes the person to the files that arrived. Tests give it one of their own.
   final FileShower shower;
 
+  /// Keeps the screen of the device on while a window is offered and shown. Tests give it one of
+  /// their own.
+  final ScreenKeeper screen;
+
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
@@ -57,8 +68,14 @@ class _HomeScreenState extends State<HomeScreen> {
     widget.session,
     shower: widget.shower,
   );
+  late final WindowsController _windows = WindowsController(
+    widget.session,
+    screen: widget.screen,
+  );
   StreamSubscription<Received>? _arrivals;
   StreamSubscription<TransferRequest>? _requests;
+  StreamSubscription<WindowRequest>? _windowRequests;
+  StreamSubscription<WindowSession>? _windowsStarted;
   _Tab _tab = _Tab.devices;
 
   @override
@@ -66,16 +83,22 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _arrivals = _inbox.arrivals.listen(_arrived);
     _requests = _transfers.asked.listen(_asked);
+    _windowRequests = _windows.asked.listen(_windowAsked);
+    _windowsStarted = _windows.started.listen(_showWindow);
     unawaited(_inbox.start());
     unawaited(_transfers.start());
+    unawaited(_windows.start());
   }
 
   @override
   void dispose() {
     unawaited(_arrivals?.cancel());
     unawaited(_requests?.cancel());
+    unawaited(_windowRequests?.cancel());
+    unawaited(_windowsStarted?.cancel());
     _inbox.dispose();
     _transfers.dispose();
+    _windows.dispose();
     super.dispose();
   }
 
@@ -144,6 +167,40 @@ class _HomeScreenState extends State<HomeScreen> {
     _goHome();
   }
 
+  /// Says that a device offers to show a window, when a screen on top of the two places hides
+  /// the question that waits at the bottom of them. It says who offers and nothing of what: the
+  /// title of a window can be private.
+  void _windowAsked(WindowRequest request) {
+    if (ModalRoute.of(context)?.isCurrent ?? true) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(
+            '${visibleText(request.deviceName)} wants to show you a window.',
+          ),
+          duration: const Duration(seconds: 10),
+          action: SnackBarAction(label: 'Review', onPressed: _review),
+        ),
+      );
+  }
+
+  /// Takes the person to a window that another device shows on this one.
+  void _showWindow(WindowSession session) {
+    if (!mounted) return;
+    unawaited(
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => WindowScreen(
+            controller: _windows,
+            session: session,
+            screen: widget.screen,
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -155,6 +212,9 @@ class _HomeScreenState extends State<HomeScreen> {
             now: widget.now,
             scanner: widget.scanner,
             chooser: widget.chooser,
+            onShareWindow: _windows.abilities.canShare
+                ? (device) => unawaited(_windows.share(device))
+                : null,
           ),
           InboxScreen(
             controller: _inbox,
@@ -166,6 +226,7 @@ class _HomeScreenState extends State<HomeScreen> {
       bottomNavigationBar: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          WindowsPanel(controller: _windows, onOpen: _showWindow),
           TransfersPanel(controller: _transfers),
           _navigation(),
         ],

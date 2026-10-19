@@ -32,17 +32,25 @@ FakeSession _session({List<Device> devices = const []}) => FakeSession(
   pairedDevices: devices,
 );
 
-Widget _screen(FakeSession session) => MaterialApp(
+Widget _screen(
+  FakeSession session, {
+  void Function(Device device)? onShareWindow,
+}) => MaterialApp(
   home: DevicesScreen(
     session: session,
     now: () => _now,
     // No camera here: the pairing screens get a stand-in.
     scanner: (context, onCode) => const Text('(camera)'),
+    onShareWindow: onShareWindow,
   ),
 );
 
-Future<void> _show(WidgetTester tester, FakeSession session) async {
-  await tester.pumpWidget(_screen(session));
+Future<void> _show(
+  WidgetTester tester,
+  FakeSession session, {
+  void Function(Device device)? onShareWindow,
+}) async {
+  await tester.pumpWidget(_screen(session, onShareWindow: onShareWindow));
   await tester.pumpAndSettle();
 }
 
@@ -389,5 +397,43 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Laptop'), findsOneWidget);
+  });
+
+  testWidgets('offers no button to share a window where none can be shared', (
+    tester,
+  ) async {
+    await _show(
+      tester,
+      _session(devices: [_device('Phone', Platform.android)]),
+    );
+
+    expect(find.byTooltip('Share a window with Phone'), findsNothing);
+    expect(find.byTooltip('Send to Phone'), findsOneWidget);
+  });
+
+  testWidgets('a button on a device shares a window with it, and only that', (
+    tester,
+  ) async {
+    final shared = <Device>[];
+    await _show(
+      tester,
+      _session(
+        devices: [
+          _device('Kitchen iPad', Platform.ipadOs),
+          _device('Phone', Platform.android),
+        ],
+      ),
+      onShareWindow: shared.add,
+    );
+
+    await tester.tap(find.byTooltip('Share a window with Phone'));
+    await tester.pumpAndSettle();
+
+    expect(shared.map((device) => device.name), ['Phone']);
+    expect(
+      find.text('Send to Phone'),
+      findsNothing,
+      reason: 'the button is not a tap on the device',
+    );
   });
 }
