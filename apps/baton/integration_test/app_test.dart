@@ -115,6 +115,17 @@ void main() {
         isTrue,
         reason: 'the system made it, or it was there',
       );
+      if (defaultTargetPlatform == TargetPlatform.macOS) {
+        // The sandbox gives the app a Downloads folder of its own inside its container, which the
+        // person does not look in, and the app falls back to it when it cannot write to the real
+        // one. The entitlement is what lets it use the real one, and nothing else shows it.
+        expect(
+          path,
+          isNot(contains('/Library/Containers/')),
+          reason:
+              'the Downloads folder of the person, not the one in the sandbox',
+        );
+      }
       // A file can be made in it, which is what taking files needs.
       final probe = File('$path/.baton-integration-probe');
       await probe.writeAsString('x');
