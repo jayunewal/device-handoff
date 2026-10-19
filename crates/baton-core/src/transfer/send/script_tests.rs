@@ -1048,6 +1048,27 @@ async fn lanes_stopped_with_499_after_a_silent_probe_are_followed_by_the_questio
 }
 
 #[tokio::test]
+async fn the_stage_is_finishing_while_the_outcome_is_asked_for_again_after_a_stop() {
+    let (_folder, selection) = sample(&[10, 20, 30]);
+    let me = id(1);
+    // The receiver stops the lanes with 499 and then does not answer the question, as one that is
+    // putting the files in place does not, and a person looks at the progress meanwhile.
+    let script = stopping_lanes_after_a_silent_probe(me, close_code::CANCELLED, |_| Step::Never);
+    let sending = start(&script, &selection, Policy::quick(), me);
+    let log = script.log();
+
+    // The `Finish` that was lost, the question about it, and the question asked again.
+    until("the question to be asked again", || {
+        log.requests(Kind::Finish) == 3
+    })
+    .await;
+
+    assert_eq!(sending.progress().borrow().stage, Stage::Finishing);
+    sending.cancel();
+    ended(sending).await;
+}
+
+#[tokio::test]
 async fn lanes_stopped_with_499_after_a_silent_probe_are_the_end_if_the_receiver_has_no_such_transfer()
  {
     let (_folder, selection) = sample(&[10, 20, 30]);
