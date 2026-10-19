@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import 'package:baton/src/backend.dart';
+import 'package:baton/src/file_chooser.dart';
 import 'package:baton/src/screens/home_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -29,8 +30,24 @@ FakeSession _session() => FakeSession(
   pairedDevices: [_kitchenIpad],
 );
 
+/// Chooses one file without asking, so that a screen can be made to send it.
+class _Chooses implements FileChooser {
+  @override
+  bool get canChooseFolders => false;
+
+  @override
+  Future<List<String>> files() async => ['/Users/me/holiday.jpg'];
+
+  @override
+  Future<String?> folder() async => null;
+}
+
 /// Shows the app's two places for [session] and waits until it has read what it needs.
-Future<FakeSession> _show(WidgetTester tester, [FakeSession? given]) async {
+Future<FakeSession> _show(
+  WidgetTester tester, [
+  FakeSession? given,
+  FileChooser chooser = const SystemFileChooser(),
+]) async {
   final session = given ?? _session();
   tester.view
     ..physicalSize = const Size(900, 1600)
@@ -44,12 +61,28 @@ Future<FakeSession> _show(WidgetTester tester, [FakeSession? given]) async {
         // No camera here: the pairing screens get a stand-in.
         scanner: (context, onCode) => const Text('(camera)'),
         openLink: (address) async => true,
+        chooser: chooser,
       ),
     ),
   );
   await tester.pumpAndSettle();
   return session;
 }
+
+/// Opens the send screen of the Kitchen iPad and sends a file from it, which goes on until the
+/// test ends it. The bar that does not fill never settles, so the tests that use this pump for
+/// a time instead of settling.
+Future<FakeSession> _sending(WidgetTester tester) async {
+  final session = await _show(tester, null, _Chooses());
+  await tester.tap(find.text('Kitchen iPad'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('Choose files'));
+  await tester.pump();
+  expect(find.text('Stop sending'), findsOneWidget);
+  return session;
+}
+
+const _sent = FilesSent(files: 1, bytes: 2000000, failed: 0, leftOut: 0);
 
 const _plan = ReceivedItem.link(
   url: 'https://example.com/plan',
@@ -280,4 +313,57 @@ void main() {
     );
     expect(find.text('holiday.jpg'), findsOneWidget);
   });
+
+  testWidgets('Review asks before it leaves a screen that is sending files', (
+    tester,
+  ) async {
+    final session = await _sending(tester);
+    session.emit(Event.transferRequested(request: sampleTransfer()));
+    // The first frame starts the notice sliding in; the second is after it has arrived.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.text('Anna’s iPhone wants to send you files.'), findsOneWidget);
+
+    await tester.tap(find.text('Review'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('Stop sending to Kitchen iPad?'), findsOneWidget);
+    expect(session.transfer.cancelled, isFalse);
+
+    await tester.tap(find.text('Keep sending'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('Send to Kitchen iPad'), findsOneWidget);
+    expect(session.transfer.cancelled, isFalse);
+
+    // Let the transfer end, so that nothing is left going.
+    session.transfer.finish(_sent);
+    await tester.pump();
+  });
+
+  testWidgets(
+    'View asks the same, and goes to the inbox once the person says stop',
+    (tester) async {
+      final session = await _sending(tester);
+      session.arrive(sampleReceived(1, item: _plan));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+
+      await tester.tap(find.text('View'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('Stop sending to Kitchen iPad?'), findsOneWidget);
+      expect(session.transfer.cancelled, isFalse);
+
+      await tester.tap(find.text('Stop'));
+      await tester.pumpAndSettle();
+
+      expect(session.transfer.cancelled, isTrue);
+      expect(find.text('Send to Kitchen iPad'), findsNothing);
+      expect(find.text('The plan'), findsOneWidget);
+    },
+  );
 }

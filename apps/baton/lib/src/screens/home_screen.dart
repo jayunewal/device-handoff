@@ -98,9 +98,23 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _view() {
     if (!mounted) return;
-    // Whatever is on top of the two places, such as a screen for pairing, goes.
-    Navigator.of(context).popUntil((route) => route.isFirst);
+    _goHome();
     _show(_Tab.inbox);
+  }
+
+  /// Leaves whatever is on top of the two places, such as a screen for pairing. A screen that
+  /// asks before it is left, as the send screen does while files go, stops the way back and
+  /// asks, because leaving it gives the transfer up.
+  void _goHome() {
+    final navigator = Navigator.of(context);
+    navigator.popUntil(
+      (route) =>
+          route.isFirst ||
+          (route is ModalRoute &&
+              route.popDisposition == RoutePopDisposition.doNotPop),
+    );
+    // On such a screen this asks "Stop sending to …?". On the two places it does nothing.
+    unawaited(navigator.maybePop());
   }
 
   /// Says that a device asks to send files, when a screen on top of the two places hides the
@@ -121,7 +135,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _review() {
     if (!mounted) return;
-    Navigator.of(context).popUntil((route) => route.isFirst);
+    _goHome();
   }
 
   @override
