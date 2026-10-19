@@ -45,6 +45,9 @@ return_self_not_must_use = "allow"
 
 [dependencies]
 baton-app.workspace = true
+# The platform code of the device registers the viewer for windows through this crate's C
+# functions, which the library then exports, and the app is started with what it registered.
+baton-stream-abi.workspace = true
 # The same version as flutter_rust_bridge in apps/baton/pubspec.yaml and as the code
 # generator that wrote src/frb_generated.rs: the three must match exactly.
 flutter_rust_bridge = "=2.13.0"
@@ -53,4 +56,5 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
 toml.workspace = true

@@ -464,8 +464,10 @@ name = "baton-ffi"
 version = "0.1.0"
 dependencies = [
  "baton-app",
+ "baton-stream-abi",
  "flutter_rust_bridge",
  "tempfile",
+ "tokio",
  "toml",
  "tracing",
  "tracing-subscriber",
@@ -504,6 +506,20 @@ dependencies = [
  "proptest",
  "serde",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "baton-stream-abi"
+version = "0.1.0"
+dependencies = [
+ "baton-app",
+ "baton-core",
+ "baton-proto",
+ "baton-stream",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml",
 ]
 
 [[package]]
