@@ -446,7 +446,7 @@ async fn serve_transfer(
     };
     match request {
         TransferRequest::Offer(offer) => Answered::Reply(incoming.offer(paired, link, offer).await),
-        TransferRequest::Finish(finish) => match incoming.finish(&paired.id, &finish).await {
+        TransferRequest::Finish(finish) => match incoming.finish(&paired.id, link, &finish).await {
             Ok(done) => Answered::Reply(TransferReply::Done(done)),
             Err(FinishError::NotFound) if !incoming.takes_files() => unsupported(),
             Err(FinishError::NotFound) => Answered::NotFound,

@@ -53,7 +53,7 @@ use super::{
 use crate::{
     transfer::{
         destination::Destination,
-        incoming::{self, Ending, FinishError, Incoming, TransferHandler, Verdict},
+        incoming::{self, Ending, FINISH_WAIT, FinishError, Incoming, TransferHandler, Verdict},
         receive::LaneEnd,
         testing::destination,
     },
@@ -835,7 +835,7 @@ impl Link for DirectLink {
                         Reply::Transfer(incoming.offer(sender, conn.name, offer).await)
                     }
                     TransferRequest::Finish(finish) => {
-                        match incoming.finish(&sender.id, &finish).await {
+                        match incoming.finish(&sender.id, conn.name, &finish).await {
                             Ok(done) => Reply::Transfer(TransferReply::Done(done)),
                             Err(FinishError::NotFound) => Reply::Error(ErrorCode::NotFound),
                             // The session ends the request without an answer.
@@ -1204,12 +1204,19 @@ pub(super) struct Rig {
 
 impl Rig {
     pub(super) fn new() -> Self {
+        Self::over(|person| Incoming::new(person, |_| true))
+    }
+
+    /// Like [`Rig::new`], with a receiver that stops an attempt that has moved no byte for `stall`.
+    pub(super) fn stalling_after(stall: Duration) -> Self {
+        Self::over(|person| Incoming::with_waits(person, |_| true, FINISH_WAIT, stall))
+    }
+
+    /// A rig whose receiver is the table that `table` makes for the person.
+    fn over(table: impl FnOnce(Arc<dyn TransferHandler>) -> Incoming) -> Self {
         let (received_dir, destination) = destination();
         let person = Arc::new(Person::new(destination));
-        let incoming = Arc::new(Incoming::new(
-            Arc::clone(&person) as Arc<dyn TransferHandler>,
-            |_| true,
-        ));
+        let incoming = Arc::new(table(Arc::clone(&person) as Arc<dyn TransferHandler>));
         let wire = Arc::new(Direct::new(Arc::clone(&incoming)));
         Self {
             person,

@@ -84,6 +84,7 @@ use crate::{
     transfer::{
         incoming::{FINISH_WAIT, Incoming, LANE_STREAMS, TransferHandler},
         lanes::LaneSink,
+        receive::STALL,
         send::{self, NodeWire, Policy, Selection, Sending, Wire},
     },
     transport,
@@ -158,6 +159,9 @@ pub struct Tuning {
     /// How long a `Finish` of a transfer waits for the files to settle. When they have not by
     /// then, the request ends without an answer (a stop with 408) and the sender asks again.
     pub finish_wait: Duration,
+    /// How long a transfer that is being received may move no byte before its attempt is
+    /// stopped (section 8, Time). The sender may try again, and the files that were received stay.
+    pub stall: Duration,
 }
 
 impl Default for Tuning {
@@ -170,6 +174,7 @@ impl Default for Tuning {
             invalid_delay: Duration::from_millis(250),
             idle_connection: Duration::from_mins(2),
             finish_wait: FINISH_WAIT,
+            stall: STALL,
         }
     }
 }
@@ -363,7 +368,12 @@ impl NodeBuilder {
         let stop = CancellationToken::new();
         let intake = Intake::new(&config.handoff);
         let incoming = transfers.map(|handler| {
-            Incoming::with_finish_wait(handler, intake.item_charge(), tuning.finish_wait)
+            Incoming::with_waits(
+                handler,
+                intake.item_charge(),
+                tuning.finish_wait,
+                tuning.stall,
+            )
         });
         let (sinks, streaming) =
             take_streams(sinks, incoming.as_ref(), windows, sharing, &intake, &tuning);
@@ -1195,5 +1205,10 @@ mod tests {
         assert!(tuning.pair_connection_limit() > tuning.approval_timeout);
         assert!(tuning.join_reply_deadline() > tuning.approval_timeout);
         assert!(tuning.reply_deadline > tuning.request_deadline);
+    }
+
+    #[test]
+    fn a_transfer_that_moves_no_byte_is_stopped_after_thirty_seconds_unless_tuned() {
+        assert_eq!(Tuning::default().stall, Duration::from_secs(30));
     }
 }
