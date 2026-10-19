@@ -36,26 +36,26 @@ A pull request runs only the jobs that its change can affect, so a change to the
 
 | The change is only in | The jobs that run |
 | --- | --- |
-| Markdown files, `docs/` (but not `docs/try-it.md`), the issue templates, `.github/CODEOWNERS`, `.github/dependabot.yml`, the Python script in `apps/baton/tool/` | None |
-| `docs/try-it.md`, which the Build jobs pack into the downloads | The Rust jobs |
+| Markdown files, `docs/`, the issue templates, `.github/CODEOWNERS`, `.github/dependabot.yml`, the Python script in `apps/baton/tool/` | None |
 | `apps/baton/test/` | App (Flutter, Linux) |
 | `apps/baton/ios/` | App (Flutter, Linux) and App (iPhone) |
 | `apps/baton/macos/` | App (Flutter, Linux) and App (macOS) |
 | Anything else in `apps/` | The three App jobs |
 | Anything else | All of them |
 
-The Rust jobs are Format, Clippy, Test, Minimum supported Rust version, Rustdoc, Licenses and advisories, and Build. A change that is in several rows runs the jobs of all of them. A change to `crates/`, `Cargo.lock`, `.github/workflows` or the scripts next to it, and anything the rules do not know, such as a new folder, runs all of them. So does an empty list of paths, or a pull request whose paths cannot be listed. A push to `main` and a run started by hand always run everything, because the downloads are built there.
+The Rust jobs are Format, Clippy, Test, Minimum supported Rust version, Rustdoc, and Licenses and advisories. A change that is in several rows runs the jobs of all of them. A change to `crates/`, `Cargo.lock`, `.github/workflows` or the scripts next to it, and anything the rules do not know, such as a new folder, runs all of them. So does an empty list of paths, or a pull request whose paths cannot be listed. A push to `main` and a run started by hand always run everything, and they run Build too, which makes the downloads. A pull request does not.
 
 The rules are in `.github/scripts/changed-paths.sh`. `changed-paths-test.sh` next to it holds them to the changes people really make, and CI runs it first, so a rule that skips a job it should not fails there.
 
 ### Why a run takes the time it does
 
-GitHub runs five Mac jobs at a time for the whole repository, and a full run needs four of them (App (macOS), App (iPhone), Test on macOS and Build for macOS). When several pull requests run together the Mac jobs wait their turn, and nothing is wrong. What CI does to ask less of them:
+GitHub runs five Mac jobs at a time for the whole repository, and a run on `main` needs four of them (App (macOS), App (iPhone), Test on macOS and Build for macOS). A pull request needs three, because it does not build the downloads. When several pull requests run together the Mac jobs wait their turn, and nothing is wrong. What CI does to ask less of them:
 
 - The jobs that build Rust keep their dependencies from one run to the next, and the two app jobs also what Cargo builds for the library, in `apps/baton/build/cargokit` (`apps/baton/rust_builder/README.md` says how Cargokit is changed to build there). Only a run on `main` saves these caches, because GitHub keeps 10 GB for the whole repository and a set for every pull request pushed the others out. A pull request that changes `Cargo.lock` therefore builds the new dependencies in each of its runs, and the run on `main` after the merge saves them. The last step of each app job says how many of the dependencies it had to build, in a notice on the page of the run, so a cache that stopped helping shows.
 - A push to a pull request cancels the run of the one before it. A run on `main` is not cancelled by the next merge, so that it gets to save its cache.
 - Rust is built without debug information (`CARGO_PROFILE_DEV_DEBUG` in `ci.yml`, and a file that the app jobs write for the builds that Xcode starts). It makes a build a third faster and a cache a third of the size, and a failed test still names its file and line.
 - The iPhone job builds its simulator for the processor of the Mac only. If Flutter never finds the app in the simulator, which has happened in about one job of eight, `.github/scripts/hang-guard.py` stops the test after two minutes and starts it again once. The log says so in a warning, and prints what the simulator logged about the app, so that a run that passes on the second start still shows what went wrong in the first. A test that fails is not started again.
+- The downloads (the `baton` program for macOS, Windows and Linux, and the Mac app) are made by a run on `main` and by a run started by hand, not for a pull request. To get the downloads of a branch before it is merged, open **Actions**, choose **CI**, click **Run workflow** and pick the branch. A break that shows only in a release build, in the program for Intel Macs or when the downloads are packed is found by the run on `main` after the merge.
 
 ## Code style
 
