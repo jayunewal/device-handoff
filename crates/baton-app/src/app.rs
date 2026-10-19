@@ -17,7 +17,10 @@ use baton_core::{
     Config, DataDir, DirLock, Identity, Inbox, InboxEntry, InboxHandler, Node, PairApprovalRequest,
     PairedDevice, TrustStore,
     error::{Error as Core, OfferEnd},
-    transfer::{destination::Destination, send::Selection},
+    transfer::{
+        destination::Destination,
+        send::{Holds, Selection},
+    },
     trust::TrustEvent,
 };
 use baton_proto::{
@@ -226,8 +229,11 @@ impl App {
         let sessions = Sessions::new(viewer, sharer, Arc::clone(&questions), events.clone());
         sessions.check_limits()?;
 
+        // What the last run left at other devices is given up as soon as they can be reached: a
+        // device that was sent files when Baton was closed would otherwise hold them for an hour.
         let mut builder = Node::builder(&identity, trust.clone(), config.clone())
-            .handoff_handler(InboxHandler::new(inbox.clone()));
+            .handoff_handler(InboxHandler::new(inbox.clone()))
+            .holds(Holds::open(dir.holds_file()));
         if sessions.abilities().can_show {
             builder = builder.window_handler(Handler(Arc::clone(&sessions)));
         }

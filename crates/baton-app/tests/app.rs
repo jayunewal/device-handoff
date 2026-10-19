@@ -29,8 +29,8 @@ const WAIT: Duration = Duration::from_secs(30);
 /// One device: an app, and the folder it keeps its files in.
 struct Dev {
     app: App,
-    /// Kept so the folder lives as long as the device does.
-    _dir: TempDir,
+    /// The folder that the device keeps its state in, kept so it lives as long as the device does.
+    dir: TempDir,
     /// The folder that files are received in, for a device that takes files.
     received: Option<TempDir>,
 }
@@ -52,11 +52,7 @@ impl Dev {
         let mut options = Options::new(dir.path());
         options.receive_dir = received.as_ref().map(|folder| folder.path().to_path_buf());
         let app = App::start(options).await.unwrap();
-        Self {
-            app,
-            _dir: dir,
-            received,
-        }
+        Self { app, dir, received }
     }
 
     fn id(&self) -> String {
@@ -69,6 +65,19 @@ impl Dev {
             .as_ref()
             .expect("a device that takes files")
             .path()
+    }
+
+    /// The app is stopped and started again over the same folder, as when a program is closed and
+    /// opened again.
+    async fn restarted(self) -> Self {
+        self.app.stop().await;
+        let mut options = Options::new(self.dir.path());
+        options.receive_dir = self
+            .received
+            .as_ref()
+            .map(|folder| folder.path().to_path_buf());
+        let app = App::start(options).await.unwrap();
+        Self { app, ..self }
     }
 }
 
@@ -1053,6 +1062,68 @@ async fn letting_go_of_a_send_gives_the_transfer_up() {
 }
 
 #[tokio::test]
+async fn an_app_that_is_opened_again_tells_the_receiver_to_let_go_of_what_it_left() {
+    let a = Dev::start_taking_files("Device A").await;
+    let b = Dev::start("Device B").await;
+    pair(&a, &b).await;
+    let mut a_events = a.app.events();
+    // Large enough that it cannot be over before the app is closed. It is a hole in the file
+    // system, so it costs nothing to make.
+    let source = tempfile::tempdir().unwrap();
+    let big = source.path().join("big.bin");
+    std::fs::File::create(&big)
+        .unwrap()
+        .set_len(128 << 20)
+        .unwrap();
+    let sending = b.app.send_files(&a.id(), vec![big]).await.unwrap();
+    let request = question(&mut a_events).await;
+    assert!(a.app.answer_transfer(request.id, true));
+    tokio::time::timeout(WAIT, async {
+        while sending.progress().sent == 0 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("no byte was sent");
+
+    // The person closes the app in the middle of the transfer. Nothing is told to the receiver,
+    // which keeps what it was sent until it lets go of it by itself.
+    b.app.stop().await;
+    let error = finished(&sending).await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Cancelled, "{error}");
+    assert!(
+        none_comes(&mut a_events, |event| matches!(
+            event,
+            Event::TransferEnded(_)
+        ))
+        .await,
+        "the receiver was not told"
+    );
+
+    // Opened again, the app gives up what it left there as soon as it reaches the device.
+    let b = b.restarted().await;
+
+    let end = next_matching(&mut a_events, |event| match event {
+        Event::TransferEnded(end) => Some(end),
+        _ => None,
+    })
+    .await;
+    assert_eq!(end.request, request.id);
+    assert_eq!(end.result, TransferResult::Dropped);
+    assert!(tree(a.received()).is_empty(), "half a file is never kept");
+    // Starting again did not change who the device is, and the receiver takes files from it again.
+    let (_source, paths) = one_file("after.txt", b"after the restart");
+    let sending = b.app.send_files(&a.id(), paths).await.unwrap();
+    let request = question(&mut a_events).await;
+    assert!(a.app.answer_transfer(request.id, true));
+    finished(&sending).await.unwrap();
+    assert_eq!(
+        tree(a.received()),
+        BTreeMap::from([("after.txt".to_owned(), Some(b"after the restart".to_vec()))])
+    );
+}
+
+#[tokio::test]
 async fn a_file_that_is_gone_when_its_turn_comes_is_counted_on_both_devices() {
     let a = Dev::start_taking_files("Device A").await;
     let b = Dev::start("Device B").await;
@@ -1251,7 +1322,7 @@ async fn a_folder_that_cannot_be_used_leaves_the_device_running_and_taking_no_fi
     options.receive_dir = Some(nowhere.path().join("not-there"));
     let a = Dev {
         app: App::start(options).await.unwrap(),
-        _dir: dir,
+        dir,
         received: None,
     };
     let b = Dev::start("Device B").await;
