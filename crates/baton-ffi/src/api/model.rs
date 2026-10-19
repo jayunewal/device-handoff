@@ -241,9 +241,9 @@ pub struct PreviewName {
     pub bytes: i64,
 }
 
-// A file name can say more than the person wants in a log, so only sizes are printed. That
-// does not carry over to Dart, where the generated class prints the name: see "The bridge" in
-// docs/architecture.md.
+// A file name can say more than the person wants in a log, so only sizes are printed. The Dart
+// class has no `toString` to do the same, so the name prints wherever a screen prints it: see
+// "Dart prints what it holds" in docs/architecture.md.
 impl std::fmt::Debug for PreviewName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PreviewName")
@@ -281,8 +281,9 @@ pub struct TransferEnd {
 }
 
 // A path has the name of a file in it, and the folder that the person keeps their files in, so
-// only how many there are is printed. That does not carry over to Dart, where the generated class
-// prints them: see "The bridge" in docs/architecture.md.
+// only how many there are is printed. The Dart class has no `toString` to do the same, so the
+// paths print wherever a screen prints `saved`: see "Dart prints what it holds" in
+// docs/architecture.md.
 impl std::fmt::Debug for TransferEnd {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TransferEnd")

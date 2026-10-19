@@ -41,6 +41,9 @@ class _Chooses implements FileChooser {
 
   @override
   Future<String?> folder() async => null;
+
+  @override
+  Future<void> release(List<String> paths) async {}
 }
 
 /// Shows the app's two places for [session] and waits until it has read what it needs.
