@@ -4,7 +4,7 @@
 
 Baton is an open source app for moving your work between your own devices: send a link, a browser tab, a file or your clipboard from one device to another, and later stream a window from your Mac or PC to your iPad or phone. It is meant to work between macOS, Windows, Linux, iOS, iPadOS and Android, in every direction. Devices talk directly over your local network when they can and fall back to the internet when they can't. Everything between devices is end-to-end encrypted.
 
-> **Status: pre-alpha.** Milestone 1 (the Rust core and a command-line client) is under construction. The `baton` program can pair two computers and send links and text between them, and [docs/try-it.md](docs/try-it.md) says how to try it and what does not work yet. The app for iPhone, iPad and Mac names the device, lists the devices paired with it, pairs two of them by a QR code or a code pasted in, sends links and text between them and keeps what it receives in an inbox, and [docs/install-the-app.md](docs/install-the-app.md) says how to put it on a Mac, an iPhone or an iPad. Files, the background agent, Android and accounts are not built. "Baton" is a working name and may change.
+> **Status: pre-alpha.** Milestone 1 (the Rust core and a command-line client) is under construction. The `baton` program can pair two computers and send links and text between them, and [docs/try-it.md](docs/try-it.md) says how to try it and what does not work yet. The app for iPhone, iPad and Mac names the device, lists the devices paired with it, pairs two of them by a QR code or a code pasted in, sends links and text between them and keeps what it receives in an inbox, and sends files and folders from one to the other once the person at the other end says yes. [docs/install-the-app.md](docs/install-the-app.md) says how to put it on a Mac, an iPhone or an iPad. The background agent, Android and accounts are not built. "Baton" is a working name and may change.
 
 ## What Baton can and cannot do
 
@@ -32,7 +32,7 @@ The research behind these limits, and the ideas for working around them, is in [
 | Milestone | Scope | State |
 | --- | --- | --- |
 | 1 | Rust core: device identity, pairing, LAN discovery, encrypted transport with relay fallback. Clipboard, link and file handoff between two desktop clients from a command-line app, with Baton's own fast file transfer and a benchmark. Designed to work while devices are locked. CI on Linux, macOS and Windows. | In progress |
-| 2 | Flutter apps for desktop and mobile that wrap the core. Pairing by QR code, send and receive links, clipboard and files. | In progress: pairing, links and text on iPhone, iPad and Mac |
+| 2 | Flutter apps for desktop and mobile that wrap the core. Pairing by QR code, send and receive links, clipboard and files. | In progress: pairing, links, text and files on iPhone, iPad and Mac |
 | 3 | Browser tabs and sharing. Browser extension, phone share sheet, iOS Shortcuts. | Planned |
 | 4 | Self-hostable account server: automatic device list, signaling and push notification gateway, so devices on the same account find each other. | Planned |
 | 5 | Window streaming from Mac and Windows to an iPad or phone, with input. | Planned |

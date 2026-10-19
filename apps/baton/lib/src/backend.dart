@@ -17,6 +17,11 @@ export 'rust/api/model.dart'
         Event_PairingRequested,
         Event_Received,
         Event_Resync,
+        Event_TransferEnded,
+        Event_TransferRequestEnded,
+        Event_TransferRequested,
+        FileProgress,
+        FilesSent,
         JoinProgress,
         JoinProgress_Code,
         JoinProgress_Failed,
@@ -33,12 +38,23 @@ export 'rust/api/model.dart'
         OfferOutcome_Paired,
         PairingRequest,
         Platform,
+        PreviewName,
         Reach,
         Received,
         ReceivedItem,
         ReceivedItem_Link,
         ReceivedItem_Text,
-        Route;
+        Receiving,
+        Receiving_Off,
+        Receiving_On,
+        Receiving_Unusable,
+        Route,
+        SendStage,
+        TransferEnd,
+        TransferRequest,
+        TransferResult,
+        TransferResult_Dropped,
+        TransferResult_Received;
 
 /// Opens the folder where Baton keeps its files and starts Baton in it.
 abstract interface class Backend {
@@ -109,6 +125,25 @@ abstract interface class Session {
   /// Gives up on a [joinPairing] that is still waiting.
   void cancelJoin();
 
+  /// Whether this device takes files from other devices, and if not, why. It is decided when
+  /// Baton starts.
+  Receiving receiving();
+
+  /// Where the files that other devices send are put, or `null` if this device takes none.
+  String? get receiveFolder;
+
+  /// Answers a request for files, which `Event_TransferRequested` brought. Returns `false` if it
+  /// is not waiting any more, because it was answered already, the other device gave up, or the
+  /// two minutes that the person has ran out; `true` does not yet mean that the files are here,
+  /// `Event_TransferEnded` says that.
+  bool answerTransfer(int request, {required bool accept});
+
+  /// Starts sending files and folders, given by their paths, to a paired device, and returns at
+  /// once with the transfer that is going. The person at the other end is asked whether to take
+  /// them. Throws a `BatonError` of kind `badItem` if nothing in the paths can be sent, whose
+  /// message says why, `notPaired`, or `stopped`.
+  Future<FileTransfer> sendFiles(String id, List<String> paths);
+
   /// Sends a web link to a paired device. Throws a `BatonError` that says why not, of kind
   /// `badItem` if [url] is not a full web address, `notPaired`, `unreachable` if the device
   /// cannot be reached, or `declined` if it answers and does not take the link.
@@ -141,4 +176,20 @@ abstract interface class Session {
 
   /// Stops Baton and lets go of its folder.
   Future<void> stop();
+}
+
+/// A transfer of files that this device is sending.
+abstract interface class FileTransfer {
+  /// How far the transfer has got. This is cheap, and the latest is always there.
+  FileProgress progress();
+
+  /// Gives the transfer up, and tells the other device if it can. [outcome] then throws a
+  /// `BatonError` of kind `cancelled`. It does nothing once the transfer is over.
+  void cancel();
+
+  /// Waits for the end of the transfer. Throws a `BatonError` that says why it did not come to
+  /// an end that the other device answered for: `declined` if it did not take the files,
+  /// `unreachable` if Baton gave up reaching it, `cancelled` if [cancel] was called, `stopped`
+  /// if Baton stopped, and `notPaired` or `other` otherwise.
+  Future<FilesSent> outcome();
 }

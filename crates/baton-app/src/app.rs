@@ -17,6 +17,7 @@ use baton_core::{
     Config, DataDir, DirLock, Identity, Inbox, InboxEntry, InboxHandler, Node, PairApprovalRequest,
     PairedDevice, TrustStore,
     error::{Error as Core, OfferEnd},
+    transfer::{destination::Destination, send::Selection},
     trust::TrustEvent,
 };
 use baton_proto::{
@@ -28,8 +29,13 @@ use tokio::sync::{broadcast, broadcast::error::RecvError, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    Error, ErrorKind, Event, Events, Result,
-    model::{Device, Me, Network, Offer, OfferOutcome, PairingRequest, Reach, Received},
+    Error, ErrorKind, Event, Events, FileSend, Result,
+    error::unusable_folder,
+    files::Files,
+    model::{
+        Device, Me, Network, Offer, OfferOutcome, PairingRequest, Reach, Received, Receiving,
+        TransferRequest,
+    },
 };
 
 /// How many events a slow reader can fall behind by before it is told to read everything
@@ -56,6 +62,19 @@ pub struct Options {
     /// The ask starts with a multicast message too, so an iPhone or iPad app passes
     /// `Some(false)` here as well.
     pub port_mapping: Option<bool>,
+    /// The folder that files sent by other devices are put in. It has to be there already.
+    ///
+    /// Without one this device takes no files: it does not say that it can, and a device that
+    /// offers files to it is told so. With one, every transfer is put to the person first (see
+    /// [`Event::TransferRequested`]), and nothing is written to the folder until they say yes.
+    /// What is being received is kept in a hidden folder of its own inside this one, and each
+    /// file is moved into place only when all of it has arrived and been checked, so the folder
+    /// never holds half a file. A file that has the name of one already there gets a number
+    /// added to its name, and nothing is replaced.
+    ///
+    /// The app has to be allowed to write to the folder. If Baton cannot use it, the app still
+    /// starts and [`App::receiving`] says why this device takes no files.
+    pub receive_dir: Option<PathBuf>,
 }
 
 impl Options {
@@ -65,6 +84,7 @@ impl Options {
             data_dir: data_dir.into(),
             lan_discovery: None,
             port_mapping: None,
+            receive_dir: None,
         }
     }
 
@@ -112,9 +132,14 @@ struct Open {
 /// holds on to it for as long as the question is open. If it held the whole app, an app that
 /// was dropped while a question was showing would stay running, with its folder locked,
 /// until the question was over.
-struct Questions {
-    /// Requests that are waiting for the person's answer.
+///
+/// Pairing requests and requests for files are numbered from the same count, but they wait in
+/// tables of their own, so an answer to one kind cannot reach the other.
+pub(crate) struct Questions {
+    /// Pairing requests that are waiting for the person's answer.
     waiting: Mutex<HashMap<u64, oneshot::Sender<bool>>>,
+    /// Requests for files that are waiting for the person's answer.
+    transfers: Mutex<HashMap<u64, oneshot::Sender<bool>>>,
     next: AtomicU64,
     events: broadcast::Sender<Event>,
 }
@@ -135,6 +160,8 @@ struct Inner {
     /// Cancelled when stopping is over: the node is down and the folder is free.
     released: CancellationToken,
     questions: Arc<Questions>,
+    /// Whether this device takes files, which was decided when it started.
+    receiving: Receiving,
     /// Held while an offer is made, so that offers reach the node in the order they were
     /// asked for.
     offer_turn: tokio::sync::Mutex<()>,
@@ -172,20 +199,40 @@ impl App {
         let arrivals = inbox.subscribe();
         let trust_events = trust.subscribe();
 
-        let node = Node::builder(&identity, trust.clone(), config.clone())
-            .handoff_handler(InboxHandler::new(inbox.clone()))
-            .bind()
-            .await
-            .map_err(starting)?;
-
-        tracing::info!(device = %identity.device_id().short(), "Baton started");
         let (events, _) = broadcast::channel(EVENT_BACKLOG);
         let stopped = CancellationToken::new();
+        // Made before the node, because the part of it that takes files puts its questions to the
+        // person through it.
         let questions = Arc::new(Questions {
             waiting: Mutex::new(HashMap::new()),
+            transfers: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
             events: events.clone(),
         });
+
+        let mut builder = Node::builder(&identity, trust.clone(), config.clone())
+            .handoff_handler(InboxHandler::new(inbox.clone()));
+        // The folder is opened once for the run: opening it again would remove what the transfers
+        // that are going on hold. A folder that cannot be used leaves the app running, and
+        // `receiving` says why it takes no files.
+        let receiving = match options.receive_dir.as_deref() {
+            None => Receiving::Off,
+            Some(folder) => match Destination::open(folder, &identity.device_id()) {
+                Ok(destination) => {
+                    builder =
+                        builder.transfer_handler(Files::new(destination, Arc::clone(&questions)));
+                    Receiving::On
+                }
+                Err(e) => {
+                    let reason = unusable_folder(&e);
+                    tracing::warn!(%reason, "no files are taken");
+                    Receiving::Unusable(reason)
+                }
+            },
+        };
+        let node = builder.bind().await.map_err(starting)?;
+
+        tracing::info!(device = %identity.device_id().short(), "Baton started");
         tokio::spawn(forward_arrivals(arrivals, events.clone(), stopped.clone()));
         tokio::spawn(forward_trust_events(
             trust_events,
@@ -205,6 +252,7 @@ impl App {
                 stopping: AtomicBool::new(false),
                 released: CancellationToken::new(),
                 questions,
+                receiving,
                 offer_turn: tokio::sync::Mutex::new(()),
                 offer: Mutex::new(None),
                 join: Mutex::new(None),
@@ -353,6 +401,23 @@ impl App {
         waiting.is_some_and(|answer| answer.send(accept).is_ok())
     }
 
+    /// Whether this device takes files from other devices, and if not, why. It is decided when
+    /// the app starts, from [`Options::receive_dir`].
+    pub fn receiving(&self) -> Receiving {
+        self.inner.receiving.clone()
+    }
+
+    /// Answers a [`TransferRequest`]. Returns `false` if it is not waiting any more, because it
+    /// was answered already, the other device gave up, or the person's two minutes ran out.
+    ///
+    /// `true` means the answer was passed on. With a yes the files start to arrive, and
+    /// [`Event::TransferEnded`] reports how it went. A no, like no answer, tells the other
+    /// device that the person did not take them.
+    pub fn answer_transfer(&self, request: u64, accept: bool) -> bool {
+        let waiting = locked(&self.inner.questions.transfers).remove(&request);
+        waiting.is_some_and(|answer| answer.send(accept).is_ok())
+    }
+
     /// Pairs with the device that made `ticket`, text as [`Offer::ticket`] shows it or as
     /// a camera read it from the other device's QR code. Anything around the ticket, such
     /// as the rest of a pasted command, is ignored.
@@ -467,6 +532,44 @@ impl App {
         self.send(id, "text", item).await
     }
 
+    /// Starts sending files and folders to a paired device, and returns at once with the transfer
+    /// that is going. The person at the other end is asked whether to take them, and the
+    /// transfer goes on in the background from there: show [`FileSend::progress`] now and then,
+    /// and wait for [`FileSend::outcome`] for the end.
+    ///
+    /// A folder is sent with everything in it, as it is. Links inside a folder, files that
+    /// cannot be read and the like are left out, and the end says how many
+    /// ([`FilesSent::left_out`](crate::model::FilesSent::left_out)).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::NotPaired`] if `id` is not a paired device, and [`ErrorKind::BadItem`] if
+    /// there is nothing to send in `paths`, or too much for one transfer. What goes wrong once
+    /// the transfer has started is the [`FileSend::outcome`].
+    pub async fn send_files(&self, id: &str, paths: Vec<PathBuf>) -> Result<FileSend> {
+        self.running()?;
+        let (peer, name) = self.paired(id)?;
+        // Walking the folders reads the disk, which can take a while for a large one, so it is
+        // not done on the threads that drive the network.
+        let selection = tokio::task::spawn_blocking(move || Selection::walk(&paths))
+            .await
+            .map_err(|_| {
+                Error::new(
+                    ErrorKind::Other,
+                    "Baton could not look at what you chose. Try again.",
+                )
+            })?
+            .map_err(|e| Error::selection(&e))?;
+        let left_out = selection.left_out().total();
+        // The app may have been stopped, or the device unpaired, while the folders were walked.
+        let node = self.running()?;
+        let sending = node
+            .send_files(&peer, selection)
+            .map_err(|e| Error::reaching(&e, &name))?;
+        tracing::debug!(device = %peer.short(), "files are being sent");
+        Ok(FileSend::start(sending, name, left_out))
+    }
+
     /// What other devices have sent, newest first.
     ///
     /// This reads a file. Call it from a thread where waiting a moment is fine.
@@ -558,6 +661,7 @@ impl Inner {
         }
         // Questions that are open become a no.
         locked(&self.questions.waiting).clear();
+        locked(&self.questions.transfers).clear();
         self.node.shutdown().await;
         // Released only now that nothing is using the folder.
         locked(&self.lock).take();
@@ -598,10 +702,10 @@ impl Questions {
         let _unanswered = Unanswered {
             questions: Arc::clone(&self),
             id,
+            kind: Asked::Pairing,
         };
         tracing::debug!(request = id, device = %request.peer.short(), "pairing request shown");
-        // Nobody listening is fine.
-        let _ = self.events.send(Event::PairingRequested(PairingRequest {
+        self.emit(Event::PairingRequested(PairingRequest {
             id,
             device_id: request.peer.to_string(),
             name: request.device.name.clone(),
@@ -611,28 +715,70 @@ impl Questions {
         }));
         answered.await.unwrap_or(false)
     }
+
+    /// Puts a request for files to the person and waits for the answer, which is no if none
+    /// comes. `request` makes the request once it has its number, and the number is returned
+    /// with the answer. A request that stops mattering first, because the other device gave up
+    /// or the person's time ran out, drops this future, and the screen is told to take the
+    /// question away.
+    pub(crate) async fn ask_transfer(
+        self: Arc<Self>,
+        request: impl FnOnce(u64) -> TransferRequest + Send,
+    ) -> (u64, bool) {
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let (answer, answered) = oneshot::channel();
+        locked(&self.transfers).insert(id, answer);
+        let _unanswered = Unanswered {
+            questions: Arc::clone(&self),
+            id,
+            kind: Asked::Transfer,
+        };
+        tracing::debug!(request = id, "request for files shown");
+        self.emit(Event::TransferRequested(request(id)));
+        (id, answered.await.unwrap_or(false))
+    }
+
+    /// Tells the screens something. Nobody listening is fine.
+    pub(crate) fn emit(&self, event: Event) {
+        let _ = self.events.send(event);
+    }
 }
 
-/// Tells the screen that a pairing request is no longer waiting, if nobody answered it.
+/// Which kind of question is being asked.
+#[derive(Clone, Copy)]
+enum Asked {
+    Pairing,
+    Transfer,
+}
+
+/// Tells the screen that a question is no longer waiting, if nobody answered it.
 struct Unanswered {
     questions: Arc<Questions>,
     id: u64,
+    kind: Asked,
 }
 
 impl Drop for Unanswered {
     fn drop(&mut self) {
-        if locked(&self.questions.waiting).remove(&self.id).is_some() {
-            let _ = self
-                .questions
-                .events
-                .send(Event::PairingRequestEnded { id: self.id });
+        let (table, ended) = match self.kind {
+            Asked::Pairing => (
+                &self.questions.waiting,
+                Event::PairingRequestEnded { id: self.id },
+            ),
+            Asked::Transfer => (
+                &self.questions.transfers,
+                Event::TransferRequestEnded { id: self.id },
+            ),
+        };
+        if locked(table).remove(&self.id).is_some() {
+            self.questions.emit(ended);
         }
     }
 }
 
 /// Locks `mutex`, carrying on if another thread panicked while holding it: nothing in this
 /// file leaves its data half changed.
-fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -731,5 +877,85 @@ mod tests {
         only_ports.port_mapping = Some(false);
         let only_ports = only_ports.applied_to(file);
         assert!(only_ports.network.lan_discovery && !only_ports.network.port_mapping);
+    }
+
+    fn request(id: u64) -> TransferRequest {
+        TransferRequest {
+            id,
+            device_id: "0".repeat(64),
+            device_name: "Kitchen iPad".to_owned(),
+            items: 1,
+            files: 1,
+            folders: 0,
+            bytes: 1,
+            preview: Vec::new(),
+        }
+    }
+
+    fn questions() -> (Arc<Questions>, broadcast::Receiver<Event>) {
+        let (events, seen) = broadcast::channel(8);
+        let questions = Arc::new(Questions {
+            waiting: Mutex::new(HashMap::new()),
+            transfers: Mutex::new(HashMap::new()),
+            next: AtomicU64::new(1),
+            events,
+        });
+        (questions, seen)
+    }
+
+    /// Waits until the question that was just asked is waiting for its answer.
+    async fn waiting(questions: &Questions) {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while locked(&questions.transfers).is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the question never started to wait");
+    }
+
+    #[tokio::test]
+    async fn a_question_whose_answer_is_lost_is_a_no() {
+        let (questions, _seen) = questions();
+        let asked = tokio::spawn(Arc::clone(&questions).ask_transfer(request));
+        waiting(&questions).await;
+
+        // What stopping the app does to the questions that are open.
+        locked(&questions.transfers).clear();
+
+        assert_eq!(asked.await.unwrap(), (1, false));
+    }
+
+    #[tokio::test]
+    async fn a_question_that_is_answered_is_not_taken_back_and_one_that_is_dropped_is() {
+        let (questions, mut seen) = questions();
+        let asked = tokio::spawn(Arc::clone(&questions).ask_transfer(request));
+        waiting(&questions).await;
+        let answer = locked(&questions.transfers).remove(&1).unwrap();
+        answer.send(true).unwrap();
+        assert_eq!(asked.await.unwrap(), (1, true));
+        assert!(matches!(
+            seen.recv().await,
+            Ok(Event::TransferRequested(TransferRequest { id: 1, .. }))
+        ));
+        assert!(
+            seen.try_recv().is_err(),
+            "an answered question stays answered"
+        );
+
+        // The other device gives up: whoever waits for the answer is dropped.
+        let asked = tokio::spawn(Arc::clone(&questions).ask_transfer(request));
+        waiting(&questions).await;
+        asked.abort();
+        let _ = asked.await;
+        assert!(matches!(
+            seen.recv().await,
+            Ok(Event::TransferRequested(TransferRequest { id: 2, .. }))
+        ));
+        assert!(matches!(
+            seen.recv().await,
+            Ok(Event::TransferRequestEnded { id: 2 })
+        ));
+        assert!(locked(&questions.transfers).is_empty());
     }
 }

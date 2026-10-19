@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import 'backend.dart';
 import 'controller.dart';
+import 'file_chooser.dart';
 import 'scanner.dart';
 import 'screens/home_screen.dart';
 import 'screens/name_screen.dart';
@@ -17,6 +18,7 @@ class BatonApp extends StatefulWidget {
   const BatonApp({
     required this.backend,
     this.scanner = cameraScanner,
+    this.chooser = const SystemFileChooser(),
     super.key,
   });
 
@@ -24,6 +26,9 @@ class BatonApp extends StatefulWidget {
 
   /// Reads QR codes with the camera, for pairing. Tests give it one of their own.
   final ScannerBuilder scanner;
+
+  /// Lets the person choose files and folders to send. Tests give it one of their own.
+  final FileChooser chooser;
 
   @override
   State<BatonApp> createState() => _BatonAppState();
@@ -61,6 +66,7 @@ class _BatonAppState extends State<BatonApp> {
           Phase.running => HomeScreen(
             session: _controller.session!,
             scanner: widget.scanner,
+            chooser: widget.chooser,
           ),
           Phase.failed => ProblemScreen(
             problem: _controller.problem,

@@ -56,7 +56,7 @@ extension EventPatterns on Event {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( Event_Received value)?  received,TResult Function( Event_DevicesChanged value)?  devicesChanged,TResult Function( Event_PairingRequested value)?  pairingRequested,TResult Function( Event_PairingRequestEnded value)?  pairingRequestEnded,TResult Function( Event_OfferEnded value)?  offerEnded,TResult Function( Event_Resync value)?  resync,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( Event_Received value)?  received,TResult Function( Event_DevicesChanged value)?  devicesChanged,TResult Function( Event_PairingRequested value)?  pairingRequested,TResult Function( Event_PairingRequestEnded value)?  pairingRequestEnded,TResult Function( Event_OfferEnded value)?  offerEnded,TResult Function( Event_TransferRequested value)?  transferRequested,TResult Function( Event_TransferRequestEnded value)?  transferRequestEnded,TResult Function( Event_TransferEnded value)?  transferEnded,TResult Function( Event_Resync value)?  resync,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case Event_Received() when received != null:
@@ -64,7 +64,10 @@ return received(_that);case Event_DevicesChanged() when devicesChanged != null:
 return devicesChanged(_that);case Event_PairingRequested() when pairingRequested != null:
 return pairingRequested(_that);case Event_PairingRequestEnded() when pairingRequestEnded != null:
 return pairingRequestEnded(_that);case Event_OfferEnded() when offerEnded != null:
-return offerEnded(_that);case Event_Resync() when resync != null:
+return offerEnded(_that);case Event_TransferRequested() when transferRequested != null:
+return transferRequested(_that);case Event_TransferRequestEnded() when transferRequestEnded != null:
+return transferRequestEnded(_that);case Event_TransferEnded() when transferEnded != null:
+return transferEnded(_that);case Event_Resync() when resync != null:
 return resync(_that);case _:
   return orElse();
 
@@ -83,7 +86,7 @@ return resync(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( Event_Received value)  received,required TResult Function( Event_DevicesChanged value)  devicesChanged,required TResult Function( Event_PairingRequested value)  pairingRequested,required TResult Function( Event_PairingRequestEnded value)  pairingRequestEnded,required TResult Function( Event_OfferEnded value)  offerEnded,required TResult Function( Event_Resync value)  resync,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( Event_Received value)  received,required TResult Function( Event_DevicesChanged value)  devicesChanged,required TResult Function( Event_PairingRequested value)  pairingRequested,required TResult Function( Event_PairingRequestEnded value)  pairingRequestEnded,required TResult Function( Event_OfferEnded value)  offerEnded,required TResult Function( Event_TransferRequested value)  transferRequested,required TResult Function( Event_TransferRequestEnded value)  transferRequestEnded,required TResult Function( Event_TransferEnded value)  transferEnded,required TResult Function( Event_Resync value)  resync,}){
 final _that = this;
 switch (_that) {
 case Event_Received():
@@ -91,7 +94,10 @@ return received(_that);case Event_DevicesChanged():
 return devicesChanged(_that);case Event_PairingRequested():
 return pairingRequested(_that);case Event_PairingRequestEnded():
 return pairingRequestEnded(_that);case Event_OfferEnded():
-return offerEnded(_that);case Event_Resync():
+return offerEnded(_that);case Event_TransferRequested():
+return transferRequested(_that);case Event_TransferRequestEnded():
+return transferRequestEnded(_that);case Event_TransferEnded():
+return transferEnded(_that);case Event_Resync():
 return resync(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
@@ -106,7 +112,7 @@ return resync(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( Event_Received value)?  received,TResult? Function( Event_DevicesChanged value)?  devicesChanged,TResult? Function( Event_PairingRequested value)?  pairingRequested,TResult? Function( Event_PairingRequestEnded value)?  pairingRequestEnded,TResult? Function( Event_OfferEnded value)?  offerEnded,TResult? Function( Event_Resync value)?  resync,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( Event_Received value)?  received,TResult? Function( Event_DevicesChanged value)?  devicesChanged,TResult? Function( Event_PairingRequested value)?  pairingRequested,TResult? Function( Event_PairingRequestEnded value)?  pairingRequestEnded,TResult? Function( Event_OfferEnded value)?  offerEnded,TResult? Function( Event_TransferRequested value)?  transferRequested,TResult? Function( Event_TransferRequestEnded value)?  transferRequestEnded,TResult? Function( Event_TransferEnded value)?  transferEnded,TResult? Function( Event_Resync value)?  resync,}){
 final _that = this;
 switch (_that) {
 case Event_Received() when received != null:
@@ -114,7 +120,10 @@ return received(_that);case Event_DevicesChanged() when devicesChanged != null:
 return devicesChanged(_that);case Event_PairingRequested() when pairingRequested != null:
 return pairingRequested(_that);case Event_PairingRequestEnded() when pairingRequestEnded != null:
 return pairingRequestEnded(_that);case Event_OfferEnded() when offerEnded != null:
-return offerEnded(_that);case Event_Resync() when resync != null:
+return offerEnded(_that);case Event_TransferRequested() when transferRequested != null:
+return transferRequested(_that);case Event_TransferRequestEnded() when transferRequestEnded != null:
+return transferRequestEnded(_that);case Event_TransferEnded() when transferEnded != null:
+return transferEnded(_that);case Event_Resync() when resync != null:
 return resync(_that);case _:
   return null;
 
@@ -132,14 +141,17 @@ return resync(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( Received received)?  received,TResult Function()?  devicesChanged,TResult Function( PairingRequest request)?  pairingRequested,TResult Function( PlatformInt64 id)?  pairingRequestEnded,TResult Function( OfferOutcome outcome)?  offerEnded,TResult Function()?  resync,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( Received received)?  received,TResult Function()?  devicesChanged,TResult Function( PairingRequest request)?  pairingRequested,TResult Function( PlatformInt64 id)?  pairingRequestEnded,TResult Function( OfferOutcome outcome)?  offerEnded,TResult Function( TransferRequest request)?  transferRequested,TResult Function( PlatformInt64 id)?  transferRequestEnded,TResult Function( TransferEnd end)?  transferEnded,TResult Function()?  resync,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case Event_Received() when received != null:
 return received(_that.received);case Event_DevicesChanged() when devicesChanged != null:
 return devicesChanged();case Event_PairingRequested() when pairingRequested != null:
 return pairingRequested(_that.request);case Event_PairingRequestEnded() when pairingRequestEnded != null:
 return pairingRequestEnded(_that.id);case Event_OfferEnded() when offerEnded != null:
-return offerEnded(_that.outcome);case Event_Resync() when resync != null:
+return offerEnded(_that.outcome);case Event_TransferRequested() when transferRequested != null:
+return transferRequested(_that.request);case Event_TransferRequestEnded() when transferRequestEnded != null:
+return transferRequestEnded(_that.id);case Event_TransferEnded() when transferEnded != null:
+return transferEnded(_that.end);case Event_Resync() when resync != null:
 return resync();case _:
   return orElse();
 
@@ -158,14 +170,17 @@ return resync();case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( Received received)  received,required TResult Function()  devicesChanged,required TResult Function( PairingRequest request)  pairingRequested,required TResult Function( PlatformInt64 id)  pairingRequestEnded,required TResult Function( OfferOutcome outcome)  offerEnded,required TResult Function()  resync,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( Received received)  received,required TResult Function()  devicesChanged,required TResult Function( PairingRequest request)  pairingRequested,required TResult Function( PlatformInt64 id)  pairingRequestEnded,required TResult Function( OfferOutcome outcome)  offerEnded,required TResult Function( TransferRequest request)  transferRequested,required TResult Function( PlatformInt64 id)  transferRequestEnded,required TResult Function( TransferEnd end)  transferEnded,required TResult Function()  resync,}) {final _that = this;
 switch (_that) {
 case Event_Received():
 return received(_that.received);case Event_DevicesChanged():
 return devicesChanged();case Event_PairingRequested():
 return pairingRequested(_that.request);case Event_PairingRequestEnded():
 return pairingRequestEnded(_that.id);case Event_OfferEnded():
-return offerEnded(_that.outcome);case Event_Resync():
+return offerEnded(_that.outcome);case Event_TransferRequested():
+return transferRequested(_that.request);case Event_TransferRequestEnded():
+return transferRequestEnded(_that.id);case Event_TransferEnded():
+return transferEnded(_that.end);case Event_Resync():
 return resync();}
 }
 /// A variant of `when` that fallback to returning `null`
@@ -180,14 +195,17 @@ return resync();}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( Received received)?  received,TResult? Function()?  devicesChanged,TResult? Function( PairingRequest request)?  pairingRequested,TResult? Function( PlatformInt64 id)?  pairingRequestEnded,TResult? Function( OfferOutcome outcome)?  offerEnded,TResult? Function()?  resync,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( Received received)?  received,TResult? Function()?  devicesChanged,TResult? Function( PairingRequest request)?  pairingRequested,TResult? Function( PlatformInt64 id)?  pairingRequestEnded,TResult? Function( OfferOutcome outcome)?  offerEnded,TResult? Function( TransferRequest request)?  transferRequested,TResult? Function( PlatformInt64 id)?  transferRequestEnded,TResult? Function( TransferEnd end)?  transferEnded,TResult? Function()?  resync,}) {final _that = this;
 switch (_that) {
 case Event_Received() when received != null:
 return received(_that.received);case Event_DevicesChanged() when devicesChanged != null:
 return devicesChanged();case Event_PairingRequested() when pairingRequested != null:
 return pairingRequested(_that.request);case Event_PairingRequestEnded() when pairingRequestEnded != null:
 return pairingRequestEnded(_that.id);case Event_OfferEnded() when offerEnded != null:
-return offerEnded(_that.outcome);case Event_Resync() when resync != null:
+return offerEnded(_that.outcome);case Event_TransferRequested() when transferRequested != null:
+return transferRequested(_that.request);case Event_TransferRequestEnded() when transferRequestEnded != null:
+return transferRequestEnded(_that.id);case Event_TransferEnded() when transferEnded != null:
+return transferEnded(_that.end);case Event_Resync() when resync != null:
 return resync();case _:
   return null;
 
@@ -511,6 +529,213 @@ $OfferOutcomeCopyWith<$Res> get outcome {
     return _then(_self.copyWith(outcome: value));
   });
 }
+}
+
+/// @nodoc
+
+
+class Event_TransferRequested extends Event {
+  const Event_TransferRequested({required this.request}): super._();
+  
+
+/// The request.
+ final  TransferRequest request;
+
+/// Create a copy of Event
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$Event_TransferRequestedCopyWith<Event_TransferRequested> get copyWith => _$Event_TransferRequestedCopyWithImpl<Event_TransferRequested>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is Event_TransferRequested&&(identical(other.request, request) || other.request == request));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,request);
+}
+
+@override
+String toString() {
+    return 'Event.transferRequested(request: $request)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $Event_TransferRequestedCopyWith<$Res> implements $EventCopyWith<$Res> {
+  factory $Event_TransferRequestedCopyWith(Event_TransferRequested value, $Res Function(Event_TransferRequested) _then) = _$Event_TransferRequestedCopyWithImpl;
+@useResult
+$Res call({
+ TransferRequest request
+});
+
+
+
+
+}
+/// @nodoc
+class _$Event_TransferRequestedCopyWithImpl<$Res>
+    implements $Event_TransferRequestedCopyWith<$Res> {
+  _$Event_TransferRequestedCopyWithImpl(this._self, this._then);
+
+  final Event_TransferRequested _self;
+  final $Res Function(Event_TransferRequested) _then;
+
+/// Create a copy of Event
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? request = null,}) {
+  return _then(Event_TransferRequested(
+request: null == request ? _self.request : request // ignore: cast_nullable_to_non_nullable
+as TransferRequest,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class Event_TransferRequestEnded extends Event {
+  const Event_TransferRequestEnded({required this.id}): super._();
+  
+
+/// The `TransferRequest.id` that ended.
+ final  PlatformInt64 id;
+
+/// Create a copy of Event
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$Event_TransferRequestEndedCopyWith<Event_TransferRequestEnded> get copyWith => _$Event_TransferRequestEndedCopyWithImpl<Event_TransferRequestEnded>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is Event_TransferRequestEnded&&(identical(other.id, id) || other.id == id));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,id);
+}
+
+@override
+String toString() {
+    return 'Event.transferRequestEnded(id: $id)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $Event_TransferRequestEndedCopyWith<$Res> implements $EventCopyWith<$Res> {
+  factory $Event_TransferRequestEndedCopyWith(Event_TransferRequestEnded value, $Res Function(Event_TransferRequestEnded) _then) = _$Event_TransferRequestEndedCopyWithImpl;
+@useResult
+$Res call({
+ PlatformInt64 id
+});
+
+
+
+
+}
+/// @nodoc
+class _$Event_TransferRequestEndedCopyWithImpl<$Res>
+    implements $Event_TransferRequestEndedCopyWith<$Res> {
+  _$Event_TransferRequestEndedCopyWithImpl(this._self, this._then);
+
+  final Event_TransferRequestEnded _self;
+  final $Res Function(Event_TransferRequestEnded) _then;
+
+/// Create a copy of Event
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? id = null,}) {
+  return _then(Event_TransferRequestEnded(
+id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
+as PlatformInt64,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class Event_TransferEnded extends Event {
+  const Event_TransferEnded({required this.end}): super._();
+  
+
+/// How it ended.
+ final  TransferEnd end;
+
+/// Create a copy of Event
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$Event_TransferEndedCopyWith<Event_TransferEnded> get copyWith => _$Event_TransferEndedCopyWithImpl<Event_TransferEnded>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is Event_TransferEnded&&(identical(other.end, end) || other.end == end));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,end);
+}
+
+@override
+String toString() {
+    return 'Event.transferEnded(end: $end)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $Event_TransferEndedCopyWith<$Res> implements $EventCopyWith<$Res> {
+  factory $Event_TransferEndedCopyWith(Event_TransferEnded value, $Res Function(Event_TransferEnded) _then) = _$Event_TransferEndedCopyWithImpl;
+@useResult
+$Res call({
+ TransferEnd end
+});
+
+
+
+
+}
+/// @nodoc
+class _$Event_TransferEndedCopyWithImpl<$Res>
+    implements $Event_TransferEndedCopyWith<$Res> {
+  _$Event_TransferEndedCopyWithImpl(this._self, this._then);
+
+  final Event_TransferEnded _self;
+  final $Res Function(Event_TransferEnded) _then;
+
+/// Create a copy of Event
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? end = null,}) {
+  return _then(Event_TransferEnded(
+end: null == end ? _self.end : end // ignore: cast_nullable_to_non_nullable
+as TransferEnd,
+  ));
+}
+
+
 }
 
 /// @nodoc
@@ -1668,5 +1893,565 @@ as String,
 
 
 }
+
+/// @nodoc
+mixin _$Receiving {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is Receiving);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'Receiving()';
+}
+
+
+}
+
+/// @nodoc
+class $ReceivingCopyWith<$Res>  {
+$ReceivingCopyWith(Receiving _, $Res Function(Receiving) __);
+}
+
+
+/// Adds pattern-matching-related methods to [Receiving].
+extension ReceivingPatterns on Receiving {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( Receiving_Off value)?  off,TResult Function( Receiving_On value)?  on_,TResult Function( Receiving_Unusable value)?  unusable,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case Receiving_Off() when off != null:
+return off(_that);case Receiving_On() when on_ != null:
+return on_(_that);case Receiving_Unusable() when unusable != null:
+return unusable(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( Receiving_Off value)  off,required TResult Function( Receiving_On value)  on_,required TResult Function( Receiving_Unusable value)  unusable,}){
+final _that = this;
+switch (_that) {
+case Receiving_Off():
+return off(_that);case Receiving_On():
+return on_(_that);case Receiving_Unusable():
+return unusable(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( Receiving_Off value)?  off,TResult? Function( Receiving_On value)?  on_,TResult? Function( Receiving_Unusable value)?  unusable,}){
+final _that = this;
+switch (_that) {
+case Receiving_Off() when off != null:
+return off(_that);case Receiving_On() when on_ != null:
+return on_(_that);case Receiving_Unusable() when unusable != null:
+return unusable(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  off,TResult Function()?  on_,TResult Function( String message)?  unusable,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case Receiving_Off() when off != null:
+return off();case Receiving_On() when on_ != null:
+return on_();case Receiving_Unusable() when unusable != null:
+return unusable(_that.message);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  off,required TResult Function()  on_,required TResult Function( String message)  unusable,}) {final _that = this;
+switch (_that) {
+case Receiving_Off():
+return off();case Receiving_On():
+return on_();case Receiving_Unusable():
+return unusable(_that.message);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  off,TResult? Function()?  on_,TResult? Function( String message)?  unusable,}) {final _that = this;
+switch (_that) {
+case Receiving_Off() when off != null:
+return off();case Receiving_On() when on_ != null:
+return on_();case Receiving_Unusable() when unusable != null:
+return unusable(_that.message);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class Receiving_Off extends Receiving {
+  const Receiving_Off(): super._();
+  
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is Receiving_Off);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'Receiving.off()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class Receiving_On extends Receiving {
+  const Receiving_On(): super._();
+  
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is Receiving_On);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'Receiving.on_()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class Receiving_Unusable extends Receiving {
+  const Receiving_Unusable({required this.message}): super._();
+  
+
+/// One sentence that says why.
+ final  String message;
+
+/// Create a copy of Receiving
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$Receiving_UnusableCopyWith<Receiving_Unusable> get copyWith => _$Receiving_UnusableCopyWithImpl<Receiving_Unusable>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is Receiving_Unusable&&(identical(other.message, message) || other.message == message));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,message);
+}
+
+@override
+String toString() {
+    return 'Receiving.unusable(message: $message)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $Receiving_UnusableCopyWith<$Res> implements $ReceivingCopyWith<$Res> {
+  factory $Receiving_UnusableCopyWith(Receiving_Unusable value, $Res Function(Receiving_Unusable) _then) = _$Receiving_UnusableCopyWithImpl;
+@useResult
+$Res call({
+ String message
+});
+
+
+
+
+}
+/// @nodoc
+class _$Receiving_UnusableCopyWithImpl<$Res>
+    implements $Receiving_UnusableCopyWith<$Res> {
+  _$Receiving_UnusableCopyWithImpl(this._self, this._then);
+
+  final Receiving_Unusable _self;
+  final $Res Function(Receiving_Unusable) _then;
+
+/// Create a copy of Receiving
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? message = null,}) {
+  return _then(Receiving_Unusable(
+message: null == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+mixin _$TransferResult {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is TransferResult);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'TransferResult()';
+}
+
+
+}
+
+/// @nodoc
+class $TransferResultCopyWith<$Res>  {
+$TransferResultCopyWith(TransferResult _, $Res Function(TransferResult) __);
+}
+
+
+/// Adds pattern-matching-related methods to [TransferResult].
+extension TransferResultPatterns on TransferResult {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( TransferResult_Received value)?  received,TResult Function( TransferResult_Dropped value)?  dropped,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case TransferResult_Received() when received != null:
+return received(_that);case TransferResult_Dropped() when dropped != null:
+return dropped(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( TransferResult_Received value)  received,required TResult Function( TransferResult_Dropped value)  dropped,}){
+final _that = this;
+switch (_that) {
+case TransferResult_Received():
+return received(_that);case TransferResult_Dropped():
+return dropped(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( TransferResult_Received value)?  received,TResult? Function( TransferResult_Dropped value)?  dropped,}){
+final _that = this;
+switch (_that) {
+case TransferResult_Received() when received != null:
+return received(_that);case TransferResult_Dropped() when dropped != null:
+return dropped(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( int failed)?  received,TResult Function()?  dropped,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case TransferResult_Received() when received != null:
+return received(_that.failed);case TransferResult_Dropped() when dropped != null:
+return dropped();case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( int failed)  received,required TResult Function()  dropped,}) {final _that = this;
+switch (_that) {
+case TransferResult_Received():
+return received(_that.failed);case TransferResult_Dropped():
+return dropped();}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( int failed)?  received,TResult? Function()?  dropped,}) {final _that = this;
+switch (_that) {
+case TransferResult_Received() when received != null:
+return received(_that.failed);case TransferResult_Dropped() when dropped != null:
+return dropped();case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class TransferResult_Received extends TransferResult {
+  const TransferResult_Received({required this.failed}): super._();
+  
+
+/// How many files did not arrive.
+ final  int failed;
+
+/// Create a copy of TransferResult
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$TransferResult_ReceivedCopyWith<TransferResult_Received> get copyWith => _$TransferResult_ReceivedCopyWithImpl<TransferResult_Received>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is TransferResult_Received&&(identical(other.failed, failed) || other.failed == failed));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,failed);
+}
+
+@override
+String toString() {
+    return 'TransferResult.received(failed: $failed)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $TransferResult_ReceivedCopyWith<$Res> implements $TransferResultCopyWith<$Res> {
+  factory $TransferResult_ReceivedCopyWith(TransferResult_Received value, $Res Function(TransferResult_Received) _then) = _$TransferResult_ReceivedCopyWithImpl;
+@useResult
+$Res call({
+ int failed
+});
+
+
+
+
+}
+/// @nodoc
+class _$TransferResult_ReceivedCopyWithImpl<$Res>
+    implements $TransferResult_ReceivedCopyWith<$Res> {
+  _$TransferResult_ReceivedCopyWithImpl(this._self, this._then);
+
+  final TransferResult_Received _self;
+  final $Res Function(TransferResult_Received) _then;
+
+/// Create a copy of TransferResult
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? failed = null,}) {
+  return _then(TransferResult_Received(
+failed: null == failed ? _self.failed : failed // ignore: cast_nullable_to_non_nullable
+as int,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class TransferResult_Dropped extends TransferResult {
+  const TransferResult_Dropped(): super._();
+  
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is TransferResult_Dropped);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'TransferResult.dropped()';
+}
+
+
+}
+
+
+
 
 // dart format on
