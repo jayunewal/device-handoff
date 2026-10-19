@@ -264,6 +264,34 @@ async fn a_connection_is_closed_when_the_link_is_let_go_of() {
 }
 
 #[tokio::test]
+async fn a_connection_is_closed_when_the_link_is_let_go_of_by_a_node_that_takes_files_too() {
+    // An app that sends files takes them too. Its node then reads the unidirectional streams of
+    // every connection it makes, with a handle of its own to each, so letting go of the link's
+    // handle does not end the connection by itself.
+    let nodes = Nodes::new().await;
+    let receiver = &nodes.receiver;
+    let (_folder, destination) = destination();
+    let sender = TestNode::with(|builder| builder.transfer_handler(Person::new(destination))).await;
+    sender.pair_with(receiver);
+    let link = match within("connecting", sender.node.wire_to(&receiver.id).link()).await {
+        Ok(link) => link,
+        Err(error) => panic!("the connection could not be made: {error}"),
+    };
+    until("the receiver to see the connection", || {
+        receiver.node.open_connections(&sender.id) == 1
+    })
+    .await;
+
+    drop(link);
+
+    until("both ends to see it closed", || {
+        sender.node.open_connections(&receiver.id) == 0
+            && receiver.node.open_connections(&sender.id) == 0
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_device_that_does_not_know_this_one_is_refused_for_good() {
     let receiver = TestNode::start().await;
     let sender = TestNode::start().await;

@@ -521,3 +521,89 @@ async fn stopping_the_node_gives_its_transfers_up_but_the_receiver_is_not_told()
     assert_eq!(pair.person.endings(), Vec::new());
     assert!(held(&pair.received) > 0);
 }
+
+mod taking_files {
+    use std::sync::atomic::AtomicBool;
+
+    use baton_proto::transfer::Offer;
+
+    use super::*;
+    use crate::{
+        PairedDevice,
+        transfer::{destination::Destination, incoming::TransferHandler},
+    };
+
+    /// The person, at a device that takes files only once it is switched on.
+    struct Switched {
+        person: Arc<Person>,
+        on: Arc<AtomicBool>,
+    }
+
+    impl TransferHandler for Switched {
+        fn destination(&self) -> Option<Destination> {
+            if self.on.load(Ordering::SeqCst) {
+                self.person.destination()
+            } else {
+                None
+            }
+        }
+
+        fn offered<'a>(
+            &'a self,
+            from: &'a PairedDevice,
+            offer: &'a Offer,
+        ) -> BoxFuture<'a, Verdict> {
+            self.person.offered(from, offer)
+        }
+    }
+
+    /// The node's wire, which switches receiving on at the other device once each connection is
+    /// made: the hello of the connection says that the device takes no files, and an offer made
+    /// on it would be taken.
+    struct SwitchedOnAfterHello {
+        inner: NodeWire,
+        on: Arc<AtomicBool>,
+    }
+
+    impl Wire for SwitchedOnAfterHello {
+        fn connect(&self) -> BoxFuture<'_, Result<Box<dyn Link>, WireError>> {
+            Box::pin(async move {
+                let link = self.inner.connect().await?;
+                self.on.store(true, Ordering::SeqCst);
+                Ok(link)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn an_offer_is_not_made_to_a_device_whose_hello_does_not_say_it_takes_files() {
+        let (folder, destination) = destination();
+        let person = Arc::new(Person::new(destination));
+        let on = Arc::new(AtomicBool::new(false));
+        let handler = Switched {
+            person: Arc::clone(&person),
+            on: Arc::clone(&on),
+        };
+        let receiver = TestNode::with(|builder| builder.transfer_handler(handler)).await;
+        let sender = TestNode::start().await;
+        sender.pair_with(&receiver);
+        let files = Folder::new();
+        files.make("a.txt", b"hello");
+        let wire = SwitchedOnAfterHello {
+            inner: sender.node.wire_to(&receiver.id),
+            on,
+        };
+
+        let sending = sender
+            .node
+            .send_over(Arc::new(wire), files.walk(&["a.txt"]), steady())
+            .unwrap();
+
+        assert_eq!(
+            ended(sending).await,
+            Outcome::Declined(DeclineReason::Unsupported)
+        );
+        assert_eq!(person.questions(), 0, "the offer was made");
+        assert!(tree(folder.path()).is_empty());
+    }
+}

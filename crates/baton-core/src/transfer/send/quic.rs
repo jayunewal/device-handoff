@@ -29,8 +29,8 @@ use std::{
 use baton_proto::{
     DeviceId, close_code,
     id::TransferId,
-    message::{ErrorCode, Request, Response},
-    transfer::{TransferRequest, lane::LaneHeader},
+    message::{DeclineReason, ErrorCode, Request, Response, capability},
+    transfer::{Declined, TransferReply, TransferRequest, lane::LaneHeader},
 };
 use iroh::{
     Endpoint,
@@ -78,6 +78,7 @@ impl NodeWire {
             .await
             .map_err(|error| connect_failure(&error))?;
         Ok(QuicLink {
+            takes_files: session.peer.supports(capability::TRANSFER_FILES),
             connection: session.connection,
         })
     }
@@ -92,6 +93,9 @@ impl Wire for NodeWire {
 /// A session connection that belongs to one transfer.
 struct QuicLink {
     connection: Connection,
+    /// Whether the device said in its hello that it takes files. An offer goes only to one that
+    /// did (section 8), while `Finish` and `Cancel` go to any, for a transfer it took before.
+    takes_files: bool,
 }
 
 impl Drop for QuicLink {
@@ -108,6 +112,15 @@ impl Link for QuicLink {
         deadline: Duration,
     ) -> BoxFuture<'_, Result<Reply, WireError>> {
         Box::pin(async move {
+            // The device is not offered anything, and the answer is the one it would give.
+            if let TransferRequest::Offer(offer) = &request
+                && !self.takes_files
+            {
+                return Ok(Reply::Transfer(TransferReply::Declined(Declined {
+                    id: offer.id,
+                    reason: DeclineReason::Unsupported,
+                })));
+            }
             let request = Request::Transfer(request);
             let asked = tokio::time::timeout(deadline, ask(&self.connection, &request, deadline));
             let response = asked.await.map_err(|_| WireError::TimedOut)??;
@@ -341,7 +354,10 @@ mod tests {
         let (receiver, mut taken) = Device::taking(&[(Kind::Lane, 2)]).await;
         let (sender, _) = Device::taking(&[]).await;
         let (dialed, _) = connect(&sender, &receiver).await;
-        let link = QuicLink { connection: dialed };
+        let link = QuicLink {
+            connection: dialed,
+            takes_files: true,
+        };
         let mut lane = link.open(TransferId::from_bytes([5; 16]), 0).await.unwrap();
         // The other device has the lane by its start before the reset, which would take the start
         // with it if it came first.

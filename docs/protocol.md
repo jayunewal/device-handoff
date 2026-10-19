@@ -326,7 +326,7 @@ The reference implementation also applies the following by default. They are not
 | Lifetime of a pairing ticket | 5 minutes (a setting, from 30 seconds to 15 minutes) |
 | QUIC keep-alive and idle timeout | 10 seconds and 30 seconds |
 
-The reference implementation takes part as a receiver once the application gives it a folder to receive into, and advertises `transfer.files` for as long as it has one. The side that sends is not built yet, and the times for a sender are what it is built to use. It takes part as a viewer of windows once the application gives it a handler for them, and advertises `stream.view` for as long as it has one; the source's side is not built into the node yet. These defaults are not part of the wire format either.
+The reference implementation takes part as a receiver once the application gives it a folder to receive into, and advertises `transfer.files` for as long as it has one. It sends files with `Node::send_files`, to the times below. It takes part as a viewer of windows once the application gives it a handler for them, and advertises `stream.view` for as long as it has one. It takes part as a source of windows once the application sets it up to show its own, and advertises `stream.share` for as long as it is set up; `Node::share` makes the offer. These defaults are not part of the wire format either.
 
 | Behaviour | Default |
 | --- | --- |
@@ -434,7 +434,7 @@ The frames of the messages on the control streams. Each is a frame of section 2,
 
 A device sends files and folders to a paired device as one **transfer**: a single offer that the receiver decides once, and then the data, which travels on streams of their own called **lanes**. [ADR 0008](adr/0008-file-transfer.md) records why it is shaped this way. A device that takes part advertises the capability `transfer.files` (section 3). A sender MUST NOT make an offer to a device that did not advertise it, and MUST NOT open a lane to one.
 
-A device that does not take part answers every valid transfer request (`Offer`, `Finish` and `Cancel`) with `Declined(Unsupported)`, the reply that this section defines for it. A transfer that a device took before it stopped taking part, because the person turned receiving off for example, is finished and cancelled as usual. A device of a version before this section cannot read the request and answers `Error { code: Malformed }` (section 3), so a sender that ignored the capability is still told, not cut off. Everything below applies to a device that advertised `transfer.files`. The reference implementation is one as a receiver, for as long as it has a folder to receive into. It cannot send yet, and where this section says what it does as a sender, it means what it is built to do (see section 6 for the numbers).
+A device that does not take part answers every valid transfer request (`Offer`, `Finish` and `Cancel`) with `Declined(Unsupported)`, the reply that this section defines for it. A transfer that a device took before it stopped taking part, because the person turned receiving off for example, is finished and cancelled as usual. A device of a version before this section cannot read the request and answers `Error { code: Malformed }` (section 3), so a sender that ignored the capability is still told, not cut off. Everything below applies to a device that advertised `transfer.files`. The reference implementation is one as a receiver, for as long as it has a folder to receive into, and it sends as this section says (see section 6 for the numbers).
 
 ### The list of files
 
