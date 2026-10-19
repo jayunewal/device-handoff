@@ -589,10 +589,12 @@ int32_t baton_stream_source_sent(uint64_t link, const BatonPicture *picture, uin
 /*
  * The size of the picture changed, because the window did or the viewer wants less: starts a new
  * epoch, which begins with a key frame, and tells the viewer. The frames in flight are of the
- * old size, and so is a picture that is being made, which baton_stream_source_sent drops
- * (BATON_SENT_STALE). Returns BATON_E_ARGUMENT, and changes nothing, if the format is beyond what
- * the protocol allows or the viewer takes. Once the session is over it returns BATON_OK and
- * changes nothing, since the end can come while the platform is resizing.
+ * old size, and so is a picture that is being made. baton_stream_source_sent drops it
+ * (BATON_SENT_STALE), except a key frame whose sequence parameter set describes more than the
+ * new size: that one is refused with BATON_E_ARGUMENT, as any key frame larger than the format
+ * is, and the frame is given up on. Returns BATON_E_ARGUMENT, and changes nothing, if the format
+ * is beyond what the protocol allows or the viewer takes. Once the session is over it returns
+ * BATON_OK and changes nothing, since the end can come while the platform is resizing.
  */
 int32_t baton_stream_source_new_epoch(uint64_t link, const BatonFormat *format);
 
