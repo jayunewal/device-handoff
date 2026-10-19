@@ -44,11 +44,15 @@ final class WindowFailed extends WindowNote {
   final String message;
 }
 
+/// How large the picture of a window is, in pixels.
+typedef PictureSize = ({int width, int height});
+
 /// What the screens show of the windows: the offers for the person to answer, the window that is
 /// being opened, the one this device is offering, the ones that run, and how the last ones ended.
 ///
 /// Nothing here draws a window. A window that another device shows on this one reaches
-/// [started], and the screen that takes it draws the picture with `WindowSession.screen`.
+/// [started], and the screen that takes it draws the picture with `WindowSession.screen`, in the
+/// shape that [pictureOf] says.
 ///
 /// The screen of a phone stays on from an offer until the person has answered it and the window
 /// has begun, because Baton on a phone works only while it is on the screen. The screen that
@@ -76,6 +80,7 @@ class WindowsController extends ChangeNotifier {
   WindowRequest? _opening;
   Device? _offering;
   final List<WindowSession> _sessions = [];
+  final Map<int, PictureSize> _pictures = {};
   final List<WindowNote> _notes = [];
 
   /// What this device does with windows. Offer only what is possible.
@@ -97,6 +102,13 @@ class WindowsController extends ChangeNotifier {
 
   /// What the last windows came to, newest first, until the person puts it away.
   List<WindowNote> get notes => List.unmodifiable(_notes);
+
+  /// How large the picture of [session] is, as its source said last, or `null` while it has said
+  /// nothing. The window that was offered is another shape when the source scales it to what
+  /// this device takes, and the picture changes shape when the window is resized, so a screen
+  /// lays out the picture by this and not by `WindowSession.width` and `height`.
+  PictureSize? pictureOf(WindowSession session) =>
+      _pictures[session.id.toInt()];
 
   /// Each offer as it comes, so that a screen that covers the list can say that one waits.
   Stream<WindowRequest> get asked => _asked.stream;
@@ -152,9 +164,21 @@ class WindowsController extends ChangeNotifier {
           _started.add(session);
         }
         _settle();
+      case Event_WindowPicture(:final id, :final width, :final height):
+        // Only a window that runs here has a picture, and a size that is nothing cannot be laid
+        // out. The same size again changes nothing to draw.
+        final shown = _sessions.any(
+          (s) => s.id == id && s.role == WindowRole.viewing,
+        );
+        if (!shown || width <= 0 || height <= 0) return;
+        final size = (width: width, height: height);
+        if (_pictures[id.toInt()] == size) return;
+        _pictures[id.toInt()] = size;
+        notifyListeners();
       case Event_WindowEnded(:final id, :final end):
         final index = _sessions.indexWhere((s) => s.id == id);
         if (index < 0) return;
+        _pictures.remove(id.toInt());
         final session = _sessions.removeAt(index);
         // The person who ended it knows.
         if (end is! WindowEnd_ThisDevice) _note(WindowOver(session, end));
@@ -218,6 +242,7 @@ class WindowsController extends ChangeNotifier {
     final running = _session.endWindow(session.id.toInt());
     final kept = _sessions.length;
     _sessions.removeWhere((s) => s.id == session.id);
+    _pictures.remove(session.id.toInt());
     if (_sessions.length != kept) _settle();
     return running;
   }

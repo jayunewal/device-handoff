@@ -646,6 +646,131 @@ async fn a_window_goes_from_one_device_to_the_other_and_the_viewer_ends_it() {
     assert!(!pair.sharing.app.end_window(shared.id));
 }
 
+/// A window larger than the viewer takes, so that the picture of it is not the size of the window.
+fn large_window() -> Chosen {
+    Chosen {
+        title: "Plan.dwg",
+        app: "Drafting",
+        size: (3000, 2000),
+    }
+}
+
+/// The next of the two events that tell a screen of a window and of its picture.
+async fn next_window_or_picture(events: &mut Events) -> Event {
+    next_matching(events, |event| match event {
+        Event::WindowStarted(_) | Event::WindowPicture { .. } => Some(event),
+        _ => None,
+    })
+    .await
+}
+
+#[tokio::test]
+async fn a_screen_is_told_the_size_of_the_picture_and_not_that_of_the_window() {
+    let pair = Pair::new(false).await;
+    *pair.sharer.next.lock().unwrap() = Some(large_window());
+    let mut viewing_events = pair.viewing.app.events();
+    let WindowShared::Started(_) = pair.offered_and_answered(true, false).await else {
+        panic!("the window was not shared");
+    };
+
+    // The window comes first. The platform of the source made the picture fit what the viewer
+    // takes, which is smaller than the window and not in the same shape.
+    let Event::WindowStarted(shown) = next_window_or_picture(&mut viewing_events).await else {
+        panic!("the size of the picture came before the window");
+    };
+    assert_eq!((shown.width, shown.height), (3000, 2000));
+    assert_eq!(
+        next_window_or_picture(&mut viewing_events).await,
+        Event::WindowPicture {
+            id: shown.id,
+            width: 1920,
+            height: 1200
+        }
+    );
+    // The decoder of the platform heard what the source said all the same.
+    until("the decoder to hear the source", || {
+        pair.viewer.heard.has("config")
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_screen_is_told_again_when_the_source_changes_the_size_of_the_picture() {
+    let pair = Pair::new(false).await;
+    let mut viewing_events = pair.viewing.app.events();
+    let WindowShared::Started(_) = pair.offered_and_answered(true, false).await else {
+        panic!("the window was not shared");
+    };
+    let Event::WindowStarted(shown) = next_window_or_picture(&mut viewing_events).await else {
+        panic!("the size of the picture came before the window");
+    };
+    assert_eq!(
+        next_window_or_picture(&mut viewing_events).await,
+        Event::WindowPicture {
+            id: shown.id,
+            width: 1440,
+            height: 900
+        }
+    );
+
+    // The window was resized: the source starts a new size of picture, and says so.
+    until("the platform of the source to be started", || {
+        pair.sharer.handle.lock().unwrap().is_some()
+    })
+    .await;
+    let handle = pair.sharer.handle.lock().unwrap().clone().unwrap();
+    handle
+        .new_epoch(Config {
+            epoch: 1,
+            codec: Codec::H264,
+            width: 800,
+            height: 800,
+            fps: 30,
+        })
+        .unwrap();
+    assert_eq!(
+        next_window_or_picture(&mut viewing_events).await,
+        Event::WindowPicture {
+            id: shown.id,
+            width: 800,
+            height: 800
+        }
+    );
+    until("the decoder to hear both", || {
+        pair.viewer.heard.count("config") == 2
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_window_that_is_shared_from_here_has_no_size_of_picture_to_tell() {
+    let pair = Pair::new(false).await;
+    let mut sharing_events = pair.sharing.app.events();
+    let WindowShared::Started(_) = pair.offered_and_answered(true, false).await else {
+        panic!("the window was not shared");
+    };
+    until("the pictures to be shown", || {
+        pair.viewer.heard.has("show 2")
+    })
+    .await;
+    let mut heard = Vec::new();
+    while let Ok(Some(event)) = tokio::time::timeout(QUIET, sharing_events.next()).await {
+        heard.push(event);
+    }
+    assert!(
+        heard
+            .iter()
+            .any(|event| matches!(event, Event::WindowStarted(_))),
+        "{heard:?}"
+    );
+    assert!(
+        !heard
+            .iter()
+            .any(|event| matches!(event, Event::WindowPicture { .. })),
+        "{heard:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_decoder_that_fails_after_it_took_a_frame_has_the_viewer_ask_for_a_new_key_frame() {
     let pair = Pair::new(false).await;

@@ -186,6 +186,107 @@ void main() {
       expect(find.byType(Texture), findsNothing);
       expect(find.text('This window cannot be shown here'), findsOneWidget);
     });
+
+    testWidgets('is not drawn for a window with no height', (tester) async {
+      await _open(tester, window: sampleWindowSession(width: 800, height: 0));
+
+      expect(find.byType(Texture), findsNothing);
+      expect(find.text('This window cannot be shown here'), findsOneWidget);
+    });
+
+    double shape(WidgetTester tester) =>
+        tester.widget<AspectRatio>(find.byType(AspectRatio)).aspectRatio;
+
+    // The source says how large the picture is: one turn for the event to reach the controller,
+    // and one for the screen to follow it.
+    Future<void> says(
+      WidgetTester tester,
+      _Shown shown,
+      int width,
+      int height, {
+      int id = 1,
+    }) async {
+      shown.session.emit(
+        Event.windowPicture(id: id, width: width, height: height),
+      );
+      await tester.pump();
+      await tester.pump();
+    }
+
+    testWidgets(
+      'is in the shape that the source said, and in that of the window before',
+      (tester) async {
+        final shown = await _open(
+          tester,
+          window: sampleWindowSession(width: 1600, height: 1000),
+        );
+        expect(shape(tester), 1.6);
+
+        // The source scales the window to what this device takes, and makes it square.
+        await says(tester, shown, 1000, 1000);
+
+        expect(shape(tester), 1.0);
+      },
+    );
+
+    testWidgets('follows the source when it changes the size', (tester) async {
+      final shown = await _open(tester);
+      await says(tester, shown, 1000, 1000);
+      expect(shape(tester), 1.0);
+
+      // The window was made narrow, and then wide.
+      await says(tester, shown, 500, 1000);
+      expect(shape(tester), 0.5);
+      await says(tester, shown, 2000, 500);
+      expect(shape(tester), 4.0);
+    });
+
+    testWidgets('is not changed by the size of another window', (tester) async {
+      final shown = await _open(
+        tester,
+        window: sampleWindowSession(width: 1600, height: 1000),
+      );
+
+      await says(tester, shown, 1000, 1000, id: 2);
+
+      expect(shape(tester), 1.6);
+    });
+
+    testWidgets(
+      'is drawn from the size of the picture when the window has none',
+      (tester) async {
+        final shown = await _open(
+          tester,
+          window: sampleWindowSession(width: 0, height: 600),
+        );
+        expect(find.byType(Texture), findsNothing);
+
+        await says(tester, shown, 800, 600);
+
+        expect(find.byType(Texture), findsOneWidget);
+        expect(find.text('This window cannot be shown here'), findsNothing);
+        expect(shape(tester), closeTo(4 / 3, 0.0001));
+      },
+    );
+
+    testWidgets(
+      'is as large as the screen allows in the shape of the picture',
+      (tester) async {
+        final shown = await _open(
+          tester,
+          window: sampleWindowSession(width: 1000, height: 1000),
+          size: const Size(1200, 800),
+        );
+
+        await says(tester, shown, 1600, 800);
+
+        // The picture is twice as wide as high, and the space is 1200 wide: it is as wide as
+        // the space and half as high.
+        final box = tester.getSize(find.byType(Texture));
+        expect(box.width, closeTo(1200, 0.01));
+        expect(box.height, closeTo(600, 0.01));
+      },
+    );
   });
 
   group('the bar at the top', () {
@@ -350,6 +451,26 @@ void main() {
       expect(find.text('Stop showing this window?'), findsNothing);
       expect(find.byType(Texture), findsOneWidget);
       expect(shown.session.windowsEnded, isEmpty);
+      expect(_onHome(tester), isFalse);
+    });
+
+    testWidgets('keeps showing if the question is closed without an answer', (
+      tester,
+    ) async {
+      final shown = await _open(tester);
+
+      await tester.tap(find.byTooltip('Stop showing'));
+      await tester.pumpAndSettle();
+      expect(find.text('Stop showing this window?'), findsOneWidget);
+
+      // A tap on the dimmed part of the screen closes the question and answers nothing.
+      await tester.tapAt(const Offset(5, 5));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Stop showing this window?'), findsNothing);
+      expect(find.byType(Texture), findsOneWidget);
+      expect(shown.session.windowsEnded, isEmpty);
+      expect(shown.controller.sessions, [shown.window]);
       expect(_onHome(tester), isFalse);
     });
 

@@ -407,6 +407,46 @@ void main() {
       // Nothing is left pending when the window is let go of.
       controller.dispose();
     });
+
+    testWidgets(
+      'is not given up on at the time that was up for a window that began before it',
+      (tester) async {
+        final session = _session();
+        final controller = await _controller(
+          session,
+          openingLimit: const Duration(seconds: 10),
+        );
+        session.emit(Event.windowRequested(request: sampleWindowRequest));
+        await tester.pump();
+        controller.answer(sampleWindowRequest, accept: true);
+        // The first window begins, and the person says yes to another one 8 seconds after the
+        // first yes.
+        session.emit(Event.windowStarted(session: sampleWindowSession()));
+        await tester.pump(const Duration(seconds: 8));
+        const next = WindowRequest(
+          id: 4,
+          deviceId: 'd1',
+          deviceName: 'Desk PC',
+          width: 800,
+          height: 600,
+          control: false,
+        );
+        session.emit(const Event.windowRequested(request: next));
+        await tester.pump();
+        controller.answer(next, accept: true);
+
+        // The time of the first answer is over, and that of the second is not.
+        await tester.pump(const Duration(seconds: 5));
+        expect(controller.opening, next);
+        expect(controller.notes, isEmpty);
+
+        // The second is given up on when its own time is over.
+        await tester.pump(const Duration(seconds: 6));
+        expect(controller.opening, isNull);
+        expect(controller.notes.single, isA<WindowNotOpened>());
+        controller.dispose();
+      },
+    );
   });
 
   group('a window that runs', () {
@@ -605,6 +645,198 @@ void main() {
 
       expect(controller.over(second), isNull);
       expect(controller.notes, isEmpty);
+    });
+  });
+
+  group('the picture of a window that runs', () {
+    Future<void> say(FakeSession session, int id, int width, int height) async {
+      session.emit(Event.windowPicture(id: id, width: width, height: height));
+      await pumpEventQueue();
+    }
+
+    test('is not known until its source has said how large it is', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession();
+
+      expect(controller.pictureOf(window), isNull);
+      await _begin(session, window);
+
+      expect(controller.pictureOf(window), isNull);
+    });
+
+    test('is as large as the source says, and the screens are told', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession();
+      await _begin(session, window);
+      var told = 0;
+      controller.addListener(() => told++);
+
+      await say(session, 1, 1920, 1200);
+
+      expect(controller.pictureOf(window), (width: 1920, height: 1200));
+      expect(told, 1);
+    });
+
+    test('changes when the source says another size', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession();
+      await _begin(session, window);
+      await say(session, 1, 1920, 1200);
+      var told = 0;
+      controller.addListener(() => told++);
+
+      await say(session, 1, 800, 800);
+
+      expect(controller.pictureOf(window), (width: 800, height: 800));
+      expect(told, 1);
+
+      // Only one of the two edges changes.
+      await say(session, 1, 800, 600);
+      expect(controller.pictureOf(window), (width: 800, height: 600));
+      await say(session, 1, 640, 600);
+      expect(controller.pictureOf(window), (width: 640, height: 600));
+      expect(told, 3);
+    });
+
+    test(
+      'is not told to the screens again when the size is the same',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        final window = sampleWindowSession();
+        await _begin(session, window);
+        await say(session, 1, 1920, 1200);
+        var told = 0;
+        controller.addListener(() => told++);
+
+        await say(session, 1, 1920, 1200);
+
+        expect(told, 0);
+        expect(controller.pictureOf(window), (width: 1920, height: 1200));
+      },
+    );
+
+    test('is kept for each window by itself', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final first = sampleWindowSession(id: 1);
+      final second = sampleWindowSession(id: 2);
+      await _begin(session, first);
+      await _begin(session, second);
+
+      await say(session, 2, 640, 480);
+      expect(controller.pictureOf(first), isNull);
+      expect(controller.pictureOf(second), (width: 640, height: 480));
+
+      await say(session, 1, 1280, 720);
+      expect(controller.pictureOf(first), (width: 1280, height: 720));
+      expect(controller.pictureOf(second), (width: 640, height: 480));
+    });
+
+    test('is not kept for a window that is not running', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession();
+      var told = 0;
+      controller.addListener(() => told++);
+
+      // Before it began, which Baton does not do, and after it ended.
+      await say(session, 1, 1920, 1200);
+      expect(controller.pictureOf(window), isNull);
+      expect(told, 0);
+      await _begin(session, window);
+      await _end(session, 1, const WindowEnd.otherDevice());
+      final toldBefore = told;
+      await say(session, 1, 1920, 1200);
+
+      expect(controller.pictureOf(window), isNull);
+      expect(told, toldBefore);
+    });
+
+    test('is not kept for a window that is not the one that runs', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final running = sampleWindowSession(id: 1);
+      final other = sampleWindowSession(id: 2);
+      await _begin(session, running);
+      var told = 0;
+      controller.addListener(() => told++);
+
+      // A window that is not here says how large its picture is, while another runs.
+      await say(session, 2, 1920, 1200);
+
+      expect(controller.pictureOf(other), isNull);
+      expect(controller.pictureOf(running), isNull);
+      expect(told, 0);
+    });
+
+    test('is not kept for a window that is shared from here', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(role: WindowRole.sharing);
+      await _begin(session, window);
+      var told = 0;
+      controller.addListener(() => told++);
+
+      await say(session, 1, 1920, 1200);
+
+      expect(controller.pictureOf(window), isNull);
+      expect(told, 0);
+    });
+
+    test('is not changed to a size that is nothing', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession();
+      await _begin(session, window);
+      await say(session, 1, 1920, 1200);
+      var told = 0;
+      controller.addListener(() => told++);
+
+      for (final size in [
+        (0, 1200),
+        (1920, 0),
+        (0, 0),
+        (-1, 1200),
+        (1920, -5),
+      ]) {
+        await say(session, 1, size.$1, size.$2);
+      }
+
+      expect(controller.pictureOf(window), (width: 1920, height: 1200));
+      expect(told, 0);
+    });
+
+    test('is forgotten when the window ends', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession();
+      await _begin(session, window);
+      await say(session, 1, 1920, 1200);
+
+      await _end(session, 1, const WindowEnd.lost());
+
+      expect(controller.pictureOf(window), isNull);
+      // A window that begins with the same number again, which Baton does not do, starts over.
+      await _begin(session, window);
+      expect(controller.pictureOf(window), isNull);
+    });
+
+    test('is forgotten when the person ends the window', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession();
+      await _begin(session, window);
+      await say(session, 1, 1920, 1200);
+
+      controller.end(window);
+
+      expect(controller.pictureOf(window), isNull);
+      await _begin(session, window);
+      expect(controller.pictureOf(window), isNull);
     });
   });
 

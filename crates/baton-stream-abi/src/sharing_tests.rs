@@ -1084,6 +1084,15 @@ async fn a_key_frame_that_describes_a_larger_picture_than_the_one_announced_is_r
         ..pic(BEGIN_DELTA, 3)
     };
     assert_eq!(sent(&rig.registry, link, &delta), Ok((SENT, 3)));
+
+    // What decides is the picture and not the kind that was announced: one that holds an IDR
+    // slice goes out with its sets, and the other device refuses them when they describe more
+    // than it takes, so a frame announced as a delta is held to the size too.
+    assert_eq!(rig.wanted(link).await, BEGIN_DELTA);
+    assert_eq!(
+        sent(&rig.registry, link, &key_with(vec![sps_of(80, 48)], 4)),
+        Err(Error::Argument)
+    );
     assert!(rig.sharing.app.end_window(1));
     rig.nothing_is_left().await;
 }

@@ -458,6 +458,11 @@ impl From<app::Event> for Event {
             app::Event::WindowStarted(session) => Self::WindowStarted {
                 session: session.into(),
             },
+            app::Event::WindowPicture { id, width, height } => Self::WindowPicture {
+                id: signed(id),
+                width,
+                height,
+            },
             app::Event::WindowEnded { id, end } => Self::WindowEnded {
                 id: signed(id),
                 end: end.into(),
@@ -568,6 +573,19 @@ mod tests {
     fn the_window_events_keep_their_numbers_and_their_sentences() {
         let started = Event::from(app::Event::WindowStarted(session()));
         assert!(matches!(started, Event::WindowStarted { session } if session.id == 4));
+        let picture = Event::from(app::Event::WindowPicture {
+            id: 4,
+            width: 1920,
+            height: 1080,
+        });
+        assert!(matches!(
+            picture,
+            Event::WindowPicture {
+                id: 4,
+                width: 1920,
+                height: 1080
+            }
+        ));
         let refused = Event::from(app::Event::WindowRequestEnded {
             id: 3,
             failure: Some("The decoder is busy.".to_owned()),

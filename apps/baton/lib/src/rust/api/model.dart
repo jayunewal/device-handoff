@@ -147,6 +147,22 @@ sealed class Event with _$Event {
     required WindowSession session,
   }) = Event_WindowStarted;
 
+  /// The picture of a window that is shown here is this many pixels wide and high. The source
+  /// says so before its first picture and again whenever it changes the size, so a screen
+  /// lays the picture out in this shape and not in that of the window that was offered. It
+  /// comes after the `Event.windowStarted` of the same window, and not for a window that is
+  /// shared from this device.
+  const factory Event.windowPicture({
+    /// The `WindowSession.id` whose picture this is.
+    required PlatformInt64 id,
+
+    /// The width of the picture in pixels, at least 1.
+    required int width,
+
+    /// The height of the picture in pixels, at least 1.
+    required int height,
+  }) = Event_WindowPicture;
+
   /// A window that was shown or shared is over.
   const factory Event.windowEnded({
     /// The `WindowSession.id` that ended.
