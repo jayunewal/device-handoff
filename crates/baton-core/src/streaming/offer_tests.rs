@@ -266,9 +266,10 @@ async fn a_person_who_does_not_answer_in_time_is_a_no() {
 #[tokio::test]
 async fn giving_up_while_the_person_decides_takes_the_question_back() {
     let rig = Rig::new(Plan::Wait).await;
+    let mut offer = Box::pin(rig.share(window()));
+    asked_about(&rig, offer.as_mut()).await;
     // The person at the source changes their mind: the call is dropped.
-    let given_up = tokio::time::timeout(Duration::from_millis(300), rig.share(window())).await;
-    assert!(given_up.is_err(), "the offer was answered");
+    drop(offer);
     assert_eq!(rig.app.asked().len(), 1);
     rig.until("the question to be taken back", |rig| {
         rig.app.taken_back() == 1

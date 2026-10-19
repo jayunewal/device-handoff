@@ -55,7 +55,9 @@ mod error;
 mod events;
 mod files;
 pub mod model;
+mod sessions;
 pub mod settings;
+pub mod windows;
 
 pub use app::{App, Options};
 pub use error::{Error, ErrorKind};
@@ -64,8 +66,10 @@ pub use files::FileSend;
 pub use model::{
     Device, FileProgress, FilesSent, Me, Network, Offer, OfferOutcome, PairingRequest, Platform,
     PreviewName, Reach, Received, ReceivedItem, Receiving, Route, SendStage, TransferEnd,
-    TransferRequest, TransferResult, web_address,
+    TransferRequest, TransferResult, WindowAbilities, WindowEnd, WindowRequest, WindowRole,
+    WindowSession, WindowShared, web_address,
 };
+pub use windows::Windows;
 
 /// What the calls in this crate return.
 pub type Result<T> = std::result::Result<T, Error>;

@@ -117,6 +117,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   TransferRequest dco_decode_box_autoadd_transfer_request(dynamic raw);
 
   @protected
+  WindowEnd dco_decode_box_autoadd_window_end(dynamic raw);
+
+  @protected
+  WindowRequest dco_decode_box_autoadd_window_request(dynamic raw);
+
+  @protected
+  WindowSession dco_decode_box_autoadd_window_session(dynamic raw);
+
+  @protected
   Device dco_decode_device(dynamic raw);
 
   @protected
@@ -225,6 +234,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BigInt dco_decode_usize(dynamic raw);
 
   @protected
+  WindowAbilities dco_decode_window_abilities(dynamic raw);
+
+  @protected
+  WindowEnd dco_decode_window_end(dynamic raw);
+
+  @protected
+  WindowRequest dco_decode_window_request(dynamic raw);
+
+  @protected
+  WindowRole dco_decode_window_role(dynamic raw);
+
+  @protected
+  WindowSession dco_decode_window_session(dynamic raw);
+
+  @protected
+  WindowShared dco_decode_window_shared(dynamic raw);
+
+  @protected
   AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer);
 
   @protected
@@ -312,6 +339,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   TransferRequest sse_decode_box_autoadd_transfer_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WindowEnd sse_decode_box_autoadd_window_end(SseDeserializer deserializer);
+
+  @protected
+  WindowRequest sse_decode_box_autoadd_window_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WindowSession sse_decode_box_autoadd_window_session(
     SseDeserializer deserializer,
   );
 
@@ -424,6 +464,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BigInt sse_decode_usize(SseDeserializer deserializer);
 
   @protected
+  WindowAbilities sse_decode_window_abilities(SseDeserializer deserializer);
+
+  @protected
+  WindowEnd sse_decode_window_end(SseDeserializer deserializer);
+
+  @protected
+  WindowRequest sse_decode_window_request(SseDeserializer deserializer);
+
+  @protected
+  WindowRole sse_decode_window_role(SseDeserializer deserializer);
+
+  @protected
+  WindowSession sse_decode_window_session(SseDeserializer deserializer);
+
+  @protected
+  WindowShared sse_decode_window_shared(SseDeserializer deserializer);
+
+  @protected
   void sse_encode_AnyhowException(
     AnyhowException self,
     SseSerializer serializer,
@@ -534,6 +592,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_transfer_request(
     TransferRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_window_end(
+    WindowEnd self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_window_request(
+    WindowRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_window_session(
+    WindowSession self,
     SseSerializer serializer,
   );
 
@@ -662,6 +738,27 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_usize(BigInt self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_window_abilities(
+    WindowAbilities self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_window_end(WindowEnd self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_window_request(WindowRequest self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_window_role(WindowRole self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_window_session(WindowSession self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_window_shared(WindowShared self, SseSerializer serializer);
 }
 
 // Section: wire_class
