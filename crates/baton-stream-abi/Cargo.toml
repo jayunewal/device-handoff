@@ -11,8 +11,8 @@ publish.workspace = true
 # This crate holds the `unsafe` code of the interface to the platform (see lib.rs). Unlike most
 # of the workspace it therefore cannot say `workspace = true`: the workspace forbids
 # `unsafe_code`, and a forbid cannot be lifted. Here it is denied everywhere except in the two
-# modules that cross the interface (`platform` and `exports`). Keep every other line equal to
-# [workspace.lints] in the root Cargo.toml.
+# modules that cross the interface (`platform` and `exports`) and in the tests that play the
+# platform. Keep every other line equal to [workspace.lints] in the root Cargo.toml.
 [lints.rust]
 unsafe_code = "deny"
 missing_docs = "warn"

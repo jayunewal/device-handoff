@@ -31,7 +31,7 @@
  *     other side how much of it is there. Fields are only ever added at the end, so a side that
  *     knows fewer fields ignores the rest, and a side that knows more reads a missing field as
  *     zero. A field called reserved is zero when the Rust side writes it, and is ignored when it
- *     reads it.
+ *     reads it. BatonBytes, a pointer and a length, is the one struct that does not begin so.
  *   - No call waits for long. The Rust side makes the calls of a screen while it holds the lock
  *     of the session, so a decoder that takes time hands the picture to a thread of its own, and
  *     reports a failure that comes later with baton_stream_link_decode_failed.
@@ -39,9 +39,11 @@
  *     thread, is refused with BATON_E_REENTRANT. From another thread it is allowed, but the call
  *     of the vtable must not wait for that thread.
  *   - Threads. limits is called on the thread that registers, before the registration returns.
- *     open is called on a thread of the app's runtime. The calls of one screen never overlap,
- *     but two calls may come on two threads, so a screen keeps nothing in thread-local storage.
- *     The calls of two screens may overlap.
+ *     open is called on a thread of the app's runtime, and two calls of open may overlap each
+ *     other and the calls of any screen that is open, so whatever open shares with other calls
+ *     (a table of screens, a pool of textures) is kept under a lock. The calls of one screen
+ *     never overlap, but two calls may come on two threads, so a screen keeps nothing in
+ *     thread-local storage. The calls of two screens may overlap.
  *   - Nothing in the platform may unwind into the Rust side: a Swift error or an exception
  *     is caught before it leaves the call.
  */
@@ -124,7 +126,10 @@ extern "C" {
 /* The most bytes of a message that explains why a window could not be shown. */
 #define BATON_MESSAGE_MAX 256u
 
-/* Bytes in memory that the other side owns: text (UTF-8, no terminator) or a picture. */
+/*
+ * Bytes in memory that the other side owns: text (UTF-8, no terminator) or a picture. When len is
+ * 0, ptr is not to be read and may be any value, NULL or not.
+ */
 typedef struct BatonBytes {
     const uint8_t *ptr;
     size_t len;

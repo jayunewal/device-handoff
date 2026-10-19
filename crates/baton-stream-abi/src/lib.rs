@@ -22,7 +22,8 @@
 //!
 //! A C interface is made of pointers, and `CONTRIBUTING.md` asks for `unsafe` code to live in a
 //! crate of its own, with the reason written down. This is that crate. `unsafe` is denied
-//! everywhere in it except in two modules:
+//! everywhere in it except in two modules (and in the tests, which play the platform with
+//! functions of its kind):
 //!
 //! - `platform` calls the platform. It reads the vtable that the platform registered, and holds
 //!   the only calls of the functions in it. What it builds for a call (the structs of the header)

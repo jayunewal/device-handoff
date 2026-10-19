@@ -620,6 +620,26 @@ mod tests {
     }
 
     #[test]
+    fn every_sequence_parameter_set_of_a_frame_is_held_to_the_limits() {
+        // A decoder takes the set that the picture names, or the last one with that number, and
+        // neither need be the first: one set that fits does not make the others safe.
+        let pictures = pictures();
+        let rest = without(&pictures[0], &[SPS]);
+        let fits = sps((4, 3), (0, 0));
+        let too_wide = sps((5, 3), (0, 0));
+        for (what, first, second) in [
+            ("the second too large", &fits, &too_wide),
+            ("the first too large", &too_wide, &fits),
+        ] {
+            let mut rig = rig(WIDTH, HEIGHT);
+            let picture = with_first(&with_first(&rest, second), first);
+            let outcome = rig.decoder.decode(&header(0, key()), picture);
+            assert!(outcome.is_err(), "{what}");
+            assert!(rig.decoded().is_empty(), "{what}: the platform was asked");
+        }
+    }
+
+    #[test]
     fn a_delta_frame_is_held_to_the_limits_when_it_carries_a_sequence_parameter_set() {
         let pictures = pictures();
         let sps = units(&pictures[0])
