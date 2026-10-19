@@ -1170,6 +1170,9 @@ func testAFailureThatComesWhileAFrameIsPreparedForIsNotUndone() {
   check(!rig.screen.decode(rig.delta(2)), "and neither is the one after it")
   check(rig.screen.decode(rig.key(3)), "a key frame starts again")
   check(rig.decoder.samples.count == 2)
+  check(
+    rig.decoder.prepared.count == 3,
+    "prepared \(rig.decoder.prepared.count) times: the key frame brings its own sets back")
 }
 
 func testAScreenThatEndsWhileAFrameIsPreparedForDecodesNothing() {
