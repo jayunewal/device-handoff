@@ -85,7 +85,7 @@ use crate::{
         incoming::{FINISH_WAIT, Incoming, LANE_STREAMS, TransferHandler},
         lanes::LaneSink,
         receive::STALL,
-        send::{self, NodeWire, Policy, Selection, Sending, Wire},
+        send::{self, Holds, Ledger, NodeWire, Pace, Policy, Selection, Sending, Wire},
     },
     transport,
     trust::{PairedDevice, TrustEvent, TrustStore},
@@ -210,6 +210,8 @@ pub struct NodeBuilder {
     windows: Option<Arc<dyn WindowHandler>>,
     /// Whether this device shows its own windows to others, and takes input if it does.
     sharing: Option<Sharer>,
+    /// What other devices may be holding for this one, if the application keeps it.
+    holds: Option<Holds>,
     clock: Arc<dyn Clock>,
     tuning: Tuning,
     /// What takes the unidirectional streams that paired devices open, besides the lanes of the
@@ -238,6 +240,7 @@ impl NodeBuilder {
             transfers: None,
             windows: None,
             sharing: None,
+            holds: None,
             clock: Arc::new(SystemClock),
             tuning: Tuning::default(),
             sinks: Sinks::default(),
@@ -284,6 +287,19 @@ impl NodeBuilder {
     #[must_use]
     pub fn share_windows(mut self, control: bool) -> Self {
         self.sharing = Some(Sharer { control });
+        self
+    }
+
+    /// Has this device remember the transfers of files that it offers to other devices, in `holds`,
+    /// so that a device that is left holding one is told to let go of it, also by a run of the
+    /// program that starts later. A transfer that is not ended properly, because the program is
+    /// closed or the network is down, would otherwise stay at the receiver for an hour, and count
+    /// against the transfers that this device may have going there.
+    ///
+    /// Without it, a device remembers them for as long as the program runs. See [`Holds`].
+    #[must_use]
+    pub fn holds(mut self, holds: Holds) -> Self {
+        self.holds = Some(holds);
         self
     }
 
@@ -353,6 +369,7 @@ impl NodeBuilder {
             transfers,
             windows,
             sharing,
+            holds,
             clock,
             tuning,
             sinks,
@@ -361,6 +378,7 @@ impl NodeBuilder {
             before_registering,
         } = self;
         config.validate()?;
+        let holds = holds.unwrap_or_else(Holds::memory);
 
         let id = DeviceId::from_bytes(*secret.public().as_bytes());
         let relay_enabled = config.network.relay != config::RelayMode::Disabled;
@@ -435,6 +453,7 @@ impl NodeBuilder {
             trust_events,
         ));
         tokio::spawn(reap_idle(Arc::clone(&shared), Arc::clone(&pool)));
+        tokio::spawn(start_release(&shared, &endpoint, &holds));
 
         tracing::info!(device = %id.short(), lan_discovery, relay = relay_enabled, "Baton is listening");
         Ok(Node {
@@ -445,8 +464,34 @@ impl NodeBuilder {
             lan_discovery,
             offer_ttl_secs: config.pairing.offer_ttl_secs,
             max_clipboard_bytes: config.handoff.max_clipboard_bytes,
+            holds,
         })
     }
+}
+
+/// Tells the devices that may hold transfers that this device left behind to let go of them, from
+/// the start of the node until it stops. See [`send::release_holds`].
+fn start_release(
+    shared: &Arc<Shared>,
+    endpoint: &Endpoint,
+    holds: &Holds,
+) -> impl std::future::Future<Output = ()> + Send + 'static {
+    let (wires_shared, wires_endpoint) = (Arc::clone(shared), endpoint.clone());
+    let trust = shared.trust.clone();
+    send::release_holds(
+        holds.clone(),
+        move |peer| {
+            Arc::new(NodeWire::new(
+                wires_endpoint.clone(),
+                Arc::clone(&wires_shared),
+                peer,
+            ))
+        },
+        Arc::new(move |peer: &DeviceId| trust.contains(peer)),
+        Arc::clone(&shared.clock),
+        Pace::default(),
+        shared.stop.clone(),
+    )
 }
 
 /// Binds the network endpoint of a node, behind `gate`, which admits the paired devices only.
@@ -490,6 +535,8 @@ pub struct Node {
     lan_discovery: bool,
     offer_ttl_secs: u64,
     max_clipboard_bytes: usize,
+    /// What other devices may be holding for this one.
+    holds: Holds,
 }
 
 impl fmt::Debug for Node {
@@ -749,21 +796,30 @@ impl Node {
         if self.shared.trust.get(peer).is_none() {
             return Err(Error::NotPaired(*peer));
         }
-        self.send_over(Arc::new(self.wire_to(peer)), selection, policy)
+        self.send_over(peer, Arc::new(self.wire_to(peer)), selection, policy)
     }
 
-    /// Starts a transfer over `wire`. It is [`wire_to`](Self::wire_to) for a device, except in the
-    /// tests of this crate, which put something between the transfer and the connections to hold
-    /// the lanes at a moment they choose.
+    /// Starts a transfer to `peer` over `wire`. It is [`wire_to`](Self::wire_to) for a device, except
+    /// in the tests of this crate, which put something between the transfer and the connections to
+    /// hold the lanes at a moment they choose.
     pub(crate) fn send_over(
         &self,
+        peer: &DeviceId,
         wire: Arc<dyn Wire>,
         selection: Selection,
         policy: Policy,
     ) -> Result<Sending> {
         let id = TransferId::from_bytes(random_bytes()?);
-        send::start(wire, Arc::new(selection), policy, id, &self.shared.stop)
-            .map_err(|error| Error::Internal(error.to_string()))
+        let ledger = Ledger::new(self.holds.clone(), *peer, Arc::clone(&self.shared.clock));
+        send::start(
+            wire,
+            Arc::new(selection),
+            policy,
+            id,
+            &self.shared.stop,
+            Some(ledger),
+        )
+        .map_err(|error| Error::Internal(error.to_string()))
     }
 
     /// The connections that a transfer to `peer` goes over: a new one for each attempt.

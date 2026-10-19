@@ -17,7 +17,7 @@ use std::time::Duration;
 use baton_proto::{
     id::TransferId,
     message::ErrorCode,
-    transfer::{TransferReply, TransferRequest},
+    transfer::{Cancel, TransferReply, TransferRequest},
 };
 
 use crate::util::BoxFuture;
@@ -53,6 +53,27 @@ pub(crate) trait Link: Send + Sync {
         id: TransferId,
         number: u8,
     ) -> BoxFuture<'_, Result<Box<dyn LaneOut>, WireError>>;
+}
+
+/// Tells the receiver on `link` that the transfer `id` is given up, and waits `wait` at most for it
+/// to say so.
+///
+/// `Ok(true)` is for a receiver that holds nothing of the transfer now: it gave it up on the word, or
+/// it does not know it, or it takes no part in transfers. `Ok(false)` is for one that said something
+/// else. The request goes to any device that is paired, whatever its hello says about taking files: a
+/// device that stopped taking files may still hold a transfer that it took before.
+pub(crate) async fn cancel(
+    link: &dyn Link,
+    id: TransferId,
+    wait: Duration,
+) -> Result<bool, WireError> {
+    let request = TransferRequest::Cancel(Cancel { id });
+    Ok(match link.request(request, wait).await? {
+        Reply::Transfer(TransferReply::Cancelled(cancelled)) => cancelled.id == id,
+        // A receiver that takes no part in transfers has nothing of this one.
+        Reply::Transfer(TransferReply::Declined(declined)) => declined.id == id,
+        _ => false,
+    })
 }
 
 /// A lane that is open for writing.

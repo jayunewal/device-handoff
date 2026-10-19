@@ -55,9 +55,7 @@ use baton_proto::{
     close_code,
     id::TransferId,
     message::ErrorCode,
-    transfer::{
-        Cancel, Finish, TransferReply, TransferRequest, hash::span_count, lane::SkipReason,
-    },
+    transfer::{Finish, TransferReply, TransferRequest, hash::span_count, lane::SkipReason},
 };
 use tokio::{sync::oneshot, task::JoinSet, time::timeout};
 use tokio_util::sync::CancellationToken;
@@ -69,7 +67,7 @@ use super::{
     produce::Producer,
     progress::{Stage, Tracker},
     selection::Selection,
-    wire::{Link, Reply, Wire, WireError},
+    wire::{self, Link, Reply, Wire, WireError},
 };
 use crate::util::lock;
 
@@ -471,13 +469,9 @@ impl Job {
 
     /// Tells the receiver that the transfer is given up, and waits a moment for it to say so.
     async fn tell(&self, link: &dyn Link) -> bool {
-        let request = TransferRequest::Cancel(Cancel { id: self.id });
-        match link.request(request, self.policy.cancel_wait).await {
-            Ok(Reply::Transfer(TransferReply::Cancelled(cancelled))) => cancelled.id == self.id,
-            // A receiver that takes no part in transfers has nothing of this one.
-            Ok(Reply::Transfer(TransferReply::Declined(declined))) => declined.id == self.id,
-            _ => false,
-        }
+        wire::cancel(link, self.id, self.policy.cancel_wait)
+            .await
+            .unwrap_or(false)
     }
 
     /// The transfer is given up on a connection that is up.

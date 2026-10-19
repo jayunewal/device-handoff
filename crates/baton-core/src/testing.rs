@@ -19,7 +19,7 @@ use crate::{
     Config, ContactHints, Identity, Node, NodeBuilder, TrustStore,
     config::RelayMode,
     gate::{ConnectionRegistry, Gate},
-    transfer::incoming::Link,
+    transfer::{incoming::Link, send::Holds},
     transport,
     uni::{Arrival, Kind, Sink, Sinks, Uni},
 };
@@ -29,7 +29,9 @@ pub(crate) struct TestNode {
     pub(crate) node: Node,
     pub(crate) id: DeviceId,
     pub(crate) trust: TrustStore,
-    _dir: tempfile::TempDir,
+    /// The key of the device, so that the same device can be started again.
+    secret: [u8; 32],
+    dir: tempfile::TempDir,
 }
 
 impl TestNode {
@@ -48,8 +50,46 @@ impl TestNode {
         configure: impl FnOnce(&mut Config),
         build: impl FnOnce(NodeBuilder) -> NodeBuilder,
     ) -> Self {
-        let dir = tempfile::tempdir().unwrap();
         let identity = Identity::generate();
+        let secret = identity.secret_key().to_bytes();
+        Self::launch(
+            tempfile::tempdir().unwrap(),
+            secret,
+            false,
+            configure,
+            build,
+        )
+        .await
+    }
+
+    /// A node that keeps what other devices may be holding for it in a file of its folder, as the
+    /// app does, so that [`restarted`](Self::restarted) finds it again.
+    pub(crate) async fn journaled(build: impl FnOnce(NodeBuilder) -> NodeBuilder) -> Self {
+        let identity = Identity::generate();
+        let secret = identity.secret_key().to_bytes();
+        Self::launch(tempfile::tempdir().unwrap(), secret, true, |_| {}, build).await
+    }
+
+    /// The same device started again over the same folder, as when a program is closed and opened
+    /// again: the node is stopped if it is not, and the new one has the same key, the same list of
+    /// paired devices and the same file of what other devices may be holding.
+    pub(crate) async fn restarted(self, build: impl FnOnce(NodeBuilder) -> NodeBuilder) -> Self {
+        let Self {
+            node, secret, dir, ..
+        } = self;
+        node.shutdown().await;
+        drop(node);
+        Self::launch(dir, secret, true, |_| {}, build).await
+    }
+
+    async fn launch(
+        dir: tempfile::TempDir,
+        secret: [u8; 32],
+        journaled: bool,
+        configure: impl FnOnce(&mut Config),
+        build: impl FnOnce(NodeBuilder) -> NodeBuilder,
+    ) -> Self {
+        let identity = Identity::from_secret_bytes(&secret);
         let trust = TrustStore::load(dir.path().join("devices.json")).unwrap();
         let mut config = Config::default();
         config.network.relay = RelayMode::Disabled;
@@ -57,8 +97,11 @@ impl TestNode {
         config.network.dns_discovery = false;
         config.network.port_mapping = false;
         configure(&mut config);
-        let builder = build(NodeBuilder::new(&identity, trust.clone(), config));
-        let node = builder
+        let mut builder = NodeBuilder::new(&identity, trust.clone(), config);
+        if journaled {
+            builder = builder.holds(Holds::open(dir.path().join("holds.json")));
+        }
+        let node = build(builder)
             .customize_endpoint(|builder| {
                 builder
                     .clear_ip_transports()
@@ -72,8 +115,15 @@ impl TestNode {
             node,
             id: identity.device_id(),
             trust,
-            _dir: dir,
+            secret,
+            dir,
         }
+    }
+
+    /// The file in which a [`journaled`](Self::journaled) node keeps what other devices may be
+    /// holding for it.
+    pub(crate) fn holds_file(&self) -> std::path::PathBuf {
+        self.dir.path().join("holds.json")
     }
 
     /// Makes the two nodes paired devices that know where to find each other.

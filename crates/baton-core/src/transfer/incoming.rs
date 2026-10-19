@@ -112,7 +112,7 @@ const ASK_TIME: Duration = Duration::from_mins(2);
 const MEMORY: Duration = Duration::from_mins(10);
 
 /// How long an accepted transfer may have no attempt going before it is given up.
-const KEEP_IDLE: Duration = Duration::from_hours(1);
+pub(crate) const KEEP_IDLE: Duration = Duration::from_hours(1);
 
 /// The longest `Finish` waits for the outcome. The sender waits for two minutes and asks again.
 pub(crate) const FINISH_WAIT: Duration = Duration::from_mins(3);
