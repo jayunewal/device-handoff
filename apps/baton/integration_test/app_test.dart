@@ -10,6 +10,7 @@
 // Nothing here uses the internet: the settings it writes keep Baton to this computer.
 
 import 'dart:async';
+import 'dart:io' as io show Platform;
 import 'dart:io' show Directory, File;
 
 import 'package:baton/src/app.dart';
@@ -185,6 +186,37 @@ void main() {
         reason: 'the plugin says: $status',
       );
       expect(status['viewer'], 0, reason: 'the plugin says: $status');
+    },
+    skip:
+        defaultTargetPlatform != TargetPlatform.iOS &&
+        defaultTargetPlatform != TargetPlatform.macOS,
+  );
+
+  testWidgets(
+    'shares windows with the sharer that the Swift code gave the library',
+    (tester) async {
+      // The plugin gives the library the sharer as well, with which this Mac shares a window that
+      // the person picks in the picker of the system. That picker is in macOS 14 and later; an
+      // older Mac, an iPhone and an iPad cannot share a window, register none, and say 1. What the
+      // person does at the picker cannot be tried here.
+      final backend = RustBackend(dataDir: (await _folder()).path);
+      await backend.setDeviceName('Test device');
+      final session = await backend.start();
+      addTearDown(session.stop);
+
+      final status = await _streamStatus();
+      final abilities = session.windowAbilities();
+      final canShare =
+          defaultTargetPlatform == TargetPlatform.macOS &&
+          _macOsMajorVersion() >= 14;
+      expect(
+        status['sharer'],
+        canShare ? 0 : 1,
+        reason: 'the plugin says: $status',
+      );
+      expect(abilities.canShare, canShare, reason: 'the plugin says: $status');
+      // A window is looked at in this version, and not steered.
+      expect(abilities.canControl, isFalse);
     },
     skip:
         defaultTargetPlatform != TargetPlatform.iOS &&
@@ -456,9 +488,18 @@ Future<void> _until(
   await tester.pump(const Duration(milliseconds: 500));
 }
 
-/// What the plugin that shows windows says it did (BatonStreamPlugin.swift): the number that the
-/// registration of the viewer gave back, how many textures it has and wants, and how many times
-/// it asked Flutter for them. The app does not use the channel; it is there for this.
+/// The number of the version of macOS that the app runs on ("Version 14.5 (Build 23F79)"), or 0 if
+/// the system does not say it that way.
+int _macOsMajorVersion() {
+  final match = RegExp(r'Version (\d+)')
+      .firstMatch(io.Platform.operatingSystemVersion);
+  return int.tryParse(match?.group(1) ?? '') ?? 0;
+}
+
+/// What the plugin that shows and shares windows says it did (BatonStreamPlugin.swift): the numbers
+/// that the registration of the viewer and of the sharer gave back, how many textures the plugin
+/// has and wants, and how many times it asked Flutter for them. The app does not use the channel;
+/// it is there for this.
 Future<Map<String, int>> _streamStatus() async {
   const channel = MethodChannel('io.github.jayunewal.baton/stream');
   return await channel.invokeMapMethod<String, int>('status') ?? {};

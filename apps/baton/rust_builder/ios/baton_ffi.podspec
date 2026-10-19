@@ -16,11 +16,13 @@ Builds the Rust library of the Baton app and links it into the app.
   s.author           = 'The Baton contributors'
 
   # The sources are the Swift that shows the windows of other devices (BatonViewer.swift,
-  # BatonH264Decoder.swift and BatonStreamPlugin.swift) and the header of the C interface that it
-  # calls the Rust library through (baton_stream_abi.h, which CocoaPods puts in the module, so
-  # that the Swift sees it). The Rust library is linked into the framework that they make. The
-  # files of ios/Classes and macos/Classes are the same, and test/viewer_files_test.dart fails if
-  # they differ.
+  # BatonH264Decoder.swift and BatonStreamPlugin.swift), the Swift that shares a window of this
+  # device (BatonSource.swift, BatonH264Encoder.swift and BatonCapture.swift, which has nothing
+  # in it on an iPhone or an iPad, since they cannot share a window), and the header of the C
+  # interface that they call the Rust library through (baton_stream_abi.h, which CocoaPods puts in
+  # the module, so that the Swift sees it). The Rust library is linked into the framework that
+  # they make. The files of ios/Classes and macos/Classes are the same, and
+  # test/viewer_files_test.dart fails if they differ.
   s.source           = { :path => '.' }
   s.source_files     = 'Classes/**/*'
   s.dependency 'Flutter'

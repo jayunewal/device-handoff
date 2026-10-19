@@ -5,6 +5,11 @@
 // (crates/baton-stream-abi), the decoder of the system makes them into pictures (VideoToolbox,
 // BatonH264Decoder.swift), and Flutter draws them from a texture, which the Dart side shows with
 // a Texture widget.
+//
+// On a Mac that has the picker of the system (macOS 14 and later) the plugin also registers the
+// sharer, with which the person shares a window of their own: BatonCapture.swift picks and
+// captures it, BatonH264Encoder.swift encodes it, and BatonSource.swift decides when a picture is
+// made and hands it to the Rust side.
 
 #if os(iOS)
 import Flutter
@@ -110,8 +115,9 @@ final class DeviceViewer: ViewerPlatform {
   }
 }
 
-/// The plugin of the app: it gives the Rust side the viewer, once, when Flutter registers it. This
-/// is before Dart runs, and so before the app starts and asks the Rust side what it can show.
+/// The plugin of the app: it gives the Rust side the viewer, and on a Mac the sharer, once, when
+/// Flutter registers it. This is before Dart runs, and so before the app starts and asks the Rust
+/// side what it can show and share.
 @objc(BatonStreamPlugin)
 public class BatonStreamPlugin: NSObject, FlutterPlugin {
   /// The channel with which the tests of the app ask what the plugin did
@@ -132,8 +138,14 @@ public class BatonStreamPlugin: NSObject, FlutterPlugin {
   /// thread, which registers plugins, touches it.
   private static var shared: BatonStreamPlugin?
 
+  /// What `status` says about the sharer on a device that registers none: an iPhone, an iPad, and
+  /// a Mac before macOS 14, which has no picker of the system. No function of the interface
+  /// returns a positive number.
+  static let noSharer: Int32 = 1
+
   private let places: ScreenPlaces<TextureSlot>
   private let registration: Int32
+  private let sharerRegistration: Int32
 
   public static func register(with registrar: FlutterPluginRegistrar) {
     #if os(iOS)
@@ -169,6 +181,7 @@ public class BatonStreamPlugin: NSObject, FlutterPlugin {
     if code != Int32(BATON_OK) && code != Int32(BATON_E_REGISTERED) {
       NSLog("Baton: the viewer was not registered (%d), so this device shows no windows.", code)
     }
+    sharerRegistration = BatonStreamPlugin.registerDeviceSharer()
     super.init()
 
     keepTrying(
@@ -185,13 +198,27 @@ public class BatonStreamPlugin: NSObject, FlutterPlugin {
       })
   }
 
+  /// Registers the sharer of this device, if it has one, and says what came of it.
+  private static func registerDeviceSharer() -> Int32 {
+    #if os(macOS)
+    if #available(macOS 14.0, *) {
+      let code = registerSharer(MacSharer())
+      if code != Int32(BATON_OK) && code != Int32(BATON_E_REGISTERED) {
+        NSLog("Baton: the sharer was not registered (%d), so this device shares no windows.", code)
+      }
+      return code
+    }
+    #endif
+    return noSharer
+  }
+
   public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
     case "status":
       let status = places.status
       result([
-        "viewer": Int(registration), "textures": status.made, "wanted": status.wanted,
-        "tries": status.tries,
+        "viewer": Int(registration), "sharer": Int(sharerRegistration),
+        "textures": status.made, "wanted": status.wanted, "tries": status.tries,
       ])
     default:
       result(FlutterMethodNotImplemented)

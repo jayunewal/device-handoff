@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// The Swift that shows the windows of other devices is the same for an iPhone and for a Mac, and a
-// CocoaPods pod can only hold files from its own folder, so the files are in two places:
+// The Swift that shows the windows of other devices, and the Swift that shares a window of this
+// device, are the same for an iPhone and for a Mac (the iPhone has nothing in the part that
+// captures), and a CocoaPods pod can only hold files from its own folder, so the files are in two
+// places:
 // rust_builder/ios/Classes and rust_builder/macos/Classes. Nothing builds one from the other, and
 // the Mac jobs of CI only build the platform they are for, so a change that reached one folder
 // and not the other would show as two apps that do different things. These tests fail at once.
@@ -15,7 +17,10 @@ String _read(String path) =>
     File(path).readAsStringSync().replaceAll('\r\n', '\n');
 
 const _files = [
+  'BatonCapture.swift',
   'BatonH264Decoder.swift',
+  'BatonH264Encoder.swift',
+  'BatonSource.swift',
   'BatonStreamPlugin.swift',
   'BatonViewer.swift',
   'baton_stream_abi.h',
@@ -74,21 +79,29 @@ void main() {
   });
 
   test('only the plugin file knows Flutter', () {
-    // The other two build without Flutter on any computer with a Swift compiler, and
-    // rust_builder/swift_tests/run.sh does just that.
-    for (final file in ['BatonViewer.swift', 'BatonH264Decoder.swift']) {
+    // The others build without Flutter on any computer with a Swift compiler (the ones that need
+    // an Apple framework, on a Mac), and rust_builder/swift_tests/run.sh does just that.
+    const others = [
+      'BatonCapture.swift',
+      'BatonH264Decoder.swift',
+      'BatonH264Encoder.swift',
+      'BatonSource.swift',
+      'BatonViewer.swift',
+    ];
+    for (final file in others) {
       final swift = _read('rust_builder/macos/Classes/$file');
       expect(swift, isNot(contains('import Flutter')), reason: file);
       expect(swift, isNot(contains('import FlutterMacOS')), reason: file);
     }
-    final viewer = _read('rust_builder/macos/Classes/BatonViewer.swift');
-    final imports = RegExp(
-      r'^import (\w+)$',
-      multiLine: true,
-    ).allMatches(viewer).map((match) => match.group(1)).toList();
-    expect(imports, [
-      'Foundation',
-    ], reason: 'the file with the rules must build and be tested everywhere');
+    // The files with the rules must build and be tested everywhere.
+    for (final file in ['BatonViewer.swift', 'BatonSource.swift']) {
+      final swift = _read('rust_builder/macos/Classes/$file');
+      final imports = RegExp(
+        r'^import (\w+)$',
+        multiLine: true,
+      ).allMatches(swift).map((match) => match.group(1)).toList();
+      expect(imports, ['Foundation'], reason: file);
+    }
   });
 
   test('the pods build what is in Classes, and the tests are not there', () {

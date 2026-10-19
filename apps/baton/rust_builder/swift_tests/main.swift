@@ -198,6 +198,226 @@ var tests: [(String, () -> Void)] = [
     "places that never come are given up on, and made when a window asks",
     testPlacesThatNeverComeAreGivenUpOnAndAskedForAgainWhenAWindowComes
   ),
+  (
+    "the sharer registration gives the Rust side a whole table",
+    testTheSharerRegistrationGivesTheRustSideAWholeTable
+  ),
+  (
+    "a sharer registration that fails returns its code and lets go of the platform",
+    testASharerRegistrationThatFailsReturnsItsCodeAndLetsGoOfThePlatform
+  ),
+  (
+    "a sharer registration that works keeps the platform for the life of the process",
+    testASharerRegistrationThatWorksKeepsThePlatformForTheLifeOfTheProcess
+  ),
+  (
+    "whether a window can be controlled is what the platform says each time",
+    testWhetherAWindowCanBeControlledIsWhatThePlatformSaysEachTime
+  ),
+  (
+    "a pick is shown and a taken down pick is told",
+    testAPickIsShownAndATakenDownPickIsTold
+  ),
+  (
+    "a pick that cannot be shown writes the sentence and anything else has one of its own",
+    testAPickThatCannotBeShownWritesTheSentenceAndAnythingElseHasOneOfItsOwn
+  ),
+  (
+    "the answer to a pick gives the window and what is known of it",
+    testTheAnswerToAPickGivesTheWindowAndWhatIsKnownOfIt
+  ),
+  (
+    "a window with no title and no name is given with empty text",
+    testAWindowWithNoTitleAndNoNameIsGivenWithEmptyText
+  ),
+  (
+    "a title that is not ascii goes as it is",
+    testATitleThatIsNotAsciiGoesAsItIs
+  ),
+  (
+    "an answer that the Rust side refuses leaves the window with the platform",
+    testAnAnswerThatTheRustSideRefusesLeavesTheWindowWithThePlatform
+  ),
+  (
+    "a picker that failed and a person who gave up are told",
+    testAPickerThatFailedAndAPersonWhoGaveUpAreTold
+  ),
+  (
+    "a window is prepared within what the other device takes",
+    testAWindowIsPreparedWithinWhatTheOtherDeviceTakes
+  ),
+  (
+    "a picture that cannot be made is a failure and nothing is written",
+    testAPictureThatCannotBeMadeIsAFailureAndNothingIsWritten
+  ),
+  (
+    "a prepare with structs that are too short or missing is refused",
+    testAPrepareWithStructsThatAreTooShortOrMissingIsRefused
+  ),
+  (
+    "a start gives the window its link and a failure writes its sentence",
+    testAStartGivesTheWindowItsLinkAndAFailureWritesItsSentence
+  ),
+  (
+    "the sentence of a failed start is cut between two characters where it does not fit",
+    testTheSentenceOfAFailedStartIsCutBetweenTwoCharactersWhereItDoesNotFit
+  ),
+  (
+    "the end and the release of a window reach it",
+    testTheEndAndTheReleaseOfAWindowReachIt
+  ),
+  (
+    "a window that was never started is released without an end",
+    testAWindowThatWasNeverStartedIsReleasedWithoutAnEnd
+  ),
+  (
+    "the picture is the window itself when it fits",
+    testThePictureIsTheWindowItselfWhenItFits
+  ),
+  (
+    "a large window is scaled down with its shape kept",
+    testALargeWindowIsScaledDownWithItsShapeKept
+  ),
+  (
+    "the picture stays within what the other device takes",
+    testThePictureStaysWithinWhatTheOtherDeviceTakes
+  ),
+  (
+    "the edges of the picture are even and never below two",
+    testTheEdgesOfThePictureAreEvenAndNeverBelowTwo
+  ),
+  (
+    "our own limits are within what the protocol allows",
+    testOurOwnLimitsAreWithinWhatTheProtocolAllows
+  ),
+  (
+    "no picture is made for a viewer that takes none",
+    testNoPictureIsMadeForAViewerThatTakesNone
+  ),
+  (
+    "the bitrate grows with the picture within bounds",
+    testTheBitrateGrowsWithThePictureWithinBounds
+  ),
+  (
+    "the clock and the questions are asked about the link",
+    testTheClockAndTheQuestionsAreAskedAboutTheLink
+  ),
+  (
+    "a clock and a question that are refused mean that the session is over",
+    testAClockAndAQuestionThatAreRefusedMeanThatTheSessionIsOver
+  ),
+  (
+    "what begin says is the kind of picture to make",
+    testWhatBeginSaysIsTheKindOfPictureToMake
+  ),
+  (
+    "a begin that is refused or not understood ends or gives up the picture",
+    testABeginThatIsRefusedOrNotUnderstoodEndsOrGivesUpThePicture
+  ),
+  (
+    "a begin that says yes without saying what kind makes no picture",
+    testABeginThatSaysYesWithoutSayingWhatKindMakesNoPicture
+  ),
+  (
+    "a picture is handed over with its sets in order and marked as referenced",
+    testAPictureIsHandedOverWithItsSetsInOrderAndMarkedAsReferenced
+  ),
+  (
+    "a picture with no sets and one with no bytes are handed over too",
+    testAPictureWithNoSetsAndOneWithNoBytesAreHandedOverToo
+  ),
+  (
+    "what became of a picture is told in the words of the library",
+    testWhatBecameOfAPictureIsToldInTheWordsOfTheLibrary
+  ),
+  (
+    "the end of a session goes with its sentence or with none",
+    testTheEndOfASessionGoesWithItsSentenceOrWithNone
+  ),
+  (
+    "a cancel reaches the library",
+    testACancelReachesTheLibrary
+  ),
+  (
+    "an image is made into the picture that the library asks for at the time it was captured",
+    testAnImageIsMadeIntoThePictureThatTheLibraryAsksForAtTheTimeItWasCaptured
+  ),
+  (
+    "a recovery frame is made as a key frame since nothing is marked as a long term reference",
+    testARecoveryFrameIsMadeAsAKeyFrameSinceNothingIsMarkedAsALongTermReference
+  ),
+  (
+    "an image for which no picture is wanted is kept and made when the frame clock ticks",
+    testAnImageForWhichNoPictureIsWantedIsKeptAndMadeWhenTheFrameClockTicks
+  ),
+  (
+    "only the newest image is made into a picture",
+    testOnlyTheNewestImageIsMadeIntoAPicture
+  ),
+  (
+    "an image that was sent is not made again unless the viewer needs something other than a delta",
+    testAnImageThatWasSentIsNotMadeAgainUnlessTheViewerNeedsSomethingOtherThanADelta
+  ),
+  (
+    "the frame clock does nothing before the first image comes",
+    testTheFrameClockDoesNothingBeforeTheFirstImageComes
+  ),
+  (
+    "a picture that is stale is asked for again on the next tick",
+    testAPictureThatIsStaleIsAskedForAgainOnTheNextTick
+  ),
+  (
+    "a picture that the encoder cannot make is given up on and the encoder is made anew",
+    testAPictureThatTheEncoderCannotMakeIsGivenUpOnAndTheEncoderIsMadeAnew
+  ),
+  (
+    "a session ends with a sentence when pictures fail too often in a row",
+    testASessionEndsWithASentenceWhenPicturesFailTooOftenInARow
+  ),
+  (
+    "a stale picture is not a failure",
+    testAStalePictureIsNotAFailure
+  ),
+  (
+    "a picture that works starts the count of failures again",
+    testAPictureThatWorksStartsTheCountOfFailuresAgain
+  ),
+  (
+    "an encoder that cannot be made anew ends the session",
+    testAnEncoderThatCannotBeMadeAnewEndsTheSession
+  ),
+  (
+    "pictures that are too large or not taken end the session when they repeat",
+    testPicturesThatAreTooLargeOrNotTakenEndTheSessionWhenTheyRepeat
+  ),
+  (
+    "a tick asks once about an image that was not made and not also about a lost picture",
+    testATickAsksOnceAboutAnImageThatWasNotMadeAndNotAlsoAboutALostPicture
+  ),
+  (
+    "a session that is over stops the making of pictures",
+    testASessionThatIsOverStopsTheMakingOfPictures
+  ),
+  (
+    "the image that was kept is let go of when the pump stops",
+    testTheImageThatWasKeptIsLetGoOfWhenThePumpStops
+  ),
+  (
+    "every begin is answered by one send or one cancel whatever happens",
+    testEveryBeginIsAnsweredByOneSendOrOneCancelWhateverHappens
+  ),
+  (
+    "the sentence for a stopped capture depends on why it stopped",
+    testTheSentenceForAStoppedCaptureDependsOnWhyItStopped
+  ),
+  (
+    "a code of another domain is never taken for one that the person caused",
+    testACodeOfAnotherDomainIsNeverTakenForOneThatThePersonCaused
+  ),
+  (
+    "every sentence for a stopped capture fits in the library's message",
+    testEverySentenceForAStoppedCaptureFitsInTheLibrarysMessage
+  ),
 ]
 
 #if canImport(VideoToolbox)
@@ -227,6 +447,31 @@ var tests: [(String, () -> Void)] = [
     (
       "a picture with nothing in it is one that Flutter draws",
       testAPictureWithNothingInItIsOneThatFlutterDraws
+    ),
+    (
+      "the encoder makes a key frame with its parameter sets and the frames after it without them",
+      testTheEncoderMakesAKeyFrameWithItsParameterSetsAndTheFramesAfterItWithoutThem
+    ),
+    (
+      "the encoder makes a key frame whenever one is asked for",
+      testTheEncoderMakesAKeyFrameWheneverOneIsAskedFor
+    ),
+    ("two pictures of the same moment are both made", testTwoPicturesOfTheSameMomentAreBothMade),
+    (
+      "an encoder that is started anew makes a key frame and one let go of refuses to encode",
+      testAnEncoderThatIsStartedAnewMakesAKeyFrameAndOneLetGoOfRefusesToEncode
+    ),
+    (
+      "an encoder is not made for a size that the protocol does not allow",
+      testAnEncoderIsNotMadeForASizeThatTheProtocolDoesNotAllow
+    ),
+    (
+      "the decoder of the viewer takes what the encoder makes",
+      testTheDecoderOfTheViewerTakesWhatTheEncoderMakes
+    ),
+    (
+      "the pump makes pictures of images with the encoder of the system",
+      testThePumpMakesPicturesOfImagesWithTheEncoderOfTheSystem
     ),
   ]
 #endif

@@ -115,7 +115,10 @@ extern "C" {
 #define BATON_SOURCE_RESUME 3u
 #define BATON_SOURCE_NOTICE 4u
 
-/* Why the source paused. Any reason that this version does not know reads as OTHER. */
+/*
+ * Why the source paused. On the viewing side, a reason that this version does not know reads as
+ * OTHER; baton_stream_source_pause refuses one with BATON_E_ARGUMENT.
+ */
 #define BATON_PAUSE_OTHER 0u
 #define BATON_PAUSE_LOCKED 1u
 #define BATON_PAUSE_HIDDEN 2u
@@ -419,7 +422,9 @@ typedef struct BatonViewerVTable {
  *
  *   control:     whether the person can let another device control a window that they share, 1
  *                or 0. A platform that cannot post input says 0, and no window is offered with
- *                control. Called each time the app asks what the device can do.
+ *                control. This version of the interface carries no input to the platform, so
+ *                every platform says 0 for now: a window that was offered with control would
+ *                drop every touch. Called each time the app asks what the device can do.
  *   pick:        the person wants to share a window: shows the picker of the system. request is
  *                the number that baton_stream_pick_done is given when the person has chosen, or
  *                given up, or the picker failed. Does not wait for the person. On a failure to
@@ -517,6 +522,11 @@ int32_t baton_stream_register_sharer(const BatonSharerVTable *vtable);
  * it was answered, or cancel_pick took it down), BATON_E_ARGUMENT (a pointer, a size or a value is
  * wrong; the person is waiting, so the request is answered with a failure all the same),
  * BATON_E_REENTRANT or BATON_E_PANIC.
+ *
+ * The window can be released inside this call. When the app stops waiting for the answer just as
+ * it arrives, the answer is taken and the window is let go of at once, on the thread that called
+ * this. So release must not take a lock that is held around this call, and must not wait for the
+ * thread that is in this call, the main thread included.
  */
 int32_t baton_stream_pick_done(uint64_t request, const BatonPicked *picked,
                                const BatonBytes *failure);
@@ -568,8 +578,10 @@ int32_t baton_stream_source_recovery_pending(uint64_t link, uint32_t *pending);
  * Returns BATON_E_ARGUMENT if the picture was not taken, because a pointer, a size or a length is
  * wrong, or the sample is not a picture that can go on the wire: a length that reaches beyond its
  * end, a NAL unit that could be taken for more than one, a key frame that lacks a sequence or a
- * picture parameter set or holds no slice of an IDR picture. The frame that begin announced is
- * given up on then too.
+ * picture parameter set or holds no slice of an IDR picture, or a key frame whose sequence
+ * parameter set describes a picture larger than the format that prepare chose or that the last
+ * baton_stream_source_new_epoch gave: the viewer refuses what is larger than it was told, and
+ * nothing on this device would say why. The frame that begin announced is given up on then too.
  */
 int32_t baton_stream_source_sent(uint64_t link, const BatonPicture *picture, uint32_t *outcome,
                                  uint64_t *number);
@@ -586,8 +598,10 @@ int32_t baton_stream_source_new_epoch(uint64_t link, const BatonFormat *format);
 
 /*
  * Stops the pictures for a while, and tells the viewer why: BATON_PAUSE_LOCKED when the Mac is
- * locked or its display is off, BATON_PAUSE_HIDDEN when the window is minimized or not on screen.
- * begin answers BATON_BEGIN_NOT_NOW until baton_stream_source_resume.
+ * locked or its display is off, BATON_PAUSE_HIDDEN when the window is minimized or not on screen,
+ * BATON_PAUSE_OTHER for any other reason. A reason that is none of the three returns
+ * BATON_E_ARGUMENT and changes nothing. begin answers BATON_BEGIN_NOT_NOW until
+ * baton_stream_source_resume.
  */
 int32_t baton_stream_source_pause(uint64_t link, uint32_t reason);
 
@@ -601,8 +615,9 @@ int32_t baton_stream_source_resume(uint64_t link);
  * words that the person can act on (at most 256 bytes, cut to one line): the person is shown it.
  * The first sentence counts, and a session that is over already is told as it ended, whatever the
  * sentence says: the other device or the connection may have ended it first, or the platform
- * itself with no sentence. ended is called a moment later, from a thread of the Rust side, and not
- * before this returns. Ending a session that is over while its link is still open returns
+ * itself with no sentence. ended is called a moment later, from a thread of the Rust side: never
+ * from inside this call, but possibly before it returns, while the thread that called this is
+ * still on its way out. Ending a session that is over while its link is still open returns
  * BATON_OK and changes nothing.
  */
 int32_t baton_stream_source_end(uint64_t link, const BatonBytes *sentence);
