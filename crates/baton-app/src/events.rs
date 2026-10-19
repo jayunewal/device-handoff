@@ -50,8 +50,8 @@ pub enum Event {
     ///
     /// The person's own answer is not announced with this event: a screen takes the question
     /// down when the person answers, and draws the window when [`Event::WindowStarted`] says so.
-    /// A yes that comes as the offer is withdrawn, or that cannot be carried out, ends with no
-    /// event at all.
+    /// A yes that comes as the offer is withdrawn, or whose session then fails to begin, ends
+    /// with no event at all.
     ///
     /// `failure` is the sentence to show when the person said yes and this device could not show
     /// the window after all. The other device was told that the window was refused.

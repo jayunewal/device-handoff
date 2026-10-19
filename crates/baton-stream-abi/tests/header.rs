@@ -1,0 +1,1046 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! `include/baton_stream_abi.h` is what the platform is written against, and `src/abi.rs` is what
+//! the Rust side is written against. Nothing makes them the same but these tests, which read the
+//! header and hold it to the Rust side:
+//!
+//! - the numbers it defines, and no others;
+//! - every struct: the fields, their types, and the offsets and sizes that follow from them by the
+//!   rules of a 64-bit C compiler, and the `BATON_STATIC_ASSERT` lines that say the same;
+//! - the function types, and the functions that the library exports;
+//! - that a C compiler and a C++ compiler take the header, wherever there is one.
+//!
+//! The header is read by a small parser that knows only the shapes the header uses. A shape it
+//! does not know stops it with a message, so that whoever adds one teaches the test as well.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::{
+    collections::BTreeMap,
+    env,
+    ffi::c_void,
+    fs,
+    mem::{align_of, offset_of, size_of},
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+use baton_proto::limits::{MAX_CODECS, MAX_FRAME_RATE, MAX_PICTURE_EDGE};
+use baton_stream_abi::{
+    abi::{
+        self, BatonBytes, BatonDecoderState, BatonFrame, BatonLimits, BatonMessage, BatonScreen,
+        BatonSourceMessage, BatonViewerVTable, BatonWindow, DecodeFn, EndedFn, LimitsFn, OpenFn,
+        ReleaseFn, ShowFn, SourceFn, StateFn,
+    },
+    exports::{
+        baton_stream_abi_version, baton_stream_link_decode_failed, baton_stream_register_viewer,
+    },
+};
+
+// What the header says.
+
+/// A function, or the type of a function.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CFunction {
+    name: String,
+    ret: String,
+    params: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CField {
+    name: String,
+    c_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CStruct {
+    name: String,
+    fields: Vec<CField>,
+}
+
+/// One `BATON_STATIC_ASSERT` line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Assert {
+    Size {
+        of: String,
+        bytes: usize,
+        message: String,
+    },
+    Offset {
+        of: String,
+        field: String,
+        bytes: usize,
+        message: String,
+    },
+}
+
+#[derive(Debug, Default)]
+struct Parsed {
+    /// The numbers it defines.
+    numbers: BTreeMap<String, i64>,
+    /// The macros that take arguments.
+    macros: Vec<String>,
+    structs: Vec<CStruct>,
+    fn_types: Vec<CFunction>,
+    prototypes: Vec<CFunction>,
+    asserts: Vec<Assert>,
+}
+
+fn header_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("include/baton_stream_abi.h")
+}
+
+/// The header as it is in git. On Windows a checkout may give the file CRLF line breaks, which
+/// say nothing about the header, so they are read as the line breaks of git.
+fn header() -> String {
+    fs::read_to_string(header_path())
+        .unwrap()
+        .replace("\r\n", "\n")
+}
+
+/// `text` with every run of white space as one space, and nothing at either end.
+fn squeeze(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `text` without its comments. A comment becomes one space, and the line breaks in it stay where
+/// they were.
+fn without_comments(text: &str) -> String {
+    assert!(
+        !text.contains("//"),
+        "the header has a // comment; it uses /* */ only"
+    );
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("/*") {
+        out.push_str(&rest[..start]);
+        let end = start
+            + rest[start..]
+                .find("*/")
+                .expect("a comment that is never closed")
+            + 2;
+        out.extend(rest[start..end].chars().filter(|c| *c == '\n'));
+        out.push(' ');
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Splits `uint32_t size` or `const uint8_t *ptr` into the type and the name.
+fn declaration(text: &str) -> (String, String) {
+    let start = text
+        .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .map_or(0, |at| at + 1);
+    let (head, name) = text.split_at(start);
+    assert!(
+        !head.trim().is_empty() && !name.is_empty(),
+        "no type or no name in `{text}`"
+    );
+    (head.trim_end().to_owned(), name.to_owned())
+}
+
+/// The types of a list of parameters.
+fn param_types(params: &str) -> Vec<String> {
+    let params = params.trim();
+    if params == "void" {
+        return Vec::new();
+    }
+    params
+        .split(',')
+        .map(|param| declaration(param.trim()).0)
+        .collect()
+}
+
+/// The statements of the code that is left once the preprocessor lines are gone: the text up to
+/// each `;` that is not inside braces.
+fn statements(code: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0_usize;
+    for c in code.chars() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth = depth.checked_sub(1).expect("a } that was never opened"),
+            ';' if depth == 0 => {
+                out.push(squeeze(&current));
+                current.clear();
+                continue;
+            }
+            _ => {}
+        }
+        current.push(c);
+    }
+    assert!(
+        current.trim().is_empty(),
+        "text after the last statement: {current}"
+    );
+    out
+}
+
+fn parse_struct(rest: &str) -> CStruct {
+    let (name, rest) = rest.split_once(" {").expect("a struct with no body");
+    let (body, alias) = rest
+        .rsplit_once('}')
+        .expect("a struct that is never closed");
+    assert_eq!(alias.trim(), name, "a struct whose two names differ");
+    let fields = body
+        .split(';')
+        .map(str::trim)
+        .filter(|field| !field.is_empty())
+        .map(|field| {
+            let (c_type, name) = declaration(field);
+            CField { name, c_type }
+        })
+        .collect();
+    CStruct {
+        name: name.to_owned(),
+        fields,
+    }
+}
+
+fn parse_fn_type(typedef: &str) -> CFunction {
+    let (returns, after) = typedef
+        .split_once(" (*")
+        .unwrap_or_else(|| panic!("a typedef that is not a struct or a function type: {typedef}"));
+    let (name, params) = after
+        .split_once(")(")
+        .unwrap_or_else(|| panic!("a function type with no parameters: {after}"));
+    let params = params
+        .strip_suffix(')')
+        .expect("a function type that is not closed");
+    CFunction {
+        name: name.to_owned(),
+        ret: returns.to_owned(),
+        params: param_types(params),
+    }
+}
+
+fn parse_prototype(statement: &str) -> CFunction {
+    let (head, params) = statement
+        .split_once('(')
+        .unwrap_or_else(|| panic!("a statement that the test does not read: {statement}"));
+    let params = params
+        .strip_suffix(')')
+        .expect("a prototype that is not closed");
+    let (ret, name) = declaration(head);
+    CFunction {
+        name,
+        ret,
+        params: param_types(params),
+    }
+}
+
+fn parse_assert(rest: &str) -> Assert {
+    let inner = rest
+        .strip_suffix(')')
+        .expect("an assert that is not closed");
+    let (condition, message) = inner
+        .rsplit_once(", \"")
+        .unwrap_or_else(|| panic!("an assert with no message: {rest}"));
+    let message = message
+        .strip_suffix('"')
+        .expect("a message that is not closed")
+        .to_owned();
+    if let Some(of) = condition.strip_prefix("sizeof(") {
+        let (of, bytes) = of
+            .split_once(") == ")
+            .unwrap_or_else(|| panic!("a sizeof that the test does not read: {condition}"));
+        Assert::Size {
+            of: of.to_owned(),
+            bytes: bytes.parse().unwrap(),
+            message,
+        }
+    } else if let Some(of) = condition.strip_prefix("offsetof(") {
+        let (of, rest) = of
+            .split_once(", ")
+            .unwrap_or_else(|| panic!("an offsetof that the test does not read: {condition}"));
+        let (field, bytes) = rest
+            .split_once(") == ")
+            .unwrap_or_else(|| panic!("an offsetof that the test does not read: {condition}"));
+        Assert::Offset {
+            of: of.to_owned(),
+            field: field.to_owned(),
+            bytes: bytes.parse().unwrap(),
+            message,
+        }
+    } else {
+        panic!("an assert that the test does not read: {condition}");
+    }
+}
+
+fn define(parsed: &mut Parsed, rest: &str) {
+    let (name, value) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+    if let Some((name, _)) = name.split_once('(') {
+        parsed.macros.push(name.to_owned());
+        return;
+    }
+    let value = value.trim();
+    if value.is_empty() {
+        // The include guard.
+        return;
+    }
+    let number = value
+        .trim_matches(|c| c == '(' || c == ')')
+        .trim_end_matches('u');
+    let number = number
+        .parse()
+        .unwrap_or_else(|_| panic!("{name} is not a number: {value}"));
+    parsed.numbers.insert(name.to_owned(), number);
+}
+
+/// What the header declares, for a C compiler and not a C++ one.
+fn parse(text: &str) -> Parsed {
+    let mut parsed = Parsed::default();
+    let mut code = String::new();
+    // For each `#if` that is open: whether its lines are read, and whether it is a block for C++.
+    let mut open: Vec<(bool, bool)> = Vec::new();
+    for line in without_comments(text).lines() {
+        let line = line.trim();
+        let reading = open.iter().all(|(read, _)| *read);
+        let Some(directive) = line.strip_prefix('#') else {
+            if reading {
+                code.push_str(line);
+                code.push('\n');
+            }
+            continue;
+        };
+        let directive = directive.trim_start();
+        let (word, rest) = directive
+            .split_once(char::is_whitespace)
+            .unwrap_or((directive, ""));
+        let rest = rest.trim();
+        match word {
+            // The include guard.
+            "ifndef" => open.push((true, false)),
+            "ifdef" => {
+                assert_eq!(rest, "__cplusplus", "an #ifdef that the test does not read");
+                open.push((false, true));
+            }
+            "else" => {
+                let last = open.last_mut().expect("an #else with no #if");
+                assert!(last.1, "an #else in a block that is not for C++");
+                last.0 = !last.0;
+            }
+            "endif" => {
+                open.pop().expect("an #endif with no #if");
+            }
+            "include" => {
+                assert!(
+                    !reading || rest == "<stddef.h>" || rest == "<stdint.h>",
+                    "an #include that the test does not read: {rest}"
+                );
+            }
+            "define" if reading => define(&mut parsed, rest),
+            "define" => {}
+            other => panic!("the header has a directive that the test does not read: #{other}"),
+        }
+    }
+    assert!(open.is_empty(), "an #if that is never closed");
+    for statement in statements(&code) {
+        if let Some(rest) = statement.strip_prefix("typedef struct ") {
+            parsed.structs.push(parse_struct(rest));
+        } else if let Some(rest) = statement.strip_prefix("typedef ") {
+            parsed.fn_types.push(parse_fn_type(rest));
+        } else if let Some(rest) = statement.strip_prefix("BATON_STATIC_ASSERT(") {
+            parsed.asserts.push(parse_assert(rest));
+        } else {
+            parsed.prototypes.push(parse_prototype(&statement));
+        }
+    }
+    parsed
+}
+
+// What a 64-bit C compiler makes of the structs.
+
+#[derive(Debug)]
+struct CompiledField {
+    name: String,
+    c_type: String,
+    offset: usize,
+    size: usize,
+}
+
+#[derive(Debug)]
+struct Compiled {
+    name: String,
+    size: usize,
+    align: usize,
+    fields: Vec<CompiledField>,
+}
+
+/// The size and alignment of a type of the header.
+fn size_align(c_type: &str, known: &BTreeMap<String, (usize, usize)>) -> (usize, usize) {
+    match c_type {
+        "uint32_t" | "int32_t" => (4, 4),
+        "uint64_t" | "int64_t" | "size_t" => (8, 8),
+        pointer if pointer.ends_with('*') => (8, 8),
+        other => *known
+            .get(other)
+            .unwrap_or_else(|| panic!("the test does not know the size of the type {other}")),
+    }
+}
+
+/// The layout of each struct, worked out from its fields by the rules of a 64-bit C compiler:
+/// each field at the next multiple of its own alignment, and the struct as large as its
+/// alignment makes it.
+fn compile(parsed: &Parsed) -> Vec<Compiled> {
+    let mut known: BTreeMap<String, (usize, usize)> = parsed
+        .fn_types
+        .iter()
+        .map(|function| (function.name.clone(), (8, 8)))
+        .collect();
+    let mut out = Vec::new();
+    for c_struct in &parsed.structs {
+        let mut at = 0;
+        let mut align = 1;
+        let mut fields = Vec::new();
+        for field in &c_struct.fields {
+            let (size, field_align) = size_align(&field.c_type, &known);
+            at = usize::next_multiple_of(at, field_align);
+            fields.push(CompiledField {
+                name: field.name.clone(),
+                c_type: field.c_type.clone(),
+                offset: at,
+                size,
+            });
+            at += size;
+            align = align.max(field_align);
+        }
+        let size = usize::next_multiple_of(at, align);
+        known.insert(c_struct.name.clone(), (size, align));
+        out.push(Compiled {
+            name: c_struct.name.clone(),
+            size,
+            align,
+            fields,
+        });
+    }
+    out
+}
+
+// What the library has.
+
+struct RustField {
+    name: &'static str,
+    c_type: &'static str,
+    offset: usize,
+    size: usize,
+}
+
+struct RustStruct {
+    name: &'static str,
+    size: usize,
+    align: usize,
+    fields: Vec<RustField>,
+}
+
+/// The layout of a struct of `abi`, with the C type that each of its fields is written as in the
+/// header. The struct is named with every field, and each has the Rust type that is said, or this
+/// does not compile.
+macro_rules! rust_struct {
+    ($ty:ident { $($field:ident: $rust:ty = $c:literal),+ $(,)? }) => {{
+        #[allow(dead_code)]
+        fn every_field_is_listed(value: &$ty) {
+            let $ty { $($field: _),+ } = value;
+        }
+        $( let _: fn(&$ty) -> &$rust = |value| &value.$field; )+
+        RustStruct {
+            name: stringify!($ty),
+            size: size_of::<$ty>(),
+            align: align_of::<$ty>(),
+            fields: vec![$(RustField {
+                name: stringify!($field),
+                c_type: $c,
+                offset: offset_of!($ty, $field),
+                size: size_of::<$rust>(),
+            }),+],
+        }
+    }};
+}
+
+fn rust_structs() -> Vec<RustStruct> {
+    vec![
+        rust_struct!(BatonBytes {
+            ptr: *const u8 = "const uint8_t *",
+            len: usize = "size_t",
+        }),
+        rust_struct!(BatonLimits {
+            size: u32 = "uint32_t",
+            max_width: u32 = "uint32_t",
+            max_height: u32 = "uint32_t",
+            max_fps: u32 = "uint32_t",
+            codecs: u32 = "uint32_t",
+            reserved: u32 = "uint32_t",
+        }),
+        rust_struct!(BatonWindow {
+            size: u32 = "uint32_t",
+            width: u32 = "uint32_t",
+            height: u32 = "uint32_t",
+            control: u32 = "uint32_t",
+            title: BatonBytes = "BatonBytes",
+            app: BatonBytes = "BatonBytes",
+        }),
+        rust_struct!(BatonScreen {
+            size: u32 = "uint32_t",
+            reserved: u32 = "uint32_t",
+            context: *mut c_void = "void *",
+            id: i64 = "int64_t",
+        }),
+        rust_struct!(BatonMessage {
+            size: u32 = "uint32_t",
+            cap: u32 = "uint32_t",
+            len: u32 = "uint32_t",
+            reserved: u32 = "uint32_t",
+            text: *mut u8 = "uint8_t *",
+        }),
+        rust_struct!(BatonFrame {
+            size: u32 = "uint32_t",
+            flags: u32 = "uint32_t",
+            number: u64 = "uint64_t",
+            depends_on: u64 = "uint64_t",
+            capture_time: u64 = "uint64_t",
+            chain: u32 = "uint32_t",
+            epoch: u32 = "uint32_t",
+            sample: BatonBytes = "BatonBytes",
+            sets: *const BatonBytes = "const BatonBytes *",
+            set_count: usize = "size_t",
+            sequence_sets: usize = "size_t",
+        }),
+        rust_struct!(BatonSourceMessage {
+            size: u32 = "uint32_t",
+            kind: u32 = "uint32_t",
+            epoch: u32 = "uint32_t",
+            codec: u32 = "uint32_t",
+            width: u32 = "uint32_t",
+            height: u32 = "uint32_t",
+            fps: u32 = "uint32_t",
+            reason: u32 = "uint32_t",
+            count: u32 = "uint32_t",
+            reserved: u32 = "uint32_t",
+        }),
+        rust_struct!(BatonDecoderState {
+            size: u32 = "uint32_t",
+            decode_us: u32 = "uint32_t",
+            thermal: u32 = "uint32_t",
+            reserved: u32 = "uint32_t",
+        }),
+        rust_struct!(BatonViewerVTable {
+            version: u32 = "uint32_t",
+            size: u32 = "uint32_t",
+            context: *mut c_void = "void *",
+            limits: Option<LimitsFn> = "BatonLimitsFn",
+            open: Option<OpenFn> = "BatonOpenFn",
+            decode: Option<DecodeFn> = "BatonDecodeFn",
+            show: Option<ShowFn> = "BatonShowFn",
+            source: Option<SourceFn> = "BatonSourceFn",
+            state: Option<StateFn> = "BatonStateFn",
+            ended: Option<EndedFn> = "BatonEndedFn",
+            release: Option<ReleaseFn> = "BatonReleaseFn",
+        }),
+    ]
+}
+
+fn function(name: &str, ret: &str, params: &[&str]) -> CFunction {
+    CFunction {
+        name: name.to_owned(),
+        ret: ret.to_owned(),
+        params: params.iter().map(|param| (*param).to_owned()).collect(),
+    }
+}
+
+/// A function type of `abi` as the header spells it. The alias is the type that is said, in both
+/// directions, or this does not compile: a safe function does not pass for an unsafe one.
+macro_rules! rust_fn_type {
+    ($alias:ident as $name:literal: $ret:literal $params:tt is $rust:ty) => {{
+        #[allow(dead_code)]
+        fn is_the_alias(value: $rust) -> $alias {
+            value
+        }
+        #[allow(dead_code)]
+        fn is_the_type(value: $alias) -> $rust {
+            value
+        }
+        function($name, $ret, &$params)
+    }};
+}
+
+fn rust_fn_types() -> Vec<CFunction> {
+    vec![
+        rust_fn_type!(LimitsFn as "BatonLimitsFn": "int32_t" ["void *", "BatonLimits *"]
+            is unsafe extern "C" fn(*mut c_void, *mut BatonLimits) -> i32),
+        rust_fn_type!(OpenFn as "BatonOpenFn": "int32_t"
+            ["void *", "const BatonWindow *", "uint64_t", "BatonScreen *", "BatonMessage *"]
+            is unsafe extern "C" fn(
+                *mut c_void,
+                *const BatonWindow,
+                u64,
+                *mut BatonScreen,
+                *mut BatonMessage,
+            ) -> i32),
+        rust_fn_type!(DecodeFn as "BatonDecodeFn": "int32_t" ["void *", "const BatonFrame *"]
+            is unsafe extern "C" fn(*mut c_void, *const BatonFrame) -> i32),
+        rust_fn_type!(ShowFn as "BatonShowFn": "void" ["void *", "uint64_t"]
+            is unsafe extern "C" fn(*mut c_void, u64)),
+        rust_fn_type!(SourceFn as "BatonSourceFn": "void"
+            ["void *", "const BatonSourceMessage *"]
+            is unsafe extern "C" fn(*mut c_void, *const BatonSourceMessage)),
+        rust_fn_type!(StateFn as "BatonStateFn": "void" ["void *", "BatonDecoderState *"]
+            is unsafe extern "C" fn(*mut c_void, *mut BatonDecoderState)),
+        rust_fn_type!(EndedFn as "BatonEndedFn": "void" ["void *"]
+            is unsafe extern "C" fn(*mut c_void)),
+        rust_fn_type!(ReleaseFn as "BatonReleaseFn": "void" ["void *"]
+            is unsafe extern "C" fn(*mut c_void)),
+    ]
+}
+
+/// The functions that the library exports, as the header declares them. Each is named, so one
+/// whose signature changes stops this from compiling.
+fn rust_exports() -> Vec<CFunction> {
+    let _: extern "C" fn() -> u32 = baton_stream_abi_version;
+    let _: unsafe extern "C" fn(*const BatonViewerVTable) -> i32 = baton_stream_register_viewer;
+    let _: extern "C" fn(u64) -> i32 = baton_stream_link_decode_failed;
+    vec![
+        function("baton_stream_abi_version", "uint32_t", &[]),
+        function(
+            "baton_stream_register_viewer",
+            "int32_t",
+            &["const BatonViewerVTable *"],
+        ),
+        function("baton_stream_link_decode_failed", "int32_t", &["uint64_t"]),
+    ]
+}
+
+/// The numbers of `abi` by the name that the header gives them. `ABI_VERSION` is the one whose
+/// name differs.
+macro_rules! numbers {
+    ($($name:ident),+ $(,)?) => {
+        vec![
+            ("BATON_STREAM_ABI_VERSION".to_owned(), i64::from(abi::ABI_VERSION)),
+            $((concat!("BATON_", stringify!($name)).to_owned(), i64::from(abi::$name))),+
+        ]
+    };
+}
+
+fn rust_numbers() -> Vec<(String, i64)> {
+    numbers![
+        OK,
+        E_ARGUMENT,
+        E_REGISTERED,
+        E_PLATFORM,
+        E_UNKNOWN_LINK,
+        E_REENTRANT,
+        E_PANIC,
+        CODEC_H264,
+        FRAME_KEY,
+        FRAME_RECOVERY,
+        FRAME_REFERENCED,
+        SOURCE_CONFIG,
+        SOURCE_PAUSE,
+        SOURCE_RESUME,
+        SOURCE_NOTICE,
+        PAUSE_OTHER,
+        PAUSE_LOCKED,
+        PAUSE_HIDDEN,
+        DROPPED_OTHER,
+        DROPPED_MALFORMED,
+        DROPPED_CONTROL_OFF,
+        DROPPED_PAUSED,
+        DROPPED_LOCKED,
+        DROPPED_NOT_ON_SCREEN,
+        DROPPED_TOO_FAST,
+        DROPPED_FRAME_UNKNOWN,
+        DROPPED_PICTURE_OUT_OF_DATE,
+        DROPPED_WINDOW_RESIZED,
+        DROPPED_OUTSIDE_WINDOW,
+        DROPPED_COVERED,
+        DROPPED_NO_KEYBOARD,
+        DROPPED_APP_WINDOW_IN_FRONT,
+        DROPPED_TOO_MANY_HELD,
+        DROPPED_NOT_PRESSED,
+        THERMAL_NOMINAL,
+        THERMAL_FAIR,
+        THERMAL_SERIOUS,
+        THERMAL_CRITICAL,
+        THERMAL_OTHER,
+        MESSAGE_MAX,
+    ]
+}
+
+// The tests.
+
+#[test]
+fn the_numbers_of_the_header_are_the_numbers_of_the_library() {
+    let parsed = parse(&header());
+    let ours = rust_numbers();
+    let theirs: Vec<(String, i64)> = parsed
+        .numbers
+        .iter()
+        .map(|(name, number)| (name.clone(), *number))
+        .collect();
+    let mut ours_sorted = ours.clone();
+    ours_sorted.sort();
+    assert_eq!(
+        theirs, ours_sorted,
+        "the numbers that the header defines, and the numbers of `abi`"
+    );
+
+    // A number of `abi` that the list above leaves out would be one the header could not have.
+    let source =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/abi.rs")).unwrap();
+    for line in source.lines() {
+        let Some(rest) = line.trim_start().strip_prefix("pub const ") else {
+            continue;
+        };
+        let name = rest.split(':').next().unwrap();
+        let header_name = if name == "ABI_VERSION" {
+            "BATON_STREAM_ABI_VERSION".to_owned()
+        } else {
+            format!("BATON_{name}")
+        };
+        assert!(
+            parsed.numbers.contains_key(&header_name),
+            "`abi::{name}` has no number in the header, which would be {header_name}"
+        );
+    }
+}
+
+#[test]
+fn the_structs_of_the_header_are_the_structs_of_the_library() {
+    let compiled = compile(&parse(&header()));
+    let ours = rust_structs();
+    assert_eq!(
+        compiled
+            .iter()
+            .map(|c_struct| c_struct.name.as_str())
+            .collect::<Vec<_>>(),
+        ours.iter()
+            .map(|r_struct| r_struct.name)
+            .collect::<Vec<_>>(),
+        "the structs of the header and of `abi`, in order"
+    );
+    for (c_struct, r_struct) in compiled.iter().zip(&ours) {
+        let name = r_struct.name;
+        assert_eq!(
+            c_struct.fields.len(),
+            r_struct.fields.len(),
+            "{name}: how many fields"
+        );
+        for (c_field, r_field) in c_struct.fields.iter().zip(&r_struct.fields) {
+            let field = r_field.name;
+            assert_eq!(c_field.name, field, "{name}: the fields, in order");
+            assert_eq!(c_field.c_type, r_field.c_type, "{name}.{field}: the type");
+            assert_eq!(c_field.size, r_field.size, "{name}.{field}: the size");
+            assert_eq!(c_field.offset, r_field.offset, "{name}.{field}: the offset");
+        }
+        assert_eq!(c_struct.size, r_struct.size, "{name}: the size");
+        assert_eq!(c_struct.align, r_struct.align, "{name}: the alignment");
+    }
+}
+
+#[test]
+fn the_static_asserts_of_the_header_say_what_the_structs_are() {
+    let parsed = parse(&header());
+    assert_eq!(parsed.macros, ["BATON_STATIC_ASSERT"]);
+
+    // These are the lines that make a compiler that disagrees refuse to build, so they must say
+    // what the declarations make, for every struct and every field and in the order of the file.
+    let mut expected = vec![
+        Assert::Size {
+            of: "void *".to_owned(),
+            bytes: 8,
+            message: "the interface is for 64-bit targets".to_owned(),
+        },
+        Assert::Size {
+            of: "size_t".to_owned(),
+            bytes: 8,
+            message: "the interface is for 64-bit targets".to_owned(),
+        },
+    ];
+    for c_struct in compile(&parsed) {
+        expected.push(Assert::Size {
+            of: c_struct.name.clone(),
+            bytes: c_struct.size,
+            message: c_struct.name.clone(),
+        });
+        for field in &c_struct.fields {
+            expected.push(Assert::Offset {
+                of: c_struct.name.clone(),
+                field: field.name.clone(),
+                bytes: field.offset,
+                message: format!("{}.{}", c_struct.name, field.name),
+            });
+        }
+    }
+    assert_eq!(parsed.asserts, expected);
+}
+
+#[test]
+fn the_function_types_of_the_header_are_those_of_the_library() {
+    assert_eq!(parse(&header()).fn_types, rust_fn_types());
+}
+
+#[test]
+fn the_functions_of_the_header_are_the_functions_the_library_exports() {
+    assert_eq!(parse(&header()).prototypes, rust_exports());
+
+    // The library exports these and no others: every `no_mangle` is a prototype of the header.
+    let exports =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/exports.rs")).unwrap();
+    assert_eq!(
+        exports.matches("#[unsafe(no_mangle)]").count(),
+        rust_exports().len(),
+        "a function is exported that the header does not declare, or the other way round"
+    );
+}
+
+#[test]
+fn the_header_says_what_the_protocol_allows() {
+    // The sentence is about the numbers of the protocol. If they change, the sentence is stale.
+    let text = squeeze(&header().replace("\n *", " "));
+    assert!(
+        text.contains(&format!(
+            "the largest picture is {MAX_PICTURE_EDGE} by {MAX_PICTURE_EDGE}, the most frames a second {MAX_FRAME_RATE}"
+        )),
+        "the header's numbers for the largest picture and the highest rate are not the protocol's"
+    );
+    assert_eq!(MAX_CODECS, 8);
+    assert!(
+        text.contains("there are one to eight codecs"),
+        "the header's number of codecs is not the protocol's"
+    );
+}
+
+#[test]
+fn the_header_is_plain_text_that_is_not_wider_than_the_rest() {
+    let text = header();
+    assert!(text.is_ascii(), "the header is ASCII");
+    assert!(text.starts_with("/* SPDX-License-Identifier: Apache-2.0 */\n"));
+    assert!(text.ends_with("#endif /* BATON_STREAM_ABI_H */\n"));
+    for (number, line) in text.lines().enumerate() {
+        let number = number + 1;
+        assert!(!line.contains('\t'), "line {number} has a tab");
+        assert_eq!(line, line.trim_end(), "line {number} ends with a space");
+        assert!(line.len() <= 100, "line {number} is wider than 100");
+    }
+}
+
+// A C compiler and a C++ compiler.
+
+/// What a platform does with the header: it declares its functions, builds the vtable, registers
+/// it and calls the library. It is valid C11 and valid C++17, and is only compiled.
+const PLATFORM: &str = r#"
+#include "baton_stream_abi.h"
+#include "baton_stream_abi.h"
+
+static int32_t limits(void *context, BatonLimits *out) {
+    (void)context;
+    out->size = (uint32_t)sizeof *out;
+    out->max_width = 1920;
+    out->max_height = 1200;
+    out->max_fps = 60;
+    out->codecs = BATON_CODEC_H264;
+    out->reserved = 0;
+    return BATON_OK;
+}
+
+static int32_t open_screen(void *context, const BatonWindow *window, uint64_t link,
+                           BatonScreen *screen, BatonMessage *message) {
+    (void)context;
+    (void)link;
+    if (window->title.len > message->cap) {
+        message->len = 0;
+        return BATON_E_PLATFORM;
+    }
+    screen->size = (uint32_t)sizeof *screen;
+    screen->context = NULL;
+    screen->id = (int64_t)window->width;
+    return BATON_OK;
+}
+
+static int32_t decode(void *screen, const BatonFrame *frame) {
+    (void)screen;
+    if ((frame->flags & BATON_FRAME_KEY) != 0 && frame->set_count < 2) {
+        return BATON_E_ARGUMENT;
+    }
+    return frame->sample.len == 0 ? BATON_E_ARGUMENT : BATON_OK;
+}
+
+static void show(void *screen, uint64_t number) {
+    (void)screen;
+    (void)number;
+}
+
+static void source(void *screen, const BatonSourceMessage *message) {
+    (void)screen;
+    if (message->kind == BATON_SOURCE_NOTICE && message->reason == BATON_DROPPED_TOO_FAST) {
+        (void)message->count;
+    }
+}
+
+static void state(void *screen, BatonDecoderState *out) {
+    (void)screen;
+    out->size = (uint32_t)sizeof *out;
+    out->decode_us = 1;
+    out->thermal = BATON_THERMAL_NOMINAL;
+    out->reserved = 0;
+}
+
+static void ended(void *screen) { (void)screen; }
+
+static void release(void *screen) { (void)screen; }
+
+int32_t register_platform(void) {
+    BatonViewerVTable table;
+    if (baton_stream_abi_version() != BATON_STREAM_ABI_VERSION) {
+        return BATON_E_ARGUMENT;
+    }
+    table.version = BATON_STREAM_ABI_VERSION;
+    table.size = (uint32_t)sizeof table;
+    table.context = NULL;
+    table.limits = limits;
+    table.open = open_screen;
+    table.decode = decode;
+    table.show = show;
+    table.source = source;
+    table.state = state;
+    table.ended = ended;
+    table.release = release;
+    (void)baton_stream_link_decode_failed(1);
+    return baton_stream_register_viewer(&table);
+}
+"#;
+
+/// The first of `names` that runs, after the one that `variable` names.
+fn find(variable: &str, names: &[&str]) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    for name in env::var(variable)
+        .into_iter()
+        .chain(names.iter().map(|n| (*n).to_owned()))
+    {
+        let runs = Command::new(&name)
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success());
+        if runs && !found.contains(&name) {
+            found.push(name);
+        }
+    }
+    found
+}
+
+/// Runs `compiler` over `source`, against the headers in `include`, and gives what it said when
+/// it refused.
+fn compile_with(
+    compiler: &str,
+    standard: &str,
+    include: &Path,
+    source: &Path,
+) -> Result<(), String> {
+    let output = Command::new(compiler)
+        .args([
+            &format!("-std={standard}"),
+            "-pedantic",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-fsyntax-only",
+            "-I",
+        ])
+        .arg(include)
+        .arg(source)
+        .output()
+        .unwrap();
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{compiler} -std={standard}:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    }
+}
+
+/// The compilers to try, for C and for C++. On Windows there are none that take these arguments.
+/// On the machines that run CI there are, so a missing one is a failure and not a skipped test.
+fn compilers(variable: &str, names: &[&str]) -> Option<Vec<String>> {
+    if cfg!(windows) {
+        return None;
+    }
+    let found = find(variable, names);
+    if found.is_empty() {
+        assert!(
+            env::var_os("CI").is_none(),
+            "no compiler was found ({names:?}), and this is CI"
+        );
+        eprintln!("no compiler was found ({names:?}); the header was not compiled");
+        return None;
+    }
+    Some(found)
+}
+
+#[test]
+fn a_c_compiler_takes_the_header_and_a_platform_that_uses_it() {
+    let Some(found) = compilers("CC", &["cc", "gcc", "clang"]) else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("platform.c");
+    fs::write(&source, PLATFORM).unwrap();
+    let include = header_path().parent().unwrap().to_owned();
+    for compiler in found {
+        compile_with(&compiler, "c11", &include, &source).unwrap();
+    }
+}
+
+#[test]
+fn a_cpp_compiler_takes_the_header_and_a_platform_that_uses_it() {
+    let Some(found) = compilers("CXX", &["c++", "g++", "clang++"]) else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("platform.cc");
+    fs::write(&source, PLATFORM).unwrap();
+    let include = header_path().parent().unwrap().to_owned();
+    for compiler in found {
+        compile_with(&compiler, "c++17", &include, &source).unwrap();
+    }
+}
+
+#[test]
+fn a_compiler_refuses_a_header_whose_numbers_are_wrong() {
+    // The test above is only worth something if a compiler does look at the numbers.
+    let Some(found) = compilers("CC", &["cc", "gcc", "clang"]) else {
+        return;
+    };
+    let text = header();
+    for (right, wrong) in [
+        (
+            "offsetof(BatonLimits, codecs) == 16",
+            "offsetof(BatonLimits, codecs) == 20",
+        ),
+        ("sizeof(BatonFrame) == 80", "sizeof(BatonFrame) == 72"),
+        (
+            "    uint32_t thermal;   /* BATON_THERMAL_ */\n    uint32_t reserved;\n}",
+            "    uint32_t thermal;   /* BATON_THERMAL_ */\n}",
+        ),
+    ] {
+        assert_eq!(text.matches(right).count(), 1, "the header has `{right}`");
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("baton_stream_abi.h"),
+            text.replace(right, wrong),
+        )
+        .unwrap();
+        let source = dir.path().join("platform.c");
+        fs::write(&source, PLATFORM).unwrap();
+        for compiler in &found {
+            let result = compile_with(compiler, "c11", dir.path(), &source);
+            assert!(
+                result.is_err(),
+                "{compiler} took a header with `{wrong}` instead of `{right}`"
+            );
+        }
+    }
+}
