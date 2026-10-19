@@ -857,6 +857,10 @@ async fn files_are_sent_when_the_person_says_yes_and_arrive_as_they_were() {
         (progress.files, progress.bytes, progress.sent),
         (3, 100_017, 100_017)
     );
+    assert_eq!(
+        progress.attempt, 1,
+        "nothing went wrong, so nothing was tried again"
+    );
     assert_eq!(finished(&sending).await.unwrap(), sent);
 }
 
@@ -952,6 +956,110 @@ async fn a_send_that_is_given_up_while_it_goes_is_dropped_and_leaves_no_files() 
     assert_eq!(end.request, request.id);
     assert_eq!(end.result, TransferResult::Dropped);
     assert!(tree(a.received()).is_empty(), "half a file is never kept");
+}
+
+#[tokio::test]
+async fn letting_go_of_a_send_gives_the_transfer_up() {
+    let a = Dev::start_taking_files("Device A").await;
+    let b = Dev::start("Device B").await;
+    pair(&a, &b).await;
+    let mut a_events = a.app.events();
+    let (_source, paths) = sample_files();
+    let sending = b.app.send_files(&a.id(), paths).await.unwrap();
+    let request = question(&mut a_events).await;
+
+    // A screen that goes away takes its transfer with it.
+    drop(sending);
+
+    next_matching(&mut a_events, |event| match event {
+        Event::TransferRequestEnded { id } if id == request.id => Some(()),
+        _ => None,
+    })
+    .await;
+    assert!(!a.app.answer_transfer(request.id, true));
+    assert!(tree(a.received()).is_empty());
+}
+
+#[tokio::test]
+async fn a_file_that_is_gone_when_its_turn_comes_is_counted_on_both_devices() {
+    let a = Dev::start_taking_files("Device A").await;
+    let b = Dev::start("Device B").await;
+    pair(&a, &b).await;
+    let mut a_events = a.app.events();
+    let source = tempfile::tempdir().unwrap();
+    let keep = source.path().join("keep.txt");
+    let gone = source.path().join("gone.txt");
+    std::fs::write(&keep, b"still here").unwrap();
+    std::fs::write(&gone, b"not for long").unwrap();
+    let sending = b
+        .app
+        .send_files(&a.id(), vec![keep, gone.clone()])
+        .await
+        .unwrap();
+    let request = question(&mut a_events).await;
+
+    // The files are read only after the person says yes.
+    std::fs::remove_file(&gone).unwrap();
+    assert!(a.app.answer_transfer(request.id, true));
+
+    let sent = finished(&sending).await.unwrap();
+    assert_eq!(
+        sent,
+        FilesSent {
+            files: 2,
+            bytes: 22,
+            failed: 1,
+            left_out: 0
+        }
+    );
+    let end = next_matching(&mut a_events, |event| match event {
+        Event::TransferEnded(end) => Some(end),
+        _ => None,
+    })
+    .await;
+    assert_eq!(end.result, TransferResult::Received { failed: 1 });
+    assert_eq!(
+        tree(a.received()),
+        BTreeMap::from([("keep.txt".to_owned(), Some(b"still here".to_vec()))])
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn things_that_are_left_out_of_a_folder_are_counted() {
+    let a = Dev::start_taking_files("Device A").await;
+    let b = Dev::start("Device B").await;
+    pair(&a, &b).await;
+    let mut a_events = a.app.events();
+    let source = tempfile::tempdir().unwrap();
+    let docs = source.path().join("docs");
+    std::fs::create_dir(&docs).unwrap();
+    std::fs::write(docs.join("a.txt"), b"first").unwrap();
+    // A link inside a folder is never followed or sent.
+    std::os::unix::fs::symlink("a.txt", docs.join("link")).unwrap();
+
+    let sending = b.app.send_files(&a.id(), vec![docs]).await.unwrap();
+    let request = question(&mut a_events).await;
+    assert_eq!((request.files, request.folders), (1, 1));
+    assert!(a.app.answer_transfer(request.id, true));
+
+    let sent = finished(&sending).await.unwrap();
+    assert_eq!(
+        sent,
+        FilesSent {
+            files: 1,
+            bytes: 5,
+            failed: 0,
+            left_out: 1
+        }
+    );
+    assert_eq!(
+        tree(a.received()),
+        BTreeMap::from([
+            ("docs".to_owned(), None),
+            ("docs/a.txt".to_owned(), Some(b"first".to_vec())),
+        ])
+    );
 }
 
 #[tokio::test]

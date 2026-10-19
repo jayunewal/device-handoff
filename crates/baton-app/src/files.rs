@@ -119,12 +119,6 @@ impl TransferHandler for Files {
         let Some(taken) = locked(&self.taken).remove(&(from.id, id)) else {
             return;
         };
-        let result = match ending {
-            Ending::Done(done) => TransferResult::Received {
-                failed: failed_files(&done),
-            },
-            Ending::Dropped => TransferResult::Dropped,
-        };
         self.questions.emit(Event::TransferEnded(TransferEnd {
             request: taken.request,
             device_id: from.id.to_string(),
@@ -132,8 +126,18 @@ impl TransferHandler for Files {
             files: taken.files,
             bytes: taken.bytes,
             preview: taken.preview,
-            result,
+            result: result_of(ending),
         }));
+    }
+}
+
+/// How a transfer that this device took has ended, as the screen is told.
+fn result_of(ending: Ending) -> TransferResult {
+    match ending {
+        Ending::Done(done) => TransferResult::Received {
+            failed: failed_files(&done),
+        },
+        Ending::Dropped => TransferResult::Dropped,
     }
 }
 
@@ -142,6 +146,18 @@ fn failed_files(done: &Done) -> u32 {
     u32::try_from(done.failed.len())
         .unwrap_or(u32::MAX)
         .saturating_add(done.more_failed)
+}
+
+/// What the screen is told of a transfer that the other device answered for. `done` is its
+/// answer, `files` and `bytes` are what was offered, and `left_out` is how many things in the
+/// choice the walk left out.
+fn files_sent(done: &Done, files: u32, bytes: u64, left_out: u32) -> FilesSent {
+    FilesSent {
+        files,
+        bytes,
+        failed: failed_files(done),
+        left_out,
+    }
 }
 
 /// A transfer that this device is sending.
@@ -249,14 +265,73 @@ async fn drive(
         }
     }
     let result = match sending.outcome().await {
-        Outcome::Done(sent) => Ok(FilesSent {
-            files,
-            bytes,
-            failed: failed_files(&sent.done),
-            left_out,
-        }),
+        Outcome::Done(sent) => Ok(files_sent(&sent.done, files, bytes, left_out)),
         other => Err(Error::not_sent(&other, &device)),
     };
     // Nobody waiting is fine.
     let _ = done.send(Some(result));
+}
+
+#[cfg(test)]
+mod tests {
+    use baton_proto::transfer::{FailReason, Failure};
+
+    use super::*;
+
+    /// An answer that names `listed` files as not put in place and counts `more_failed` more.
+    fn done(listed: u32, more_failed: u32) -> Done {
+        Done {
+            id: TransferId::from_bytes([7; TransferId::LEN]),
+            failed: (0..listed)
+                .map(|file| Failure {
+                    file,
+                    reason: FailReason::WriteFailed,
+                })
+                .collect(),
+            more_failed,
+        }
+    }
+
+    #[test]
+    fn the_files_that_were_not_put_in_place_are_counted_with_the_ones_not_named() {
+        assert_eq!(failed_files(&done(0, 0)), 0);
+        assert_eq!(failed_files(&done(3, 0)), 3);
+        assert_eq!(failed_files(&done(3, 5)), 8);
+        assert_eq!(failed_files(&done(2, u32::MAX)), u32::MAX);
+    }
+
+    #[test]
+    fn a_transfer_that_was_taken_ends_as_received_or_dropped() {
+        assert_eq!(
+            result_of(Ending::Done(done(0, 0))),
+            TransferResult::Received { failed: 0 }
+        );
+        assert_eq!(
+            result_of(Ending::Done(done(2, 3))),
+            TransferResult::Received { failed: 5 }
+        );
+        assert_eq!(result_of(Ending::Dropped), TransferResult::Dropped);
+    }
+
+    #[test]
+    fn a_transfer_that_was_sent_says_what_arrived_and_what_was_left_out() {
+        assert_eq!(
+            files_sent(&done(1, 2), 10, 4096, 4),
+            FilesSent {
+                files: 10,
+                bytes: 4096,
+                failed: 3,
+                left_out: 4,
+            }
+        );
+        assert_eq!(
+            files_sent(&done(0, 0), 1, 2, 0),
+            FilesSent {
+                files: 1,
+                bytes: 2,
+                failed: 0,
+                left_out: 0,
+            }
+        );
+    }
 }

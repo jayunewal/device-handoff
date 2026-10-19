@@ -527,4 +527,26 @@ mod tests {
         assert_eq!(converted.kind, ErrorKind::BadName);
         assert_eq!(converted.message, error.message());
     }
+
+    #[test]
+    fn every_kind_of_error_is_copied_one_for_one() {
+        for (kind, copy) in [
+            (app::ErrorKind::AlreadyRunning, ErrorKind::AlreadyRunning),
+            (app::ErrorKind::Stopped, ErrorKind::Stopped),
+            (app::ErrorKind::Storage, ErrorKind::Storage),
+            (app::ErrorKind::WrongMachine, ErrorKind::WrongMachine),
+            (app::ErrorKind::Network, ErrorKind::Network),
+            (app::ErrorKind::NotPaired, ErrorKind::NotPaired),
+            (app::ErrorKind::Unreachable, ErrorKind::Unreachable),
+            (app::ErrorKind::Declined, ErrorKind::Declined),
+            (app::ErrorKind::BadItem, ErrorKind::BadItem),
+            (app::ErrorKind::BadName, ErrorKind::BadName),
+            (app::ErrorKind::BadTicket, ErrorKind::BadTicket),
+            (app::ErrorKind::PairingFailed, ErrorKind::PairingFailed),
+            (app::ErrorKind::Cancelled, ErrorKind::Cancelled),
+            (app::ErrorKind::Other, ErrorKind::Other),
+        ] {
+            assert_eq!(ErrorKind::from(kind), copy, "{kind:?}");
+        }
+    }
 }

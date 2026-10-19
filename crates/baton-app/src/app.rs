@@ -878,4 +878,84 @@ mod tests {
         let only_ports = only_ports.applied_to(file);
         assert!(only_ports.network.lan_discovery && !only_ports.network.port_mapping);
     }
+
+    fn request(id: u64) -> TransferRequest {
+        TransferRequest {
+            id,
+            device_id: "0".repeat(64),
+            device_name: "Kitchen iPad".to_owned(),
+            items: 1,
+            files: 1,
+            folders: 0,
+            bytes: 1,
+            preview: Vec::new(),
+        }
+    }
+
+    fn questions() -> (Arc<Questions>, broadcast::Receiver<Event>) {
+        let (events, seen) = broadcast::channel(8);
+        let questions = Arc::new(Questions {
+            waiting: Mutex::new(HashMap::new()),
+            transfers: Mutex::new(HashMap::new()),
+            next: AtomicU64::new(1),
+            events,
+        });
+        (questions, seen)
+    }
+
+    /// Waits until the question that was just asked is waiting for its answer.
+    async fn waiting(questions: &Questions) {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while locked(&questions.transfers).is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the question never started to wait");
+    }
+
+    #[tokio::test]
+    async fn a_question_whose_answer_is_lost_is_a_no() {
+        let (questions, _seen) = questions();
+        let asked = tokio::spawn(Arc::clone(&questions).ask_transfer(request));
+        waiting(&questions).await;
+
+        // What stopping the app does to the questions that are open.
+        locked(&questions.transfers).clear();
+
+        assert_eq!(asked.await.unwrap(), (1, false));
+    }
+
+    #[tokio::test]
+    async fn a_question_that_is_answered_is_not_taken_back_and_one_that_is_dropped_is() {
+        let (questions, mut seen) = questions();
+        let asked = tokio::spawn(Arc::clone(&questions).ask_transfer(request));
+        waiting(&questions).await;
+        let answer = locked(&questions.transfers).remove(&1).unwrap();
+        answer.send(true).unwrap();
+        assert_eq!(asked.await.unwrap(), (1, true));
+        assert!(matches!(
+            seen.recv().await,
+            Ok(Event::TransferRequested(TransferRequest { id: 1, .. }))
+        ));
+        assert!(
+            seen.try_recv().is_err(),
+            "an answered question stays answered"
+        );
+
+        // The other device gives up: whoever waits for the answer is dropped.
+        let asked = tokio::spawn(Arc::clone(&questions).ask_transfer(request));
+        waiting(&questions).await;
+        asked.abort();
+        let _ = asked.await;
+        assert!(matches!(
+            seen.recv().await,
+            Ok(Event::TransferRequested(TransferRequest { id: 2, .. }))
+        ));
+        assert!(matches!(
+            seen.recv().await,
+            Ok(Event::TransferRequestEnded { id: 2 })
+        ));
+        assert!(locked(&questions.transfers).is_empty());
+    }
 }
