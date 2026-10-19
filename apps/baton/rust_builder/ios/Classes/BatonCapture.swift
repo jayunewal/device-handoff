@@ -92,7 +92,9 @@ final class MacSharer: NSObject, SharerPlatform, SCContentSharingPickerObserver 
     let waiting = request
     request = nil
     lock.unlock()
-    SCContentSharingPicker.shared.isActive = false
+    // The picker is touched from the main thread only, as `pick` and `cancelPick` do: the observer
+    // is called on a thread of the system's choosing.
+    DispatchQueue.main.async { SCContentSharingPicker.shared.isActive = false }
     // Nobody asked, or nobody asks any more: a window that was chosen is let go of by dropping it.
     guard let waiting else { return }
     answerPick(request: waiting, answer)
@@ -146,6 +148,7 @@ final class MacSharedWindow: SharedWindow {
     do {
       encoder = try H264Encoder(format: chosen)
     } catch {
+      NSLog("Baton: no video encoder could be made (%@).", String(describing: error))
       throw SharerFailure(sentence: "This device could not start the video encoder.")
     }
     format = chosen
@@ -162,6 +165,8 @@ final class MacSharedWindow: SharedWindow {
       // went away) after this returns, and then the session is ended with a sentence.
       try made.begin(filter: filter)
     } catch {
+      let failure = error as NSError
+      NSLog("Baton: the capture could not be set up (%@, %ld).", failure.domain, failure.code)
       throw SharerFailure(sentence: "This device could not start capturing the window.")
     }
     capture = made
@@ -213,6 +218,9 @@ private final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
     configuration.capturesAudio = false
     // A window that is resized is scaled into the picture and keeps its shape.
     configuration.scalesToFit = true
+    // The shadow of a window is not part of it. With the shadow the picture would be the window in
+    // a black frame (a video has no transparency), scaled down to make room for it.
+    configuration.ignoreShadowsSingleWindow = true
     configuration.queueDepth = 4
 
     let stream = SCStream(filter: filter, configuration: configuration, delegate: self)

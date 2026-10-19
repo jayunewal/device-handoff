@@ -445,11 +445,19 @@ final class LibrarySourceSession: SourceSession {
         var number: UInt64 = 0
         let code = baton_stream_source_sent(link, &c, &outcome, &number)
         if code == Int32(BATON_E_UNKNOWN_LINK) { return .over }
-        if code != ok { return .refused }
+        if code != ok {
+          // The person is told in words that a picture could not be sent, and the log says why,
+          // for whoever reads it afterwards: a window is first tried where nobody watches. The
+          // log holds codes and sizes and never what is in a window.
+          NSLog("Baton: the library did not take a picture of the shared window (%d).", code)
+          return .refused
+        }
         switch outcome {
         case BATON_SENT: return .sent
         case BATON_SENT_STALE: return .stale
-        case BATON_SENT_TOO_LARGE: return .tooLarge
+        case BATON_SENT_TOO_LARGE:
+          NSLog("Baton: a picture of %ld bytes is larger than the protocol allows.", sample.count)
+          return .tooLarge
         case BATON_SENT_OVER: return .over
         default: return .stale
         }
@@ -588,6 +596,9 @@ final class FramePump<Encoder: PictureEncoder> {
     do {
       picture = try encoder.encode(image, key: key, captureTime: latestTime)
     } catch {
+      NSLog(
+        "Baton: a picture of the shared window could not be made (%@).",
+        String(describing: error))
       // The picture that `begin` announced is given up on.
       session.cancel()
       if failedAgain("This device could not encode the window.") {
@@ -595,6 +606,7 @@ final class FramePump<Encoder: PictureEncoder> {
         do {
           try encoder.reset()
         } catch {
+          NSLog("Baton: the encoder could not be made anew (%@).", String(describing: error))
           fail("This device could not encode the window.")
         }
       }
