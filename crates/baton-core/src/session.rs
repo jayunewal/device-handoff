@@ -25,7 +25,6 @@ use baton_proto::{
         DeclineReason, ErrorCode, ErrorReply, Handoff, HandoffReply, Hello, Item, Outcome, Request,
         Response, capability,
     },
-    stream::{self, StreamReply},
     transfer::{Cancelled, Declined, TransferReply, TransferRequest},
 };
 use iroh::{
@@ -105,6 +104,10 @@ pub(crate) fn our_hello(shared: &Shared) -> Hello {
     // A device that has a folder to receive into takes the requests and the lanes of section 8.
     if shared.incoming.as_ref().is_some_and(Incoming::takes_files) {
         capabilities.push(capability::TRANSFER_FILES.to_owned());
+    }
+    // A device that was given someone to ask about the windows that are offered shows them.
+    if shared.streaming.views() {
+        capabilities.push(capability::STREAM_VIEW.to_owned());
     }
     Hello {
         protocol_minor: PROTOCOL_MINOR,
@@ -324,6 +327,7 @@ async fn serve_connection(shared: Arc<Shared>, connection: Connection, link: Lin
         }
     }
     // Requests still in flight are abandoned along with the connection.
+    shared.streaming.connection_ended(link);
 }
 
 async fn serve_stream(
@@ -390,12 +394,14 @@ async fn serve_stream(
                 }
             }
         }
-        // This version neither shows a window nor shares one and advertises no `stream.view`, so
-        // every request of a session is declined (protocol.md section 9).
-        Request::Stream(request) => Response::Stream(StreamReply::Declined(stream::Declined {
-            session: request.session(),
-            reason: DeclineReason::Unsupported,
-        })),
+        // A device that does not show windows declines every request about one as unsupported
+        // (section 9).
+        Request::Stream(request) => Response::Stream(
+            shared
+                .streaming
+                .answer(&paired, &connection, link, request)
+                .await,
+        ),
     };
     respond(&mut send, &response).await;
 }

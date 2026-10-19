@@ -495,6 +495,11 @@ impl Source {
         Ok((source, handle))
     }
 
+    /// The device at the other end.
+    pub(super) fn peer(&self) -> DeviceId {
+        self.peer
+    }
+
     /// Whether `peer` on `connection` is the other end of this session.
     pub(super) fn belongs_to(&self, peer: &PairedDevice, connection: &Connection) -> bool {
         self.peer == peer.id && self.connection.stable_id() == connection.stable_id()
@@ -521,7 +526,7 @@ impl Source {
     }
 
     /// Ends the session, once. The caller does not hold the session's lock.
-    fn end(&self, how: End) {
+    pub(super) fn end(&self, how: End) {
         if self.end.set(how).is_err() {
             return;
         }

@@ -48,6 +48,7 @@ pub mod pairing;
 pub mod paths;
 pub mod policy;
 pub mod session;
+pub mod streaming;
 pub mod transfer;
 pub mod trust;
 pub mod util;
@@ -58,14 +59,6 @@ mod machine;
 mod ratelimit;
 mod shared;
 mod slots;
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "the offer that makes a session, and the node that holds the sessions, come next"
-    )
-)]
-mod streaming;
 #[cfg(test)]
 mod testing;
 mod transport;

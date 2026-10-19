@@ -14,6 +14,7 @@ use crate::{
     pairing::Offers,
     session::{HandoffHandler, Intake},
     slots::PairSlots,
+    streaming::Streaming,
     transfer::incoming::Incoming,
     trust::TrustStore,
     uni::Uni,
@@ -39,6 +40,8 @@ pub(crate) struct Shared {
     /// The transfers that other devices offer. `None` when the application gave the node nothing
     /// to ask about them, and then every request about one is declined.
     pub(crate) incoming: Option<Incoming>,
+    /// The window streaming sessions, and the offers of windows that other devices make.
+    pub(crate) streaming: Arc<Streaming>,
     /// What takes the unidirectional streams of session connections.
     pub(crate) uni: Arc<Uni>,
 }
