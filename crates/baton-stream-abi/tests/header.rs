@@ -468,7 +468,16 @@ macro_rules! rust_struct {
     }};
 }
 
+/// Every struct of the header, in the order of the header.
 fn rust_structs() -> Vec<RustStruct> {
+    let mut all = structs_for_showing();
+    all.extend(structs_for_sharing());
+    all.extend(tables_of_functions());
+    all
+}
+
+/// The structs for showing a window, and the ones that both halves use.
+fn structs_for_showing() -> Vec<RustStruct> {
     vec![
         rust_struct!(BatonBytes {
             ptr: *const u8 = "const uint8_t *",
@@ -534,6 +543,12 @@ fn rust_structs() -> Vec<RustStruct> {
             thermal: u32 = "uint32_t",
             reserved: u32 = "uint32_t",
         }),
+    ]
+}
+
+/// The structs for sharing a window.
+fn structs_for_sharing() -> Vec<RustStruct> {
+    vec![
         rust_struct!(BatonTakes {
             size: u32 = "uint32_t",
             max_width: u32 = "uint32_t",
@@ -569,6 +584,12 @@ fn rust_structs() -> Vec<RustStruct> {
             sets: *const BatonBytes = "const BatonBytes *",
             set_count: usize = "size_t",
         }),
+    ]
+}
+
+/// The tables of functions that the platform registers.
+fn tables_of_functions() -> Vec<RustStruct> {
+    vec![
         rust_struct!(BatonViewerVTable {
             version: u32 = "uint32_t",
             size: u32 = "uint32_t",

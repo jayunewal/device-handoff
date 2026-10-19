@@ -560,8 +560,16 @@ async fn pictures_go_from_the_functions_the_platform_calls_to_the_functions_the_
         (1, 0, 16_000)
     );
     assert_eq!(decoded[2].capture_time, 32_000);
-    rig.platform.complaints().is_empty().then_some(()).unwrap();
-    assert!(rig.viewer.complaints().is_empty());
+    assert!(
+        rig.platform.complaints().is_empty(),
+        "the platform: {:?}",
+        rig.platform.complaints()
+    );
+    assert!(
+        rig.viewer.complaints().is_empty(),
+        "the viewer: {:?}",
+        rig.viewer.complaints()
+    );
 
     assert!(rig.viewing.app.end_window(shown.viewing.id));
     rig.nothing_is_left().await;
@@ -599,7 +607,7 @@ async fn of_the_flags_of_a_picture_only_the_one_for_a_later_frame_to_refer_to_co
         (FRAME_RECOVERY, 0),
         (0, 0),
         (u32::MAX, FRAME_REFERENCED),
-        (u32::MAX & !FRAME_REFERENCED, 0),
+        (!FRAME_REFERENCED, 0),
     ];
     for (number, (given, _)) in (1..).zip(flags) {
         assert_eq!(rig.wanted(link).await, BEGIN_DELTA);
