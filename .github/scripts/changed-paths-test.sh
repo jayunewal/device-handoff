@@ -82,10 +82,10 @@ check none .github/CODEOWNERS .github/dependabot.yml
 check none apps/baton/tool/make_icons.py
 check none README.md docs/security.md .github/ISSUE_TEMPLATE/config.yml
 
-# The Build jobs pack docs/try-it.md into the downloads.
-check "rust" docs/try-it.md
-check "rust" docs/try-it.md README.md
-check "rust app mac iphone" docs/try-it.md apps/baton/lib/main.dart
+# The Build jobs pack docs/try-it.md into the downloads, and a pull request does not build those.
+check none docs/try-it.md
+check none docs/try-it.md README.md
+check "app mac iphone" docs/try-it.md apps/baton/lib/main.dart
 
 # A change that is partly words runs what the rest of it needs.
 check "app mac iphone" README.md apps/baton/lib/main.dart docs/install-the-app.md

@@ -29,7 +29,7 @@ env:
 # and only a run on main saves them. GitHub keeps 10 GB of caches for the whole repository and
 # drops the ones that were used longest ago when there are more. The twelve entries of a set are
 # 200 to 700 MB each, and the Flutter SDK is another 2 GB, so a second set does not fit: when
-# every pull request saved a set of its own, the copies pushed each other out, and the set that
+# every pull request saved a set of its own, the copies pushed out each other and the set that
 # every pull request starts from. A pull request that changes Cargo.lock builds the new
 # dependencies in each of its runs, and the run on main after the merge saves them.
 jobs:
@@ -308,9 +308,13 @@ jobs:
         timeout-minutes: 25
         working-directory: apps/baton
         run: flutter test integration_test -d macos
+      # The app is a download like the program that the Build jobs make: a run for a pull request
+      # does not make it.
       - name: Package the app
+        if: github.event_name != 'pull_request'
         run: ditto -c -k --keepParent apps/baton/build/macos/Build/Products/Release/Baton.app Baton-macos-app.zip
       - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
         with:
           name: baton-app-macos
           path: Baton-macos-app.zip
@@ -411,10 +415,13 @@ jobs:
         if: always()
         run: bash .github/scripts/cargokit-cache-report.sh
 
+  # The downloads: the `baton` program for each system, packed with the try-it guide. A pull
+  # request does not build them, which leaves it one Mac job fewer. A push to main and a run
+  # started by hand do, so the downloads of a branch come from starting CI by hand on it.
   build:
     name: Build (${{ matrix.name }})
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' && github.event_name != 'pull_request'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

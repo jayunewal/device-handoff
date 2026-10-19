@@ -5,7 +5,7 @@
 # as `rust=true`, ready to be appended to $GITHUB_OUTPUT:
 #
 #   rust    Format, Clippy, Test, Minimum supported Rust version, Rustdoc, Licenses and
-#           advisories, Build
+#           advisories, Build (which a pull request does not run: see ci.yml)
 #   app     App (Flutter, Linux)
 #   mac     App (macOS)
 #   iphone  App (iPhone)
@@ -22,12 +22,9 @@ set -eu
 # Whether a change to the path $2 can affect the jobs of the group $1.
 affects() {
   case "$2" in
-    # Only the Build jobs read this one, because they pack it into the downloads.
-    docs/try-it.md)
-      test "$1" = rust
-      return
-      ;;
-    # Words for people, and files that only GitHub reads. No job reads any of them.
+    # Words for people, and files that only GitHub reads. No job of a pull request reads any of
+    # them. The Build jobs pack docs/try-it.md into the downloads, but only a run on main or
+    # one started by hand makes those, and that run does everything.
     *.md | docs/* | .github/ISSUE_TEMPLATE/* | .github/CODEOWNERS | .github/dependabot.yml)
       return 1
       ;;
