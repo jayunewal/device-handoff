@@ -28,8 +28,13 @@ use std::{
     time::Duration,
 };
 
-use baton_proto::{DeviceId, close_code, id::SessionId, message::Message};
-use baton_stream::{KIND_CONTROL, header::encode_prefix};
+use baton_proto::{
+    DeviceId, close_code,
+    id::SessionId,
+    message::Message,
+    stream::{Accepted, Codec},
+};
+use baton_stream::{KIND_CONTROL, control::Config, header::encode_prefix};
 use iroh::endpoint::{Connection, RecvStream};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -37,6 +42,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     error::{Error, Result},
     gate::code,
+    session::Hold,
     trust::PairedDevice,
     uni::{Arrival, Kind, Sink},
     util::lock,
@@ -46,13 +52,9 @@ use crate::{
 mod answer;
 #[cfg(test)]
 mod answer_tests;
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "the node offers a window when the source's side is connected to it, which comes next"
-    )
-)]
+mod offer;
+#[cfg(test)]
+mod offer_tests;
 mod source;
 mod view;
 
@@ -69,17 +71,52 @@ use answer::Offers;
 pub(crate) use answer::Viewer;
 pub use answer::{Viewing, WindowHandler, WindowOffer, WindowVerdict};
 
+use offer::Sending;
+pub(crate) use offer::{Offered, Sharer, ask};
+pub use offer::{ShareOutcome, WindowShare};
+
 use source::Source;
-#[allow(
-    unused_imports,
-    reason = "used by the code that makes a session, which comes next"
-)]
-pub(crate) use source::{
-    NotSent, Picture, SourceEvents, SourceHandle, SourceParams, SourceSetup, SourceStats,
-};
+pub use source::{NotSent, Picture, SourceEvents, SourceHandle, SourceStats};
+pub(crate) use source::{SourceParams, SourceSetup};
 use view::View;
+pub(crate) use view::ViewParams;
 pub use view::{DecodeError, Decoder, DecoderState, ViewHandle, ViewStats};
-pub(crate) use view::{Takes, ViewParams};
+
+/// What a viewer said it can take, in `Accepted`. The source keeps within it, and a source that
+/// sends a picture beyond it has broken the session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Takes {
+    /// The widest picture in pixels.
+    pub max_width: u32,
+    /// The highest picture in pixels.
+    pub max_height: u32,
+    /// The most frames a second.
+    pub max_fps: u16,
+    /// The codecs it can decode. A codec that this version does not know is never one of them.
+    pub codecs: Vec<Codec>,
+}
+
+impl Takes {
+    /// Whether the viewer said that it can take the picture that `config` describes.
+    #[must_use]
+    pub fn allows(&self, config: &Config) -> bool {
+        config.width <= self.max_width
+            && config.height <= self.max_height
+            && config.fps <= self.max_fps
+            && config.codec != Codec::Other
+            && self.codecs.contains(&config.codec)
+    }
+
+    fn of(accepted: &Accepted) -> Self {
+        Self {
+            max_width: accepted.max_width,
+            max_height: accepted.max_height,
+            max_fps: accepted.max_fps,
+            codecs: accepted.codecs.clone(),
+        }
+    }
+}
 
 /// Why a session ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,13 +146,6 @@ pub enum End {
 
 /// A session of this node, from one side or the other.
 #[derive(Clone)]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "the node offers a window when the source's side is connected to it, which comes next"
-    )
-)]
 enum Session {
     View(Arc<View>),
     Source(Arc<Source>),
@@ -155,6 +185,9 @@ struct Table {
     sessions: HashMap<SessionId, Session>,
     /// The offers that this device has been made as a viewer.
     offers: Offers,
+    /// The place of the one session that this device has as a source, from the offer to the
+    /// session. The session itself is in `sessions` from then on.
+    sending: Option<Sending>,
 }
 
 impl Table {
@@ -164,6 +197,15 @@ impl Table {
             .values()
             .any(|session| matches!(session, Session::View(_)))
     }
+
+    /// Whether a window is being offered or shared.
+    fn has_source(&self) -> bool {
+        self.sending.is_some()
+            || self
+                .sessions
+                .values()
+                .any(|session| matches!(session, Session::Source(_)))
+    }
 }
 
 /// The window streaming sessions of a node, from either side.
@@ -171,23 +213,24 @@ pub(crate) struct Streaming {
     table: Mutex<Table>,
     /// What a device needs to show the windows of others, if it does.
     viewer: Option<Viewer>,
+    /// What a device needs to show its own windows to others, if it does.
+    sharer: Option<Sharer>,
 }
 
 impl Streaming {
-    /// A set of sessions that takes part as a source only, to be installed as the sink of frames
-    /// and of control streams.
+    /// A set of sessions that takes no part on its own: it holds the sessions that are started
+    /// on it, which is what the tests of the two sides of a session do.
+    #[cfg(test)]
     pub(crate) fn new() -> Arc<Self> {
-        Arc::new(Self {
-            table: Mutex::default(),
-            viewer: None,
-        })
+        Self::taking_part(None, None)
     }
 
-    /// A set of sessions that also shows the windows that other devices offer.
-    pub(crate) fn showing(viewer: Viewer) -> Arc<Self> {
+    /// A set of sessions of a device that takes part as a viewer, as a source, both or neither.
+    pub(crate) fn taking_part(viewer: Option<Viewer>, sharer: Option<Sharer>) -> Arc<Self> {
         Arc::new(Self {
             table: Mutex::default(),
-            viewer: Some(viewer),
+            viewer,
+            sharer,
         })
     }
 
@@ -266,25 +309,21 @@ impl Streaming {
     /// the platform asks, picture by picture, whether to encode (`SourceHandle::begin`), and
     /// hands over what it encoded (`SourceHandle::sent`). The session ends, and the platform is
     /// told, when the viewer ends it, when it breaks a rule, when the connection ends, when the
-    /// returned handle is dropped and when the viewer sends no report for too long.
+    /// returned handle is dropped and when the viewer sends no report for too long. The `hold`,
+    /// if there is one, keeps the connection in the pool for as long as the session runs.
     ///
     /// Must be called from within the runtime of the node: the platform calls the handle from
     /// threads of its own, and the frames are written by tasks of that runtime.
     ///
     /// # Errors
     ///
-    /// The id is in use, or the picture format is beyond a limit of the protocol.
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "the node offers a window when the source's side is connected to it, which comes next"
-        )
-    )]
+    /// The id is in use, or the picture format is beyond a limit of the protocol or beyond what
+    /// the viewer takes.
     pub(crate) fn source(
         self: &Arc<Self>,
         peer: &PairedDevice,
         connection: Connection,
+        hold: Option<Hold>,
         session: SessionId,
         setup: SourceSetup,
         events: impl SourceEvents,
@@ -299,6 +338,7 @@ impl Streaming {
                 session,
                 peer: peer.id,
                 connection,
+                hold,
             },
             setup,
             Box::new(events),
@@ -332,6 +372,11 @@ impl Streaming {
         let ending: Vec<Session> = {
             let table = lock(&self.table);
             table.offers.withdraw_where(&doomed);
+            if let Some(sending) = &table.sending
+                && doomed(&sending.peer)
+            {
+                sending.cancel.cancel();
+            }
             table
                 .sessions
                 .values()

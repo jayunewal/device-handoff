@@ -150,6 +150,9 @@ pub enum Error {
     /// This node has been shut down.
     #[error("Baton is shutting down")]
     Stopped,
+    /// A window is being offered or shown already, and a device shows one window at a time.
+    #[error("a window is being shared already")]
+    Busy,
 }
 
 /// How a pairing offer ended without pairing anyone.

@@ -47,7 +47,8 @@ use std::{
 
 use baton_proto::{
     ALPN_PAIR, ALPN_SESSION, DeviceId, DeviceInfo, ItemId, Platform, TransferId, close_code,
-    message::{Handoff, Item, Message, Outcome, Ping, Request, Response},
+    id::SessionId,
+    message::{Handoff, Item, Message, Outcome, Ping, Request, Response, capability},
     pair::{ConfirmationCode, PairSecret},
     ticket::{MAX_ADDRS, MAX_RELAY_BYTES, PairTicket},
 };
@@ -76,7 +77,10 @@ use crate::{
     session::{HandoffHandler, Intake, NoHandoff, Pool, SessionServer, call, worth_retrying},
     shared::Shared,
     slots::{MAX_PAIRING_CONNECTIONS, PairSlots},
-    streaming::{CONTROL_STREAMS, FRAME_STREAMS, Streaming, Viewer, WindowHandler},
+    streaming::{
+        CONTROL_STREAMS, FRAME_STREAMS, Offered, ShareOutcome, Sharer, SourceEvents, Streaming,
+        Takes, Viewer, WindowHandler, WindowShare, ask,
+    },
     transfer::{
         incoming::{FINISH_WAIT, Incoming, LANE_STREAMS, TransferHandler},
         lanes::LaneSink,
@@ -95,12 +99,14 @@ const MDNS_SERVICE: &str = "baton";
 const RELAY_WAIT: Duration = Duration::from_secs(3);
 
 /// Installs what takes the unidirectional streams of the kinds that this node takes part in: the
-/// lanes of a transfer when it receives files, and the frames and control streams of window
-/// streaming when it shows windows. Returns them with the windows of the node.
+/// lanes of a transfer when it receives files, the frames of window streaming when it shows
+/// windows, and the control streams of the sessions it has, as a viewer or as a source. Returns
+/// them with the windows of the node.
 fn take_streams(
     sinks: Sinks,
     incoming: Option<&Incoming>,
     windows: Option<Arc<dyn WindowHandler>>,
+    sharer: Option<Sharer>,
     intake: &Intake,
     tuning: &Tuning,
 ) -> (Sinks, Arc<Streaming>) {
@@ -112,18 +118,19 @@ fn take_streams(
         ),
         None => sinks,
     };
-    let streaming = match windows {
-        Some(handler) => Streaming::showing(Viewer::new(
-            handler,
-            intake.item_charge(),
-            tuning.approval_timeout,
-        )),
-        None => Streaming::new(),
-    };
+    let viewer =
+        windows.map(|handler| Viewer::new(handler, intake.item_charge(), tuning.approval_timeout));
+    let streaming = Streaming::taking_part(viewer, sharer);
     let sinks = if streaming.views() {
+        sinks.install(Kind::Video, FRAME_STREAMS, streaming.clone())
+    } else {
         sinks
-            .install(Kind::Video, FRAME_STREAMS, streaming.clone())
-            .install(Kind::Control, CONTROL_STREAMS, streaming.clone())
+    };
+    // A connection can carry a session of each side, and each has a control stream from the other
+    // end.
+    let controls = u32::from(streaming.views()) + u32::from(streaming.shares());
+    let sinks = if controls > 0 {
+        sinks.install(Kind::Control, controls * CONTROL_STREAMS, streaming.clone())
     } else {
         sinks
     };
@@ -142,7 +149,7 @@ pub struct Tuning {
     pub reply_deadline: Duration,
     /// How long to wait for a connection to a device to come up.
     pub connect_timeout: Duration,
-    /// How long a person has to approve a pairing request.
+    /// How long a person has to approve a pairing request, and to answer the offer of a window.
     pub approval_timeout: Duration,
     /// How long a refused pairing request is held before the refusal is sent.
     pub invalid_delay: Duration,
@@ -178,6 +185,12 @@ impl Tuning {
     pub(crate) fn join_reply_deadline(&self) -> Duration {
         self.approval_timeout + Duration::from_secs(30)
     }
+
+    /// How long the source of a window waits for the answer to an offer: the approval plus the
+    /// network.
+    pub(crate) fn offer_reply_deadline(&self) -> Duration {
+        self.approval_timeout + Duration::from_secs(30)
+    }
 }
 
 /// Sets up a [`Node`].
@@ -190,6 +203,8 @@ pub struct NodeBuilder {
     transfers: Option<Arc<dyn TransferHandler>>,
     /// What the application says about the windows that other devices offer, if it shows them.
     windows: Option<Arc<dyn WindowHandler>>,
+    /// Whether this device shows its own windows to others, and takes input if it does.
+    sharing: Option<Sharer>,
     clock: Arc<dyn Clock>,
     tuning: Tuning,
     /// What takes the unidirectional streams that paired devices open, besides the lanes of the
@@ -217,6 +232,7 @@ impl NodeBuilder {
             handler: Arc::new(NoHandoff),
             transfers: None,
             windows: None,
+            sharing: None,
             clock: Arc::new(SystemClock),
             tuning: Tuning::default(),
             sinks: Sinks::default(),
@@ -252,6 +268,17 @@ impl NodeBuilder {
     #[must_use]
     pub fn window_handler(mut self, handler: impl WindowHandler) -> Self {
         self.windows = Some(Arc::new(handler));
+        self
+    }
+
+    /// Has this device offer its windows to paired devices, with [`Node::share`].
+    ///
+    /// Without it, a device offers none and says nothing about it. With it, the device advertises
+    /// `stream.share`. With `control` it also takes input from a viewer in a session where the
+    /// person at this device granted control, and advertises `stream.control`.
+    #[must_use]
+    pub fn share_windows(mut self, control: bool) -> Self {
+        self.sharing = Some(Sharer { control });
         self
     }
 
@@ -320,6 +347,7 @@ impl NodeBuilder {
             handler,
             transfers,
             windows,
+            sharing,
             clock,
             tuning,
             sinks,
@@ -337,7 +365,8 @@ impl NodeBuilder {
         let incoming = transfers.map(|handler| {
             Incoming::with_finish_wait(handler, intake.item_charge(), tuning.finish_wait)
         });
-        let (sinks, streaming) = take_streams(sinks, incoming.as_ref(), windows, &intake, &tuning);
+        let (sinks, streaming) =
+            take_streams(sinks, incoming.as_ref(), windows, sharing, &intake, &tuning);
         let uni = Arc::new(Uni::new(sinks, &trust, &stop, tuning.request_deadline));
         let shared = Arc::new(Shared {
             id,
@@ -739,6 +768,112 @@ impl Node {
         self.shared
             .registry
             .close_peer(peer, close_code::INTERNAL, b"a test")
+    }
+
+    /// Offers a window of this device to a paired device and, if the person there accepts it,
+    /// starts sending its picture.
+    ///
+    /// The other device decides once, and a person may be asked, so the answer can take as long
+    /// as a person may take (two minutes and the network). Dropping the returned future before it
+    /// is done withdraws the offer, and the other device takes the question back from its
+    /// person. On a yes `choose` is shown what the other device can take, and says what picture
+    /// the platform makes within it, or `None` if it can make none, which ends the session at
+    /// once ([`ShareOutcome::Unmatched`]). The platform is then told what the viewer reports and
+    /// wants through `events`, and asks the [`SourceHandle`](crate::streaming::SourceHandle) in
+    /// the outcome, picture by picture, whether to encode.
+    ///
+    /// A device has one session as a source at a time. The connection to the other device is kept
+    /// open for as long as the session runs.
+    ///
+    /// # Errors
+    ///
+    /// If this device was not set up to show its windows, or not to take input when `window`
+    /// grants control, or `window` breaks a limit; if the device is not paired, cannot be
+    /// reached, does not advertise `stream.view` or breaks the protocol; if a window is being
+    /// offered or shared already ([`Error::Busy`]); or if the device is unpaired or this node
+    /// stops while the offer waits. A device that is reached but does not take the window is not
+    /// an error: the [`ShareOutcome`] says so.
+    pub async fn share(
+        &self,
+        peer: &DeviceId,
+        window: WindowShare,
+        events: impl SourceEvents,
+        choose: impl FnOnce(&Takes) -> Option<baton_stream::control::Config> + Send,
+    ) -> Result<ShareOutcome> {
+        let paired = self.shared.trust.get(peer).ok_or(Error::NotPaired(*peer))?;
+        let streaming = &self.shared.streaming;
+        streaming.can_offer(&window)?;
+        let reservation = streaming.reserve(paired.id)?;
+        let wait = self.shared.tuning.offer_reply_deadline();
+        let mut attempt = 0;
+        let (session, hold, id, reply) = loop {
+            attempt += 1;
+            let (session, reused) = self
+                .pool
+                .session(&self.endpoint, &self.shared, &paired)
+                .await?;
+            if !session.peer.supports(capability::STREAM_VIEW) {
+                return Err(Error::Unsupported(capability::STREAM_VIEW.to_owned()));
+            }
+            // The pool sees a request only when it starts, and the person has minutes to answer.
+            let hold = session.hold();
+            // Nothing is repeated under a session id, so a second attempt has an id of its own.
+            let id = SessionId::from_bytes(random_bytes()?);
+            let asked = tokio::select! {
+                () = reservation.cancelled() => return Err(self.cancelled(&paired.id)),
+                asked = ask(&session.connection, window.offer(id), wait) => asked,
+            };
+            match asked {
+                Ok(reply) => break (session, hold, id, reply),
+                // A connection that sat idle may have been closed. An offer that nobody answered
+                // is not repeated: the person there may be deciding.
+                Err(e)
+                    if reused
+                        && attempt == 1
+                        && worth_retrying(&e)
+                        && !matches!(e, Error::Timeout(_)) =>
+                {
+                    tracing::debug!(error = %e, "retrying on a new connection");
+                    session
+                        .connection
+                        .close(VarInt::from_u32(close_code::NORMAL), b"stale");
+                }
+                Err(e) => return Err(self.explain(&paired.id, e)),
+            }
+        };
+        if reservation.is_cancelled() {
+            return Err(self.cancelled(&paired.id));
+        }
+        let offered = Offered {
+            peer: &paired,
+            connection: &session.connection,
+            hold,
+            session: id,
+            control: window.control(),
+        };
+        streaming.begin(offered, reply, events, choose).await
+    }
+
+    /// Why an offer that waited was cancelled.
+    fn cancelled(&self, peer: &DeviceId) -> Error {
+        if self.shared.stop.is_cancelled() {
+            Error::Stopped
+        } else {
+            Error::NotPaired(*peer)
+        }
+    }
+
+    /// What a failure while a device was asked really was. This node stopping and the device being
+    /// unpaired both close the connection, and the closed connection can be what the call sees
+    /// first.
+    fn explain(&self, peer: &DeviceId, error: Error) -> Error {
+        if self.shared.stop.is_cancelled() {
+            Error::Stopped
+        } else if self.shared.trust.get(peer).is_none() {
+            Error::NotPaired(*peer)
+        } else {
+            error
+        }
     }
 
     /// The connection that requests to `peer` go on, made if there is none.
