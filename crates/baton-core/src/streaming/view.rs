@@ -962,7 +962,7 @@ mod tests {
         let result = read_next::<ViewerMessage>(recv, PATIENCE).await;
         match result {
             Ok(message) => message,
-            Err(ReadFailure::Transport(_)) => None,
+            Err(ReadFailure::Reset(_) | ReadFailure::Transport(_)) => None,
             Err(other) => panic!("the viewer wrote a message that cannot be read: {other:?}"),
         }
     }

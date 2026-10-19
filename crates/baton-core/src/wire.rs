@@ -14,7 +14,7 @@ use baton_proto::{
     message::Message,
 };
 use iroh::endpoint::{
-    ApplicationClose, ConnectionError, ReadError, ReadExactError, RecvStream, SendStream,
+    ApplicationClose, ConnectionError, ReadError, ReadExactError, RecvStream, SendStream, VarInt,
     WriteError,
 };
 
@@ -29,6 +29,8 @@ pub(crate) enum ReadFailure {
     BadPayload(FrameError),
     /// Nothing complete arrived in time.
     TimedOut,
+    /// The other device abandoned the stream with this code.
+    Reset(u32),
     /// The stream or connection failed.
     Transport(Error),
 }
@@ -38,6 +40,7 @@ impl From<ReadFailure> for Error {
         match failure {
             ReadFailure::BadHeader(e) | ReadFailure::BadPayload(e) => Self::protocol(&e),
             ReadFailure::TimedOut => Self::Timeout("waiting for the other device"),
+            ReadFailure::Reset(code) => Self::Protocol(abandoned(code)),
             ReadFailure::Transport(e) => e,
         }
     }
@@ -98,7 +101,7 @@ async fn read_payload<M: Message>(
                     "the stream ended in the middle of a message",
                 )));
             }
-            Err(e) => return Err(ReadFailure::Transport(read_error(&e))),
+            Err(e) => return Err(read_failure(&e)),
         }
     }
     frame::decode_payload(&payload).map_err(ReadFailure::BadPayload)
@@ -118,19 +121,34 @@ fn read_exact_failure(error: ReadExactError) -> ReadFailure {
         ReadExactError::FinishedEarly(_) => ReadFailure::Transport(Error::protocol(
             "the stream ended before a message header arrived",
         )),
-        ReadExactError::ReadError(e) => ReadFailure::Transport(read_error(&e)),
+        ReadExactError::ReadError(e) => read_failure(&e),
+    }
+}
+
+/// A failed read of a stream: the other device abandoned it, or the stream or connection failed.
+fn read_failure(error: &ReadError) -> ReadFailure {
+    match error {
+        ReadError::Reset(code) => ReadFailure::Reset(code_of(*code)),
+        other => ReadFailure::Transport(read_error(other)),
     }
 }
 
 pub(crate) fn read_error(error: &ReadError) -> Error {
     match error {
         ReadError::ConnectionLost(e) => connection_error("reading", e),
-        ReadError::Reset(code) => Error::Protocol(format!(
-            "the other device abandoned the stream (code {})",
-            code.into_inner()
-        )),
+        ReadError::Reset(code) => Error::Protocol(abandoned(code_of(*code))),
         other => Error::network("reading", other),
     }
+}
+
+/// The code of a stop or a reset. No code of this protocol is larger than a `u32`, and one from a
+/// device that sends a larger one has no meaning, so it is kept as large as it can be.
+pub(crate) fn code_of(code: VarInt) -> u32 {
+    u32::try_from(code.into_inner()).unwrap_or(u32::MAX)
+}
+
+fn abandoned(code: u32) -> String {
+    format!("the other device abandoned the stream (code {code})")
 }
 
 pub(crate) fn write_error(error: &WriteError) -> Error {
@@ -154,5 +172,19 @@ pub(crate) fn connection_error(context: &'static str, error: &ConnectionError) -
             }
         }
         other => Error::network(context, other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_code_is_a_u32_whatever_the_other_device_sends() {
+        assert_eq!(code_of(VarInt::from_u32(507)), 507);
+        assert_eq!(code_of(VarInt::from_u32(0)), 0);
+        let huge = VarInt::from_u64(u64::from(u32::MAX) + 5).unwrap();
+        assert_eq!(code_of(huge), u32::MAX);
+        assert_eq!(code_of(VarInt::from_u32(u32::MAX)), u32::MAX);
     }
 }
