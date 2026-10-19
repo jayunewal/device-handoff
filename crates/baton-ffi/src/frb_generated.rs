@@ -2332,6 +2332,7 @@ impl SseDecode for crate::api::model::TransferEnd {
         let mut var_files = <u32>::sse_decode(deserializer);
         let mut var_bytes = <i64>::sse_decode(deserializer);
         let mut var_preview = <Vec<crate::api::model::PreviewName>>::sse_decode(deserializer);
+        let mut var_saved = <Vec<String>>::sse_decode(deserializer);
         let mut var_result = <crate::api::model::TransferResult>::sse_decode(deserializer);
         return crate::api::model::TransferEnd {
             request: var_request,
@@ -2340,6 +2341,7 @@ impl SseDecode for crate::api::model::TransferEnd {
             files: var_files,
             bytes: var_bytes,
             preview: var_preview,
+            saved: var_saved,
             result: var_result,
         };
     }
@@ -3130,6 +3132,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::model::TransferEnd {
             self.files.into_into_dart().into_dart(),
             self.bytes.into_into_dart().into_dart(),
             self.preview.into_into_dart().into_dart(),
+            self.saved.into_into_dart().into_dart(),
             self.result.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -3880,6 +3883,7 @@ impl SseEncode for crate::api::model::TransferEnd {
         <u32>::sse_encode(self.files, serializer);
         <i64>::sse_encode(self.bytes, serializer);
         <Vec<crate::api::model::PreviewName>>::sse_encode(self.preview, serializer);
+        <Vec<String>>::sse_encode(self.saved, serializer);
         <crate::api::model::TransferResult>::sse_encode(self.result, serializer);
     }
 }

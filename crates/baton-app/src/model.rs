@@ -7,7 +7,7 @@
 //! as long as it likes. Ids are text (64 hexadecimal characters) so that they can be kept
 //! in a widget, a route or a test as they are.
 
-use std::fmt;
+use std::{fmt, path::PathBuf};
 
 use baton_core::{
     InboxEntry, InboxItem, PairedDevice,
@@ -371,7 +371,7 @@ impl fmt::Debug for PreviewName {
 }
 
 /// How a transfer that this device took has ended.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TransferEnd {
     /// The [`TransferRequest::id`] of the transfer.
     pub request: u64,
@@ -385,8 +385,31 @@ pub struct TransferEnd {
     pub bytes: u64,
     /// The first of the items that were offered, as the request showed them.
     pub preview: Vec<PreviewName>,
+    /// Where the items that arrived are: the files and folders at the top of what was offered, in
+    /// the order they were offered, each at the full path it was put at. A name that was taken in
+    /// the folder has a number, so these are the names to look for, and not the ones in
+    /// `preview`. An item that could not be saved is not among them, and none are when the
+    /// transfer was dropped. A screen can show the person where the files are with these.
+    pub saved: Vec<PathBuf>,
     /// How it ended.
     pub result: TransferResult,
+}
+
+// A path has the name of a file in it, and the folder that the person keeps their files in, so
+// only how many there are is printed.
+impl fmt::Debug for TransferEnd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TransferEnd")
+            .field("request", &self.request)
+            .field("device_id", &self.device_id)
+            .field("device_name", &self.device_name)
+            .field("files", &self.files)
+            .field("bytes", &self.bytes)
+            .field("preview", &self.preview)
+            .field("saved", &self.saved.len())
+            .field("result", &self.result)
+            .finish()
+    }
 }
 
 /// How a transfer that this device took has ended.
@@ -692,6 +715,9 @@ mod tests {
             files: 1,
             bytes: 4096,
             preview: vec![name.clone()],
+            saved: vec![PathBuf::from(
+                "/Users/someone/Downloads/tax return 2026.pdf",
+            )],
             result: TransferResult::Received { failed: 0 },
         };
         for shown in [
@@ -701,8 +727,11 @@ mod tests {
         ] {
             assert!(!shown.contains("tax"), "{shown}");
             assert!(!shown.contains(".pdf"), "{shown}");
+            assert!(!shown.contains("someone"), "{shown}");
             assert!(shown.contains("4096"), "{shown}");
         }
+        // How many were saved is printed.
+        assert!(format!("{end:?}").contains("saved: 1"), "{end:?}");
     }
 
     #[test]

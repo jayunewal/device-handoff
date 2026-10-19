@@ -3,10 +3,12 @@
 import 'package:baton/src/awake.dart';
 import 'package:baton/src/backend.dart';
 import 'package:baton/src/transfers_controller.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'fake_backend.dart';
 import 'fake_screen.dart';
+import 'fake_shower.dart';
 
 FakeSession _session() => FakeSession(
   me: const Me(
@@ -20,10 +22,12 @@ FakeSession _session() => FakeSession(
 Future<TransfersController> _controller(
   FakeSession session, {
   FakeScreen? screen,
+  FakeShower? shower,
 }) async {
   final controller = TransfersController(
     session,
     screen: screen ?? FakeScreen(),
+    shower: shower ?? FakeShower(),
   );
   addTearDown(controller.dispose);
   await controller.start();
@@ -234,6 +238,92 @@ void main() {
     await _end(session, lost);
 
     expect(controller.ended, [lost, dropped]);
+  });
+
+  group('taking the person to the files that arrived', () {
+    test('shows where the end says the items are, and nothing else', () async {
+      final session = _session();
+      final shower = FakeShower();
+      final controller = await _controller(session, shower: shower);
+      final end = sampleTransferEnd(
+        sampleTransfer(),
+        saved: [
+          '/Users/test/Downloads/Holiday',
+          '/Users/test/Downloads/notes 2.txt',
+        ],
+      );
+      await _end(session, end);
+
+      expect(controller.canShow(end), isTrue);
+      expect(await controller.show(end), ShowResult.shown);
+
+      expect(shower.asked, [
+        ['/Users/test/Downloads/Holiday', '/Users/test/Downloads/notes 2.txt'],
+      ]);
+    });
+
+    test('files that are not there any more are said to be gone', () async {
+      final shower = FakeShower()..there = false;
+      final controller = await _controller(_session(), shower: shower);
+
+      expect(
+        await controller.show(sampleTransferEnd(sampleTransfer())),
+        ShowResult.gone,
+      );
+      expect(shower.asked, hasLength(1));
+    });
+
+    test('a transfer that kept nothing has nothing to show', () async {
+      final shower = FakeShower();
+      final controller = await _controller(_session(), shower: shower);
+      final request = sampleTransfer();
+      final dropped = sampleTransferEnd(
+        request,
+        result: const TransferResult.dropped(),
+      );
+      final lostEverything = sampleTransferEnd(
+        request,
+        result: TransferResult.received(failed: request.files),
+      );
+
+      for (final end in [dropped, lostEverything]) {
+        expect(controller.canShow(end), isFalse);
+        expect(await controller.show(end), ShowResult.gone);
+      }
+      expect(shower.asked, isEmpty, reason: 'the system is not asked');
+      expect(
+        controller.canShow(
+          sampleTransferEnd(
+            request,
+            result: const TransferResult.received(failed: 1),
+          ),
+        ),
+        isTrue,
+        reason: 'the files that did arrive can be shown',
+      );
+    });
+
+    test(
+      'a system that cannot be asked is told as that, and logs no path',
+      () async {
+        final shower = FakeShower()
+          ..failure = StateError(
+            'no way: /Users/test/Downloads/secret plans.pdf',
+          );
+        final controller = await _controller(_session(), shower: shower);
+        final logged = <String>[];
+        final before = debugPrint;
+        debugPrint = (message, {wrapWidth}) => logged.add(message ?? '');
+        addTearDown(() => debugPrint = before);
+
+        expect(
+          await controller.show(sampleTransferEnd(sampleTransfer())),
+          ShowResult.failed,
+        );
+
+        expect(logged, ['Baton: showing files: StateError']);
+      },
+    );
   });
 
   test('other events are not for this list', () async {

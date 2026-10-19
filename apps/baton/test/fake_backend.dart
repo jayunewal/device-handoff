@@ -628,10 +628,13 @@ TransferRequest sampleTransfer({
       ],
 );
 
-/// How a transfer that [request] asked for ended.
+/// How a transfer that [request] asked for ended. [saved] is where the items that arrived are.
+/// Without it they are in the Downloads folder under the names they were offered with, when
+/// [result] says that something arrived, and there are none when it does not.
 TransferEnd sampleTransferEnd(
   TransferRequest request, {
   TransferResult result = const TransferResult.received(failed: 0),
+  List<String>? saved,
 }) => TransferEnd(
   request: request.id,
   deviceId: request.deviceId,
@@ -639,5 +642,14 @@ TransferEnd sampleTransferEnd(
   files: request.files,
   bytes: request.bytes,
   preview: request.preview,
+  saved:
+      saved ??
+      switch (result) {
+        TransferResult_Received(:final failed) when failed < request.files => [
+          for (final item in request.preview)
+            '/Users/test/Downloads/${item.name}',
+        ],
+        TransferResult_Received() || TransferResult_Dropped() => const [],
+      },
   result: result,
 );

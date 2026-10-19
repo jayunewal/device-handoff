@@ -15,6 +15,7 @@ import 'dart:io' show Directory, File;
 import 'package:baton/src/app.dart';
 import 'package:baton/src/awake.dart';
 import 'package:baton/src/backend.dart';
+import 'package:baton/src/file_shower.dart';
 import 'package:baton/src/rust_backend.dart';
 import 'package:baton/src/support_folder.dart';
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
@@ -126,6 +127,26 @@ void main() {
       addTearDown(session.stop);
       expect(session.receiving(), isA<Receiving_On>());
       expect(session.receiveFolder, path);
+    },
+    skip:
+        defaultTargetPlatform != TargetPlatform.iOS &&
+        defaultTargetPlatform != TargetPlatform.macOS,
+  );
+
+  testWidgets(
+    'asks the system to show files, and is told when they are not there',
+    (tester) async {
+      // Finder on a Mac and the Files app on a phone show what arrived, and the apps ask them
+      // (macos/Runner/MainFlutterWindow.swift and ios/Runner/AppDelegate.swift). Showing a file
+      // takes the person out of the app, which a test cannot have, so this asks for one that is
+      // not there. The answer says that the question reached the code and was understood, and
+      // that nothing opens for a path that leads nowhere.
+      final folder = await _folder();
+
+      expect(
+        await const SystemFileShower().show(['${folder.path}/not-there.txt']),
+        isFalse,
+      );
     },
     skip:
         defaultTargetPlatform != TargetPlatform.iOS &&

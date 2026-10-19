@@ -18,6 +18,7 @@ import UIKit
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     screenKeeper = ScreenKeeper(messenger: engineBridge.applicationRegistrar.messenger())
     answerWhereTheAppKeepsItsFiles(messenger: engineBridge.applicationRegistrar.messenger())
+    showReceivedFilesInTheFilesApp(messenger: engineBridge.applicationRegistrar.messenger())
   }
 }
 
@@ -63,6 +64,64 @@ private func applicationSupportFolder() throws -> URL {
 private func documentsFolder() throws -> URL {
   try FileManager.default.url(
     for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+}
+
+/// Takes the person to the files that other devices sent: the Files app opens at the folder that
+/// holds them, which is the Baton folder that it shows under "On My iPhone" or "On My iPad". The
+/// Files app shows them and does not open them. The names of the channel and of the question must
+/// be the ones in lib/src/file_shower.dart.
+private func showReceivedFilesInTheFilesApp(messenger: FlutterBinaryMessenger) {
+  let channel = FlutterMethodChannel(
+    name: "io.github.jayunewal.baton/files", binaryMessenger: messenger)
+  channel.setMethodCallHandler { call, result in
+    switch call.method {
+    case "show":
+      guard let paths = call.arguments as? [String] else {
+        result(FlutterError(code: "bad_paths", message: "The paths were not text.", details: nil))
+        return
+      }
+      showInTheFilesApp(paths: paths, result: result)
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+}
+
+/// Opens the Files app at the folder to show for `paths`, and says `false` when none of them is
+/// there any more: the person may have moved or deleted them since. A folder that arrived alone is
+/// opened. Otherwise the folder that holds the first one is, which is the folder they were all put
+/// in, and what arrived is in sight there. The Files app is told which folder to open with the
+/// path of the folder under its own scheme, which is how it is asked to open the Documents folder
+/// of an app.
+private func showInTheFilesApp(paths: [String], result: @escaping FlutterResult) {
+  let files = FileManager.default
+  let there = paths.filter { files.fileExists(atPath: $0) }
+  guard let first = there.first else {
+    result(false)
+    return
+  }
+  var isFolder: ObjCBool = false
+  _ = files.fileExists(atPath: first, isDirectory: &isFolder)
+  let item = URL(fileURLWithPath: first)
+  let alone = there.count == 1 && isFolder.boolValue
+  let folder = alone ? item : item.deletingLastPathComponent()
+  guard var address = URLComponents(url: folder, resolvingAgainstBaseURL: false) else {
+    result(FlutterError(code: "no_address", message: "The folder has no address.", details: nil))
+    return
+  }
+  address.scheme = "shareddocuments"
+  guard let url = address.url else {
+    result(FlutterError(code: "no_address", message: "The folder has no address.", details: nil))
+    return
+  }
+  UIApplication.shared.open(url, options: [:]) { opened in
+    if opened {
+      result(true)
+    } else {
+      result(
+        FlutterError(code: "not_opened", message: "The Files app did not open.", details: nil))
+    }
+  }
 }
 
 /// Keeps the screen on while the app asks for it, which it does while two devices pair and while

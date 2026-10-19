@@ -7,6 +7,7 @@
 import 'dart:io';
 
 import 'package:baton/src/awake.dart';
+import 'package:baton/src/file_shower.dart';
 import 'package:baton/src/rust_backend.dart';
 import 'package:baton/src/support_folder.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -182,6 +183,67 @@ void main() {
       }
     },
   );
+
+  test('both apps answer where Baton asks to show the files that arrived', () {
+    // The channel and its question are named in lib/src/file_shower.dart and in each app. If they
+    // differ, the button that takes the person to the files can only say that it could not.
+    for (final file in [
+      'ios/Runner/AppDelegate.swift',
+      'macos/Runner/MainFlutterWindow.swift',
+    ]) {
+      final swift = _read(file);
+      expect(
+        swift,
+        contains('name: "${SystemFileShower.channelName}"'),
+        reason: file,
+      );
+      expect(
+        swift,
+        contains('case "${SystemFileShower.question}":'),
+        reason: file,
+      );
+    }
+  });
+
+  test('both apps register what answers the question about showing files', () {
+    // An answer that nothing registered is the same to Baton as an app that does not know the
+    // question: the button can only say that it could not, and nothing else here fails.
+    expect(
+      _read('ios/Runner/AppDelegate.swift'),
+      contains(
+        '    showReceivedFilesInTheFilesApp(messenger: engineBridge.applicationRegistrar.messenger())',
+      ),
+    );
+    expect(
+      _read('macos/Runner/MainFlutterWindow.swift'),
+      contains(
+        '    showReceivedFilesInFinder(messenger: flutterViewController.engine.binaryMessenger)',
+      ),
+    );
+  });
+
+  test('the apps show the files that arrived and never open them', () {
+    // What a file does when it is opened is for the person to choose, and Baton opens nothing
+    // that another device sent. Finder is asked to select the items, and the Files app is asked
+    // to open a folder. Neither is asked to open a file.
+    final mac = _read('macos/Runner/MainFlutterWindow.swift');
+    expect(mac, contains('NSWorkspace.shared.activateFileViewerSelecting('));
+    for (final opening in [
+      'NSWorkspace.shared.open',
+      'NSWorkspace.shared.openFile',
+      'NSWorkspace.shared.openApplication',
+      'NSWorkspace.shared.launchApplication',
+    ]) {
+      expect(mac, isNot(contains(opening)), reason: opening);
+    }
+    final ios = _read('ios/Runner/AppDelegate.swift');
+    expect(ios, contains('address.scheme = "shareddocuments"'));
+    expect(
+      ios,
+      contains('item.deletingLastPathComponent()'),
+      reason: 'anything but a folder that arrived alone is shown by its folder',
+    );
+  });
 
   test('the library is linked in a way that keeps its functions findable', () {
     for (final system in ['ios', 'macos']) {

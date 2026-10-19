@@ -848,6 +848,12 @@ async fn files_are_sent_when_the_person_says_yes_and_arrive_as_they_were() {
     );
     assert_eq!(end.preview, request.preview);
     assert_eq!(tree(a.received()), sample_tree());
+    // The end says where the items are, so that a screen can take the person to them: the top of
+    // what was offered, in the order it was offered, and not every file in a folder.
+    assert_eq!(
+        end.saved,
+        [a.received().join("docs"), a.received().join("hello.txt")]
+    );
 
     // The sender's screen has what it needs to show a finished bar, and asking again gets the
     // same answer.
@@ -955,7 +961,73 @@ async fn a_send_that_is_given_up_while_it_goes_is_dropped_and_leaves_no_files() 
     .await;
     assert_eq!(end.request, request.id);
     assert_eq!(end.result, TransferResult::Dropped);
+    assert!(end.saved.is_empty(), "nothing is kept, so nothing is shown");
     assert!(tree(a.received()).is_empty(), "half a file is never kept");
+}
+
+#[tokio::test]
+async fn the_places_of_one_transfer_are_not_the_places_of_another() {
+    let a = Dev::start_taking_files("Device A").await;
+    let b = Dev::start("Device B").await;
+    pair(&a, &b).await;
+    let mut a_events = a.app.events();
+    // A transfer that is still going when the other one is over: large enough that it cannot be
+    // over first, and a hole in the file system, so it costs nothing to make.
+    let source = tempfile::tempdir().unwrap();
+    let big = source.path().join("big.bin");
+    std::fs::File::create(&big)
+        .unwrap()
+        .set_len(256 << 20)
+        .unwrap();
+    let going = b.app.send_files(&a.id(), vec![big]).await.unwrap();
+    let going_request = question(&mut a_events).await;
+    assert!(a.app.answer_transfer(going_request.id, true));
+    tokio::time::timeout(WAIT, async {
+        while going.progress().sent == 0 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("no byte was sent");
+
+    let (_small_source, paths) = one_file("small.txt", b"small");
+    let small = b.app.send_files(&a.id(), paths).await.unwrap();
+    let small_request = question(&mut a_events).await;
+    assert!(a.app.answer_transfer(small_request.id, true));
+    finished(&small).await.unwrap();
+    let small_end = next_matching(&mut a_events, |event| match event {
+        Event::TransferEnded(end) => Some(end),
+        _ => None,
+    })
+    .await;
+    assert_eq!(small_end.request, small_request.id);
+    assert_eq!(small_end.saved, [a.received().join("small.txt")]);
+    assert_eq!(
+        going.progress().stage,
+        SendStage::Sending,
+        "the other transfer is still going"
+    );
+
+    // The one that is still going is given up, and keeps nothing. The place of the file that
+    // arrived meanwhile is not its place.
+    going.cancel();
+    let error = finished(&going).await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Cancelled, "{error}");
+    let going_end = next_matching(&mut a_events, |event| match event {
+        Event::TransferEnded(end) => Some(end),
+        _ => None,
+    })
+    .await;
+    assert_eq!(going_end.request, going_request.id);
+    assert_eq!(going_end.result, TransferResult::Dropped);
+    assert!(
+        going_end.saved.is_empty(),
+        "nothing is kept, so nothing is shown"
+    );
+    assert_eq!(
+        tree(a.received()),
+        BTreeMap::from([("small.txt".to_owned(), Some(b"small".to_vec()))])
+    );
 }
 
 #[tokio::test]
@@ -1021,6 +1093,45 @@ async fn a_file_that_is_gone_when_its_turn_comes_is_counted_on_both_devices() {
     assert_eq!(
         tree(a.received()),
         BTreeMap::from([("keep.txt".to_owned(), Some(b"still here".to_vec()))])
+    );
+    assert_eq!(
+        end.saved,
+        [a.received().join("keep.txt")],
+        "a file that did not arrive is not shown"
+    );
+}
+
+#[tokio::test]
+async fn a_name_that_is_taken_gets_a_number_and_the_end_says_where_the_file_went() {
+    let a = Dev::start_taking_files("Device A").await;
+    let b = Dev::start("Device B").await;
+    pair(&a, &b).await;
+    let mut a_events = a.app.events();
+    std::fs::write(a.received().join("hello.txt"), b"was here before").unwrap();
+    let (_source, paths) = one_file("hello.txt", b"hello from B");
+
+    let sending = b.app.send_files(&a.id(), paths).await.unwrap();
+    let request = question(&mut a_events).await;
+    assert!(a.app.answer_transfer(request.id, true));
+
+    finished(&sending).await.unwrap();
+    let end = next_matching(&mut a_events, |event| match event {
+        Event::TransferEnded(end) => Some(end),
+        _ => None,
+    })
+    .await;
+    // What the person was shown is the name it was sent with, and what they look for is the name
+    // it has now.
+    assert_eq!(end.preview[0].name, "hello.txt");
+    assert_eq!(end.saved, [a.received().join("hello 2.txt")]);
+    assert_eq!(
+        std::fs::read(a.received().join("hello.txt")).unwrap(),
+        b"was here before"
+    );
+    assert_eq!(
+        std::fs::read(&end.saved[0]).unwrap(),
+        b"hello from B",
+        "the path is the file that arrived"
     );
 }
 
