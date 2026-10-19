@@ -13,6 +13,7 @@ use baton_core::{
     InboxEntry, InboxItem, PairedDevice,
     link::PathKind,
     node::{NodeStatus, PingReport},
+    transfer::send::{Progress, Stage},
 };
 use baton_proto::Platform as ProtoPlatform;
 
@@ -317,6 +318,177 @@ pub enum OfferOutcome {
     Failed(String),
 }
 
+/// A device asking to send files, for the person to answer.
+///
+/// Show who is asking and what is offered, and answer with
+/// [`App::answer_transfer`](crate::App::answer_transfer). The names were written by the other
+/// device. They are cleaned to be safe to show, and they say what the person is asked to take,
+/// not what the files will be called here: a name that is taken in the folder gets a number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferRequest {
+    /// Names this request when answering it.
+    pub id: u64,
+    /// The id of the device asking.
+    pub device_id: String,
+    /// The name this device shows for it.
+    pub device_name: String,
+    /// How many files and folders were chosen to be sent: the items that are not inside
+    /// another one.
+    pub items: u32,
+    /// How many files there are in all, in every folder.
+    pub files: u32,
+    /// How many folders there are in all, in every folder.
+    pub folders: u32,
+    /// How many bytes the files add up to.
+    pub bytes: u64,
+    /// The first of the items, in order. It holds fewer than `items` when there are many.
+    pub preview: Vec<PreviewName>,
+}
+
+/// One of the files and folders that were chosen to be sent.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PreviewName {
+    /// The name, cleaned to be safe to show.
+    pub name: String,
+    /// Whether it is a folder.
+    pub folder: bool,
+    /// For a folder, how many files are in it, in every folder inside it. 0 for a file.
+    pub files: u32,
+    /// The size of the file, or of all the files in the folder added up.
+    pub bytes: u64,
+}
+
+// A file name can say more than the person wants in a log, so only sizes are printed.
+impl fmt::Debug for PreviewName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PreviewName")
+            .field("name_bytes", &self.name.len())
+            .field("folder", &self.folder)
+            .field("files", &self.files)
+            .field("bytes", &self.bytes)
+            .finish()
+    }
+}
+
+/// How a transfer that this device took has ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferEnd {
+    /// The [`TransferRequest::id`] of the transfer.
+    pub request: u64,
+    /// The id of the device that sent it.
+    pub device_id: String,
+    /// The name this device shows for it.
+    pub device_name: String,
+    /// How many files the transfer held.
+    pub files: u32,
+    /// How many bytes they add up to.
+    pub bytes: u64,
+    /// The first of the items that were offered, as the request showed them.
+    pub preview: Vec<PreviewName>,
+    /// How it ended.
+    pub result: TransferResult,
+}
+
+/// How a transfer that this device took has ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferResult {
+    /// The sender is done. Every file is in the folder except `failed` of them, and those are
+    /// not there at all, never half of one.
+    Received {
+        /// How many files did not arrive.
+        failed: u32,
+    },
+    /// The transfer was given up, and nothing of it is kept: the sender stopped, the device was
+    /// unpaired, or the sender did not come back.
+    Dropped,
+}
+
+/// Whether this device takes files, and where they go.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Receiving {
+    /// The app gave no folder for files, so this device takes none.
+    Off,
+    /// Files are taken, after the person says yes to each transfer.
+    On,
+    /// The app gave a folder, and Baton cannot use it, so this device takes no files. The
+    /// sentence says why.
+    Unusable(String),
+}
+
+/// What a transfer that is being sent is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendStage {
+    /// Making a connection to the other device.
+    Connecting,
+    /// Waiting for the answer to the offer. A person may be deciding.
+    Asking,
+    /// The files are going out.
+    Sending,
+    /// Everything is sent, and the other device is putting it in place.
+    Finishing,
+    /// The connection failed or the other device stalled, and Baton waits a moment before it
+    /// tries again.
+    Waiting,
+    /// The transfer is over, whichever way it ended.
+    Over,
+}
+
+/// How far a transfer that is being sent has got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileProgress {
+    /// What the transfer is doing now.
+    pub stage: SendStage,
+    /// The attempt that is going, from 1.
+    pub attempt: u32,
+    /// How many files the transfer holds.
+    pub files: u32,
+    /// How many bytes they add up to.
+    pub bytes: u64,
+    /// How many bytes have gone out in this attempt. An attempt that is tried again starts
+    /// from 0, because it sends everything again.
+    pub sent: u64,
+}
+
+impl From<Stage> for SendStage {
+    fn from(stage: Stage) -> Self {
+        match stage {
+            Stage::Connecting => Self::Connecting,
+            Stage::Asking => Self::Asking,
+            Stage::Finishing => Self::Finishing,
+            Stage::Waiting => Self::Waiting,
+            Stage::Over => Self::Over,
+            // `Sending` and any stage added later: the transfer is under way.
+            _ => Self::Sending,
+        }
+    }
+}
+
+impl From<Progress> for FileProgress {
+    fn from(progress: Progress) -> Self {
+        Self {
+            stage: progress.stage.into(),
+            attempt: progress.attempt,
+            files: progress.files,
+            bytes: progress.bytes,
+            sent: progress.sent,
+        }
+    }
+}
+
+/// A transfer that the other device answered for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FilesSent {
+    /// How many files the transfer held.
+    pub files: u32,
+    /// How many bytes they add up to.
+    pub bytes: u64,
+    /// How many of the files are not in place on the other device. The others are.
+    pub failed: u32,
+    /// How many things in what was chosen were left out and not offered at all: links inside a
+    /// folder, files that could not be read, and the like.
+    pub left_out: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,6 +506,58 @@ mod tests {
             assert!(!shown.contains("hunter2"), "{shown}");
             assert!(!shown.contains("token"), "{shown}");
             assert!(!shown.contains("Reset"), "{shown}");
+        }
+    }
+
+    #[test]
+    fn the_names_of_files_are_not_printed() {
+        let name = PreviewName {
+            name: "tax return 2026.pdf".to_owned(),
+            folder: false,
+            files: 0,
+            bytes: 4096,
+        };
+        let request = TransferRequest {
+            id: 1,
+            device_id: "0".repeat(64),
+            device_name: "Kitchen iPad".to_owned(),
+            items: 1,
+            files: 1,
+            folders: 0,
+            bytes: 4096,
+            preview: vec![name.clone()],
+        };
+        let end = TransferEnd {
+            request: 1,
+            device_id: "0".repeat(64),
+            device_name: "Kitchen iPad".to_owned(),
+            files: 1,
+            bytes: 4096,
+            preview: vec![name.clone()],
+            result: TransferResult::Received { failed: 0 },
+        };
+        for shown in [
+            format!("{name:?}"),
+            format!("{request:?}"),
+            format!("{end:?}"),
+        ] {
+            assert!(!shown.contains("tax"), "{shown}");
+            assert!(!shown.contains(".pdf"), "{shown}");
+            assert!(shown.contains("4096"), "{shown}");
+        }
+    }
+
+    #[test]
+    fn the_stages_of_a_transfer_are_copied_one_for_one() {
+        for (stage, copy) in [
+            (Stage::Connecting, SendStage::Connecting),
+            (Stage::Asking, SendStage::Asking),
+            (Stage::Sending, SendStage::Sending),
+            (Stage::Finishing, SendStage::Finishing),
+            (Stage::Waiting, SendStage::Waiting),
+            (Stage::Over, SendStage::Over),
+        ] {
+            assert_eq!(SendStage::from(stage), copy, "{stage:?}");
         }
     }
 

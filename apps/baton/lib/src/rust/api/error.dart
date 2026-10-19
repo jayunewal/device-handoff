@@ -71,6 +71,9 @@ enum ErrorKind {
   /// The other device did not pair: declined, busy, or the ticket was used up.
   pairingFailed,
 
+  /// The person stopped what was going on.
+  cancelled,
+
   /// Anything else.
   other,
 }

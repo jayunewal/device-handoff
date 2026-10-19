@@ -31,6 +31,8 @@ pub enum ErrorKind {
     BadTicket,
     /// The other device did not pair: declined, busy, or the ticket was used up.
     PairingFailed,
+    /// The person stopped what was going on.
+    Cancelled,
     /// Anything else.
     Other,
 }

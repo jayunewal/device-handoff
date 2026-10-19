@@ -11,8 +11,14 @@
 
 use std::{fmt, path::Path};
 
-use baton_core::Error as Core;
-use baton_proto::{device::sanitize_text, message::DeclineReason};
+use baton_core::{
+    Error as Core,
+    transfer::{
+        destination::OpenError,
+        send::{Error as SendError, Outcome, Why, selection::SelectionError},
+    },
+};
+use baton_proto::{close_code, device::sanitize_text, message::DeclineReason};
 
 /// The longest message kept, in characters.
 const MAX_MESSAGE_CHARS: usize = 300;
@@ -51,6 +57,8 @@ pub enum ErrorKind {
     BadTicket,
     /// The other device did not pair: declined, busy, or the ticket was used up.
     PairingFailed,
+    /// The person stopped what was going on.
+    Cancelled,
     /// Anything else.
     Other,
 }
@@ -228,6 +236,136 @@ impl Error {
             format!("{device} did not take the {what}: {why}."),
         )
     }
+
+    /// What was chosen to be sent cannot be made into a transfer.
+    pub(crate) fn selection(error: &SelectionError) -> Self {
+        let message = match error {
+            SelectionError::Empty(left_out) if left_out.total() == 0 => {
+                "There is nothing to send in what you chose.".to_owned()
+            }
+            SelectionError::Empty(_) => "Nothing in what you chose can be sent. Links inside a \
+                 folder, files that cannot be read and files that are too large are left out."
+                .to_owned(),
+            SelectionError::TooMany { what, max } => format!(
+                "There are more than {max} {what} in what you chose. Send a smaller folder, or \
+                 send it in parts."
+            ),
+            SelectionError::ListTooLong => "The names of the files in what you chose take more \
+                 room than one transfer allows. Send it in parts."
+                .to_owned(),
+            SelectionError::TooBig => {
+                "What you chose is larger than one transfer can hold. Send it in parts.".to_owned()
+            }
+        };
+        Self::new(ErrorKind::BadItem, message)
+    }
+
+    /// A transfer to `device` that did not end with the files there. `outcome` is not
+    /// `Outcome::Done`.
+    pub(crate) fn not_sent(outcome: &Outcome, device: &str) -> Self {
+        match outcome {
+            Outcome::Declined(reason) => Self::declined(device, "files", *reason),
+            Outcome::Stopped(code) => Self::stopped_by(device, *code),
+            Outcome::Cancelled { .. } => Self::new(ErrorKind::Cancelled, "You stopped sending."),
+            Outcome::Failed(error) => Self::transfer_failed(error, device),
+            _ => Self::new(
+                ErrorKind::Other,
+                format!("The files did not reach {device}."),
+            ),
+        }
+    }
+
+    /// The device `device` ended the transfer by stopping its lanes with `code`.
+    fn stopped_by(device: &str, code: u32) -> Self {
+        match code {
+            close_code::CANCELLED => Self::new(
+                ErrorKind::Declined,
+                format!("{device} stopped the transfer."),
+            ),
+            close_code::NO_SPACE => Self::new(
+                ErrorKind::Declined,
+                format!("{device} has no room for the files."),
+            ),
+            close_code::NOT_PAIRED => Self::new(
+                ErrorKind::NotPaired,
+                format!(
+                    "{device} no longer has this device paired. Pair them again to send files."
+                ),
+            ),
+            other => Self::new(
+                ErrorKind::Other,
+                format!(
+                    "{device} ended the transfer (code {other}). Both devices may need a newer \
+                     version of Baton."
+                ),
+            ),
+        }
+    }
+
+    /// A transfer to `device` that could not be carried through.
+    fn transfer_failed(error: &SendError, device: &str) -> Self {
+        match error {
+            SendError::GaveUp(Why::Connection | Why::Silent) => Self::new(
+                ErrorKind::Unreachable,
+                format!(
+                    "Could not reach {device}. Baton has to be open on it, and both devices \
+                     need to be online."
+                ),
+            ),
+            SendError::GaveUp(Why::TimedOut | Why::Stalled) => Self::new(
+                ErrorKind::Unreachable,
+                format!(
+                    "The connection to {device} stopped moving data, and Baton gave up. Try \
+                     again when both devices are on a good connection."
+                ),
+            ),
+            SendError::GaveUp(_) => Self::new(
+                ErrorKind::Other,
+                format!("{device} lost track of the transfer. Try sending the files again."),
+            ),
+            SendError::NoOutcome => Self::new(
+                ErrorKind::Other,
+                format!(
+                    "{device} did not say whether it has the files. Look there before sending \
+                     them again."
+                ),
+            ),
+            SendError::Refused(close_code::NOT_PAIRED) => Self::new(
+                ErrorKind::NotPaired,
+                format!(
+                    "{device} no longer has this device paired. Pair them again to send files."
+                ),
+            ),
+            SendError::Refused(code) => Self::new(
+                ErrorKind::Other,
+                format!("{device} ended the connection (code {code})."),
+            ),
+            SendError::Protocol(what) | SendError::Internal(what) => Self::new(
+                ErrorKind::Other,
+                format!("Something went wrong with the transfer ({what})."),
+            ),
+            SendError::Stopped => Self::stopped(),
+            _ => Self::new(
+                ErrorKind::Other,
+                format!("The files did not reach {device}."),
+            ),
+        }
+    }
+}
+
+/// Why the folder for received files cannot be used, as one sentence.
+pub(crate) fn unusable_folder(error: &OpenError) -> String {
+    let message = match error {
+        OpenError::NotAFolder => "The folder for received files is not a folder.".to_owned(),
+        OpenError::Io(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            "Baton is not allowed to use the folder for received files.".to_owned()
+        }
+        OpenError::Io(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            "The folder for received files is not there.".to_owned()
+        }
+        OpenError::Io(e) => format!("Baton cannot use the folder for received files ({e})."),
+    };
+    one_line(&message)
 }
 
 impl fmt::Display for Error {
@@ -266,6 +404,8 @@ fn detail(error: &Core) -> String {
 
 #[cfg(test)]
 mod tests {
+    use baton_core::transfer::send::selection::LeftOut;
+
     use super::*;
 
     #[test]
@@ -374,5 +514,178 @@ mod tests {
                 .contains("identity.toml")
         );
         assert!(!Error::starting(&readable).message().contains("/data/"));
+    }
+
+    /// Checks the kind and a part of the sentence for each outcome, and that the sentence is one
+    /// line.
+    fn check_not_sent(cases: impl IntoIterator<Item = (Outcome, ErrorKind, &'static str)>) {
+        for (outcome, kind, part) in cases {
+            let error = Error::not_sent(&outcome, "Kitchen iPad");
+            assert_eq!(error.kind(), kind, "{outcome:?}: {error}");
+            assert!(error.message().contains(part), "{outcome:?}: {error}");
+            assert!(!error.message().contains('\n'), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_transfer_that_the_other_device_or_the_person_ended_says_why() {
+        check_not_sent([
+            (
+                Outcome::Declined(DeclineReason::NoSpace),
+                ErrorKind::Declined,
+                "Kitchen iPad did not take the files: it has no room for it.",
+            ),
+            (
+                Outcome::Declined(DeclineReason::Refused),
+                ErrorKind::Declined,
+                "nobody there accepted it",
+            ),
+            (
+                Outcome::Stopped(close_code::CANCELLED),
+                ErrorKind::Declined,
+                "Kitchen iPad stopped the transfer.",
+            ),
+            (
+                Outcome::Stopped(close_code::NO_SPACE),
+                ErrorKind::Declined,
+                "Kitchen iPad has no room for the files.",
+            ),
+            (
+                Outcome::Stopped(close_code::NOT_PAIRED),
+                ErrorKind::NotPaired,
+                "no longer has this device paired",
+            ),
+            (
+                Outcome::Stopped(close_code::TOO_LARGE),
+                ErrorKind::Other,
+                "(code 413)",
+            ),
+            (
+                Outcome::Cancelled { told: true },
+                ErrorKind::Cancelled,
+                "You stopped sending.",
+            ),
+            (
+                Outcome::Cancelled { told: false },
+                ErrorKind::Cancelled,
+                "You stopped sending.",
+            ),
+        ]);
+    }
+
+    #[test]
+    fn a_transfer_that_could_not_be_carried_through_says_why() {
+        check_not_sent([
+            (
+                Outcome::Failed(SendError::GaveUp(Why::Connection)),
+                ErrorKind::Unreachable,
+                "Could not reach Kitchen iPad. Baton has to be open on it",
+            ),
+            (
+                Outcome::Failed(SendError::GaveUp(Why::Silent)),
+                ErrorKind::Unreachable,
+                "Could not reach Kitchen iPad.",
+            ),
+            (
+                Outcome::Failed(SendError::GaveUp(Why::TimedOut)),
+                ErrorKind::Unreachable,
+                "stopped moving data",
+            ),
+            (
+                Outcome::Failed(SendError::GaveUp(Why::Stalled)),
+                ErrorKind::Unreachable,
+                "stopped moving data",
+            ),
+            (
+                Outcome::Failed(SendError::GaveUp(Why::Forgotten)),
+                ErrorKind::Other,
+                "lost track of the transfer",
+            ),
+            (
+                Outcome::Failed(SendError::NoOutcome),
+                ErrorKind::Other,
+                "did not say whether it has the files",
+            ),
+            (
+                Outcome::Failed(SendError::Refused(close_code::NOT_PAIRED)),
+                ErrorKind::NotPaired,
+                "no longer has this device paired",
+            ),
+            (
+                Outcome::Failed(SendError::Refused(close_code::INTERNAL)),
+                ErrorKind::Other,
+                "ended the connection (code",
+            ),
+            (
+                Outcome::Failed(SendError::Protocol("an odd answer")),
+                ErrorKind::Other,
+                "Something went wrong with the transfer (an odd answer).",
+            ),
+            (
+                Outcome::Failed(SendError::Internal("no list")),
+                ErrorKind::Other,
+                "Something went wrong with the transfer (no list).",
+            ),
+            (
+                Outcome::Failed(SendError::Stopped),
+                ErrorKind::Stopped,
+                "stopped",
+            ),
+        ]);
+    }
+
+    #[test]
+    fn what_cannot_be_made_into_a_transfer_says_why() {
+        let nothing = SelectionError::Empty(LeftOut::default());
+        let all_left_out = SelectionError::Empty(LeftOut {
+            links: 2,
+            ..LeftOut::default()
+        });
+        let too_many = SelectionError::TooMany {
+            what: "folders",
+            max: 1000,
+        };
+        for (error, part) in [
+            (nothing, "There is nothing to send in what you chose."),
+            (all_left_out, "Nothing in what you chose can be sent."),
+            (
+                too_many,
+                "There are more than 1000 folders in what you chose.",
+            ),
+            (SelectionError::ListTooLong, "Send it in parts."),
+            (SelectionError::TooBig, "larger than one transfer can hold"),
+        ] {
+            let shown = Error::selection(&error);
+            assert_eq!(shown.kind(), ErrorKind::BadItem, "{error}");
+            assert!(shown.message().contains(part), "{shown}");
+        }
+    }
+
+    #[test]
+    fn a_folder_for_received_files_that_cannot_be_used_says_why_and_not_where() {
+        use std::io::{Error as Io, ErrorKind as Of};
+
+        for (error, said) in [
+            (
+                OpenError::NotAFolder,
+                "The folder for received files is not a folder.",
+            ),
+            (
+                OpenError::Io(Io::from(Of::PermissionDenied)),
+                "Baton is not allowed to use the folder for received files.",
+            ),
+            (
+                OpenError::Io(Io::from(Of::NotFound)),
+                "The folder for received files is not there.",
+            ),
+        ] {
+            assert_eq!(unusable_folder(&error), said);
+        }
+        let other = unusable_folder(&OpenError::Io(Io::other("disk on fire\nsecond line")));
+        assert!(
+            other.starts_with("Baton cannot use the folder for received files ("),
+            "{other}"
+        );
+        assert!(!other.contains('\n'), "{other}");
     }
 }

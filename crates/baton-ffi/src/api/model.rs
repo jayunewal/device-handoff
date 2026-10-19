@@ -201,6 +201,155 @@ pub enum OfferOutcome {
     },
 }
 
+/// A device asking to send files, for the person to answer.
+///
+/// Show who is asking and what is offered, and answer with `Baton.answerTransfer`. The names
+/// were written by the other device. They are cleaned to be safe to show, and they say what
+/// the person is asked to take, not what the files will be called here: a name that is taken
+/// in the folder gets a number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferRequest {
+    /// Names this request when answering it with `Baton.answerTransfer`.
+    pub id: i64,
+    /// The id of the device asking.
+    pub device_id: String,
+    /// The name this device shows for it.
+    pub device_name: String,
+    /// How many files and folders were chosen to be sent: the items that are not inside
+    /// another one.
+    pub items: u32,
+    /// How many files there are in all, in every folder.
+    pub files: u32,
+    /// How many folders there are in all, in every folder.
+    pub folders: u32,
+    /// How many bytes the files add up to.
+    pub bytes: i64,
+    /// The first of the items, in order. It holds fewer than `items` when there are many.
+    pub preview: Vec<PreviewName>,
+}
+
+/// One of the files and folders that were chosen to be sent.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PreviewName {
+    /// The name, cleaned to be safe to show.
+    pub name: String,
+    /// Whether it is a folder.
+    pub folder: bool,
+    /// For a folder, how many files are in it, in every folder inside it. 0 for a file.
+    pub files: u32,
+    /// The size of the file, or of all the files in the folder added up.
+    pub bytes: i64,
+}
+
+// A file name can say more than the person wants in a log, so only sizes are printed. That
+// does not carry over to Dart, where the generated class prints the name: see "The bridge" in
+// docs/architecture.md.
+impl std::fmt::Debug for PreviewName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreviewName")
+            .field("name_bytes", &self.name.len())
+            .field("folder", &self.folder)
+            .field("files", &self.files)
+            .field("bytes", &self.bytes)
+            .finish()
+    }
+}
+
+/// How a transfer that this device took has ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferEnd {
+    /// The `TransferRequest.id` of the transfer.
+    pub request: i64,
+    /// The id of the device that sent it.
+    pub device_id: String,
+    /// The name this device shows for it.
+    pub device_name: String,
+    /// How many files the transfer held.
+    pub files: u32,
+    /// How many bytes they add up to.
+    pub bytes: i64,
+    /// The first of the items that were offered, as the request showed them.
+    pub preview: Vec<PreviewName>,
+    /// How it ended.
+    pub result: TransferResult,
+}
+
+/// How a transfer that this device took has ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferResult {
+    /// The sender is done. Every file is in the folder except `failed` of them, and those are
+    /// not there at all, never half of one.
+    Received {
+        /// How many files did not arrive.
+        failed: u32,
+    },
+    /// The transfer was given up, and nothing of it is kept: the sender stopped, the device
+    /// was unpaired, or the sender did not come back.
+    Dropped,
+}
+
+/// Whether this device takes files, and where they go.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Receiving {
+    /// The app gave no folder for files, so this device takes none.
+    Off,
+    /// Files are taken, after the person says yes to each transfer.
+    On,
+    /// The app gave a folder, and Baton cannot use it, so this device takes no files.
+    Unusable {
+        /// One sentence that says why.
+        message: String,
+    },
+}
+
+/// What a transfer that is being sent is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendStage {
+    /// Making a connection to the other device.
+    Connecting,
+    /// Waiting for the answer to the offer. A person may be deciding.
+    Asking,
+    /// The files are going out.
+    Sending,
+    /// Everything is sent, and the other device is putting it in place.
+    Finishing,
+    /// The connection failed or the other device stalled, and Baton waits a moment before it
+    /// tries again.
+    Waiting,
+    /// The transfer is over, whichever way it ended.
+    Over,
+}
+
+/// How far a transfer that is being sent has got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileProgress {
+    /// What the transfer is doing now.
+    pub stage: SendStage,
+    /// The attempt that is going, from 1.
+    pub attempt: u32,
+    /// How many files the transfer holds.
+    pub files: u32,
+    /// How many bytes they add up to.
+    pub bytes: i64,
+    /// How many bytes have gone out in this attempt. An attempt that is tried again starts
+    /// from 0, because it sends everything again.
+    pub sent: i64,
+}
+
+/// A transfer that the other device answered for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FilesSent {
+    /// How many files the transfer held.
+    pub files: u32,
+    /// How many bytes they add up to.
+    pub bytes: i64,
+    /// How many of the files are not in place on the other device. The others are.
+    pub failed: u32,
+    /// How many things in what was chosen were left out and not offered at all: links inside
+    /// a folder, files that could not be read, and the like.
+    pub left_out: u32,
+}
+
 /// Something a screen may want to react to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
@@ -228,6 +377,24 @@ pub enum Event {
     OfferEnded {
         /// How.
         outcome: OfferOutcome,
+    },
+    /// A device wants to send files. Show what it offers, with who is asking, and answer
+    /// with `Baton.answerTransfer`: the person has two minutes, and no answer is a no.
+    TransferRequested {
+        /// The request.
+        request: TransferRequest,
+    },
+    /// A request for files no longer needs an answer: the other device gave up, was
+    /// unpaired, or the time ran out. Take the question off the screen.
+    TransferRequestEnded {
+        /// The `TransferRequest.id` that ended.
+        id: i64,
+    },
+    /// A transfer that the person said yes to has ended. The files that arrived are in the
+    /// folder already.
+    TransferEnded {
+        /// How it ended.
+        end: TransferEnd,
     },
     /// Events were missed because they came faster than they were read. Read the devices and
     /// the inbox again.
