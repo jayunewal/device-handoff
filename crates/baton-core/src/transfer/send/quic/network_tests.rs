@@ -183,7 +183,15 @@ async fn a_device_that_takes_no_files_now_is_offered_none_but_is_told_to_let_go_
     );
     assert_eq!(nodes.person.questions(), 1);
 
-    // `Cancel` and `Finish` are made. The device gives up what it holds, and says so.
+    // `Finish` of what it holds goes to the device too, which waits for files that never come.
+    let finished = link
+        .request(
+            TransferRequest::Finish(sample_finish(id(1))),
+            Duration::from_secs(1),
+        )
+        .await;
+    assert_eq!(finished, Err(WireError::TimedOut));
+    // So does `Cancel`. The device gives up what it holds, and says so.
     let cancelled = link
         .request(TransferRequest::Cancel(Cancel { id: id(1) }), WAIT)
         .await;
