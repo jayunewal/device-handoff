@@ -29,7 +29,7 @@ env:
 # and only a run on main saves them. GitHub keeps 10 GB of caches for the whole repository and
 # drops the ones that were used longest ago when there are more. The twelve entries of a set are
 # 200 to 700 MB each, and the Flutter SDK is another 2 GB, so a second set does not fit: when
-# every pull request saved a set of its own, the copies pushed each other out, and the set that
+# every pull request saved a set of its own, the copies pushed out each other and the set that
 # every pull request starts from. A pull request that changes Cargo.lock builds the new
 # dependencies in each of its runs, and the run on main after the merge saves them.
 jobs:
