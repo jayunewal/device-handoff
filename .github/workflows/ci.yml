@@ -308,9 +308,13 @@ jobs:
         timeout-minutes: 25
         working-directory: apps/baton
         run: flutter test integration_test -d macos
+      # The app is a download like the program that the Build jobs make: a run for a pull request
+      # does not make it.
       - name: Package the app
+        if: github.event_name != 'pull_request'
         run: ditto -c -k --keepParent apps/baton/build/macos/Build/Products/Release/Baton.app Baton-macos-app.zip
       - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
         with:
           name: baton-app-macos
           path: Baton-macos-app.zip
@@ -411,10 +415,13 @@ jobs:
         if: always()
         run: bash .github/scripts/cargokit-cache-report.sh
 
+  # The downloads: the `baton` program for each system, packed with the try-it guide. A pull
+  # request does not build them, which leaves it one Mac job fewer. A push to main and a run
+  # started by hand do, so the downloads of a branch come from starting CI by hand on it.
   build:
     name: Build (${{ matrix.name }})
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' && github.event_name != 'pull_request'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
