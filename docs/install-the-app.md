@@ -212,11 +212,15 @@ To get a newer version of Baton first:
 git checkout -- ios macos
 git pull
 flutter pub get
+(cd ios && pod install)
+(cd macos && pod install)
 flutter build ios --config-only --no-codesign
 open ios/Runner.xcworkspace
 ```
 
 Choose your team again as above (and your own bundle identifier, if you changed it), close Xcode, and run `flutter run --release --no-resident`.
+
+The two `pod install` lines matter when a newer version adds or removes files of Baton's plugin, which Flutter does not always notice. Without them a build can stop with `Build input file cannot be found`, naming a file under `rust_builder` (in target `baton_ffi` from project `Pods`). If you see that, run them and build again.
 
 ## If something does not work
 

@@ -17,7 +17,7 @@ use baton_proto::{
     stream::{Codec, Offer, SourceKind, Stop, StopReason, StreamReply, StreamRequest},
 };
 use baton_stream::{
-    control::{Report, SourceMessage, Thermal, Want},
+    control::{InputBatch, Report, SourceMessage, Thermal, Want},
     header::FrameHeader,
 };
 use iroh::endpoint::Connection;
@@ -599,11 +599,22 @@ async fn a_connection_that_ends_gives_back_what_was_kept_for_it() {
 
 /// What the platform of a test source hears.
 #[derive(Clone, Default)]
-pub(super) struct Heard(Arc<Mutex<Vec<String>>>);
+pub(super) struct Heard {
+    lines: Arc<Mutex<Vec<String>>>,
+    batches: Arc<Mutex<Vec<InputBatch>>>,
+}
 
 impl Heard {
     pub(super) fn count(&self, what: &str) -> usize {
-        lock(&self.0).iter().filter(|each| *each == what).count()
+        lock(&self.lines)
+            .iter()
+            .filter(|each| *each == what)
+            .count()
+    }
+
+    /// The batches of input that the viewer sent, in order.
+    pub(super) fn batches(&self) -> Vec<InputBatch> {
+        lock(&self.batches).clone()
     }
 }
 
@@ -611,15 +622,16 @@ pub(super) struct Platform(pub(super) Heard);
 
 impl SourceEvents for Platform {
     fn report(&mut self, _: Report) {
-        lock(&(self.0).0).push("report".to_owned());
+        lock(&(self.0).lines).push("report".to_owned());
     }
 
     fn want(&mut self, _: Want) {
-        lock(&(self.0).0).push("want".to_owned());
+        lock(&(self.0).lines).push("want".to_owned());
     }
 
-    fn input(&mut self, _: baton_stream::control::InputBatch, _: Duration) {
-        lock(&(self.0).0).push("input".to_owned());
+    fn input(&mut self, batch: InputBatch, _: Duration) {
+        lock(&(self.0).lines).push("input".to_owned());
+        lock(&(self.0).batches).push(batch);
     }
 
     fn held(&mut self, _: Vec<baton_stream::sender::LtrToken>) {}
@@ -627,7 +639,7 @@ impl SourceEvents for Platform {
     fn recovery(&mut self) {}
 
     fn ended(&mut self) {
-        lock(&(self.0).0).push("ended".to_owned());
+        lock(&(self.0).lines).push("ended".to_owned());
     }
 }
 

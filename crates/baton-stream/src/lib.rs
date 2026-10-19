@@ -11,13 +11,16 @@
 //! is state machines that are told what happened and say what to do, so that they can be tested
 //! with a simulated link in continuous integration. So far it holds the start of a stream, the
 //! source's side of the frames in flight, the viewer's side, and what a viewer that was granted
-//! control may do:
+//! control may do and how it sends it:
 //!
 //! - [`header`] holds the first bytes of a stream and the header of a frame of video.
 //! - [`sender`] holds the source's accounting of frames in flight, and when to give up on one.
 //! - [`viewer`] holds the viewer's choice of which frame to decode next, and its limits on the
 //!   frame streams it reads and the pictures it holds.
 //! - [`input`] holds the events that a viewer sends and the checks on their numbers.
+//! - [`input_queue`] holds what a viewer does with the touches and keys of its person before it
+//!   sends them: the limits on their rate and size, the clamping of positions to the picture, and
+//!   the releases.
 //! - [`gate`] holds the rules that confine a viewer's input to the shared window.
 //! - [`control`] holds the messages on the two control streams of a session.
 //! - [`h264`] turns an H.264 picture from the form it has on the wire into the form that the
@@ -33,6 +36,7 @@ pub mod gate;
 pub mod h264;
 pub mod header;
 pub mod input;
+pub mod input_queue;
 pub mod sender;
 pub mod viewer;
 
