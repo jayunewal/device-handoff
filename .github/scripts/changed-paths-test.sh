@@ -57,6 +57,8 @@ check "app mac iphone" apps/baton/rust_builder/cargokit/build_pod.sh
 # The Swift of the viewer is one set of files for both kinds of Apple device: the Mac job tests it,
 # the iPhone job builds it for an iPhone, and the Linux job checks that the two folders agree.
 check "app mac iphone" apps/baton/rust_builder/macos/Classes/BatonViewer.swift
+check "app mac iphone" apps/baton/rust_builder/macos/Classes/BatonCapture.swift apps/baton/rust_builder/ios/Classes/BatonH264Encoder.swift
+check "app mac iphone" apps/baton/rust_builder/swift_tests/EncoderTests.swift apps/baton/rust_builder/swift_tests/SourceTests.swift
 check "app mac iphone" apps/baton/rust_builder/ios/Classes/BatonStreamPlugin.swift
 check "app mac iphone" apps/baton/rust_builder/swift_tests/run.sh apps/baton/rust_builder/swift_tests/Tests.swift
 check "app mac iphone" apps/baton/rust_builder/ios/baton_ffi.podspec apps/baton/rust_builder/macos/baton_ffi.podspec

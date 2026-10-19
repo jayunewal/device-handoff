@@ -277,7 +277,7 @@ private func viewerOpen(
 
 /// Writes the sentence into the room the Rust side gave for it: as much of it as fits, cut
 /// between two characters.
-private func write(_ sentence: String, to message: UnsafeMutablePointer<BatonMessage>) {
+func write(_ sentence: String, to message: UnsafeMutablePointer<BatonMessage>) {
   guard let text = message.pointee.text else {
     message.pointee.len = 0
     return
