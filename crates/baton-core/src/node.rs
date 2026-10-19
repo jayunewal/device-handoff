@@ -99,6 +99,23 @@ const MDNS_SERVICE: &str = "baton";
 /// How long to wait for the relay before making a ticket without it.
 const RELAY_WAIT: Duration = Duration::from_secs(3);
 
+/// The table of the transfers that other devices offer, when the application takes transfers. Its
+/// waits are the tuning's, so that a test can shorten them.
+fn incoming_table(
+    transfers: Option<Arc<dyn TransferHandler>>,
+    intake: &Intake,
+    tuning: &Tuning,
+) -> Option<Incoming> {
+    transfers.map(|handler| {
+        Incoming::with_waits(
+            handler,
+            intake.item_charge(),
+            tuning.finish_wait,
+            tuning.stall,
+        )
+    })
+}
+
 /// Installs what takes the unidirectional streams of the kinds that this node takes part in: the
 /// lanes of a transfer when it receives files, the frames of window streaming when it shows
 /// windows, and the control streams of the sessions it has, as a viewer or as a source. Returns
@@ -385,14 +402,7 @@ impl NodeBuilder {
         let registry = Arc::new(ConnectionRegistry::default());
         let stop = CancellationToken::new();
         let intake = Intake::new(&config.handoff);
-        let incoming = transfers.map(|handler| {
-            Incoming::with_waits(
-                handler,
-                intake.item_charge(),
-                tuning.finish_wait,
-                tuning.stall,
-            )
-        });
+        let incoming = incoming_table(transfers, &intake, &tuning);
         let (sinks, streaming) =
             take_streams(sinks, incoming.as_ref(), windows, sharing, &intake, &tuning);
         let uni = Arc::new(Uni::new(sinks, &trust, &stop, tuning.request_deadline));
