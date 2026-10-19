@@ -565,7 +565,7 @@ pub enum Event {
     /// out, or the connection ended. Take the question off the screen. The person's own answer
     /// is not announced with this event: a screen takes the question down when the person
     /// answers, and draws the window when `Event.windowStarted` says so. A yes that comes as the
-    /// offer is withdrawn, or that cannot be carried out, ends with no event at all.
+    /// offer is withdrawn, or whose session then fails to begin, ends with no event at all.
     WindowRequestEnded {
         /// The `WindowRequest.id` that ended.
         id: i64,
