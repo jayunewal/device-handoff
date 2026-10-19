@@ -288,11 +288,16 @@ impl Offers {
         }
     }
 
-    /// Withdraws the offer that waits if it is `session`, which `peer` made.
-    fn withdraw(&self, peer: &DeviceId, session: SessionId) {
-        if let Some(waiting) = &self.waiting
-            && waiting.peer == *peer
-            && waiting.session == session
+    /// Withdraws the offer that waits if it is `session`, which `peer` made, and lets go of its
+    /// place at once. The source is told `Stopped` next, and the offer that it makes after that
+    /// must find the place free, which it would not if the place were let go of only when the
+    /// task that asked the person had woken up and seen the withdrawal. That task takes the
+    /// question back from the person, and sees to it that it does not let go of a later offer's
+    /// place ([`Claim`]).
+    fn withdraw(&mut self, peer: &DeviceId, session: SessionId) {
+        if let Some(waiting) = self
+            .waiting
+            .take_if(|waiting| waiting.peer == *peer && waiting.session == session)
         {
             waiting.withdrawn.cancel();
         }
@@ -450,7 +455,7 @@ impl Streaming {
     /// There is nothing to say if it has not: the answer is the same.
     fn stop(&self, paired: &PairedDevice, stop: &Stop) {
         let session = {
-            let table = lock(&self.table);
+            let mut table = lock(&self.table);
             table.offers.withdraw(&paired.id, stop.session);
             table
                 .sessions
@@ -466,5 +471,76 @@ impl Streaming {
     /// Lets go of what was kept for a connection that ended.
     pub(crate) fn connection_ended(&self, link: Link) {
         lock(&self.table).offers.seen.remove(&link);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn device(byte: u8) -> DeviceId {
+        DeviceId::from_bytes([byte; 32])
+    }
+
+    fn session(byte: u8) -> SessionId {
+        SessionId::from_bytes([byte; 16])
+    }
+
+    /// Offers with one that waits, made by device 1 under session 7, and the token that
+    /// withdraws it.
+    fn waiting() -> (Offers, CancellationToken) {
+        let withdrawn = CancellationToken::new();
+        let offers = Offers {
+            waiting: Some(Waiting {
+                peer: device(1),
+                session: session(7),
+                withdrawn: withdrawn.clone(),
+            }),
+            ..Offers::default()
+        };
+        (offers, withdrawn)
+    }
+
+    #[test]
+    fn withdrawing_an_offer_takes_the_question_back_and_lets_go_of_its_place_at_once() {
+        let (mut offers, withdrawn) = waiting();
+        offers.withdraw(&device(1), session(7));
+        assert!(withdrawn.is_cancelled());
+        assert!(offers.waiting.is_none());
+    }
+
+    #[test]
+    fn withdrawing_another_offer_or_the_offer_of_another_device_changes_nothing() {
+        for (peer, id) in [(2, 7), (1, 8)] {
+            let (mut offers, withdrawn) = waiting();
+            offers.withdraw(&device(peer), session(id));
+            assert!(!withdrawn.is_cancelled(), "device {peer}, session {id}");
+            assert!(offers.waiting.is_some(), "device {peer}, session {id}");
+        }
+    }
+
+    #[test]
+    fn the_claim_of_a_withdrawn_offer_does_not_let_go_of_the_place_of_a_later_one() {
+        let streaming = Streaming::new();
+        let place = || lock(&streaming.table).offers.waiting.is_some();
+        let claim = |id| Claim {
+            streaming: &streaming,
+            session: session(id),
+            withdrawn: CancellationToken::new(),
+        };
+        let first = claim(7);
+        // The first offer was withdrawn, and the place is taken by a later one.
+        lock(&streaming.table).offers.waiting = Some(Waiting {
+            peer: device(1),
+            session: session(8),
+            withdrawn: CancellationToken::new(),
+        });
+        drop(first);
+        assert!(
+            place(),
+            "the claim of offer 7 let go of the place of offer 8"
+        );
+        drop(claim(8));
+        assert!(!place(), "the claim of offer 8 kept its own place");
     }
 }

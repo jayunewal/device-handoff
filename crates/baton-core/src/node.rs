@@ -78,8 +78,8 @@ use crate::{
     shared::Shared,
     slots::{MAX_PAIRING_CONNECTIONS, PairSlots},
     streaming::{
-        CONTROL_STREAMS, FRAME_STREAMS, Offered, ShareOutcome, Sharer, SourceEvents, Streaming,
-        Takes, Viewer, WindowHandler, WindowShare, ask,
+        CONTROL_STREAMS, FRAME_STREAMS, Offered, SETTLE, ShareOutcome, Sharer, SourceEvents,
+        Streaming, Takes, Viewer, WindowHandler, WindowShare, ask,
     },
     transfer::{
         incoming::{FINISH_WAIT, Incoming, LANE_STREAMS, TransferHandler},
@@ -785,6 +785,12 @@ impl Node {
     /// A device has one session as a source at a time. The connection to the other device is kept
     /// open for as long as the session runs.
     ///
+    /// A window offered straight after another was given up, or after a session of this device
+    /// ended, is offered once the other device has answered the `Stop` that this device sent for
+    /// the first (three seconds at most), so the other device does not turn it away as busy while
+    /// it still holds the place. One that does not answer in time may still do so
+    /// ([`ShareOutcome::Declined`] with `RateLimited`), and offering again a moment later works.
+    ///
     /// # Errors
     ///
     /// If this device was not set up to show its windows, or not to take input when `window`
@@ -803,6 +809,10 @@ impl Node {
         let paired = self.shared.trust.get(peer).ok_or(Error::NotPaired(*peer))?;
         let streaming = &self.shared.streaming;
         streaming.can_offer(&window)?;
+        // A `Stop` that this device sent to the same device a moment ago, for an offer that was
+        // given up or a session that was ended, is answered first: until then the other device
+        // may still hold the place of what was stopped, and refuse this offer as busy.
+        streaming.settled(&paired.id, SETTLE).await;
         let reservation = streaming.reserve(paired.id)?;
         let wait = self.shared.tuning.offer_reply_deadline();
         let mut attempt = 0;
@@ -821,7 +831,7 @@ impl Node {
             let id = SessionId::from_bytes(random_bytes()?);
             let asked = tokio::select! {
                 () = reservation.cancelled() => return Err(self.cancelled(&paired.id)),
-                asked = ask(&session.connection, window.offer(id), wait) => asked,
+                asked = ask(streaming, paired.id, &session.connection, window.offer(id), wait) => asked,
             };
             match asked {
                 Ok(reply) => break (session, hold, id, reply),

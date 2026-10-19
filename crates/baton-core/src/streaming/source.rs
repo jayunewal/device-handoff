@@ -37,6 +37,7 @@ use std::{
 
 use baton_proto::{
     DeviceId, close_code, id::SessionId, limits::MAX_PICTURE_BYTES, message::Message,
+    stream::StopReason,
 };
 use baton_stream::{
     MAX_FRAME_STREAMS,
@@ -583,6 +584,14 @@ impl Source {
         self.ended.cancel();
         if let Some(registry) = self.registry.upgrade() {
             registry.forget(&self.session);
+            // The viewer learns of this from the end of the control stream too, but it lets go of
+            // its place only when it reads that, and an offer made straight after would meet it
+            // taken. A `Stop` is answered when the place is free, and the next offer waits for
+            // that. Any other end is the viewer's or the connection's doing, or the viewer is not
+            // answering anyway.
+            if how == End::Local {
+                registry.stop_later(self.peer, &self.connection, self.session, StopReason::Ended);
+            }
         }
         lock(&self.core).events.ended();
         tracing::debug!(peer = %self.peer.short(), reason = ?how, "a window streaming session ended");
