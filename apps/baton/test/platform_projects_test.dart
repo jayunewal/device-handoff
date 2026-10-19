@@ -243,6 +243,10 @@ void main() {
       contains('item.deletingLastPathComponent()'),
       reason: 'anything but a folder that arrived alone is shown by its folder',
     );
+    // A folder that the system takes for a document, such as Report.pages, is not opened either:
+    // it is shown by the folder that holds it, like a file.
+    expect(ios, contains('forKeys: [.isPackageKey]'));
+    expect(ios, contains('isFolder.boolValue && !isPackage'));
   });
 
   test('the library is linked in a way that keeps its functions findable', () {

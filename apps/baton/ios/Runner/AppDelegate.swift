@@ -89,10 +89,10 @@ private func showReceivedFilesInTheFilesApp(messenger: FlutterBinaryMessenger) {
 
 /// Opens the Files app at the folder to show for `paths`, and says `false` when none of them is
 /// there any more: the person may have moved or deleted them since. A folder that arrived alone is
-/// opened. Otherwise the folder that holds the first one is, which is the folder they were all put
-/// in, and what arrived is in sight there. The Files app is told which folder to open with the
-/// path of the folder under its own scheme, which is how it is asked to open the Documents folder
-/// of an app.
+/// opened, unless it is a package. Otherwise the folder that holds the first one is, which is the
+/// folder they were all put in, and what arrived is in sight there. The Files app is told which
+/// folder to open with the path of the folder under its own scheme, which is how it is asked to
+/// open the Documents folder of an app.
 private func showInTheFilesApp(paths: [String], result: @escaping FlutterResult) {
   let files = FileManager.default
   let there = paths.filter { files.fileExists(atPath: $0) }
@@ -103,7 +103,10 @@ private func showInTheFilesApp(paths: [String], result: @escaping FlutterResult)
   var isFolder: ObjCBool = false
   _ = files.fileExists(atPath: first, isDirectory: &isFolder)
   let item = URL(fileURLWithPath: first)
-  let alone = there.count == 1 && isFolder.boolValue
+  // A folder with a name such as Report.pages is a document to the system, and the Files app could
+  // open it as one. Like a file, it is shown by the folder that holds it.
+  let isPackage = (try? item.resourceValues(forKeys: [.isPackageKey]))?.isPackage ?? false
+  let alone = there.count == 1 && isFolder.boolValue && !isPackage
   let folder = alone ? item : item.deletingLastPathComponent()
   guard var address = URLComponents(url: folder, resolvingAgainstBaseURL: false) else {
     result(FlutterError(code: "no_address", message: "The folder has no address.", details: nil))
