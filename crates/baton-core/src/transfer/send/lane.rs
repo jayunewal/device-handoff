@@ -334,7 +334,13 @@ mod tests {
             .any(|window| window == needle)
     }
 
-    const STALL: Duration = Duration::from_millis(300);
+    /// The stall time of the tests that wait for a stall. It is long enough for a read from the
+    /// disk of a busy computer to come back in it, because a read that does not is a stall too.
+    const STALL: Duration = Duration::from_secs(1);
+    /// The stall time of every other test, which no test comes near: a busy computer can hold a
+    /// read or a write for much longer than a short stall time, and a lane that stalls by then is
+    /// not what the test is about.
+    const PATIENT: Duration = Duration::from_secs(30);
 
     // The list.
 
@@ -370,7 +376,7 @@ mod tests {
             written,
         };
 
-        let result = run(link, id(1), fixture.plan(0, STALL), Some(listing)).await;
+        let result = run(link, id(1), fixture.plan(0, PATIENT), Some(listing)).await;
 
         assert_eq!(result, Ok(()));
         assert_eq!(signal.await, Ok(()));
@@ -391,7 +397,7 @@ mod tests {
         let (script, link) = connection(|_, _| Take::All).await;
         let fixture = Fixture::new(&selection);
 
-        let result = run(link, id(1), fixture.plan(2, STALL), None).await;
+        let result = run(link, id(1), fixture.plan(2, PATIENT), None).await;
 
         assert_eq!(result, Ok(()));
         let lane = script.lane(1, 2).unwrap();
@@ -407,7 +413,7 @@ mod tests {
         let (script, link) = connection(|_, _| Take::All).await;
         let fixture = Fixture::new(&selection);
 
-        run(link, id(1), fixture.plan(1, STALL), None)
+        run(link, id(1), fixture.plan(1, PATIENT), None)
             .await
             .unwrap();
 
@@ -434,7 +440,7 @@ mod tests {
             written,
         };
 
-        let result = run(link, id(1), fixture.plan(0, STALL), Some(listing)).await;
+        let result = run(link, id(1), fixture.plan(0, PATIENT), Some(listing)).await;
 
         assert_eq!(result, Err(Halt::Stopped(close_code::TOO_LARGE)));
         let lane = script.lane(1, 0).unwrap();
@@ -452,7 +458,7 @@ mod tests {
         .await;
         let fixture = Fixture::new(&selection);
 
-        let result = run(link, id(1), fixture.plan(1, STALL), None).await;
+        let result = run(link, id(1), fixture.plan(1, PATIENT), None).await;
 
         assert_eq!(result, Err(Halt::Stopped(close_code::CANCELLED)));
         let lane = script.lane(1, 1).unwrap();
@@ -477,17 +483,22 @@ mod tests {
 
     #[tokio::test]
     async fn a_read_that_does_not_come_back_in_the_stall_time_stalls() {
-        let read = tokio::task::spawn_blocking(|| {
-            std::thread::sleep(Duration::from_millis(400));
+        // The read waits for a message that is sent only after `joined` has answered, so an answer
+        // that comes at all did not wait for the read. How long it took is not asked: a busy
+        // computer can be slow to wake any thread.
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let read = tokio::task::spawn_blocking(move || {
+            let _ = held.recv();
             (Chunk::new(), false)
         });
-        let started = std::time::Instant::now();
 
-        let result = joined(read, Duration::from_millis(50)).await;
+        let result = timeout(PATIENT, joined(read, Duration::from_millis(50)))
+            .await
+            .expect("the answer waited for the read");
 
         assert!(matches!(result, Err(Halt::Stalled)));
-        // The read is let go of and not waited for.
-        assert!(started.elapsed() < Duration::from_millis(300));
+        // The read is let go of, and it ends by itself once it is told to.
+        let _ = release.send(());
     }
 
     #[tokio::test]
@@ -496,7 +507,7 @@ mod tests {
         let (_script, link) = connection(|_, _| Take::Nothing).await;
         let fixture = Fixture::new(&selection);
 
-        let result = run(link, id(1), fixture.plan(1, STALL), None).await;
+        let result = run(link, id(1), fixture.plan(1, PATIENT), None).await;
 
         assert_eq!(result, Err(Halt::Lost));
     }
@@ -507,7 +518,7 @@ mod tests {
         let (script, link) = connection(|_, _| Take::LoseAfter { after: 100 }).await;
         let fixture = Fixture::new(&selection);
 
-        let result = run(link, id(1), fixture.plan(1, STALL), None).await;
+        let result = run(link, id(1), fixture.plan(1, PATIENT), None).await;
 
         assert_eq!(result, Err(Halt::Lost));
         let lane = script.lane(1, 1).unwrap();
@@ -520,7 +531,7 @@ mod tests {
         let fixture = Fixture::new(&selection);
 
         let (script, link) = connection(|_, _| Take::OpenFails).await;
-        let result = run(link, id(1), fixture.plan(1, STALL), None).await;
+        let result = run(link, id(1), fixture.plan(1, PATIENT), None).await;
         assert_eq!(result, Err(Halt::Lost));
         assert_eq!(script.log().opened(), Vec::new());
 
