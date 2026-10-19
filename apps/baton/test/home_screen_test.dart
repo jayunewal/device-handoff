@@ -198,4 +198,86 @@ void main() {
     expect(find.textContaining('new'), findsNothing);
     expect(find.textContaining('sent you'), findsNothing);
   });
+
+  testWidgets('a request for files is asked at the bottom of both places', (
+    tester,
+  ) async {
+    final session = await _show(tester);
+
+    session.emit(Event.transferRequested(request: sampleTransfer()));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('Anna’s iPhone wants to send you 2 files'),
+      findsOneWidget,
+    );
+    expect(find.text('holiday.jpg'), findsOneWidget);
+    expect(
+      find.byType(SnackBar),
+      findsNothing,
+      reason: 'the question is on show, so nothing needs to point to it',
+    );
+
+    await tester.tap(find.text('Inbox'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('Anna’s iPhone wants to send you 2 files'),
+      findsOneWidget,
+      reason: 'it stays while the person looks at the inbox',
+    );
+    expect(session.transferAnswers, isEmpty);
+  });
+
+  testWidgets('a request is answered from the home screen', (tester) async {
+    final session = await _show(tester);
+    session.emit(Event.transferRequested(request: sampleTransfer(id: 4)));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Accept'));
+    await tester.pump();
+
+    expect(session.transferAnswers, [(request: 4, accept: true)]);
+    expect(find.text('Accept'), findsNothing);
+    expect(find.text('Receiving from Anna’s iPhone…'), findsOneWidget);
+
+    // Let the transfer end, so that nothing is left going.
+    session.emit(
+      Event.transferEnded(end: sampleTransferEnd(sampleTransfer(id: 4))),
+    );
+    await tester.pump();
+  });
+
+  testWidgets('a request that comes over another screen is pointed out', (
+    tester,
+  ) async {
+    final session = await _show(tester);
+    await tester.tap(find.text('Kitchen iPad'));
+    await tester.pumpAndSettle();
+    expect(find.text('Send to Kitchen iPad'), findsOneWidget);
+
+    session.emit(Event.transferRequested(request: sampleTransfer()));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('Anna’s iPhone wants to send you files.'),
+      findsOneWidget,
+      reason: 'it is said over the screen the person is on',
+    );
+    expect(
+      find.textContaining('holiday.jpg'),
+      findsNothing,
+      reason: 'the names of the files can be private, and nothing says them',
+    );
+
+    await tester.tap(find.text('Review'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Send to Kitchen iPad'), findsNothing);
+    expect(
+      find.text('Anna’s iPhone wants to send you 2 files'),
+      findsOneWidget,
+    );
+    expect(find.text('holiday.jpg'), findsOneWidget);
+  });
 }

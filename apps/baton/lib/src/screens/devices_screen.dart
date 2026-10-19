@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../backend.dart';
 import '../controller.dart';
+import '../file_chooser.dart';
 import '../format.dart';
 import '../scanner.dart';
 import 'add_device_screen.dart';
@@ -19,6 +20,7 @@ class DevicesScreen extends StatefulWidget {
     required this.session,
     this.now = DateTime.now,
     this.scanner = cameraScanner,
+    this.chooser = const SystemFileChooser(),
     super.key,
   });
 
@@ -29,6 +31,9 @@ class DevicesScreen extends StatefulWidget {
 
   /// Reads QR codes with the camera, for pairing. Tests give it one of their own.
   final ScannerBuilder scanner;
+
+  /// Lets the person choose files and folders to send. Tests give it one of their own.
+  final FileChooser chooser;
 
   @override
   State<DevicesScreen> createState() => _DevicesScreenState();
@@ -83,6 +88,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
           session: widget.session,
           device: device,
           now: widget.now,
+          chooser: widget.chooser,
         ),
       ),
     );

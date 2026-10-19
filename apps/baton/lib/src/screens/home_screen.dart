@@ -5,20 +5,24 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../backend.dart';
+import '../file_chooser.dart';
 import '../inbox_controller.dart';
 import '../links.dart';
 import '../scanner.dart';
+import '../transfers_controller.dart';
 import 'devices_screen.dart';
 import 'inbox_screen.dart';
+import 'transfers_panel.dart';
 
 /// The two places the person starts from: the devices, to pair them and send to them, and the
-/// inbox, for what they sent.
+/// inbox, for what they sent. The files that other devices send show at the bottom of both.
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
     required this.session,
     this.now = DateTime.now,
     this.scanner = cameraScanner,
     this.openLink = openInBrowser,
+    this.chooser = const SystemFileChooser(),
     super.key,
   });
 
@@ -33,6 +37,9 @@ class HomeScreen extends StatefulWidget {
   /// Opens a link in the web browser. Tests give it one of their own.
   final OpenLink openLink;
 
+  /// Lets the person choose files and folders to send. Tests give it one of their own.
+  final FileChooser chooser;
+
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
@@ -41,20 +48,28 @@ enum _Tab { devices, inbox }
 
 class _HomeScreenState extends State<HomeScreen> {
   late final InboxController _inbox = InboxController(widget.session);
+  late final TransfersController _transfers = TransfersController(
+    widget.session,
+  );
   StreamSubscription<Received>? _arrivals;
+  StreamSubscription<TransferRequest>? _requests;
   _Tab _tab = _Tab.devices;
 
   @override
   void initState() {
     super.initState();
     _arrivals = _inbox.arrivals.listen(_arrived);
+    _requests = _transfers.asked.listen(_asked);
     unawaited(_inbox.start());
+    unawaited(_transfers.start());
   }
 
   @override
   void dispose() {
     unawaited(_arrivals?.cancel());
+    unawaited(_requests?.cancel());
     _inbox.dispose();
+    _transfers.dispose();
     super.dispose();
   }
 
@@ -88,6 +103,27 @@ class _HomeScreenState extends State<HomeScreen> {
     _show(_Tab.inbox);
   }
 
+  /// Says that a device asks to send files, when a screen on top of the two places hides the
+  /// question that waits at the bottom of them. It says who asks and nothing of what: the
+  /// names of the files can be private.
+  void _asked(TransferRequest request) {
+    if (ModalRoute.of(context)?.isCurrent ?? true) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text('${request.deviceName} wants to send you files.'),
+          duration: const Duration(seconds: 10),
+          action: SnackBarAction(label: 'Review', onPressed: _review),
+        ),
+      );
+  }
+
+  void _review() {
+    if (!mounted) return;
+    Navigator.of(context).popUntil((route) => route.isFirst);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -98,6 +134,7 @@ class _HomeScreenState extends State<HomeScreen> {
             session: widget.session,
             now: widget.now,
             scanner: widget.scanner,
+            chooser: widget.chooser,
           ),
           InboxScreen(
             controller: _inbox,
@@ -106,34 +143,44 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
-      bottomNavigationBar: ListenableBuilder(
-        listenable: _inbox,
-        builder: (context, _) {
-          Widget inbox(IconData icon) => Badge(
-            isLabelVisible: _inbox.unseen > 0,
-            label: Text('${_inbox.unseen}'),
-            child: Icon(icon),
-          );
-          return NavigationBar(
-            selectedIndex: _tab.index,
-            onDestinationSelected: (index) => _show(_Tab.values[index]),
-            destinations: [
-              const NavigationDestination(
-                icon: Icon(Icons.devices_outlined),
-                selectedIcon: Icon(Icons.devices),
-                label: 'Devices',
-              ),
-              NavigationDestination(
-                icon: inbox(Icons.inbox_outlined),
-                selectedIcon: inbox(Icons.inbox),
-                label: _inbox.unseen > 0
-                    ? 'Inbox, ${_inbox.unseen} new'
-                    : 'Inbox',
-              ),
-            ],
-          );
-        },
+      bottomNavigationBar: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          TransfersPanel(controller: _transfers),
+          _navigation(),
+        ],
       ),
+    );
+  }
+
+  Widget _navigation() {
+    return ListenableBuilder(
+      listenable: _inbox,
+      builder: (context, _) {
+        Widget inbox(IconData icon) => Badge(
+          isLabelVisible: _inbox.unseen > 0,
+          label: Text('${_inbox.unseen}'),
+          child: Icon(icon),
+        );
+        return NavigationBar(
+          selectedIndex: _tab.index,
+          onDestinationSelected: (index) => _show(_Tab.values[index]),
+          destinations: [
+            const NavigationDestination(
+              icon: Icon(Icons.devices_outlined),
+              selectedIcon: Icon(Icons.devices),
+              label: 'Devices',
+            ),
+            NavigationDestination(
+              icon: inbox(Icons.inbox_outlined),
+              selectedIcon: inbox(Icons.inbox),
+              label: _inbox.unseen > 0
+                  ? 'Inbox, ${_inbox.unseen} new'
+                  : 'Inbox',
+            ),
+          ],
+        );
+      },
     );
   }
 }

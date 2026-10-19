@@ -21,10 +21,11 @@ import UIKit
   }
 }
 
-/// Tells the app where its Library/Application Support is, which is where Baton makes its folder.
-/// The app asks and does not look in its environment: iOS 27 starts an app without HOME in it, and
-/// a Baton that looked for HOME did not start. The names of the channel and of the question must be
-/// the ones in lib/src/support_folder.dart.
+/// Tells the app where its Library/Application Support is, which is where Baton makes its folder,
+/// and where the files that other devices send are put. The app asks and does not look in its
+/// environment: iOS 27 starts an app without HOME in it, and a Baton that looked for HOME did not
+/// start. The names of the channel and of the questions must be the ones in
+/// lib/src/support_folder.dart.
 private func answerWhereTheAppKeepsItsFiles(messenger: FlutterBinaryMessenger) {
   let channel = FlutterMethodChannel(
     name: "io.github.jayunewal.baton/folder", binaryMessenger: messenger)
@@ -33,6 +34,13 @@ private func answerWhereTheAppKeepsItsFiles(messenger: FlutterBinaryMessenger) {
     case "applicationSupport":
       do {
         let folder = try applicationSupportFolder().path
+        result(folder)
+      } catch {
+        result(FlutterError(code: "no_folder", message: "\(error)", details: nil))
+      }
+    case "receiveFolder":
+      do {
+        let folder = try documentsFolder().path
         result(folder)
       } catch {
         result(FlutterError(code: "no_folder", message: "\(error)", details: nil))
@@ -47,6 +55,14 @@ private func answerWhereTheAppKeepsItsFiles(messenger: FlutterBinaryMessenger) {
 private func applicationSupportFolder() throws -> URL {
   try FileManager.default.url(
     for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+}
+
+/// The folder that the Files app shows as the app's own, under "On My iPhone" or "On My iPad", as
+/// Info.plist says it may (UIFileSharingEnabled and LSSupportsOpeningDocumentsInPlace). The files
+/// that other devices send are put there, so the person finds them.
+private func documentsFolder() throws -> URL {
+  try FileManager.default.url(
+    for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
 }
 
 /// Keeps the screen on while the app asks for it, which it does only while two devices pair. A

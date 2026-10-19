@@ -56,6 +56,42 @@ void main() {
     }
   });
 
+  test(
+    'the sandboxed Mac app may put files in Downloads and read the ones chosen',
+    () {
+      // Without the first, received files go to a folder inside the sandbox that nobody looks in,
+      // or are refused. Without the second, the open panel shows files that Baton cannot read.
+      for (final file in [
+        'macos/Runner/DebugProfile.entitlements',
+        'macos/Runner/Release.entitlements',
+      ]) {
+        final entitlements = _read(file);
+        for (final key in [
+          'com.apple.security.files.downloads.read-write',
+          'com.apple.security.files.user-selected.read-only',
+        ]) {
+          expect(
+            entitlements,
+            contains('<key>$key</key>\n\t<true/>'),
+            reason: '$key in $file',
+          );
+        }
+      }
+    },
+  );
+
+  test('the iPhone app shows the files that arrive in the Files app', () {
+    // The files are put in the Documents folder of the app, which the Files app lists only when
+    // the app says so.
+    final plist = _read('ios/Runner/Info.plist');
+    for (final key in [
+      'UIFileSharingEnabled',
+      'LSSupportsOpeningDocumentsInPlace',
+    ]) {
+      expect(plist, contains('<key>$key</key>\n\t<true/>'), reason: key);
+    }
+  });
+
   test('the Mac app is sandboxed and may use the network both ways', () {
     for (final file in [
       'macos/Runner/DebugProfile.entitlements',
@@ -113,6 +149,30 @@ void main() {
       final swift = _read('ios/Runner/AppDelegate.swift');
       expect(swift, contains('name: "${SupportFolder.channelName}"'));
       expect(swift, contains('case "${SupportFolder.question}":'));
+    },
+  );
+
+  test(
+    'both apps answer where Baton asks for the folder of received files',
+    () {
+      // The channel and its question are named in lib/src/support_folder.dart and in each app. If
+      // they differ, files are not taken, and Baton says only that the system would not say where.
+      for (final file in [
+        'ios/Runner/AppDelegate.swift',
+        'macos/Runner/MainFlutterWindow.swift',
+      ]) {
+        final swift = _read(file);
+        expect(
+          swift,
+          contains('name: "${SupportFolder.channelName}"'),
+          reason: file,
+        );
+        expect(
+          swift,
+          contains('case "${SupportFolder.receiveQuestion}":'),
+          reason: file,
+        );
+      }
     },
   );
 

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import 'package:flutter/foundation.dart' show TargetPlatform;
 import 'package:flutter/material.dart' show IconData, Icons;
 
 import 'backend.dart';
@@ -62,6 +63,34 @@ String lastSeen(int? seconds, DateTime now) =>
 
 String _count(int n, String unit) => n == 1 ? '1 $unit' : '$n ${unit}s';
 
+/// "1 file" and "3 files".
+String fileCount(int n) => _count(n, 'file');
+
+/// "1 folder" and "3 folders".
+String folderCount(int n) => _count(n, 'folder');
+
+/// "1 item" and "3 items".
+String itemCount(int n) => _count(n, 'item');
+
+/// A size as the Mac and the iPhone write one, in units of a thousand: "950 bytes", "1.2 MB",
+/// "31 GB".
+String fileSize(int bytes) {
+  if (bytes < 1000) return bytes == 1 ? '1 byte' : '$bytes bytes';
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  // One decimal below 10 and none above, and a size that rounds up to 1000 is the next unit.
+  num rounded(double value) =>
+      value < 10 ? (value * 10).round() / 10 : value.round();
+  var value = bytes / 1000;
+  var unit = 0;
+  while (rounded(value) >= 1000 && unit < units.length - 1) {
+    value /= 1000;
+    unit++;
+  }
+  final shown = rounded(value);
+  return '${shown < 10 ? shown.toStringAsFixed(1) : shown.toStringAsFixed(0)} '
+      '${units[unit]}';
+}
+
 /// How long is left until [expiresAt], counted in seconds from the Unix epoch as the app layer
 /// gives it: "4:32", and "0:00" once it has passed.
 String timeLeft(int expiresAt, DateTime now) {
@@ -114,3 +143,56 @@ String visibleText(String text) => text
     .replaceAll('\r\n', '\n')
     .replaceAll('\r', '\n')
     .replaceAll(_hidden, '\uFFFD');
+
+/// What a transfer holds, in a few words: "3 files, 12 MB", or "3 files in 2 folders, 12 MB".
+String describeContents({
+  required int files,
+  required int folders,
+  required int bytes,
+}) {
+  final what = folders == 0
+      ? fileCount(files)
+      : '${fileCount(files)} in ${folderCount(folders)}';
+  return '$what, ${fileSize(bytes)}';
+}
+
+/// What a transfer that is being sent is doing, in a sentence for the person.
+String describeStage(SendStage stage, String device) => switch (stage) {
+  SendStage.connecting => 'Reaching $device…',
+  SendStage.asking => 'Waiting for $device to say yes…',
+  SendStage.sending => 'Sending to $device…',
+  SendStage.finishing => '$device is putting the files in place…',
+  SendStage.waiting =>
+    'The connection stopped. Baton will try again in a moment…',
+  SendStage.over => 'Done.',
+};
+
+/// How a transfer that this device sent ended, as a sentence.
+String describeSent(FilesSent sent, String device) {
+  final arrived = sent.files - sent.failed;
+  final sentences = <String>[
+    if (sent.failed == 0)
+      'Sent ${fileCount(sent.files)} (${fileSize(sent.bytes)}) to $device.'
+    else if (arrived <= 0)
+      '$device could not keep ${sent.failed == 1 ? 'the file' : 'the files'}.'
+    else
+      'Sent $arrived of ${fileCount(sent.files)} to $device. '
+          '${fileCount(sent.failed)} could not be saved there.',
+    if (sent.leftOut > 0)
+      '${itemCount(sent.leftOut)} in what you chose '
+          '${sent.leftOut == 1 ? 'was' : 'were'} left out: links inside '
+          'folders, files that could not be read and files that are too large.',
+  ];
+  return sentences.join(' ');
+}
+
+/// Where received files are, in words for the person: "your Downloads folder" on a Mac and "the
+/// Baton folder in the Files app" on an iPhone or an iPad. [path] is the folder that Baton was
+/// given for them.
+String describeReceiveFolder(String path, TargetPlatform platform) =>
+    switch (platform) {
+      TargetPlatform.iOS => 'the Baton folder in the Files app',
+      TargetPlatform.macOS when path.endsWith('/Downloads') =>
+        'your Downloads folder',
+      _ => 'the folder $path',
+    };

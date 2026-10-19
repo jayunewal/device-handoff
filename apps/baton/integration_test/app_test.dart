@@ -92,6 +92,46 @@ void main() {
     skip: defaultTargetPlatform != TargetPlatform.iOS,
   );
 
+  testWidgets(
+    'finds the folder for received files from the system, and takes files into it',
+    (tester) async {
+      // The person finds what arrives in the Files app on a phone and in Downloads on a Mac, and
+      // the apps answer where that is (ios/Runner/AppDelegate.swift and
+      // macos/Runner/MainFlutterWindow.swift). Nothing else here can try those answers.
+      final path = await const SupportFolder().receiveFolder();
+
+      expect(path, startsWith('/'));
+      expect(
+        path,
+        endsWith(
+          defaultTargetPlatform == TargetPlatform.iOS
+              ? '/Documents'
+              : '/Downloads',
+        ),
+      );
+      expect(
+        Directory(path).existsSync(),
+        isTrue,
+        reason: 'the system made it, or it was there',
+      );
+      // A file can be made in it, which is what taking files needs.
+      final probe = File('$path/.baton-integration-probe');
+      await probe.writeAsString('x');
+      await probe.delete();
+
+      // The library takes files into it.
+      final backend = RustBackend(dataDir: (await _folder()).path);
+      await backend.setDeviceName('Test device');
+      final session = await backend.start();
+      addTearDown(session.stop);
+      expect(session.receiving(), isA<Receiving_On>());
+      expect(session.receiveFolder, path);
+    },
+    skip:
+        defaultTargetPlatform != TargetPlatform.iOS &&
+        defaultTargetPlatform != TargetPlatform.macOS,
+  );
+
   testWidgets('pairs with another Baton, by the code pasted in', (
     tester,
   ) async {
@@ -120,6 +160,14 @@ void main() {
     await _see(tester, find.text('Second device'));
     await _tap(tester, find.text('Second device'));
     await _see(tester, find.text('Send to Second device'));
+    // Files can be chosen here, and a folder only where the system can choose one.
+    expect(find.text('Choose files'), findsOneWidget);
+    expect(
+      find.text('Choose a folder'),
+      defaultTargetPlatform == TargetPlatform.macOS
+          ? findsOneWidget
+          : findsNothing,
+    );
     await _type(tester, ' HTTPS://Example.com/plan ');
     await tester.scrollUntilVisible(
       find.text('Send link'),
