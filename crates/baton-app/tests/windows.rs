@@ -15,9 +15,10 @@ use std::{
 
 use baton_app::{
     App, ErrorKind, Event, Events, Options, WindowAbilities, WindowEnd, WindowRequest, WindowRole,
-    WindowShared, Windows,
+    WindowSession, WindowShared, Windows,
     windows::{
-        PickedWindow, PlatformError, Screen, ScreenLink, ShowLimits, WindowSharer, WindowViewer,
+        PickedWindow, PlatformError, Screen, ScreenLink, SharingFailure, ShowLimits, WindowSharer,
+        WindowViewer,
     },
 };
 use baton_core::{
@@ -205,9 +206,15 @@ struct Sharer {
     pictures: usize,
     /// Whether the platform can make a picture within what the viewer takes.
     makes_pictures: AtomicBool,
-    /// Whether the platform gives up the session as soon as it is started, which is how it says
-    /// that the capture could not begin.
+    /// Whether the platform gives up the session as soon as it is started, which is how it ends
+    /// one quietly.
     lets_go_at_once: AtomicBool,
+    /// If set, the platform ends the session as soon as it is started, with this sentence, which
+    /// is how it says that the capture could not begin.
+    fails_at_once: Mutex<Option<String>>,
+    /// The means of the session that started to say that something went wrong, for the test to
+    /// use at the time of its choosing.
+    failure: Arc<Mutex<Option<SharingFailure>>>,
 }
 
 impl Sharer {
@@ -223,6 +230,8 @@ impl Sharer {
             pictures: 3,
             makes_pictures: AtomicBool::new(true),
             lets_go_at_once: AtomicBool::new(false),
+            fails_at_once: Mutex::new(None),
+            failure: Arc::new(Mutex::new(None)),
         })
     }
 }
@@ -262,6 +271,8 @@ impl WindowSharer for Sharer {
             pictures: self.pictures,
             makes_pictures: self.makes_pictures.load(Ordering::Relaxed),
             lets_go_at_once: self.lets_go_at_once.load(Ordering::Relaxed),
+            fails_at_once: self.fails_at_once.lock().unwrap().clone(),
+            failure: Arc::clone(&self.failure),
         };
         Box::pin(async move {
             if let Some(gate) = gate {
@@ -280,6 +291,8 @@ struct Picked {
     pictures: usize,
     makes_pictures: bool,
     lets_go_at_once: bool,
+    fails_at_once: Option<String>,
+    failure: Arc<Mutex<Option<SharingFailure>>>,
 }
 
 impl Drop for Picked {
@@ -319,10 +332,15 @@ impl PickedWindow for Picked {
         })
     }
 
-    fn start(self: Box<Self>, handle: Arc<SourceHandle>) {
+    fn start(self: Box<Self>, handle: Arc<SourceHandle>, failure: SharingFailure) {
         if self.lets_go_at_once {
             return;
         }
+        if let Some(why) = &self.fails_at_once {
+            failure.fail(why.clone());
+            return;
+        }
+        *self.failure.lock().unwrap() = Some(failure);
         *self.handle.lock().unwrap() = Some(Arc::clone(&handle));
         let pictures = self.pictures;
         std::thread::spawn(move || {
@@ -759,7 +777,7 @@ async fn a_platform_that_lets_go_of_the_window_ends_the_session() {
 }
 
 #[tokio::test]
-async fn a_platform_that_cannot_begin_to_capture_says_so_by_letting_go() {
+async fn a_platform_that_lets_go_of_the_window_at_once_ends_it_without_a_word() {
     let pair = Pair::new(false).await;
     pair.sharer.lets_go_at_once.store(true, Ordering::Relaxed);
     let mut viewing_events = pair.viewing.app.events();
@@ -798,6 +816,225 @@ async fn a_platform_that_cannot_begin_to_capture_says_so_by_letting_go() {
     .await;
     assert!(pair.sharer.handle.lock().unwrap().is_none());
     assert!(!pair.sharing.app.end_window(shared.id));
+}
+
+/// A device that shares a window whose platform ends the session with `sentence` as soon as it
+/// is started, and the events of both devices.
+async fn failed_at_once(sentence: &str) -> (Pair, Events, Events, WindowSession, WindowSession) {
+    let pair = Pair::new(false).await;
+    *pair.sharer.fails_at_once.lock().unwrap() = Some(sentence.to_owned());
+    let mut viewing_events = pair.viewing.app.events();
+    let sharing_events = pair.sharing.app.events();
+    let WindowShared::Started(shared) = pair.offered_and_answered(true, false).await else {
+        panic!("the window was not shared");
+    };
+    let shown = next_matching(&mut viewing_events, |event| match event {
+        Event::WindowStarted(session) => Some(session),
+        _ => None,
+    })
+    .await;
+    (pair, sharing_events, viewing_events, shared, shown)
+}
+
+#[tokio::test]
+async fn a_platform_that_cannot_begin_to_capture_says_why_and_the_person_is_told() {
+    let (pair, mut sharing_events, mut viewing_events, shared, shown) =
+        failed_at_once("Screen recording is turned off for Baton.").await;
+
+    let ended = next_matching(&mut sharing_events, |event| match event {
+        Event::WindowEnded { id, end } => Some((id, end)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        ended,
+        (
+            shared.id,
+            WindowEnd::Failed("Screen recording is turned off for Baton.".to_owned())
+        )
+    );
+    // The other device is only told that the window ended.
+    let ended = next_matching(&mut viewing_events, |event| match event {
+        Event::WindowEnded { id, end } => Some((id, end)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(ended, (shown.id, WindowEnd::OtherDevice));
+    until("both platforms to be told", || {
+        pair.viewer.heard.has("ended") && pair.sharer.heard.has("ended")
+    })
+    .await;
+    assert!(!pair.sharing.app.end_window(shared.id));
+}
+
+#[tokio::test]
+async fn the_sentence_of_the_platform_is_made_fit_for_a_screen() {
+    let (_pair, mut sharing_events, _viewing_events, _shared, _shown) =
+        failed_at_once("Screen recording\nis off.\u{202e}\u{7}").await;
+
+    let end = next_matching(&mut sharing_events, |event| match event {
+        Event::WindowEnded { end, .. } => Some(end),
+        _ => None,
+    })
+    .await;
+
+    assert_eq!(
+        end,
+        WindowEnd::Failed("Screen recording is off.".to_owned())
+    );
+}
+
+#[tokio::test]
+async fn a_sentence_with_nothing_in_it_ends_the_window_without_one() {
+    let (_pair, mut sharing_events, _viewing_events, _shared, _shown) =
+        failed_at_once(" \n\u{200b}").await;
+
+    let end = next_matching(&mut sharing_events, |event| match event {
+        Event::WindowEnded { end, .. } => Some(end),
+        _ => None,
+    })
+    .await;
+
+    assert_eq!(end, WindowEnd::ThisDevice);
+}
+
+#[tokio::test]
+async fn a_platform_that_has_to_stop_later_says_why_and_the_first_sentence_counts() {
+    let pair = Pair::new(false).await;
+    let mut viewing_events = pair.viewing.app.events();
+    let mut sharing_events = pair.sharing.app.events();
+    let WindowShared::Started(shared) = pair.offered_and_answered(true, false).await else {
+        panic!("the window was not shared");
+    };
+    next_matching(&mut viewing_events, |event| match event {
+        Event::WindowStarted(_) => Some(()),
+        _ => None,
+    })
+    .await;
+    until("the pictures to be shown", || {
+        pair.viewer.heard.has("show 2")
+    })
+    .await;
+
+    let failure = pair.sharer.failure.lock().unwrap().clone().unwrap();
+    failure.fail("The system stopped the capture.");
+    failure.fail("Something else.");
+
+    let ended = next_matching(&mut sharing_events, |event| match event {
+        Event::WindowEnded { id, end } => Some((id, end)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        ended,
+        (
+            shared.id,
+            WindowEnd::Failed("The system stopped the capture.".to_owned())
+        )
+    );
+    let ended = next_matching(&mut viewing_events, |event| match event {
+        Event::WindowEnded { end, .. } => Some(end),
+        _ => None,
+    })
+    .await;
+    assert_eq!(ended, WindowEnd::OtherDevice);
+}
+
+#[tokio::test]
+async fn a_window_that_the_other_device_ended_first_is_told_as_that_whatever_the_platform_says_after()
+ {
+    let pair = Pair::new(false).await;
+    let mut viewing_events = pair.viewing.app.events();
+    let mut sharing_events = pair.sharing.app.events();
+    let WindowShared::Started(_) = pair.offered_and_answered(true, false).await else {
+        panic!("the window was not shared");
+    };
+    let shown = next_matching(&mut viewing_events, |event| match event {
+        Event::WindowStarted(session) => Some(session),
+        _ => None,
+    })
+    .await;
+    // A viewer that ends the window before the pictures come is not heard until the source's
+    // liveness ends it, so the test waits for a picture.
+    until("the pictures to be shown", || {
+        pair.viewer.heard.has("show 2")
+    })
+    .await;
+    assert!(pair.viewing.app.end_window(shown.id));
+    let end = next_matching(&mut sharing_events, |event| match event {
+        Event::WindowEnded { end, .. } => Some(end),
+        _ => None,
+    })
+    .await;
+    assert_eq!(end, WindowEnd::OtherDevice);
+
+    let failure = pair.sharer.failure.lock().unwrap().clone().unwrap();
+    failure.fail("Too late.");
+
+    // Nothing is told twice.
+    let more = tokio::time::timeout(
+        QUIET,
+        next_matching(&mut sharing_events, |event| match event {
+            Event::WindowEnded { .. } => Some(()),
+            _ => None,
+        }),
+    )
+    .await;
+    assert!(more.is_err(), "the end of a window was told twice");
+}
+
+#[tokio::test]
+async fn a_sentence_that_comes_after_the_platform_ended_the_session_quietly_changes_nothing() {
+    let pair = Pair::new(false).await;
+    let mut sharing_events = pair.sharing.app.events();
+    let WindowShared::Started(shared) = pair.offered_and_answered(true, false).await else {
+        panic!("the window was not shared");
+    };
+    let handle = pair.sharer.handle.lock().unwrap().clone().unwrap();
+    let failure = pair.sharer.failure.lock().unwrap().clone().unwrap();
+
+    // The person closed the window, and the capture of another thread of the platform stopped at
+    // the same moment. Nothing runs between the two calls, so the first is the end.
+    handle.end();
+    failure.fail("The capture stopped.");
+
+    let ended = next_matching(&mut sharing_events, |event| match event {
+        Event::WindowEnded { id, end } => Some((id, end)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(ended, (shared.id, WindowEnd::ThisDevice));
+}
+
+#[tokio::test]
+async fn a_sentence_that_comes_after_the_platform_let_go_of_the_window_changes_nothing() {
+    let pair = Pair::new(false).await;
+    let mut sharing_events = pair.sharing.app.events();
+    let WindowShared::Started(shared) = pair.offered_and_answered(true, false).await else {
+        panic!("the window was not shared");
+    };
+    let handle = pair.sharer.handle.lock().unwrap().take().unwrap();
+    // The platform keeps the failure for as long as it likes, and that does not keep the session
+    // going: it ends with the last copy of the handle.
+    let failure = pair.sharer.failure.lock().unwrap().clone().unwrap();
+    until(
+        "the thread that sends the pictures to let go of its copy",
+        || Arc::strong_count(&handle) == 1,
+    )
+    .await;
+
+    // The platform lets go of the handle, which is how the person's closing the window is told,
+    // and a thread of it that has not heard says why a moment later. Nothing runs between the two
+    // calls, so the first is the end.
+    drop(handle);
+    failure.fail("The capture stopped.");
+
+    let ended = next_matching(&mut sharing_events, |event| match event {
+        Event::WindowEnded { id, end } => Some((id, end)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(ended, (shared.id, WindowEnd::ThisDevice));
 }
 
 #[tokio::test]

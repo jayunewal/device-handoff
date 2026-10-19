@@ -469,6 +469,14 @@ impl SourceHandle {
         }
     }
 
+    /// The time since the session began. It is the clock of the capture times of the pictures
+    /// ([`Picture::capture_time`], in microseconds) and of the arrival times that
+    /// [`SourceEvents::input`] is given, so a platform stamps what it captures with this and
+    /// not with a clock of its own.
+    pub fn elapsed(&self) -> Duration {
+        self.source.now()
+    }
+
     /// Ends the session.
     pub fn end(&self) {
         self.source.end(End::Local);
@@ -1271,6 +1279,21 @@ mod tests {
         rig.settled().await;
         // The session goes on.
         assert!(!rig.log.has(&Heard::Ended));
+    }
+
+    #[tokio::test]
+    async fn the_platform_can_read_the_clock_that_the_pictures_are_stamped_with() {
+        let rig = Rig::new().await;
+        let first = rig.handle.elapsed();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let second = rig.handle.elapsed();
+
+        // It runs, and it counts from the start of the session.
+        assert!(
+            second >= first + Duration::from_millis(30),
+            "{first:?} {second:?}"
+        );
+        assert!(second < Duration::from_secs(30), "{second:?}");
     }
 
     #[tokio::test]

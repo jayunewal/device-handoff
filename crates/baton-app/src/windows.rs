@@ -23,15 +23,23 @@
 
 use std::{
     fmt,
+    pin::pin,
     sync::{Arc, Mutex, Weak},
+    task::{Context, Waker},
 };
 
 use baton_core::{
-    streaming::{Decoder, SourceEvents, SourceHandle, Takes, ViewHandle, WindowOffer},
+    streaming::{
+        DecodeError, Decoder, DecoderState, SourceEvents, SourceHandle, Takes, ViewHandle, Viewing,
+        WindowOffer,
+    },
     util::BoxFuture,
 };
 use baton_proto::stream::Codec;
-use baton_stream::control::Config as Format;
+use baton_stream::{
+    control::{Config as Format, SourceMessage, Thermal},
+    header::FrameHeader,
+};
 
 use crate::app::locked;
 
@@ -76,6 +84,52 @@ pub struct ShowLimits {
     pub max_fps: u16,
     /// The codecs that the decoder takes: from 1 to 8, none of them [`Codec::Other`].
     pub codecs: Vec<Codec>,
+}
+
+impl ShowLimits {
+    /// Whether the numbers are within what the protocol allows: each edge from 1 to 3840 pixels,
+    /// the rate from 1 to 120, and from 1 to 8 codecs, none of them [`Codec::Other`].
+    ///
+    /// The app checks them when it starts, and a platform that registers through the C interface
+    /// has them checked when it registers, so that a platform that is set up wrongly fails at
+    /// once and not at the first window.
+    ///
+    /// # Errors
+    ///
+    /// A number is outside what the protocol allows. The error says which.
+    pub fn check(&self) -> Result<(), PlatformError> {
+        Viewing::new(
+            Unused,
+            self.max_width,
+            self.max_height,
+            self.max_fps,
+            self.codecs.clone(),
+        )
+        .map(|_| ())
+        .map_err(|error| PlatformError::new(error.to_string()))
+    }
+}
+
+/// A decoder that is never used: it stands in for the real one when the limits are checked.
+struct Unused;
+
+impl Decoder for Unused {
+    fn decode(&mut self, _: &FrameHeader, _: Vec<u8>) -> std::result::Result<(), DecodeError> {
+        Err(DecodeError)
+    }
+
+    fn show(&mut self, _: u64) {}
+
+    fn source(&mut self, _: SourceMessage) {}
+
+    fn state(&self) -> DecoderState {
+        DecoderState {
+            decode_us: 0,
+            thermal: Thermal::Nominal,
+        }
+    }
+
+    fn ended(&mut self) {}
 }
 
 /// The decoder and the screen of a window that is shown.
@@ -191,10 +245,82 @@ pub trait PickedWindow: Send + 'static {
     /// picture it asks `handle` whether to ([`SourceHandle::begin`]), and it hands over what it
     /// encoded ([`SourceHandle::sent`]). The session ends when the other device ends it, when
     /// the connection ends, and when the platform ends it, with [`SourceHandle::end`] or by
-    /// dropping the last copy of `handle`. The app keeps no copy of its own, so a platform that
-    /// lets go of the handle, because the window closed or the capture could not begin, has
-    /// ended the session.
-    fn start(self: Box<Self>, handle: Arc<SourceHandle>);
+    /// dropping the last copy of `handle`, which the person is not told of: they closed the
+    /// window, or ended the session themselves. The app keeps no copy of its own, so a platform
+    /// that lets go of the handle has ended the session.
+    ///
+    /// A platform that has to end the session because something went wrong, such as a capture
+    /// that cannot begin or that the system stopped, says so with
+    /// [`failure`](SharingFailure::fail) instead, and the person is shown the sentence.
+    fn start(self: Box<Self>, handle: Arc<SourceHandle>, failure: SharingFailure);
+}
+
+/// How a platform ends a window that this device shares because something went wrong, and says
+/// why. [`PickedWindow::start`] gives it with the handle.
+///
+/// It holds the session loosely, as [`ScreenLink`] does: keeping a failure does not keep the
+/// session going.
+#[derive(Clone)]
+pub struct SharingFailure {
+    note: Arc<Note>,
+}
+
+struct Note {
+    message: Mutex<Option<String>>,
+    handle: Weak<SourceHandle>,
+}
+
+impl SharingFailure {
+    pub(crate) fn new(handle: &Arc<SourceHandle>) -> Self {
+        Self {
+            note: Arc::new(Note {
+                message: Mutex::new(None),
+                handle: Arc::downgrade(handle),
+            }),
+        }
+    }
+
+    /// Ends the session, and tells the person why, in a sentence about what happened that they
+    /// can act on. The first sentence is the one that counts, and a sentence with nothing in it
+    /// ends the session without one. Does nothing to a session that is over, whose end is told
+    /// as it came.
+    ///
+    /// The platform calls this instead of letting go of the handle: a session that is ended by
+    /// the handle first is told as the end of a window that the person closed.
+    pub fn fail(&self, message: impl Into<String>) {
+        let Some(handle) = self.note.handle.upgrade() else {
+            return;
+        };
+        // A session that is over ended as it ended, and a sentence that comes after that is not
+        // the reason: a thread of the platform that has not heard that the person closed the
+        // window yet does not turn the end into a failure.
+        let mut over = pin!(handle.on_end());
+        if over
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_ready()
+        {
+            return;
+        }
+        {
+            let mut note = locked(&self.note.message);
+            if note.is_none() {
+                *note = Some(message.into());
+            }
+        }
+        handle.end();
+    }
+
+    /// The sentence that the platform gave, if it gave one.
+    pub(crate) fn message(&self) -> Option<String> {
+        locked(&self.note.message).clone()
+    }
+}
+
+impl fmt::Debug for SharingFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SharingFailure").finish_non_exhaustive()
+    }
 }
 
 /// What a device is given to take part in window streaming with. The default is nothing.

@@ -16,7 +16,7 @@ use std::{
 use baton_app::{
     App, Event, Events, Options, WindowEnd, WindowRequest, WindowRole, WindowSession, WindowShared,
     Windows,
-    windows::{PickedWindow, PlatformError, WindowSharer},
+    windows::{PickedWindow, PlatformError, SharingFailure, WindowSharer},
 };
 use baton_core::{
     streaming::{Picture, SourceEvents, SourceHandle, Takes},
@@ -228,7 +228,7 @@ impl PickedWindow for Picked {
         })
     }
 
-    fn start(self: Box<Self>, handle: Arc<SourceHandle>) {
+    fn start(self: Box<Self>, handle: Arc<SourceHandle>, _failure: SharingFailure) {
         *self.handle.lock().unwrap() = Some(handle);
     }
 }
