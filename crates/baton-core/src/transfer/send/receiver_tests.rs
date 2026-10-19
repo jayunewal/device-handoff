@@ -261,8 +261,13 @@ async fn cancelling_while_the_person_decides_takes_the_question_back() {
 }
 
 /// A transfer of one big file that waits, with some of it written, until the gate is opened.
+///
+/// A lane claims a chunk to write and one to read ahead, and the hold comes at 1.5 MB and not at the
+/// first write, so a lane can write a whole chunk and claim a third. That is up to nine claims
+/// before every lane is held, and a lane that finds no chunk left ends whole instead of being held,
+/// so the file is twelve chunks.
 async fn parked(rig: &Rig, hold: &Gate) -> super::engine::Sending {
-    rig.files.make("big", &bytes(1, 6_000_000));
+    rig.files.make("big", &bytes(1, 12_000_000));
     let selection = rig.files.select(&["big"]);
     let held_up = hold.clone();
     rig.wire.on_put(move |put| {
