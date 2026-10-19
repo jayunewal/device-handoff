@@ -56,7 +56,7 @@ extension EventPatterns on Event {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( Event_Received value)?  received,TResult Function( Event_DevicesChanged value)?  devicesChanged,TResult Function( Event_PairingRequested value)?  pairingRequested,TResult Function( Event_PairingRequestEnded value)?  pairingRequestEnded,TResult Function( Event_OfferEnded value)?  offerEnded,TResult Function( Event_TransferRequested value)?  transferRequested,TResult Function( Event_TransferRequestEnded value)?  transferRequestEnded,TResult Function( Event_TransferEnded value)?  transferEnded,TResult Function( Event_WindowRequested value)?  windowRequested,TResult Function( Event_WindowRequestEnded value)?  windowRequestEnded,TResult Function( Event_WindowStarted value)?  windowStarted,TResult Function( Event_WindowEnded value)?  windowEnded,TResult Function( Event_Resync value)?  resync,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( Event_Received value)?  received,TResult Function( Event_DevicesChanged value)?  devicesChanged,TResult Function( Event_PairingRequested value)?  pairingRequested,TResult Function( Event_PairingRequestEnded value)?  pairingRequestEnded,TResult Function( Event_OfferEnded value)?  offerEnded,TResult Function( Event_TransferRequested value)?  transferRequested,TResult Function( Event_TransferRequestEnded value)?  transferRequestEnded,TResult Function( Event_TransferEnded value)?  transferEnded,TResult Function( Event_WindowRequested value)?  windowRequested,TResult Function( Event_WindowRequestEnded value)?  windowRequestEnded,TResult Function( Event_WindowStarted value)?  windowStarted,TResult Function( Event_WindowPicture value)?  windowPicture,TResult Function( Event_WindowEnded value)?  windowEnded,TResult Function( Event_Resync value)?  resync,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case Event_Received() when received != null:
@@ -70,7 +70,8 @@ return transferRequestEnded(_that);case Event_TransferEnded() when transferEnded
 return transferEnded(_that);case Event_WindowRequested() when windowRequested != null:
 return windowRequested(_that);case Event_WindowRequestEnded() when windowRequestEnded != null:
 return windowRequestEnded(_that);case Event_WindowStarted() when windowStarted != null:
-return windowStarted(_that);case Event_WindowEnded() when windowEnded != null:
+return windowStarted(_that);case Event_WindowPicture() when windowPicture != null:
+return windowPicture(_that);case Event_WindowEnded() when windowEnded != null:
 return windowEnded(_that);case Event_Resync() when resync != null:
 return resync(_that);case _:
   return orElse();
@@ -90,7 +91,7 @@ return resync(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( Event_Received value)  received,required TResult Function( Event_DevicesChanged value)  devicesChanged,required TResult Function( Event_PairingRequested value)  pairingRequested,required TResult Function( Event_PairingRequestEnded value)  pairingRequestEnded,required TResult Function( Event_OfferEnded value)  offerEnded,required TResult Function( Event_TransferRequested value)  transferRequested,required TResult Function( Event_TransferRequestEnded value)  transferRequestEnded,required TResult Function( Event_TransferEnded value)  transferEnded,required TResult Function( Event_WindowRequested value)  windowRequested,required TResult Function( Event_WindowRequestEnded value)  windowRequestEnded,required TResult Function( Event_WindowStarted value)  windowStarted,required TResult Function( Event_WindowEnded value)  windowEnded,required TResult Function( Event_Resync value)  resync,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( Event_Received value)  received,required TResult Function( Event_DevicesChanged value)  devicesChanged,required TResult Function( Event_PairingRequested value)  pairingRequested,required TResult Function( Event_PairingRequestEnded value)  pairingRequestEnded,required TResult Function( Event_OfferEnded value)  offerEnded,required TResult Function( Event_TransferRequested value)  transferRequested,required TResult Function( Event_TransferRequestEnded value)  transferRequestEnded,required TResult Function( Event_TransferEnded value)  transferEnded,required TResult Function( Event_WindowRequested value)  windowRequested,required TResult Function( Event_WindowRequestEnded value)  windowRequestEnded,required TResult Function( Event_WindowStarted value)  windowStarted,required TResult Function( Event_WindowPicture value)  windowPicture,required TResult Function( Event_WindowEnded value)  windowEnded,required TResult Function( Event_Resync value)  resync,}){
 final _that = this;
 switch (_that) {
 case Event_Received():
@@ -104,7 +105,8 @@ return transferRequestEnded(_that);case Event_TransferEnded():
 return transferEnded(_that);case Event_WindowRequested():
 return windowRequested(_that);case Event_WindowRequestEnded():
 return windowRequestEnded(_that);case Event_WindowStarted():
-return windowStarted(_that);case Event_WindowEnded():
+return windowStarted(_that);case Event_WindowPicture():
+return windowPicture(_that);case Event_WindowEnded():
 return windowEnded(_that);case Event_Resync():
 return resync(_that);}
 }
@@ -120,7 +122,7 @@ return resync(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( Event_Received value)?  received,TResult? Function( Event_DevicesChanged value)?  devicesChanged,TResult? Function( Event_PairingRequested value)?  pairingRequested,TResult? Function( Event_PairingRequestEnded value)?  pairingRequestEnded,TResult? Function( Event_OfferEnded value)?  offerEnded,TResult? Function( Event_TransferRequested value)?  transferRequested,TResult? Function( Event_TransferRequestEnded value)?  transferRequestEnded,TResult? Function( Event_TransferEnded value)?  transferEnded,TResult? Function( Event_WindowRequested value)?  windowRequested,TResult? Function( Event_WindowRequestEnded value)?  windowRequestEnded,TResult? Function( Event_WindowStarted value)?  windowStarted,TResult? Function( Event_WindowEnded value)?  windowEnded,TResult? Function( Event_Resync value)?  resync,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( Event_Received value)?  received,TResult? Function( Event_DevicesChanged value)?  devicesChanged,TResult? Function( Event_PairingRequested value)?  pairingRequested,TResult? Function( Event_PairingRequestEnded value)?  pairingRequestEnded,TResult? Function( Event_OfferEnded value)?  offerEnded,TResult? Function( Event_TransferRequested value)?  transferRequested,TResult? Function( Event_TransferRequestEnded value)?  transferRequestEnded,TResult? Function( Event_TransferEnded value)?  transferEnded,TResult? Function( Event_WindowRequested value)?  windowRequested,TResult? Function( Event_WindowRequestEnded value)?  windowRequestEnded,TResult? Function( Event_WindowStarted value)?  windowStarted,TResult? Function( Event_WindowPicture value)?  windowPicture,TResult? Function( Event_WindowEnded value)?  windowEnded,TResult? Function( Event_Resync value)?  resync,}){
 final _that = this;
 switch (_that) {
 case Event_Received() when received != null:
@@ -134,7 +136,8 @@ return transferRequestEnded(_that);case Event_TransferEnded() when transferEnded
 return transferEnded(_that);case Event_WindowRequested() when windowRequested != null:
 return windowRequested(_that);case Event_WindowRequestEnded() when windowRequestEnded != null:
 return windowRequestEnded(_that);case Event_WindowStarted() when windowStarted != null:
-return windowStarted(_that);case Event_WindowEnded() when windowEnded != null:
+return windowStarted(_that);case Event_WindowPicture() when windowPicture != null:
+return windowPicture(_that);case Event_WindowEnded() when windowEnded != null:
 return windowEnded(_that);case Event_Resync() when resync != null:
 return resync(_that);case _:
   return null;
@@ -153,7 +156,7 @@ return resync(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( Received received)?  received,TResult Function()?  devicesChanged,TResult Function( PairingRequest request)?  pairingRequested,TResult Function( PlatformInt64 id)?  pairingRequestEnded,TResult Function( OfferOutcome outcome)?  offerEnded,TResult Function( TransferRequest request)?  transferRequested,TResult Function( PlatformInt64 id)?  transferRequestEnded,TResult Function( TransferEnd end)?  transferEnded,TResult Function( WindowRequest request)?  windowRequested,TResult Function( PlatformInt64 id,  String? failure)?  windowRequestEnded,TResult Function( WindowSession session)?  windowStarted,TResult Function( PlatformInt64 id,  WindowEnd end)?  windowEnded,TResult Function()?  resync,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( Received received)?  received,TResult Function()?  devicesChanged,TResult Function( PairingRequest request)?  pairingRequested,TResult Function( PlatformInt64 id)?  pairingRequestEnded,TResult Function( OfferOutcome outcome)?  offerEnded,TResult Function( TransferRequest request)?  transferRequested,TResult Function( PlatformInt64 id)?  transferRequestEnded,TResult Function( TransferEnd end)?  transferEnded,TResult Function( WindowRequest request)?  windowRequested,TResult Function( PlatformInt64 id,  String? failure)?  windowRequestEnded,TResult Function( WindowSession session)?  windowStarted,TResult Function( PlatformInt64 id,  int width,  int height)?  windowPicture,TResult Function( PlatformInt64 id,  WindowEnd end)?  windowEnded,TResult Function()?  resync,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case Event_Received() when received != null:
 return received(_that.received);case Event_DevicesChanged() when devicesChanged != null:
@@ -166,7 +169,8 @@ return transferRequestEnded(_that.id);case Event_TransferEnded() when transferEn
 return transferEnded(_that.end);case Event_WindowRequested() when windowRequested != null:
 return windowRequested(_that.request);case Event_WindowRequestEnded() when windowRequestEnded != null:
 return windowRequestEnded(_that.id,_that.failure);case Event_WindowStarted() when windowStarted != null:
-return windowStarted(_that.session);case Event_WindowEnded() when windowEnded != null:
+return windowStarted(_that.session);case Event_WindowPicture() when windowPicture != null:
+return windowPicture(_that.id,_that.width,_that.height);case Event_WindowEnded() when windowEnded != null:
 return windowEnded(_that.id,_that.end);case Event_Resync() when resync != null:
 return resync();case _:
   return orElse();
@@ -186,7 +190,7 @@ return resync();case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( Received received)  received,required TResult Function()  devicesChanged,required TResult Function( PairingRequest request)  pairingRequested,required TResult Function( PlatformInt64 id)  pairingRequestEnded,required TResult Function( OfferOutcome outcome)  offerEnded,required TResult Function( TransferRequest request)  transferRequested,required TResult Function( PlatformInt64 id)  transferRequestEnded,required TResult Function( TransferEnd end)  transferEnded,required TResult Function( WindowRequest request)  windowRequested,required TResult Function( PlatformInt64 id,  String? failure)  windowRequestEnded,required TResult Function( WindowSession session)  windowStarted,required TResult Function( PlatformInt64 id,  WindowEnd end)  windowEnded,required TResult Function()  resync,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( Received received)  received,required TResult Function()  devicesChanged,required TResult Function( PairingRequest request)  pairingRequested,required TResult Function( PlatformInt64 id)  pairingRequestEnded,required TResult Function( OfferOutcome outcome)  offerEnded,required TResult Function( TransferRequest request)  transferRequested,required TResult Function( PlatformInt64 id)  transferRequestEnded,required TResult Function( TransferEnd end)  transferEnded,required TResult Function( WindowRequest request)  windowRequested,required TResult Function( PlatformInt64 id,  String? failure)  windowRequestEnded,required TResult Function( WindowSession session)  windowStarted,required TResult Function( PlatformInt64 id,  int width,  int height)  windowPicture,required TResult Function( PlatformInt64 id,  WindowEnd end)  windowEnded,required TResult Function()  resync,}) {final _that = this;
 switch (_that) {
 case Event_Received():
 return received(_that.received);case Event_DevicesChanged():
@@ -199,7 +203,8 @@ return transferRequestEnded(_that.id);case Event_TransferEnded():
 return transferEnded(_that.end);case Event_WindowRequested():
 return windowRequested(_that.request);case Event_WindowRequestEnded():
 return windowRequestEnded(_that.id,_that.failure);case Event_WindowStarted():
-return windowStarted(_that.session);case Event_WindowEnded():
+return windowStarted(_that.session);case Event_WindowPicture():
+return windowPicture(_that.id,_that.width,_that.height);case Event_WindowEnded():
 return windowEnded(_that.id,_that.end);case Event_Resync():
 return resync();}
 }
@@ -215,7 +220,7 @@ return resync();}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( Received received)?  received,TResult? Function()?  devicesChanged,TResult? Function( PairingRequest request)?  pairingRequested,TResult? Function( PlatformInt64 id)?  pairingRequestEnded,TResult? Function( OfferOutcome outcome)?  offerEnded,TResult? Function( TransferRequest request)?  transferRequested,TResult? Function( PlatformInt64 id)?  transferRequestEnded,TResult? Function( TransferEnd end)?  transferEnded,TResult? Function( WindowRequest request)?  windowRequested,TResult? Function( PlatformInt64 id,  String? failure)?  windowRequestEnded,TResult? Function( WindowSession session)?  windowStarted,TResult? Function( PlatformInt64 id,  WindowEnd end)?  windowEnded,TResult? Function()?  resync,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( Received received)?  received,TResult? Function()?  devicesChanged,TResult? Function( PairingRequest request)?  pairingRequested,TResult? Function( PlatformInt64 id)?  pairingRequestEnded,TResult? Function( OfferOutcome outcome)?  offerEnded,TResult? Function( TransferRequest request)?  transferRequested,TResult? Function( PlatformInt64 id)?  transferRequestEnded,TResult? Function( TransferEnd end)?  transferEnded,TResult? Function( WindowRequest request)?  windowRequested,TResult? Function( PlatformInt64 id,  String? failure)?  windowRequestEnded,TResult? Function( WindowSession session)?  windowStarted,TResult? Function( PlatformInt64 id,  int width,  int height)?  windowPicture,TResult? Function( PlatformInt64 id,  WindowEnd end)?  windowEnded,TResult? Function()?  resync,}) {final _that = this;
 switch (_that) {
 case Event_Received() when received != null:
 return received(_that.received);case Event_DevicesChanged() when devicesChanged != null:
@@ -228,7 +233,8 @@ return transferRequestEnded(_that.id);case Event_TransferEnded() when transferEn
 return transferEnded(_that.end);case Event_WindowRequested() when windowRequested != null:
 return windowRequested(_that.request);case Event_WindowRequestEnded() when windowRequestEnded != null:
 return windowRequestEnded(_that.id,_that.failure);case Event_WindowStarted() when windowStarted != null:
-return windowStarted(_that.session);case Event_WindowEnded() when windowEnded != null:
+return windowStarted(_that.session);case Event_WindowPicture() when windowPicture != null:
+return windowPicture(_that.id,_that.width,_that.height);case Event_WindowEnded() when windowEnded != null:
 return windowEnded(_that.id,_that.end);case Event_Resync() when resync != null:
 return resync();case _:
   return null;
@@ -967,6 +973,81 @@ class _$Event_WindowStartedCopyWithImpl<$Res>
   return _then(Event_WindowStarted(
 session: null == session ? _self.session : session // ignore: cast_nullable_to_non_nullable
 as WindowSession,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class Event_WindowPicture extends Event {
+  const Event_WindowPicture({required this.id, required this.width, required this.height}): super._();
+  
+
+/// The `WindowSession.id` whose picture this is.
+ final  PlatformInt64 id;
+/// The width of the picture in pixels, at least 1.
+ final  int width;
+/// The height of the picture in pixels, at least 1.
+ final  int height;
+
+/// Create a copy of Event
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$Event_WindowPictureCopyWith<Event_WindowPicture> get copyWith => _$Event_WindowPictureCopyWithImpl<Event_WindowPicture>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is Event_WindowPicture&&(identical(other.id, id) || other.id == id)&&(identical(other.width, width) || other.width == width)&&(identical(other.height, height) || other.height == height));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,id,width,height);
+}
+
+@override
+String toString() {
+    return 'Event.windowPicture(id: $id, width: $width, height: $height)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $Event_WindowPictureCopyWith<$Res> implements $EventCopyWith<$Res> {
+  factory $Event_WindowPictureCopyWith(Event_WindowPicture value, $Res Function(Event_WindowPicture) _then) = _$Event_WindowPictureCopyWithImpl;
+@useResult
+$Res call({
+ PlatformInt64 id, int width, int height
+});
+
+
+
+
+}
+/// @nodoc
+class _$Event_WindowPictureCopyWithImpl<$Res>
+    implements $Event_WindowPictureCopyWith<$Res> {
+  _$Event_WindowPictureCopyWithImpl(this._self, this._then);
+
+  final Event_WindowPicture _self;
+  final $Res Function(Event_WindowPicture) _then;
+
+/// Create a copy of Event
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? id = null,Object? width = null,Object? height = null,}) {
+  return _then(Event_WindowPicture(
+id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
+as PlatformInt64,width: null == width ? _self.width : width // ignore: cast_nullable_to_non_nullable
+as int,height: null == height ? _self.height : height // ignore: cast_nullable_to_non_nullable
+as int,
   ));
 }
 

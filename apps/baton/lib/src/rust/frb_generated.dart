@@ -1538,11 +1538,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           session: dco_decode_box_autoadd_window_session(raw[1]),
         );
       case 11:
+        return Event_WindowPicture(
+          id: dco_decode_i_64(raw[1]),
+          width: dco_decode_u_32(raw[2]),
+          height: dco_decode_u_32(raw[3]),
+        );
+      case 12:
         return Event_WindowEnded(
           id: dco_decode_i_64(raw[1]),
           end: dco_decode_box_autoadd_window_end(raw[2]),
         );
-      case 12:
+      case 13:
         return Event_Resync();
       default:
         throw Exception("unreachable");
@@ -2256,9 +2262,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         return Event_WindowStarted(session: var_session);
       case 11:
         var var_id = sse_decode_i_64(deserializer);
+        var var_width = sse_decode_u_32(deserializer);
+        var var_height = sse_decode_u_32(deserializer);
+        return Event_WindowPicture(
+          id: var_id,
+          width: var_width,
+          height: var_height,
+        );
+      case 12:
+        var var_id = sse_decode_i_64(deserializer);
         var var_end = sse_decode_box_autoadd_window_end(deserializer);
         return Event_WindowEnded(id: var_id, end: var_end);
-      case 12:
+      case 13:
         return Event_Resync();
       default:
         throw UnimplementedError('');
@@ -3084,12 +3099,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       case Event_WindowStarted(session: final session):
         sse_encode_i_32(10, serializer);
         sse_encode_box_autoadd_window_session(session, serializer);
-      case Event_WindowEnded(id: final id, end: final end):
+      case Event_WindowPicture(
+        id: final id,
+        width: final width,
+        height: final height,
+      ):
         sse_encode_i_32(11, serializer);
+        sse_encode_i_64(id, serializer);
+        sse_encode_u_32(width, serializer);
+        sse_encode_u_32(height, serializer);
+      case Event_WindowEnded(id: final id, end: final end):
+        sse_encode_i_32(12, serializer);
         sse_encode_i_64(id, serializer);
         sse_encode_box_autoadd_window_end(end, serializer);
       case Event_Resync():
-        sse_encode_i_32(12, serializer);
+        sse_encode_i_32(13, serializer);
     }
   }
 

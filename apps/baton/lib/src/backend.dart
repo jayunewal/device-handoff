@@ -21,6 +21,7 @@ export 'rust/api/model.dart'
         Event_TransferRequestEnded,
         Event_TransferRequested,
         Event_WindowEnded,
+        Event_WindowPicture,
         Event_WindowRequestEnded,
         Event_WindowRequested,
         Event_WindowStarted,

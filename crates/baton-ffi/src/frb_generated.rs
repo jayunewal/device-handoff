@@ -1905,13 +1905,23 @@ impl SseDecode for crate::api::model::Event {
             }
             11 => {
                 let mut var_id = <i64>::sse_decode(deserializer);
+                let mut var_width = <u32>::sse_decode(deserializer);
+                let mut var_height = <u32>::sse_decode(deserializer);
+                return crate::api::model::Event::WindowPicture {
+                    id: var_id,
+                    width: var_width,
+                    height: var_height,
+                };
+            }
+            12 => {
+                let mut var_id = <i64>::sse_decode(deserializer);
                 let mut var_end = <crate::api::model::WindowEnd>::sse_decode(deserializer);
                 return crate::api::model::Event::WindowEnded {
                     id: var_id,
                     end: var_end,
                 };
             }
-            12 => {
+            13 => {
                 return crate::api::model::Event::Resync;
             }
             _ => {
@@ -2746,13 +2756,20 @@ impl flutter_rust_bridge::IntoDart for crate::api::model::Event {
             crate::api::model::Event::WindowStarted { session } => {
                 [10.into_dart(), session.into_into_dart().into_dart()].into_dart()
             }
-            crate::api::model::Event::WindowEnded { id, end } => [
+            crate::api::model::Event::WindowPicture { id, width, height } => [
                 11.into_dart(),
+                id.into_into_dart().into_dart(),
+                width.into_into_dart().into_dart(),
+                height.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
+            crate::api::model::Event::WindowEnded { id, end } => [
+                12.into_dart(),
                 id.into_into_dart().into_dart(),
                 end.into_into_dart().into_dart(),
             ]
             .into_dart(),
-            crate::api::model::Event::Resync => [12.into_dart()].into_dart(),
+            crate::api::model::Event::Resync => [13.into_dart()].into_dart(),
             _ => {
                 unimplemented!("");
             }
@@ -3522,13 +3539,19 @@ impl SseEncode for crate::api::model::Event {
                 <i32>::sse_encode(10, serializer);
                 <crate::api::model::WindowSession>::sse_encode(session, serializer);
             }
-            crate::api::model::Event::WindowEnded { id, end } => {
+            crate::api::model::Event::WindowPicture { id, width, height } => {
                 <i32>::sse_encode(11, serializer);
+                <i64>::sse_encode(id, serializer);
+                <u32>::sse_encode(width, serializer);
+                <u32>::sse_encode(height, serializer);
+            }
+            crate::api::model::Event::WindowEnded { id, end } => {
+                <i32>::sse_encode(12, serializer);
                 <i64>::sse_encode(id, serializer);
                 <crate::api::model::WindowEnd>::sse_encode(end, serializer);
             }
             crate::api::model::Event::Resync => {
-                <i32>::sse_encode(12, serializer);
+                <i32>::sse_encode(13, serializer);
             }
             _ => {
                 unimplemented!("");

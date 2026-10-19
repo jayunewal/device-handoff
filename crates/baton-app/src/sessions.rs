@@ -15,12 +15,13 @@ use std::{
 use baton_core::{
     PairedDevice,
     streaming::{
-        End, ShareOutcome, SourceHandle, Takes, ViewHandle, Viewing, WindowHandler, WindowOffer,
-        WindowShare, WindowVerdict,
+        DecodeError, Decoder, DecoderState, End, ShareOutcome, SourceHandle, Takes, ViewHandle,
+        Viewing, WindowHandler, WindowOffer, WindowShare, WindowVerdict,
     },
     util::BoxFuture,
 };
 use baton_proto::{DeviceId, message::DeclineReason};
+use baton_stream::{control::SourceMessage, header::FrameHeader};
 use tokio::sync::broadcast;
 
 use crate::{
@@ -47,6 +48,97 @@ struct Accepted {
     screen: i64,
     /// Reaches the session of the screen, once the session runs.
     link: ScreenLink,
+    /// Tells the screens how large the picture is, once they know the window.
+    pictures: Arc<Pictures>,
+}
+
+/// What the source of a window that is shown here says about the size of its picture, kept until
+/// the screens know the window.
+///
+/// The source says the size before its first picture, and the node tells the app that the
+/// session runs at about the same moment, on tasks of their own, so the size can come first. It
+/// waits here for the window and is told right after [`Event::WindowStarted`], so that a screen
+/// always hears of a window before it hears of its picture.
+struct Pictures {
+    events: broadcast::Sender<Event>,
+    state: Mutex<PictureState>,
+}
+
+#[derive(Default)]
+struct PictureState {
+    /// The window, once the screens have been told of it.
+    session: Option<u64>,
+    /// The size that the source said last.
+    size: Option<(u32, u32)>,
+}
+
+impl Pictures {
+    fn new(events: broadcast::Sender<Event>) -> Arc<Self> {
+        Arc::new(Self {
+            events,
+            state: Mutex::new(PictureState::default()),
+        })
+    }
+
+    /// The source says that its pictures are this size from now on.
+    fn said(&self, width: u32, height: u32) {
+        let mut state = locked(&self.state);
+        state.size = Some((width, height));
+        if let Some(id) = state.session {
+            // Told under the lock, so that it cannot overtake the size that `began` tells.
+            self.tell(id, width, height);
+        }
+    }
+
+    /// The screens have been told of the window `id`: whatever the source said before is told now.
+    fn began(&self, id: u64) {
+        let mut state = locked(&self.state);
+        state.session = Some(id);
+        if let Some((width, height)) = state.size {
+            self.tell(id, width, height);
+        }
+    }
+
+    fn tell(&self, id: u64, width: u32, height: u32) {
+        // Nobody listening is fine.
+        let _ = self.events.send(Event::WindowPicture { id, width, height });
+    }
+}
+
+/// The decoder of the platform, with the app hearing what the source says about its picture. It
+/// passes everything on as it is.
+struct Watching {
+    decoder: Box<dyn Decoder>,
+    pictures: Arc<Pictures>,
+}
+
+impl Decoder for Watching {
+    fn decode(
+        &mut self,
+        frame: &FrameHeader,
+        picture: Vec<u8>,
+    ) -> std::result::Result<(), DecodeError> {
+        self.decoder.decode(frame, picture)
+    }
+
+    fn show(&mut self, number: u64) {
+        self.decoder.show(number);
+    }
+
+    fn source(&mut self, message: SourceMessage) {
+        if let SourceMessage::Config(config) = &message {
+            self.pictures.said(config.width, config.height);
+        }
+        self.decoder.source(message);
+    }
+
+    fn state(&self) -> DecoderState {
+        self.decoder.state()
+    }
+
+    fn ended(&mut self) {
+        self.decoder.ended();
+    }
 }
 
 /// What the app keeps for window streaming.
@@ -128,16 +220,21 @@ impl Sessions {
     /// Takes note of a session that started, tells the screens, and reports its end when it comes.
     /// `ended` waits for the end and says how it is told. It is given apart from `live` because a
     /// window that this device shares is waited for without holding its handle, which the
-    /// platform owns.
+    /// platform owns. `pictures` is given for a window that is shown here: what its source said of
+    /// the size of the picture is told right after the window, and never before it.
     fn begin(
         self: &Arc<Self>,
         session: WindowSession,
         live: Live,
         ended: BoxFuture<'static, WindowEnd>,
+        pictures: Option<&Pictures>,
     ) {
         let id = session.id;
         locked(&self.live).insert(id, live);
         self.emit(Event::WindowStarted(session));
+        if let Some(pictures) = pictures {
+            pictures.began(id);
+        }
         let sessions = Arc::clone(self);
         tokio::spawn(async move {
             let end = ended.await;
@@ -191,8 +288,12 @@ impl Sessions {
             }
         };
         let limits = viewer.limits();
+        let pictures = Pictures::new(self.events.clone());
         let viewing = match Viewing::new(
-            screen.decoder,
+            Watching {
+                decoder: screen.decoder,
+                pictures: Arc::clone(&pictures),
+            },
             limits.max_width,
             limits.max_height,
             limits.max_fps,
@@ -217,6 +318,7 @@ impl Sessions {
             },
             screen: screen.id,
             link,
+            pictures,
         });
         WindowVerdict::Accept(viewing)
     }
@@ -257,7 +359,12 @@ impl Sessions {
             let handle = Arc::clone(&handle);
             Box::pin(async move { window_end(handle.ended().await) })
         };
-        self.begin(session, Live::Viewing(handle), ended);
+        self.begin(
+            session,
+            Live::Viewing(handle),
+            ended,
+            Some(&accepted.pictures),
+        );
     }
 
     /// Offers the window that the person picked to `peer`, and starts the session if it says yes.
@@ -308,6 +415,7 @@ impl Sessions {
                     session.clone(),
                     Live::Sharing(Arc::downgrade(&handle)),
                     Box::pin(sharing_end(handle.on_end(), failure.clone())),
+                    None,
                 );
                 picked.start(handle, failure);
                 Ok(WindowShared::Started(session))
@@ -408,7 +516,228 @@ impl WindowHandler for Handler {
 
 #[cfg(test)]
 mod tests {
+    use baton_proto::{id::SessionId, stream::Codec};
+    use baton_stream::{
+        control::{Config, Pause, PauseReason, Thermal},
+        header::Flags,
+    };
+    use tokio::sync::broadcast::error::TryRecvError;
+
     use super::*;
+
+    fn picture(id: u64, width: u32, height: u32) -> Event {
+        Event::WindowPicture { id, width, height }
+    }
+
+    fn config(width: u32, height: u32) -> SourceMessage {
+        SourceMessage::Config(Config {
+            epoch: 0,
+            codec: Codec::H264,
+            width,
+            height,
+            fps: 30,
+        })
+    }
+
+    fn pictures() -> (Arc<Pictures>, broadcast::Receiver<Event>) {
+        let (events, heard) = broadcast::channel(8);
+        (Pictures::new(events), heard)
+    }
+
+    #[test]
+    fn a_size_that_comes_when_the_window_is_known_is_told_at_once() {
+        let (pictures, mut heard) = pictures();
+        pictures.began(3);
+        assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
+        pictures.said(1280, 800);
+        assert_eq!(heard.try_recv(), Ok(picture(3, 1280, 800)));
+        assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn a_size_that_comes_before_the_window_is_known_is_told_when_it_is() {
+        let (pictures, mut heard) = pictures();
+        pictures.said(1280, 800);
+        assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
+        pictures.began(3);
+        assert_eq!(heard.try_recv(), Ok(picture(3, 1280, 800)));
+        assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn of_the_sizes_that_came_before_the_window_is_known_the_last_is_told() {
+        let (pictures, mut heard) = pictures();
+        pictures.said(1280, 800);
+        pictures.said(640, 400);
+        pictures.began(3);
+        assert_eq!(heard.try_recv(), Ok(picture(3, 640, 400)));
+        assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn every_new_size_is_told_in_the_order_it_came() {
+        let (pictures, mut heard) = pictures();
+        pictures.began(3);
+        pictures.said(1280, 800);
+        pictures.said(800, 800);
+        pictures.said(1280, 800);
+        for expected in [(1280, 800), (800, 800), (1280, 800)] {
+            assert_eq!(heard.try_recv(), Ok(picture(3, expected.0, expected.1)));
+        }
+        assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    fn window(id: u64, role: WindowRole) -> WindowSession {
+        WindowSession {
+            id,
+            role,
+            device_id: "ab".repeat(32),
+            device_name: "Studio Mac".to_owned(),
+            title: None,
+            app: None,
+            width: 1440,
+            height: 900,
+            control: false,
+            screen: Some(100),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_screens_hear_of_a_window_before_they_hear_of_its_picture() {
+        let (events, mut heard) = broadcast::channel(8);
+        let sessions = Sessions::new(None, None, Questions::new(events.clone()), events.clone());
+        let pictures = Pictures::new(events);
+        // The source has said the size already when the app makes the window known.
+        pictures.said(1280, 800);
+        assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
+        let shown = window(6, WindowRole::Viewing);
+
+        // What the entry holds does not matter here, so it is the one that needs no handle.
+        sessions.begin(
+            shown.clone(),
+            Live::Sharing(Weak::new()),
+            Box::pin(std::future::pending()),
+            Some(&pictures),
+        );
+
+        assert_eq!(heard.try_recv(), Ok(Event::WindowStarted(shown)));
+        assert_eq!(heard.try_recv(), Ok(picture(6, 1280, 800)));
+        assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[tokio::test]
+    async fn a_window_that_has_no_pictures_to_wait_for_is_told_alone() {
+        let (events, mut heard) = broadcast::channel(8);
+        let sessions = Sessions::new(None, None, Questions::new(events.clone()), events);
+        let shared = window(2, WindowRole::Sharing);
+
+        sessions.begin(
+            shared.clone(),
+            Live::Sharing(Weak::new()),
+            Box::pin(std::future::pending()),
+            None,
+        );
+
+        assert_eq!(heard.try_recv(), Ok(Event::WindowStarted(shared)));
+        assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    /// A decoder that writes down what it is given.
+    struct Recorder(Arc<Mutex<Vec<String>>>);
+
+    impl Decoder for Recorder {
+        fn decode(
+            &mut self,
+            frame: &FrameHeader,
+            picture: Vec<u8>,
+        ) -> std::result::Result<(), DecodeError> {
+            locked(&self.0).push(format!(
+                "decode {} of {} bytes",
+                frame.number,
+                picture.len()
+            ));
+            Ok(())
+        }
+
+        fn show(&mut self, number: u64) {
+            locked(&self.0).push(format!("show {number}"));
+        }
+
+        fn source(&mut self, message: SourceMessage) {
+            locked(&self.0).push(format!("source {message:?}"));
+        }
+
+        fn state(&self) -> DecoderState {
+            DecoderState {
+                decode_us: 1234,
+                thermal: Thermal::Fair,
+            }
+        }
+
+        fn ended(&mut self) {
+            locked(&self.0).push("ended".to_owned());
+        }
+    }
+
+    fn watching() -> (
+        Watching,
+        Arc<Mutex<Vec<String>>>,
+        broadcast::Receiver<Event>,
+    ) {
+        let (pictures, heard) = pictures();
+        pictures.began(5);
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let decoder = Watching {
+            decoder: Box::new(Recorder(Arc::clone(&written))),
+            pictures,
+        };
+        (decoder, written, heard)
+    }
+
+    #[test]
+    fn the_decoder_of_the_platform_is_given_everything_as_it_comes() {
+        let (mut decoder, written, _) = watching();
+        let header = FrameHeader {
+            session: SessionId::from_bytes([7; SessionId::LEN]),
+            number: 9,
+            depends_on: 9,
+            chain: 0,
+            epoch: 0,
+            capture_time: 0,
+            flags: Flags::KEY,
+        };
+        assert!(decoder.decode(&header, vec![0; 12]).is_ok());
+        decoder.show(9);
+        decoder.source(SourceMessage::Resume);
+        decoder.ended();
+        assert_eq!(
+            *locked(&written),
+            ["decode 9 of 12 bytes", "show 9", "source Resume", "ended"]
+        );
+        let state = decoder.state();
+        assert_eq!((state.decode_us, state.thermal), (1234, Thermal::Fair));
+    }
+
+    #[test]
+    fn what_the_source_says_is_given_on_and_only_its_picture_is_told_to_the_screens() {
+        let (mut decoder, written, mut heard) = watching();
+        decoder.source(config(1000, 500));
+        assert_eq!(heard.try_recv(), Ok(picture(5, 1000, 500)));
+        for message in [
+            SourceMessage::Pause(Pause {
+                reason: PauseReason::Hidden,
+            }),
+            SourceMessage::Resume,
+        ] {
+            decoder.source(message);
+        }
+        assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
+        let written = locked(&written);
+        assert_eq!(written.len(), 3);
+        assert!(written[0].starts_with("source Config("), "{written:?}");
+        assert!(written[1].starts_with("source Pause("), "{written:?}");
+        assert_eq!(written[2], "source Resume");
+    }
 
     #[test]
     fn an_end_is_told_as_a_screen_needs_it() {

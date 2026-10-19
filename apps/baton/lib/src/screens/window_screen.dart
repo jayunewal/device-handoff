@@ -152,7 +152,10 @@ class _WindowScreenState extends State<WindowScreen> {
             ),
             body: SafeArea(
               child: running
-                  ? _Picture(session: session)
+                  ? _Picture(
+                      session: session,
+                      size: widget.controller.pictureOf(session),
+                    )
                   : _Over(
                       over: widget.controller.over(session),
                       onClose: () =>
@@ -168,15 +171,24 @@ class _WindowScreenState extends State<WindowScreen> {
 
 /// The picture of the window, as large as the screen allows with its shape kept, and zoomed
 /// with two fingers so that small writing can be read.
+///
+/// The shape is that of the picture, which the source says and can change: it scales the window to
+/// what this device takes, and a window that is resized changes shape. The shape of the window as
+/// it was offered is used until the source has said.
 class _Picture extends StatelessWidget {
-  const _Picture({required this.session});
+  const _Picture({required this.session, required this.size});
 
   final WindowSession session;
+
+  /// How large the picture is, or `null` before the source has said.
+  final PictureSize? size;
 
   @override
   Widget build(BuildContext context) {
     final screen = session.screen;
-    if (screen == null || session.width <= 0 || session.height <= 0) {
+    final width = size?.width ?? session.width;
+    final height = size?.height ?? session.height;
+    if (screen == null || width <= 0 || height <= 0) {
       return const _Message(
         title: 'This window cannot be shown here',
         detail: 'Baton did not get a screen to draw it on.',
@@ -188,7 +200,7 @@ class _Picture extends StatelessWidget {
       child: SizedBox.expand(
         child: Center(
           child: AspectRatio(
-            aspectRatio: session.width / session.height,
+            aspectRatio: width / height,
             child: Semantics(
               label:
                   'The window ${windowName(session.title, session.app)} from '

@@ -64,6 +64,22 @@ pub enum Event {
     /// A window is shown on this device or shared from it. When it is shown here, the session
     /// names the screen to draw it with.
     WindowStarted(WindowSession),
+    /// The picture of a window that is shown here is this many pixels wide and high. The source
+    /// says so before its first picture and again whenever it changes the size, so a screen
+    /// lays the picture out in this shape and not in that of the window that was offered: the
+    /// source scales a window to a picture that fits what this device takes, and a window that
+    /// is resized changes shape.
+    ///
+    /// It always comes after the [`Event::WindowStarted`] of the same window, and is not sent
+    /// for a window that is shared from this device.
+    WindowPicture {
+        /// The [`WindowSession::id`] whose picture this is.
+        id: u64,
+        /// The width of the picture in pixels, at least 1.
+        width: u32,
+        /// The height of the picture in pixels, at least 1.
+        height: u32,
+    },
     /// A window that was shown or shared is over.
     WindowEnded {
         /// The [`WindowSession::id`] that ended.
@@ -79,7 +95,8 @@ pub enum Event {
     /// out as a no after two minutes, an offer ends when its time is up, and a transfer that
     /// was taken shows no end. The events of windows are not recovered either: a screen that
     /// missed `WindowStarted` cannot end that window short of stopping the app, and a request to
-    /// show a window that it missed runs out as a no.
+    /// show a window that it missed runs out as a no. A missed `WindowPicture` leaves the
+    /// picture in the shape of the window that was offered until the next one comes.
     Resync,
 }
 

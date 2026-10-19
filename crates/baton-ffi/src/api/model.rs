@@ -580,6 +580,19 @@ pub enum Event {
         /// The session.
         session: WindowSession,
     },
+    /// The picture of a window that is shown here is this many pixels wide and high. The source
+    /// says so before its first picture and again whenever it changes the size, so a screen
+    /// lays the picture out in this shape and not in that of the window that was offered. It
+    /// comes after the `Event.windowStarted` of the same window, and not for a window that is
+    /// shared from this device.
+    WindowPicture {
+        /// The `WindowSession.id` whose picture this is.
+        id: i64,
+        /// The width of the picture in pixels, at least 1.
+        width: u32,
+        /// The height of the picture in pixels, at least 1.
+        height: u32,
+    },
     /// A window that was shown or shared is over.
     WindowEnded {
         /// The `WindowSession.id` that ended.
