@@ -23,7 +23,7 @@ use std::{
 
 use baton_core::{
     Config, ConfirmationCode, HandoffHandler, Identity, Node, PairApprovalRequest, PairedDevice,
-    TrustStore, Tuning, clock::ManualClock, config::RelayMode, util::BoxFuture,
+    TransferHandler, TrustStore, Tuning, clock::ManualClock, config::RelayMode, util::BoxFuture,
 };
 use baton_proto::{
     DeviceId, DeviceInfo, Platform,
@@ -117,6 +117,8 @@ pub struct Spec {
     pub before_registering: Option<Arc<dyn Fn(DeviceId) -> BoxFuture<'static, ()> + Send + Sync>>,
     /// Takes the place of the recorder, which then stays empty.
     handler: Option<Box<dyn HandoffHandler>>,
+    /// What takes the files that other devices send. A device without it takes none.
+    transfers: Option<Arc<dyn TransferHandler>>,
 }
 
 impl Spec {
@@ -144,12 +146,19 @@ impl Spec {
             relay_only: None,
             before_registering: None,
             handler: None,
+            transfers: None,
         }
     }
 
     /// Hands what the device receives to `handler` instead of recording it.
     pub fn with_handler(mut self, handler: impl HandoffHandler) -> Self {
         self.handler = Some(Box::new(handler));
+        self
+    }
+
+    /// Has the device take the files that other devices send, as `handler` decides.
+    pub fn with_transfers(mut self, handler: Arc<dyn TransferHandler>) -> Self {
+        self.transfers = Some(handler);
         self
     }
 
@@ -186,6 +195,9 @@ impl Spec {
             .tuning(self.tuning);
         if let Some(hook) = self.before_registering {
             builder = builder.before_registering(move |peer| hook(peer));
+        }
+        if let Some(transfers) = self.transfers {
+            builder = builder.transfer_handler(transfers);
         }
         let node = builder
             .customize_endpoint(move |builder| {

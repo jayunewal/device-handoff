@@ -22,15 +22,15 @@
 //!   on. It asks the application, through a handler, for what only the application can say.
 //! - `lanes` takes the lanes of those transfers from the task that takes the unidirectional
 //!   streams of a connection, and gives each to the attempt it belongs to.
-//! - [`send`] is the other side: it walks what a person chose to send into the list of an
-//!   offer.
+//! - [`send`] is the other side: it walks what a person chose to send into the list of an offer,
+//!   reads the files into the frames that the lanes write, and carries the transfer from the offer
+//!   to its outcome over as many connections as it takes.
 //!
 //! A node takes part as a receiver once the application gives it a
 //! [`TransferHandler`](incoming::TransferHandler) (see
 //! [`NodeBuilder::transfer_handler`](crate::NodeBuilder::transfer_handler)), and advertises
-//! `transfer.files` for as long as the handler has a folder to receive into. The side that sends only
-//! walks the files so far: it makes the list and the offer of what a person chose, and nothing is
-//! sent yet.
+//! `transfer.files` for as long as the handler has a folder to receive into. Any node can send:
+//! [`Node::send_files`](crate::Node::send_files) starts a transfer to a paired device.
 
 pub mod destination;
 pub mod incoming;

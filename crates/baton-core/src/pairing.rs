@@ -527,7 +527,7 @@ impl PairServer {
             // A frame header that breaks the limits is not worth an answer.
             Err(ReadFailure::BadHeader(_)) => return Exit::Violation,
             Err(ReadFailure::TimedOut) => return Exit::TooSlow,
-            Err(ReadFailure::Transport(_)) => return Exit::Gone,
+            Err(ReadFailure::Reset(_) | ReadFailure::Transport(_)) => return Exit::Gone,
             // Garbage in the payload gets the same answer as a wrong proof.
             Err(ReadFailure::BadPayload(_)) => self.reject_invalid().await,
         };

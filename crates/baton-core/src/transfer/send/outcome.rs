@@ -9,7 +9,8 @@ use baton_proto::{
 
 /// How a transfer ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Outcome {
+#[non_exhaustive]
+pub enum Outcome {
     /// The receiver has the files, except for the ones it names.
     Done(Sent),
     /// The receiver does not take the transfer.
@@ -20,28 +21,33 @@ pub(crate) enum Outcome {
     Stopped(u32),
     /// This device gave the transfer up. `told` says whether the receiver knows, or cannot have the
     /// transfer. A receiver that was not told keeps what it holds for an hour.
-    Cancelled { told: bool },
+    Cancelled {
+        /// Whether the receiver was told, or cannot have the transfer.
+        told: bool,
+    },
     /// The transfer could not be carried through.
     Failed(Error),
 }
 
 /// A transfer that the receiver answered for.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Sent {
+#[non_exhaustive]
+pub struct Sent {
     /// What the receiver says of the files (section 8, Finish).
-    pub(crate) done: Done,
+    pub done: Done,
     /// How many files `Finish` said were sent in full.
-    pub(crate) files: u32,
+    pub files: u32,
     /// How many bytes those files add up to.
-    pub(crate) bytes: u64,
+    pub bytes: u64,
     /// The files that this device did not send, and why, in the order they were skipped. The
     /// receiver names them in `done` as well.
-    pub(crate) skipped: Vec<(u32, SkipReason)>,
+    pub skipped: Vec<(u32, SkipReason)>,
 }
 
 /// Why attempts at a transfer kept failing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Why {
+#[non_exhaustive]
+pub enum Why {
     /// The connection could not be made, or went.
     Connection,
     /// The receiver gave no answer to the offer.
@@ -58,7 +64,8 @@ pub(crate) enum Why {
 
 /// Why a transfer failed, as opposed to how it was ended.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum Error {
+#[non_exhaustive]
+pub enum Error {
     /// Every attempt failed, and the last of them failed for this reason.
     #[error("the transfer could not be carried through ({0:?})")]
     GaveUp(Why),

@@ -199,6 +199,7 @@ impl Job {
             // The receiver says that the transfer is over for new lanes, and it may be over because
             // it is done: the `Finish` that was never answered says which.
             (Err(Over::Final(Outcome::Stopped(close_code::CANCELLED))), Some(told)) => {
+                self.tracker.stage(Stage::Finishing);
                 return self.outcome_after_stop(&*link, told).await;
             }
             (Err(over), _) => return over,

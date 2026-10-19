@@ -497,7 +497,9 @@ pub(super) async fn read_control<M: Message>(
                     return ControlEnd::Violation;
                 }
             }
-            Ok(None) | Err(ReadFailure::Transport(_)) => return ControlEnd::Peer,
+            Ok(None) | Err(ReadFailure::Reset(_) | ReadFailure::Transport(_)) => {
+                return ControlEnd::Peer;
+            }
             Err(ReadFailure::BadHeader(_) | ReadFailure::BadPayload(_)) => {
                 stop(&mut recv, close_code::PROTOCOL_VIOLATION);
                 return ControlEnd::Violation;

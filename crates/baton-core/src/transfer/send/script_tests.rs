@@ -19,6 +19,7 @@ use baton_proto::{
     message::{DeclineReason, ErrorCode},
     transfer::{FailReason, Failure, Finish, TransferRequest},
 };
+use tokio_util::sync::CancellationToken;
 
 use super::{
     engine::{self, Sending},
@@ -58,8 +59,19 @@ fn start(
     policy: Policy,
     id: TransferId,
 ) -> Sending {
+    start_under(script, selection, policy, id, &CancellationToken::new())
+}
+
+/// Starts a transfer that `stop` gives up.
+fn start_under(
+    script: &Arc<Script>,
+    selection: &Arc<Selection>,
+    policy: Policy,
+    id: TransferId,
+    stop: &CancellationToken,
+) -> Sending {
     let wire: Arc<dyn Wire> = Arc::clone(script) as Arc<dyn Wire>;
-    engine::start(wire, Arc::clone(selection), policy, id).unwrap()
+    engine::start(wire, Arc::clone(selection), policy, id, stop).unwrap()
 }
 
 /// What a receiver that takes everything answers.
@@ -1036,6 +1048,27 @@ async fn lanes_stopped_with_499_after_a_silent_probe_are_followed_by_the_questio
 }
 
 #[tokio::test]
+async fn the_stage_is_finishing_while_the_outcome_is_asked_for_again_after_a_stop() {
+    let (_folder, selection) = sample(&[10, 20, 30]);
+    let me = id(1);
+    // The receiver stops the lanes with 499 and then does not answer the question, as one that is
+    // putting the files in place does not, and a person looks at the progress meanwhile.
+    let script = stopping_lanes_after_a_silent_probe(me, close_code::CANCELLED, |_| Step::Never);
+    let sending = start(&script, &selection, Policy::quick(), me);
+    let log = script.log();
+
+    // The `Finish` that was lost, the question about it, and the question asked again.
+    until("the question to be asked again", || {
+        log.requests(Kind::Finish) == 3
+    })
+    .await;
+
+    assert_eq!(sending.progress().borrow().stage, Stage::Finishing);
+    sending.cancel();
+    ended(sending).await;
+}
+
+#[tokio::test]
 async fn lanes_stopped_with_499_after_a_silent_probe_are_the_end_if_the_receiver_has_no_such_transfer()
  {
     let (_folder, selection) = sample(&[10, 20, 30]);
@@ -1415,6 +1448,51 @@ async fn dropping_the_handle_gives_the_transfer_up() {
         log.requests(Kind::Cancel) == 1
     })
     .await;
+}
+
+#[tokio::test]
+async fn the_stop_token_gives_up_every_transfer_under_it_and_cancelling_one_leaves_the_others() {
+    let (_folder, selection) = sample(&[10]);
+    let stop = CancellationToken::new();
+    let held = |me: TransferId| {
+        Arc::new(Script::new(move |call| match call.kind {
+            Kind::Offer => Step::Never,
+            _ => normal(me, call),
+        }))
+    };
+    let (first, second) = (held(id(1)), held(id(2)));
+    let one = start_under(&first, &selection, Policy::quick(), id(1), &stop);
+    let two = start_under(&second, &selection, Policy::quick(), id(2), &stop);
+    until("both offers", || {
+        first.log().requests(Kind::Offer) == 1 && second.log().requests(Kind::Offer) == 1
+    })
+    .await;
+
+    // Giving one up leaves the other alone, and the token too.
+    one.cancel();
+    assert_eq!(ended(one).await, Outcome::Cancelled { told: true });
+    assert!(!stop.is_cancelled());
+    assert_eq!(second.log().requests(Kind::Cancel), 0);
+
+    // Stopping gives up what is left, and the receiver is told.
+    stop.cancel();
+    assert_eq!(ended(two).await, Outcome::Cancelled { told: true });
+    assert_eq!(second.log().requests(Kind::Cancel), 1);
+}
+
+#[tokio::test]
+async fn a_token_that_was_stopped_before_the_transfer_started_gives_it_up_at_once() {
+    let (_folder, selection) = sample(&[10]);
+    let me = id(1);
+    let script = Arc::new(friendly(me));
+    let stop = CancellationToken::new();
+    stop.cancel();
+
+    let sending = start_under(&script, &selection, Policy::quick(), me, &stop);
+    let outcome = ended(sending).await;
+
+    assert_eq!(outcome, Outcome::Cancelled { told: true });
+    assert_eq!(script.log().events(), Vec::new());
 }
 
 // How long the engine keeps trying.
