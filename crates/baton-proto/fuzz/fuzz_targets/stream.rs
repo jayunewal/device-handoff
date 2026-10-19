@@ -3,7 +3,8 @@
 //! Feeds arbitrary bytes to the parts of window streaming that read what a device on the network
 //! sends: the start of a stream, the header of a frame of video, the messages on the two control
 //! streams, and the picture of a frame. It also feeds the sample of an encoder to the part that
-//! makes a picture of it, which is the only part of the source that takes bytes it did not write.
+//! makes a picture of it, which is the only part of the source that takes bytes it did not write,
+//! and the parameter set of a key frame to the part that reads the size of its pictures.
 //!
 //! The first byte of the input picks the part. Besides "never panics", each part is checked for
 //! what it promises:
@@ -17,7 +18,9 @@
 //!   a picture again, the picture is read as the same sample; a picture that is refused leaves the
 //!   output as it was;
 //! - a sample that is made into a picture is read back as the units that were written, and one that
-//!   is refused leaves the output as it was.
+//!   is refused leaves the output as it was;
+//! - a parameter set gives a size that is not nothing, and one that is cut short gives that size or
+//!   none.
 
 #![no_main]
 
@@ -36,13 +39,14 @@ fuzz_target!(|data: &[u8]| {
     let Some((mode, data)) = data.split_first() else {
         return;
     };
-    match mode % 6 {
+    match mode % 7 {
         0 => start(data),
         1 => header(data),
         2 => message::<SourceMessage>(data),
         3 => message::<ViewerMessage>(data),
         4 => picture(data),
-        _ => sample(data),
+        5 => sample(data),
+        _ => size(data),
     }
 });
 
@@ -141,5 +145,20 @@ fn sample(data: &[u8]) {
             .expect("a picture that was written can be read");
         assert_eq!(back.idr, summary.idr);
         assert!(back.sps.len() + back.pps.len() >= usize::from(summary.idr) * 2);
+    }
+}
+
+/// The input is a sequence parameter set, as a key frame carries it.
+fn size(data: &[u8]) {
+    let size = h264::picture_size(data);
+    if let Some((width, height)) = size {
+        assert!(width > 0 && height > 0);
+    }
+    for length in 0..data.len().min(96) {
+        let cut = h264::picture_size(&data[..length]);
+        assert!(
+            cut.is_none() || cut == size,
+            "a set cut at {length} gave another size"
+        );
     }
 }

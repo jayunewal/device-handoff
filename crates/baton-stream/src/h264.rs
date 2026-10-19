@@ -13,12 +13,18 @@
 //!   wire, and a key frame gets the parameter sets of the format in front of it.
 //! - [`annex_b_to_avcc`] is for the viewer: a picture from the wire becomes a sample for the
 //!   decoder, and the parameter sets come out of it for the description of the format.
+//! - [`picture_size`] reads the size of the picture from a sequence parameter set, so that a
+//!   viewer can refuse a picture beyond what it said it takes before a decoder allocates for it.
 //!
 //! The NAL units themselves are not changed: both forms hold them with their emulation
 //! prevention bytes in, so only what lies between them differs. The picture comes from a paired
 //! device, which may be broken, so every length is checked and nothing here panics. Each
 //! function finds out whether it can convert before it writes, so an error leaves the output as
 //! it was.
+
+mod size;
+
+pub use size::picture_size;
 
 /// A slice of a picture that is not an IDR picture.
 pub const NAL_SLICE: u8 = 1;
