@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'fake_backend.dart';
+import 'fake_screen.dart';
 import 'fake_shower.dart';
 
 // Five minutes after the items in these tests were sent.
@@ -52,6 +53,7 @@ Future<FakeSession> _show(
   FakeSession? given,
   FileChooser chooser = const SystemFileChooser(),
   FakeShower? shower,
+  FakeScreen? screen,
 ]) async {
   final session = given ?? _session();
   tester.view
@@ -68,6 +70,7 @@ Future<FakeSession> _show(
         openLink: (address) async => true,
         chooser: chooser,
         shower: shower ?? FakeShower(),
+        screen: screen ?? FakeScreen(),
       ),
     ),
   );
@@ -89,6 +92,13 @@ Future<FakeSession> _sending(WidgetTester tester) async {
 }
 
 const _sent = FilesSent(files: 1, bytes: 2000000, failed: 0, leftOut: 0);
+
+/// A device that shows the windows of others and shares its own.
+const _windowAbilities = WindowAbilities(
+  canShow: true,
+  canShare: true,
+  canControl: false,
+);
 
 const _plan = ReceivedItem.link(
   url: 'https://example.com/plan',
@@ -394,6 +404,215 @@ void main() {
       expect(session.transfer.cancelled, isTrue);
       expect(find.text('Send to Kitchen iPad'), findsNothing);
       expect(find.text('The plan'), findsOneWidget);
+    },
+  );
+
+  testWidgets('a device that cannot share a window offers no button for it', (
+    tester,
+  ) async {
+    await _show(tester);
+
+    expect(find.byTooltip('Share a window with Kitchen iPad'), findsNothing);
+  });
+
+  testWidgets('a device that can share a window does so from the row', (
+    tester,
+  ) async {
+    final session = _session()..abilities = _windowAbilities;
+    await _show(tester, session);
+
+    await tester.tap(find.byTooltip('Share a window with Kitchen iPad'));
+    await tester.pumpAndSettle();
+
+    expect(session.windowsShared, [(id: _kitchenIpad.id, control: false)]);
+  });
+
+  testWidgets(
+    'an offer to show a window is asked at the bottom of both places',
+    (tester) async {
+      final session = await _show(tester);
+
+      session.emit(Event.windowRequested(request: sampleWindowRequest));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Anna’s Mac wants to show you a window'),
+        findsOneWidget,
+      );
+      expect(find.text('Budget.numbers · Numbers'), findsOneWidget);
+      expect(
+        find.byType(SnackBar),
+        findsNothing,
+        reason: 'the question is on show, so nothing needs to point to it',
+      );
+
+      await tester.tap(find.text('Inbox'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Anna’s Mac wants to show you a window'),
+        findsOneWidget,
+        reason: 'it stays while the person looks at the inbox',
+      );
+      expect(session.windowAnswers, isEmpty);
+    },
+  );
+
+  testWidgets('a window that is accepted opens on a screen of its own', (
+    tester,
+  ) async {
+    final screen = FakeScreen();
+    final session = await _show(
+      tester,
+      null,
+      const SystemFileChooser(),
+      null,
+      screen,
+    );
+    session.emit(Event.windowRequested(request: sampleWindowRequest));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Show it'));
+    await tester.pump();
+
+    expect(session.windowAnswers, [(request: 3, accept: true)]);
+    expect(find.text('Opening the window from Anna’s Mac…'), findsOneWidget);
+    expect(screen.on, isTrue, reason: 'the screen stays on while it opens');
+
+    session.emit(Event.windowStarted(session: sampleWindowSession()));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(Texture), findsOneWidget);
+    expect(find.text('Opening the window from Anna’s Mac…'), findsNothing);
+    expect(screen.on, isTrue, reason: 'and while the window shows');
+
+    // The person stops it, after being asked.
+    await tester.tap(find.byTooltip('Stop showing'));
+    await tester.pumpAndSettle();
+    expect(find.text('Stop showing this window?'), findsOneWidget);
+    await tester.tap(find.text('Stop'));
+    await tester.pumpAndSettle();
+
+    expect(session.windowsEnded, [1]);
+    expect(find.byType(Texture), findsNothing);
+    expect(find.text('Kitchen iPad'), findsOneWidget);
+    expect(screen.on, isFalse);
+  });
+
+  testWidgets('an offer that comes over another screen is pointed out', (
+    tester,
+  ) async {
+    final session = await _show(tester);
+    await tester.tap(find.text('Kitchen iPad'));
+    await tester.pumpAndSettle();
+    expect(find.text('Send to Kitchen iPad'), findsOneWidget);
+
+    session.emit(Event.windowRequested(request: sampleWindowRequest));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('Anna’s Mac wants to show you a window.'),
+      findsOneWidget,
+      reason: 'it is said over the screen the person is on',
+    );
+    expect(
+      find.textContaining('Budget'),
+      findsNothing,
+      reason: 'the title of a window can be private, and nothing says it',
+    );
+
+    await tester.tap(find.text('Review'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Send to Kitchen iPad'), findsNothing);
+    expect(find.text('Anna’s Mac wants to show you a window'), findsOneWidget);
+    expect(find.text('Budget.numbers · Numbers'), findsOneWidget);
+  });
+
+  testWidgets(
+    'the notice of an offer has the name of the device made fit to show',
+    (tester) async {
+      final session = await _show(tester);
+      await tester.tap(find.text('Kitchen iPad'));
+      await tester.pumpAndSettle();
+
+      session.emit(
+        const Event.windowRequested(
+          request: WindowRequest(
+            id: 5,
+            deviceId: 'd2',
+            deviceName: 'Mac\u202Eexe',
+            width: 800,
+            height: 600,
+            control: false,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Mac\uFFFDexe wants to show you a window.'),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets('Review asks before it leaves a window that is shown', (
+    tester,
+  ) async {
+    final session = await _show(tester);
+    session.emit(Event.windowStarted(session: sampleWindowSession()));
+    await tester.pumpAndSettle();
+    expect(find.byType(Texture), findsOneWidget);
+
+    session.emit(Event.windowRequested(request: sampleWindowRequest));
+    await tester.pumpAndSettle();
+    expect(find.text('Anna’s Mac wants to show you a window.'), findsOneWidget);
+
+    await tester.tap(find.text('Review'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Stop showing this window?'), findsOneWidget);
+    expect(session.windowsEnded, isEmpty);
+
+    await tester.tap(find.text('Keep showing'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(Texture), findsOneWidget);
+    expect(session.windowsEnded, isEmpty);
+
+    // Let the window end, so that nothing is left going.
+    session.emit(const Event.windowEnded(id: 1, end: WindowEnd.otherDevice()));
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets(
+    'a window of this device that another shows is stopped from here',
+    (tester) async {
+      final session = await _show(tester);
+
+      session.emit(
+        Event.windowStarted(
+          session: sampleWindowSession(role: WindowRole.sharing),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Sharing Budget.numbers with Anna’s Mac'),
+        findsOneWidget,
+      );
+      expect(
+        find.byType(Texture),
+        findsNothing,
+        reason: 'it is not shown here',
+      );
+
+      await tester.tap(find.text('Stop sharing'));
+      await tester.pumpAndSettle();
+
+      expect(session.windowsEnded, [1]);
+      expect(find.text('Sharing Budget.numbers with Anna’s Mac'), findsNothing);
     },
   );
 }

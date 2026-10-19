@@ -1,0 +1,991 @@
+// SPDX-License-Identifier: Apache-2.0
+
+import 'package:baton/src/backend.dart';
+import 'package:baton/src/windows_controller.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'fake_backend.dart';
+import 'fake_screen.dart';
+
+const _ipad = Device(
+  id: 'c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1',
+  name: 'Kitchen iPad',
+  platform: Platform.ipadOs,
+  fingerprint: 'abcd-efgh-ijkl-mnop-qrst',
+  pairedAt: 1760000000,
+  lastSeenAt: 1760529600,
+);
+
+FakeSession _session() => FakeSession(
+  me: const Me(
+    id: 'f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0',
+    name: 'Desk Mac',
+    platform: Platform.macOs,
+    fingerprint: 'wxyz-abcd-efgh-ijkl-mnop',
+  ),
+  pairedDevices: [_ipad],
+);
+
+/// Starts a controller on [session]. Without an [openingLimit] it has the one that it has in the
+/// app, which the tests of the time that a window may take to begin rely on.
+Future<WindowsController> _controller(
+  FakeSession session, {
+  FakeScreen? screen,
+  Duration? openingLimit,
+}) async {
+  final keeper = screen ?? FakeScreen();
+  final controller = openingLimit == null
+      ? WindowsController(session, screen: keeper)
+      : WindowsController(session, screen: keeper, openingLimit: openingLimit);
+  addTearDown(controller.dispose);
+  await controller.start();
+  return controller;
+}
+
+/// Hands [request] to the controller, as Baton does when a device offers a window.
+Future<void> _offer(FakeSession session, WindowRequest request) async {
+  session.emit(Event.windowRequested(request: request));
+  await pumpEventQueue();
+}
+
+Future<void> _begin(FakeSession session, WindowSession window) async {
+  session.emit(Event.windowStarted(session: window));
+  await pumpEventQueue();
+}
+
+Future<void> _end(FakeSession session, int id, WindowEnd end) async {
+  session.emit(Event.windowEnded(id: id, end: end));
+  await pumpEventQueue();
+}
+
+void main() {
+  group('an offer to show a window', () {
+    test(
+      'waits for the person, and the screens are told that it came',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        final asked = <WindowRequest>[];
+        final heard = controller.asked.listen(asked.add);
+        addTearDown(heard.cancel);
+
+        await _offer(session, sampleWindowRequest);
+
+        expect(controller.requests, [sampleWindowRequest]);
+        expect(asked, [sampleWindowRequest]);
+        expect(controller.opening, isNull);
+        expect(controller.sessions, isEmpty);
+        expect(controller.notes, isEmpty);
+      },
+    );
+
+    test('that comes twice is one offer', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final asked = <WindowRequest>[];
+      final heard = controller.asked.listen(asked.add);
+      addTearDown(heard.cancel);
+
+      await _offer(session, sampleWindowRequest);
+      await _offer(session, sampleWindowRequest);
+
+      expect(controller.requests, [sampleWindowRequest]);
+      expect(asked, hasLength(1));
+    });
+
+    test(
+      'is said yes to, and the window is being opened until it begins',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        await _offer(session, sampleWindowRequest);
+
+        expect(controller.answer(sampleWindowRequest, accept: true), isTrue);
+
+        expect(session.windowAnswers, [(request: 3, accept: true)]);
+        expect(controller.requests, isEmpty);
+        expect(controller.opening, sampleWindowRequest);
+        expect(controller.sessions, isEmpty);
+
+        final window = sampleWindowSession();
+        final begun = <WindowSession>[];
+        final heard = controller.started.listen(begun.add);
+        addTearDown(heard.cancel);
+        await _begin(session, window);
+
+        expect(controller.opening, isNull);
+        expect(controller.sessions, [window]);
+        expect(begun, [window]);
+      },
+    );
+
+    test('is said no to, and nothing is opened', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      await _offer(session, sampleWindowRequest);
+
+      expect(controller.answer(sampleWindowRequest, accept: false), isTrue);
+
+      expect(session.windowAnswers, [(request: 3, accept: false)]);
+      expect(controller.requests, isEmpty);
+      expect(controller.opening, isNull);
+      expect(controller.notes, isEmpty);
+    });
+
+    test('is answered once', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      await _offer(session, sampleWindowRequest);
+
+      expect(controller.answer(sampleWindowRequest, accept: true), isTrue);
+      expect(controller.answer(sampleWindowRequest, accept: false), isFalse);
+
+      expect(session.windowAnswers, [(request: 3, accept: true)]);
+      expect(controller.opening, sampleWindowRequest);
+    });
+
+    test(
+      'that the other device took back is not opened, and the person is told',
+      () async {
+        final session = _session()..windowRequestWaiting = false;
+        final controller = await _controller(session);
+        await _offer(session, sampleWindowRequest);
+
+        expect(controller.answer(sampleWindowRequest, accept: true), isFalse);
+
+        expect(controller.requests, isEmpty);
+        expect(controller.opening, isNull);
+        expect(controller.notes, hasLength(1));
+        expect(controller.notes.single, isA<WindowWithdrawn>());
+        expect(
+          (controller.notes.single as WindowWithdrawn).request,
+          sampleWindowRequest,
+        );
+      },
+    );
+
+    test(
+      'that the other device took back, and was said no to, says nothing',
+      () async {
+        final session = _session()..windowRequestWaiting = false;
+        final controller = await _controller(session);
+        await _offer(session, sampleWindowRequest);
+
+        expect(controller.answer(sampleWindowRequest, accept: false), isFalse);
+
+        expect(controller.requests, isEmpty);
+        expect(controller.notes, isEmpty);
+      },
+    );
+
+    test(
+      'goes without an answer when the other device takes it back',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        const other = WindowRequest(
+          id: 4,
+          deviceId: 'd1',
+          deviceName: 'Desk PC',
+          width: 800,
+          height: 600,
+          control: false,
+        );
+        await _offer(session, sampleWindowRequest);
+        await _offer(session, other);
+
+        session.emit(const Event.windowRequestEnded(id: 3));
+        await pumpEventQueue();
+
+        expect(controller.requests, [other]);
+        expect(controller.notes, isEmpty);
+      },
+    );
+
+    test('that ends without being on the list changes nothing', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      var told = 0;
+      controller.addListener(() => told++);
+
+      session.emit(const Event.windowRequestEnded(id: 9));
+      await pumpEventQueue();
+
+      expect(told, 0);
+      expect(controller.notes, isEmpty);
+    });
+
+    test('that was said yes to and could not be shown says why', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      await _offer(session, sampleWindowRequest);
+      controller.answer(sampleWindowRequest, accept: true);
+
+      session.emit(
+        const Event.windowRequestEnded(
+          id: 3,
+          failure: 'This device cannot show windows.',
+        ),
+      );
+      await pumpEventQueue();
+
+      expect(controller.opening, isNull);
+      expect(controller.notes, hasLength(1));
+      expect(controller.notes.single, isA<WindowFailed>());
+      expect(
+        (controller.notes.single as WindowFailed).message,
+        'This device cannot show windows.',
+      );
+    });
+
+    test('that was said yes to and ends without a failure is no longer being opened', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      await _offer(session, sampleWindowRequest);
+      controller.answer(sampleWindowRequest, accept: true);
+
+      session.emit(const Event.windowRequestEnded(id: 3));
+      await pumpEventQueue();
+
+      expect(controller.opening, isNull);
+      expect(controller.notes, isEmpty);
+    });
+
+    test(
+      'that another offer ends does not stop the one that is being opened',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        await _offer(session, sampleWindowRequest);
+        controller.answer(sampleWindowRequest, accept: true);
+
+        session.emit(const Event.windowRequestEnded(id: 8));
+        await pumpEventQueue();
+
+        expect(controller.opening, sampleWindowRequest);
+      },
+    );
+
+    testWidgets('is given up on when the window does not begin in time', (
+      tester,
+    ) async {
+      final session = _session();
+      final controller = await _controller(session);
+      session.emit(Event.windowRequested(request: sampleWindowRequest));
+      await tester.pump();
+      controller.answer(sampleWindowRequest, accept: true);
+
+      await tester.pump(const Duration(seconds: 19));
+      expect(controller.opening, sampleWindowRequest);
+      expect(controller.notes, isEmpty);
+
+      await tester.pump(const Duration(seconds: 2));
+      expect(controller.opening, isNull);
+      expect(controller.notes, hasLength(1));
+      expect(controller.notes.single, isA<WindowNotOpened>());
+      expect(
+        (controller.notes.single as WindowNotOpened).request,
+        sampleWindowRequest,
+      );
+    });
+
+    testWidgets(
+      'that begins after it was given up on is shown, and not told as a failure',
+      (tester) async {
+        final session = _session();
+        final controller = await _controller(
+          session,
+          openingLimit: const Duration(seconds: 5),
+        );
+        session.emit(Event.windowRequested(request: sampleWindowRequest));
+        await tester.pump();
+        controller.answer(sampleWindowRequest, accept: true);
+        await tester.pump(const Duration(seconds: 6));
+        expect(controller.notes.single, isA<WindowNotOpened>());
+        final begun = <WindowSession>[];
+        final heard = controller.started.listen(begun.add);
+        addTearDown(heard.cancel);
+
+        final window = sampleWindowSession();
+        session.emit(Event.windowStarted(session: window));
+        await tester.pump();
+
+        expect(controller.sessions, [window]);
+        expect(begun, [window]);
+        expect(controller.notes, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'that begins after it was given up on takes away its own note, and not the note of another device',
+      (tester) async {
+        final session = _session();
+        final controller = await _controller(
+          session,
+          openingLimit: const Duration(seconds: 5),
+        );
+        const other = WindowRequest(
+          id: 4,
+          deviceId: 'd1',
+          deviceName: 'Desk PC',
+          width: 800,
+          height: 600,
+          control: false,
+        );
+        session.emit(Event.windowRequested(request: sampleWindowRequest));
+        session.emit(const Event.windowRequested(request: other));
+        await tester.pump();
+        controller.answer(sampleWindowRequest, accept: true);
+        await tester.pump(const Duration(seconds: 6));
+        controller.answer(other, accept: true);
+        await tester.pump(const Duration(seconds: 6));
+        expect(
+          controller.notes.map((note) => (note as WindowNotOpened).request),
+          [other, sampleWindowRequest],
+        );
+
+        // The window of the first device begins; the second one never did.
+        session.emit(Event.windowStarted(session: sampleWindowSession()));
+        await tester.pump();
+
+        expect(
+          controller.notes.map((note) => (note as WindowNotOpened).request),
+          [other],
+        );
+      },
+    );
+
+    testWidgets('that is opened in time is not given up on later', (
+      tester,
+    ) async {
+      final session = _session();
+      final controller = await _controller(
+        session,
+        openingLimit: const Duration(seconds: 5),
+      );
+      session.emit(Event.windowRequested(request: sampleWindowRequest));
+      await tester.pump();
+      controller.answer(sampleWindowRequest, accept: true);
+      session.emit(Event.windowStarted(session: sampleWindowSession()));
+      await tester.pump(const Duration(seconds: 1));
+
+      await tester.pump(const Duration(seconds: 30));
+
+      expect(controller.notes, isEmpty);
+    });
+
+    testWidgets('is not given up on after another window was said yes to', (
+      tester,
+    ) async {
+      final session = _session();
+      final controller = await _controller(
+        session,
+        openingLimit: const Duration(seconds: 10),
+      );
+      session.emit(Event.windowRequested(request: sampleWindowRequest));
+      await tester.pump();
+      controller.answer(sampleWindowRequest, accept: true);
+      await tester.pump(const Duration(seconds: 8));
+      const next = WindowRequest(
+        id: 4,
+        deviceId: 'd1',
+        deviceName: 'Desk PC',
+        width: 800,
+        height: 600,
+        control: false,
+      );
+      session.emit(const Event.windowRequested(request: next));
+      await tester.pump();
+      controller.answer(next, accept: true);
+
+      // The first answer's time has passed, and the second's has not.
+      await tester.pump(const Duration(seconds: 5));
+
+      expect(controller.opening, next);
+      expect(controller.notes, isEmpty);
+
+      // Nothing is left pending when the window is let go of.
+      controller.dispose();
+    });
+  });
+
+  group('a window that runs', () {
+    test('that is shown here is told to the screens', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final begun = <WindowSession>[];
+      final heard = controller.started.listen(begun.add);
+      addTearDown(heard.cancel);
+      final window = sampleWindowSession(id: 4, screen: 9);
+
+      await _begin(session, window);
+
+      expect(controller.sessions, [window]);
+      expect(begun, [window]);
+    });
+
+    test(
+      'that is shared from here is on the list, and not told as one to draw',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        final begun = <WindowSession>[];
+        final heard = controller.started.listen(begun.add);
+        addTearDown(heard.cancel);
+        final window = sampleWindowSession(role: WindowRole.sharing);
+
+        await _begin(session, window);
+
+        expect(controller.sessions, [window]);
+        expect(begun, isEmpty);
+      },
+    );
+
+    test('that begins twice is one window', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final begun = <WindowSession>[];
+      final heard = controller.started.listen(begun.add);
+      addTearDown(heard.cancel);
+      final window = sampleWindowSession();
+
+      await _begin(session, window);
+      await _begin(session, window);
+
+      expect(controller.sessions, [window]);
+      expect(begun, hasLength(1));
+    });
+
+    test('that begins while another offer is being opened leaves the offer alone if it is shared', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      await _offer(session, sampleWindowRequest);
+      controller.answer(sampleWindowRequest, accept: true);
+
+      await _begin(session, sampleWindowSession(role: WindowRole.sharing));
+
+      expect(controller.opening, sampleWindowRequest);
+    });
+
+    test(
+      'that the other device ends is taken off, and the person is told',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        final window = sampleWindowSession();
+        await _begin(session, window);
+
+        await _end(session, 1, const WindowEnd.otherDevice());
+
+        expect(controller.sessions, isEmpty);
+        expect(controller.notes, hasLength(1));
+        final note = controller.notes.single as WindowOver;
+        expect(note.session, window);
+        expect(note.end, const WindowEnd.otherDevice());
+      },
+    );
+
+    test('that is lost or fails is told the same way', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      await _begin(session, sampleWindowSession(id: 1));
+      await _begin(
+        session,
+        sampleWindowSession(id: 2, role: WindowRole.sharing),
+      );
+
+      await _end(session, 1, const WindowEnd.lost());
+      await _end(
+        session,
+        2,
+        const WindowEnd.failed(message: 'Something broke.'),
+      );
+
+      expect(controller.sessions, isEmpty);
+      expect(controller.notes.map((note) => (note as WindowOver).end), [
+        const WindowEnd.failed(message: 'Something broke.'),
+        const WindowEnd.lost(),
+      ]);
+    });
+
+    test('that this device ended says nothing', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      await _begin(session, sampleWindowSession());
+
+      await _end(session, 1, const WindowEnd.thisDevice());
+
+      expect(controller.sessions, isEmpty);
+      expect(controller.notes, isEmpty);
+    });
+
+    test('that was never on the list ends without a word', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      var told = 0;
+      controller.addListener(() => told++);
+
+      await _end(session, 5, const WindowEnd.otherDevice());
+
+      expect(told, 0);
+      expect(controller.notes, isEmpty);
+    });
+
+    test('ends the one that was asked for, and no other', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final first = sampleWindowSession(id: 1, role: WindowRole.sharing);
+      final second = sampleWindowSession(id: 2);
+      await _begin(session, first);
+      await _begin(session, second);
+
+      expect(controller.end(second), isTrue);
+
+      expect(session.windowsEnded, [2]);
+      expect(controller.sessions, [first]);
+    });
+
+    test('that is ended is off the list at once, and its end is not told as one to mind', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession();
+      await _begin(session, window);
+      var told = 0;
+      controller.addListener(() => told++);
+
+      controller.end(window);
+
+      expect(controller.sessions, isEmpty);
+      expect(told, 1);
+
+      await _end(session, 1, const WindowEnd.thisDevice());
+
+      expect(controller.notes, isEmpty);
+      expect(told, 1);
+    });
+
+    test('that is ended twice is told to the screens once', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession();
+      await _begin(session, window);
+      controller.end(window);
+      var told = 0;
+      controller.addListener(() => told++);
+
+      controller.end(window);
+
+      expect(told, 0);
+      expect(controller.sessions, isEmpty);
+    });
+
+    test('that was not running is said so by Baton', () async {
+      final session = _session()..windowRuns = false;
+      final controller = await _controller(session);
+
+      expect(controller.end(sampleWindowSession()), isFalse);
+      expect(session.windowsEnded, [1]);
+    });
+
+    test('has its end found by the window, until it is put away', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final first = sampleWindowSession(id: 1);
+      final second = sampleWindowSession(id: 2);
+      await _begin(session, first);
+      await _begin(session, second);
+      await _end(session, 2, const WindowEnd.lost());
+
+      expect(controller.over(first), isNull);
+      final over = controller.over(second);
+      expect(over, isNotNull);
+      expect(over!.end, const WindowEnd.lost());
+
+      controller.dismiss(over);
+
+      expect(controller.over(second), isNull);
+      expect(controller.notes, isEmpty);
+    });
+  });
+
+  group('sharing a window', () {
+    test('asks Baton to share it with the device, and is offering until the device has answered', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      session.holdShare();
+
+      final done = controller.share(_ipad);
+      await pumpEventQueue();
+
+      expect(session.windowsShared, [(id: _ipad.id, control: false)]);
+      expect(controller.offering, _ipad);
+
+      session.releaseShare();
+      await done;
+
+      expect(controller.offering, isNull);
+      expect(controller.notes, isEmpty);
+    });
+
+    test('passes on that the other device may control the window', () async {
+      final session = _session();
+      final controller = await _controller(session);
+
+      await controller.share(_ipad, control: true);
+
+      expect(session.windowsShared, [(id: _ipad.id, control: true)]);
+    });
+
+    test('is one offer at a time', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      session.holdShare();
+
+      final first = controller.share(_ipad);
+      await pumpEventQueue();
+      await controller.share(_ipad);
+
+      expect(session.windowsShared, hasLength(1));
+
+      session.releaseShare();
+      await first;
+    });
+
+    test('can be done again after an offer', () async {
+      final session = _session();
+      final controller = await _controller(session);
+
+      await controller.share(_ipad);
+      await controller.share(_ipad);
+
+      expect(session.windowsShared, hasLength(2));
+    });
+
+    test('says nothing when the person chose no window', () async {
+      final session = _session()..sharing = const WindowShared.nothingChosen();
+      final controller = await _controller(session);
+
+      await controller.share(_ipad);
+
+      expect(controller.notes, isEmpty);
+      expect(controller.sessions, isEmpty);
+    });
+
+    test('leaves the window to its event when it began', () async {
+      final session = _session();
+      final window = sampleWindowSession(role: WindowRole.sharing);
+      session.sharing = WindowShared.started(session: window);
+      final controller = await _controller(session);
+
+      await controller.share(_ipad);
+
+      // The session comes as an event, and a result that arrives after the window ended would
+      // bring back a window that is over.
+      expect(controller.sessions, isEmpty);
+      expect(controller.notes, isEmpty);
+    });
+
+    test('tells the person why a device did not take the window', () async {
+      final session = _session()
+        ..sharing = const WindowShared.declined(
+          message: 'Kitchen iPad did not accept the window.',
+        );
+      final controller = await _controller(session);
+
+      await controller.share(_ipad);
+
+      expect(controller.notes, hasLength(1));
+      expect(
+        (controller.notes.single as WindowFailed).message,
+        'Kitchen iPad did not accept the window.',
+      );
+      expect(controller.offering, isNull);
+    });
+
+    test('tells the person why it failed', () async {
+      final session = _session()
+        ..shareFailure = const BatonError(
+          kind: ErrorKind.unreachable,
+          message: 'Kitchen iPad did not answer.',
+        );
+      final controller = await _controller(session);
+
+      await controller.share(_ipad);
+
+      expect(
+        (controller.notes.single as WindowFailed).message,
+        'Kitchen iPad did not answer.',
+      );
+      expect(controller.offering, isNull);
+    });
+
+    test(
+      'is let go of when the controller is, and what comes after is not told',
+      () async {
+        final session = _session();
+        final controller = WindowsController(session, screen: FakeScreen());
+        await controller.start();
+        session.holdShare();
+        final done = controller.share(_ipad);
+        await pumpEventQueue();
+        var told = 0;
+        controller.addListener(() => told++);
+
+        controller.dispose();
+        session.releaseShare();
+        await done;
+
+        expect(told, 0);
+      },
+    );
+  });
+
+  group('the notes', () {
+    test('are the last few, newest first', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      for (var i = 1; i <= WindowsController.keepNotes + 2; i++) {
+        await _begin(session, sampleWindowSession(id: i, device: 'Mac $i'));
+        await _end(session, i, const WindowEnd.otherDevice());
+      }
+
+      final names = controller.notes.map(
+        (note) => (note as WindowOver).session.deviceName,
+      );
+      expect(names, ['Mac 7', 'Mac 6', 'Mac 5', 'Mac 4', 'Mac 3']);
+    });
+
+    test('are put away one at a time', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      await _begin(session, sampleWindowSession(id: 1));
+      await _begin(session, sampleWindowSession(id: 2));
+      await _end(session, 1, const WindowEnd.lost());
+      await _end(session, 2, const WindowEnd.lost());
+      final newest = controller.notes.first;
+      var told = 0;
+      controller.addListener(() => told++);
+
+      controller.dismiss(newest);
+
+      expect(controller.notes, hasLength(1));
+      expect(controller.notes.single, isNot(newest));
+      expect(told, 1);
+
+      controller.dismiss(newest);
+
+      expect(told, 1, reason: 'a note that is gone is not told again');
+    });
+  });
+
+  group('the screen of the device', () {
+    test('stays on from an offer until the window begins', () async {
+      final screen = FakeScreen();
+      final session = _session();
+      final controller = await _controller(session, screen: screen);
+      expect(screen.asked, isEmpty);
+
+      await _offer(session, sampleWindowRequest);
+      expect(screen.asked, ['keepOn']);
+
+      controller.answer(sampleWindowRequest, accept: true);
+      expect(screen.asked, ['keepOn'], reason: 'it is still being opened');
+
+      await _begin(session, sampleWindowSession());
+      expect(screen.asked, ['keepOn', 'letTurnOff']);
+    });
+
+    testWidgets('stays on for as long after the answer as after the offer', (
+      tester,
+    ) async {
+      final screen = FakeScreen();
+      final session = _session();
+      final controller = await _controller(
+        session,
+        screen: screen,
+        openingLimit: const Duration(minutes: 1),
+      );
+      session.emit(Event.windowRequested(request: sampleWindowRequest));
+      await tester.pump();
+      expect(screen.on, isTrue);
+      await tester.pump(const Duration(minutes: 4, seconds: 50));
+      expect(screen.on, isTrue);
+
+      controller.answer(sampleWindowRequest, accept: true);
+
+      // The hold that the offer began runs out at five minutes, unless the answer renewed it.
+      await tester.pump(const Duration(seconds: 15));
+      expect(screen.on, isTrue);
+      expect(screen.asked, ['keepOn']);
+
+      // Nothing is left pending when the controller is let go of.
+      controller.dispose();
+    });
+
+    test('goes back to locking when the offer is said no to', () async {
+      final screen = FakeScreen();
+      final session = _session();
+      final controller = await _controller(session, screen: screen);
+      await _offer(session, sampleWindowRequest);
+
+      controller.answer(sampleWindowRequest, accept: false);
+
+      expect(screen.asked, ['keepOn', 'letTurnOff']);
+    });
+
+    test('goes back to locking when the offer is taken back', () async {
+      final screen = FakeScreen();
+      final session = _session();
+      await _controller(session, screen: screen);
+      await _offer(session, sampleWindowRequest);
+
+      session.emit(const Event.windowRequestEnded(id: 3));
+      await pumpEventQueue();
+
+      expect(screen.asked, ['keepOn', 'letTurnOff']);
+    });
+
+    test('stays on while one offer waits after another is answered', () async {
+      final screen = FakeScreen();
+      final session = _session();
+      final controller = await _controller(session, screen: screen);
+      const other = WindowRequest(
+        id: 4,
+        deviceId: 'd1',
+        deviceName: 'Desk PC',
+        width: 800,
+        height: 600,
+        control: false,
+      );
+      await _offer(session, sampleWindowRequest);
+      await _offer(session, other);
+
+      controller.answer(sampleWindowRequest, accept: false);
+
+      expect(screen.on, isTrue);
+      expect(screen.asked, ['keepOn']);
+    });
+
+    test('is let go of with the controller', () async {
+      final screen = FakeScreen();
+      final session = _session();
+      final controller = WindowsController(session, screen: screen);
+      await controller.start();
+      await _offer(session, sampleWindowRequest);
+
+      controller.dispose();
+
+      expect(screen.asked, ['keepOn', 'letTurnOff']);
+    });
+
+    test('is not touched by a window that is shared', () async {
+      final screen = FakeScreen();
+      final session = _session();
+      await _controller(session, screen: screen);
+
+      await _begin(session, sampleWindowSession(role: WindowRole.sharing));
+
+      expect(screen.asked, isEmpty);
+    });
+  });
+
+  group('the events', () {
+    test('are listened to until the controller is let go of', () async {
+      final session = _session();
+      final controller = WindowsController(session, screen: FakeScreen());
+      await controller.start();
+      expect(session.listening, isTrue);
+
+      controller.dispose();
+
+      expect(session.listening, isFalse);
+    });
+
+    test('that arrive after it was let go of are not heard', () async {
+      final session = _session();
+      final controller = WindowsController(session, screen: FakeScreen());
+      await controller.start();
+      controller.dispose();
+
+      session.emit(Event.windowRequested(request: sampleWindowRequest));
+      await pumpEventQueue();
+
+      expect(controller.requests, isEmpty);
+    });
+
+    test('are not listened to at all if the controller was let go of before they came', () async {
+      final session = _session()..holdEvents();
+      final controller = WindowsController(session, screen: FakeScreen());
+      final started = controller.start();
+      controller.dispose();
+
+      session.releaseEvents();
+      await started;
+      await pumpEventQueue();
+
+      expect(session.listening, isFalse);
+    });
+
+    test('that are not about windows are left to other screens', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      var told = 0;
+      controller.addListener(() => told++);
+
+      session.emit(const Event.devicesChanged());
+      session.emit(const Event.resync());
+      await pumpEventQueue();
+
+      expect(told, 0);
+    });
+
+    test('are let go of once, however often the controller is', () async {
+      final session = _session();
+      final controller = WindowsController(session, screen: FakeScreen());
+      await controller.start();
+
+      controller
+        ..dispose()
+        ..dispose();
+
+      expect(session.listening, isFalse);
+    });
+  });
+
+  test('says what the device does with windows, as Baton says it', () async {
+    final session = _session()
+      ..abilities = const WindowAbilities(
+        canShow: true,
+        canShare: false,
+        canControl: false,
+      );
+    final controller = await _controller(session);
+
+    expect(
+      controller.abilities,
+      const WindowAbilities(canShow: true, canShare: false, canControl: false),
+    );
+    expect(controller.abilities, session.windowAbilities());
+  });
+
+  test(
+    'keeps what it shows out of reach of the screens that read it',
+    () async {
+      final session = _session();
+      final controller = await _controller(session);
+      await _offer(session, sampleWindowRequest);
+      await _begin(session, sampleWindowSession());
+      await _end(session, 1, const WindowEnd.lost());
+
+      expect(
+        () => controller.requests.add(sampleWindowRequest),
+        throwsUnsupportedError,
+      );
+      expect(
+        () => controller.sessions.add(sampleWindowSession()),
+        throwsUnsupportedError,
+      );
+      expect(() => controller.notes.clear(), throwsUnsupportedError);
+    },
+  );
+}
