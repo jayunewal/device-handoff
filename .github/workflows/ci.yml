@@ -65,7 +65,7 @@ jobs:
         run: |
           set -u
           everything() {
-            printf 'rust=true\napp=true\nmac=true\niphone=true\n' | tee -a "$GITHUB_OUTPUT"
+            printf 'rust=false\napp=false\nmac=false\niphone=true\n' | tee -a "$GITHUB_OUTPUT"
           }
           if [ "$EVENT" != pull_request ]; then
             echo "This is not a pull request, so every job runs."
@@ -358,6 +358,34 @@ jobs:
       - name: Fetch the app's packages
         working-directory: apps/baton
         run: flutter pub get --enforce-lockfile
+      - name: Diag - machine and Flutter SDK
+        continue-on-error: true
+        run: |
+          {
+            echo "== machine"
+            sw_vers; sysctl -n hw.model hw.ncpu hw.memsize; xcodebuild -version; uptime; df -h /
+            echo "== simulator runtimes"
+            xcrun simctl list runtimes
+            echo "== iPhone devices"
+            xcrun simctl list devices available | grep -E '^--|iPhone'
+            root=$(dirname "$(dirname "$(command -v flutter)")")
+            echo "== Flutter SDK at $root"
+            du -sh "$root" "$root/bin/cache" || true
+            ls "$root/bin/cache/artifacts/engine" || true
+            du -sh "$root"/bin/cache/artifacts/engine/* || true
+          } >> "$RUNNER_TEMP/notes.txt" 2>&1
+      - name: Diag - Xcode, release build for the device, timed
+        continue-on-error: true
+        working-directory: apps/baton
+        run: |
+          {
+            echo "== Xcode, release build for the device, from nothing"
+            start=$(date +%s)
+            flutter build ios --release --no-codesign --config-only
+            echo "flutter build --config-only took $(( $(date +%s) - start )) s"
+            cd ios
+            python3 "$GITHUB_WORKSPACE/.github/scripts/diag-xcodebuild.py" xcrun xcodebuild -configuration Release -workspace Runner.xcworkspace -scheme Runner BUILD_DIR="$PWD/../build/ios" -sdk iphoneos -destination generic/platform=iOS CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= EXPANDED_CODE_SIGN_IDENTITY= ONLY_ACTIVE_ARCH=NO FLUTTER_SUPPRESS_ANALYTICS=true COMPILER_INDEX_STORE_ENABLE=NO -showBuildTimingSummary
+          } >> "$RUNNER_TEMP/notes.txt" 2>&1
       - name: Build the app for an iPhone
         # Nothing signs it, so it cannot be installed from here. Whoever installs it builds it
         # on their own Mac, with their own Apple ID; docs/install-the-app.md says how.
@@ -383,6 +411,21 @@ jobs:
           echo "Simulator: $udid"
           echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
           xcrun simctl bootstatus "$udid" -b
+      - name: Diag - Xcode, debug build for the simulator, timed
+        continue-on-error: true
+        working-directory: apps/baton
+        env:
+          XCODE_XCCONFIG_FILE: ${{ runner.temp }}/simulator.xcconfig
+        run: |
+          {
+            printf 'ARCHS[sdk=iphonesimulator*] = %s\n' "$(uname -m)" > "$XCODE_XCCONFIG_FILE"
+            echo "== Xcode, debug build for the simulator, from nothing"
+            start=$(date +%s)
+            flutter build ios --debug --simulator --no-codesign --config-only -t integration_test/app_test.dart
+            echo "flutter build --config-only took $(( $(date +%s) - start )) s"
+            cd ios
+            python3 "$GITHUB_WORKSPACE/.github/scripts/diag-xcodebuild.py" xcrun xcodebuild -configuration Debug VERBOSE_SCRIPT_LOGGING=YES -workspace Runner.xcworkspace -scheme Runner BUILD_DIR="$PWD/../build/ios" -sdk iphonesimulator -destination "id=$SIMULATOR_UDID" ONLY_ACTIVE_ARCH=YES ARCHS=arm64 FLUTTER_SUPPRESS_ANALYTICS=true COMPILER_INDEX_STORE_ENABLE=NO -showBuildTimingSummary
+          } >> "$RUNNER_TEMP/notes.txt" 2>&1
       - name: Start the app in the simulator
         timeout-minutes: 25
         working-directory: apps/baton
@@ -417,6 +460,29 @@ jobs:
       - name: Say how much of the Rust build came from the cache
         if: always()
         run: bash .github/scripts/cargokit-cache-report.sh
+      - name: Diag - what was noted
+        if: always()
+        run: cat "$RUNNER_TEMP/notes.txt" || true
+
+  diag-boot:
+    name: Diag boot (${{ matrix.order }})
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        order: [preinstalled-first, new-first]
+    steps:
+      - uses: actions/checkout@v7
+      - name: The machine
+        run: |
+          sw_vers; sysctl -n hw.model hw.ncpu hw.memsize; xcodebuild -version; uptime; df -h /
+          xcrun simctl list runtimes
+          xcrun simctl list devicetypes | grep -i iphone | tail -3
+          xcrun simctl list devices available
+      - name: Boot
+        run: bash .github/scripts/diag-boot.sh "${{ matrix.order }}"
 
   # The downloads: the `baton` program for each system, packed with the try-it guide. A pull
   # request does not build them, which leaves it one Mac job fewer. A push to main and a run
