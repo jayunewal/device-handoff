@@ -293,9 +293,8 @@ impl Book {
         first
     }
 
-    /// Whether `file` is open: it has started, and has neither ended nor failed. A lane that holds
-    /// the bytes of a piece of a file that is not open drops them, since the file's `End` or
-    /// `Skip` has been sent or will be.
+    /// Whether `file` is open: it has started, and has neither ended nor failed.
+    #[cfg(test)]
     pub(crate) fn is_open(&self, file: u32) -> bool {
         lock(&self.state)
             .active

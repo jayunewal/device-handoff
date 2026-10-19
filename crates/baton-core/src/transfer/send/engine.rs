@@ -6,6 +6,10 @@
 //! runs it as a task of its own. It returns a [`Sending`], which shows how far the transfer has got,
 //! can give it up, and says how it ended.
 //!
+//! A stop token ends every transfer that is made under it, as [`Sending::cancel`] ends one. A node
+//! gives all its transfers the token that it stops by, so that a program that is closing does not
+//! leave them running, and a transfer that is cancelled does not stop the others.
+//!
 //! The task makes attempts ([`Job::attempt`]) one after another until one of them is the end of the
 //! transfer. An attempt that fails in a way another may not is followed by a pause and another
 //! attempt, and every attempt sends everything again, on a connection of its own (section 8,
@@ -41,7 +45,8 @@ use super::{
 
 /// A transfer that is going. Dropping it gives the transfer up.
 #[derive(Debug)]
-pub(crate) struct Sending {
+#[must_use = "dropping a transfer that is going gives it up"]
+pub struct Sending {
     id: TransferId,
     progress: watch::Receiver<Progress>,
     cancel: CancellationToken,
@@ -50,23 +55,23 @@ pub(crate) struct Sending {
 
 impl Sending {
     /// The id the transfer has on the wire.
-    pub(crate) fn id(&self) -> TransferId {
+    pub fn id(&self) -> TransferId {
         self.id
     }
 
     /// How far the transfer has got. The latest value is always there, and a screen that looks at
     /// it now and then sees the latest.
-    pub(crate) fn progress(&self) -> watch::Receiver<Progress> {
+    pub fn progress(&self) -> watch::Receiver<Progress> {
         self.progress.clone()
     }
 
     /// Gives the transfer up. The outcome says whether the receiver was told.
-    pub(crate) fn cancel(&self) {
+    pub fn cancel(&self) {
         self.cancel.cancel();
     }
 
     /// Waits for the end of the transfer.
-    pub(crate) async fn outcome(mut self) -> Outcome {
+    pub async fn outcome(mut self) -> Outcome {
         match (&mut self.task).await {
             Ok(outcome) => outcome,
             Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
@@ -82,7 +87,8 @@ impl Drop for Sending {
     }
 }
 
-/// Starts sending `selection` to the receiver at the other end of `wire`, as the transfer `id`.
+/// Starts sending `selection` to the receiver at the other end of `wire`, as the transfer `id`. The
+/// transfer is given up when `stop` is cancelled, as it is when [`Sending::cancel`] is called.
 ///
 /// # Errors
 ///
@@ -93,13 +99,15 @@ pub(crate) fn start(
     selection: Arc<Selection>,
     policy: Policy,
     id: TransferId,
+    stop: &CancellationToken,
 ) -> Result<Sending, Error> {
     let list = ListFrames::new(selection.entries())
         .map(Arc::new)
         .map_err(|_| Error::Internal("the list cannot be made into frames"))?;
     let summary = selection.summary();
     let (tracker, progress) = Tracker::new(summary.files, summary.bytes);
-    let cancel = CancellationToken::new();
+    // A child, so that giving this transfer up leaves the others alone.
+    let cancel = stop.child_token();
     let job = Job::new(
         wire,
         selection,

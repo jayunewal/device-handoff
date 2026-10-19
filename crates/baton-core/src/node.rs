@@ -46,7 +46,7 @@ use std::{
 };
 
 use baton_proto::{
-    ALPN_PAIR, ALPN_SESSION, DeviceId, DeviceInfo, ItemId, Platform, close_code,
+    ALPN_PAIR, ALPN_SESSION, DeviceId, DeviceInfo, ItemId, Platform, TransferId, close_code,
     message::{Handoff, Item, Message, Outcome, Ping, Request, Response},
     pair::{ConfirmationCode, PairSecret},
     ticket::{MAX_ADDRS, MAX_RELAY_BYTES, PairTicket},
@@ -80,6 +80,7 @@ use crate::{
     transfer::{
         incoming::{FINISH_WAIT, Incoming, LANE_STREAMS, TransferHandler},
         lanes::LaneSink,
+        send::{self, NodeWire, Policy, Selection, Sending, Wire},
     },
     transport,
     trust::{PairedDevice, TrustEvent, TrustStore},
@@ -674,6 +675,70 @@ impl Node {
                 "the answer to a handoff was not for that handoff",
             )),
         }
+    }
+
+    /// Starts sending the files and folders of `selection` to a paired device, and returns at once
+    /// with the transfer that is going.
+    ///
+    /// The person at the other end is asked whether to take them, and may decline. The transfer
+    /// goes on connections of its own, a new one for each attempt, and is tried again when a
+    /// connection goes or the other device stalls, until the patience of the sender runs out.
+    /// [`Sending::progress`] shows which of these it is doing, [`Sending::cancel`] gives it up and
+    /// [`Sending::outcome`] says how it ended. Dropping the [`Sending`] gives the transfer up, and so
+    /// does stopping the node.
+    ///
+    /// A device that takes no part in transfers declines the offer as unsupported, which is an
+    /// [`Outcome::Declined`](send::Outcome::Declined) like a person saying no.
+    ///
+    /// This must be called from within a Tokio runtime, as the transfer is run as a task of its own.
+    ///
+    /// # Errors
+    ///
+    /// If the device is not paired, or a number for the transfer's id cannot be had.
+    pub fn send_files(&self, peer: &DeviceId, selection: Selection) -> Result<Sending> {
+        self.send_files_with(peer, selection, Policy::default())
+    }
+
+    /// [`send_files`](Self::send_files) with other numbers than the usual ones, which the tests of
+    /// this crate use to see a transfer give up in less than minutes.
+    pub(crate) fn send_files_with(
+        &self,
+        peer: &DeviceId,
+        selection: Selection,
+        policy: Policy,
+    ) -> Result<Sending> {
+        if self.shared.trust.get(peer).is_none() {
+            return Err(Error::NotPaired(*peer));
+        }
+        self.send_over(Arc::new(self.wire_to(peer)), selection, policy)
+    }
+
+    /// Starts a transfer over `wire`. It is [`wire_to`](Self::wire_to) for a device, except in the
+    /// tests of this crate, which put something between the transfer and the connections to hold
+    /// the lanes at a moment they choose.
+    pub(crate) fn send_over(
+        &self,
+        wire: Arc<dyn Wire>,
+        selection: Selection,
+        policy: Policy,
+    ) -> Result<Sending> {
+        let id = TransferId::from_bytes(random_bytes()?);
+        send::start(wire, Arc::new(selection), policy, id, &self.shared.stop)
+            .map_err(|error| Error::Internal(error.to_string()))
+    }
+
+    /// The connections that a transfer to `peer` goes over: a new one for each attempt.
+    pub(crate) fn wire_to(&self, peer: &DeviceId) -> NodeWire {
+        NodeWire::new(self.endpoint.clone(), Arc::clone(&self.shared), *peer)
+    }
+
+    /// Closes every connection to `peer`, as a network that fails would, and says how many were
+    /// open.
+    #[cfg(test)]
+    pub(crate) fn drop_connections(&self, peer: &DeviceId) -> usize {
+        self.shared
+            .registry
+            .close_peer(peer, close_code::INTERNAL, b"a test")
     }
 
     /// The connection that requests to `peer` go on, made if there is none.
