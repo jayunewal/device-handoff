@@ -72,7 +72,7 @@ pub(crate) use answer::Viewer;
 pub use answer::{Viewing, WindowHandler, WindowOffer, WindowVerdict};
 
 use offer::Sending;
-pub(crate) use offer::{Offered, Sharer, ask};
+pub(crate) use offer::{Offered, SETTLE, Sharer, ask};
 pub use offer::{ShareOutcome, WindowShare};
 
 use source::Source;
@@ -188,6 +188,9 @@ struct Table {
     /// The place of the one session that this device has as a source, from the offer to the
     /// session. The session itself is in `sessions` from then on.
     sending: Option<Sending>,
+    /// The `Stop`s that this device sent and that are not answered yet, by the device they went
+    /// to. Each token is cancelled when its `Stop` has been answered or has come to nothing.
+    stops: Vec<(DeviceId, CancellationToken)>,
 }
 
 impl Table {

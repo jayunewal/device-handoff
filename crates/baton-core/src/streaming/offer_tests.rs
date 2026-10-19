@@ -15,6 +15,7 @@ use baton_proto::{
     stream::{Codec, StreamRequest},
 };
 use baton_stream::control::{Config as Format, SourceMessage};
+use tokio_util::sync::CancellationToken;
 
 use super::{
     End, Picture, ShareOutcome, SourceHandle, Takes, WindowShare,
@@ -24,6 +25,7 @@ use crate::{
     error::{Error, Result},
     node::Tuning,
     testing::{PATIENCE, QUIET, TestNode},
+    util::lock,
 };
 
 /// What the platform of a test makes of what a viewer takes: a picture of 1440 by 900 pixels at
@@ -99,6 +101,14 @@ impl Rig {
             assert!(Instant::now() < deadline, "timed out waiting for {what}");
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
+    }
+}
+
+/// Waits until the person at the viewer has been asked about `waiting`, which must not finish.
+async fn asked_about<F: std::future::Future>(rig: &Rig, waiting: std::pin::Pin<&mut F>) {
+    tokio::select! {
+        _ = waiting => panic!("the offer was answered"),
+        () = rig.until("the person to be asked", |rig| !rig.app.asked().is_empty()) => {}
     }
 }
 
@@ -272,6 +282,111 @@ async fn giving_up_while_the_person_decides_takes_the_question_back() {
 }
 
 #[tokio::test]
+async fn an_offer_made_straight_after_one_was_given_up_is_taken() {
+    let rig = Rig::new(Plan::Wait).await;
+    let mut first = Box::pin(rig.share(window()));
+    asked_about(&rig, first.as_mut()).await;
+    // The person at the source picks another window: the first call is dropped and the second
+    // made in the same breath.
+    drop(first);
+    rig.app.plan(Plan::Accept);
+    let (outcome, _) = rig.share(window()).await;
+    assert!(
+        matches!(outcome, Ok(ShareOutcome::Started(_))),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_offer_made_straight_after_one_was_given_up_by_another_thread_is_taken() {
+    let rig = Rig::new(Plan::Wait).await;
+    let mut first = Box::pin(rig.share(window()));
+    asked_about(&rig, first.as_mut()).await;
+    // The call is dropped by a thread that is not in the runtime, as it is when an application
+    // polls it from one place and gives up from another.
+    std::thread::scope(|scope| {
+        scope.spawn(move || drop(first)).join().unwrap();
+    });
+    rig.app.plan(Plan::Accept);
+    let (outcome, _) = rig.share(window()).await;
+    assert!(
+        matches!(outcome, Ok(ShareOutcome::Started(_))),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_offer_made_straight_after_a_session_ended_is_taken() {
+    let rig = Rig::new(Plan::Accept).await;
+    let (handle, _) = rig.started().await;
+    // The person at the source switches to another window while one is shown.
+    handle.end();
+    let (outcome, _) = rig.share(window()).await;
+    assert!(
+        matches!(outcome, Ok(ShareOutcome::Started(_))),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_offer_made_straight_after_the_handle_was_dropped_is_taken() {
+    let rig = Rig::new(Plan::Accept).await;
+    let (handle, _) = rig.started().await;
+    drop(handle);
+    let (outcome, _) = rig.share(window()).await;
+    assert!(
+        matches!(outcome, Ok(ShareOutcome::Started(_))),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_offer_made_straight_after_the_platform_ended_the_session_is_taken() {
+    let rig = Rig::new(Plan::Accept).await;
+    let (handle, _) = rig.started().await;
+    // The platform calls the handle from a thread of its own, which is not in the runtime.
+    std::thread::spawn(move || handle.end()).join().unwrap();
+    let (outcome, _) = rig.share(window()).await;
+    assert!(
+        matches!(outcome, Ok(ShareOutcome::Started(_))),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_offer_made_straight_after_the_platform_dropped_the_handle_is_taken() {
+    let rig = Rig::new(Plan::Accept).await;
+    let (handle, _) = rig.started().await;
+    // The platform lets go of the handle from a thread of its own too.
+    std::thread::spawn(move || drop(handle)).join().unwrap();
+    let (outcome, _) = rig.share(window()).await;
+    assert!(
+        matches!(outcome, Ok(ShareOutcome::Started(_))),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_session_that_the_viewer_ended_is_not_stopped_again() {
+    let rig = Rig::new(Plan::Accept).await;
+    let (handle, heard) = rig.started().await;
+    // The session runs: the viewer has opened its control stream and reported.
+    rig.until("the viewer to report", |_| heard.count("report") > 0)
+        .await;
+    rig.app.handle(0).end();
+    assert_eq!(
+        tokio::time::timeout(PATIENCE, handle.ended())
+            .await
+            .expect("the source did not hear that the session ended"),
+        End::Peer
+    );
+    // The viewer let go of its place when it ended the session: no `Stop` goes out, and the next
+    // offer has nothing to wait for.
+    let kept = lock(&rig.source.node.streaming().table).stops.len();
+    assert_eq!(kept, 0, "{kept} stops are kept");
+}
+
+#[tokio::test]
 async fn a_second_window_is_not_offered_while_one_is_offered_or_shared() {
     let rig = Rig::new(Plan::Wait).await;
     let mut first = Box::pin(rig.share(window()));
@@ -326,6 +441,220 @@ async fn the_connection_is_held_for_as_long_as_the_session_runs() {
         assert!(Instant::now() < deadline, "the hold was not let go of");
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
+}
+
+#[tokio::test]
+async fn the_connection_is_held_while_the_person_decides() {
+    let rig = Rig::new(Plan::Wait).await;
+    let mut first = Box::pin(rig.share(window()));
+    asked_about(&rig, first.as_mut()).await;
+    let session = rig
+        .source
+        .node
+        .pooled_session(&rig.viewer.id)
+        .await
+        .unwrap();
+    assert_eq!(session.holds(), 1, "the offer that waits holds nothing");
+    drop(first);
+    let deadline = Instant::now() + PATIENCE;
+    while session.holds() != 0 {
+        assert!(Instant::now() < deadline, "the hold was not let go of");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+#[tokio::test]
+async fn the_connection_stays_held_while_the_session_runs() {
+    let rig = Rig::new(Plan::Accept).await;
+    let (handle, heard) = rig.started().await;
+    // The session has run for a while: the viewer has reported.
+    rig.until("the viewer to report", |_| heard.count("report") > 0)
+        .await;
+    let session = rig
+        .source
+        .node
+        .pooled_session(&rig.viewer.id)
+        .await
+        .unwrap();
+    assert_eq!(session.holds(), 1, "the running session holds nothing");
+    drop(handle);
+}
+
+#[tokio::test]
+async fn unpairing_another_device_leaves_an_offer_that_waits() {
+    let rig = Rig::new(Plan::Wait).await;
+    let other = TestNode::start().await;
+    rig.source.pair_with(&other);
+    let mut waiting = Box::pin(rig.share(window()));
+    asked_about(&rig, waiting.as_mut()).await;
+    rig.source.trust.remove(&other.id).unwrap();
+    tokio::select! {
+        (outcome, _) = &mut waiting => panic!("the offer ended: {outcome:?}"),
+        () = tokio::time::sleep(QUIET) => {}
+    }
+    assert_eq!(rig.app.taken_back(), 0);
+}
+
+#[tokio::test]
+async fn a_viewer_that_takes_nothing_is_stopped_at_once() {
+    let rig = Rig::new(Plan::Accept).await;
+    let outcome = rig
+        .source
+        .node
+        .share(&rig.viewer.id, window(), Platform(Heard::default()), |_| {
+            None
+        })
+        .await;
+    assert!(
+        matches!(outcome, Ok(ShareOutcome::Unmatched)),
+        "{outcome:?}"
+    );
+    // The `Stop` ends the viewer's side, well before it would end on its own for want of the
+    // source's control stream.
+    let view = rig.app.handle(0);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), view.ended())
+            .await
+            .expect("the viewer was not stopped"),
+        End::Peer
+    );
+}
+
+#[tokio::test]
+async fn a_format_beyond_what_the_viewer_takes_stops_the_viewer_at_once() {
+    let rig = Rig::new(Plan::Accept).await;
+    let outcome = rig
+        .source
+        .node
+        .share(
+            &rig.viewer.id,
+            window(),
+            Platform(Heard::default()),
+            |takes| {
+                fit(takes).map(|format| Format {
+                    width: takes.max_width + 1,
+                    ..format
+                })
+            },
+        )
+        .await;
+    assert!(matches!(outcome, Err(Error::Config(_))), "{outcome:?}");
+    let view = rig.app.handle(0);
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), view.ended())
+            .await
+            .expect("the viewer was not stopped"),
+        End::Peer
+    );
+}
+
+// The `Stop`s that went before an offer.
+
+#[tokio::test]
+async fn an_offer_waits_for_a_stop_that_went_to_the_same_device_and_for_no_other() {
+    let rig = Rig::new(Plan::Accept).await;
+    let streaming = rig.source.node.streaming();
+    let (to, other) = (rig.viewer.id, TestNode::start().await.id);
+    let answered = CancellationToken::new();
+    lock(&streaming.table).stops.push((to, answered.clone()));
+
+    // A `Stop` to one device is nothing to an offer to another.
+    tokio::time::timeout(PATIENCE, streaming.settled(&other, Duration::from_secs(60)))
+        .await
+        .expect("an offer to another device waited");
+    // To the same device it is: nothing is settled until the answer is in.
+    let waiting = streaming.settled(&to, Duration::from_secs(60));
+    tokio::pin!(waiting);
+    tokio::select! {
+        () = &mut waiting => panic!("the offer did not wait for the Stop"),
+        () = tokio::time::sleep(QUIET) => {}
+    }
+    answered.cancel();
+    tokio::time::timeout(PATIENCE, waiting)
+        .await
+        .expect("the offer went on waiting after the Stop was answered");
+}
+
+#[tokio::test]
+async fn an_offer_does_not_wait_for_a_stop_longer_than_it_is_given() {
+    let rig = Rig::new(Plan::Accept).await;
+    let streaming = rig.source.node.streaming();
+    lock(&streaming.table)
+        .stops
+        .push((rig.viewer.id, CancellationToken::new()));
+    let began = Instant::now();
+    tokio::time::timeout(
+        PATIENCE,
+        streaming.settled(&rig.viewer.id, Duration::from_millis(200)),
+    )
+    .await
+    .expect("the offer waited for longer than it was given");
+    let waited = began.elapsed();
+    assert!(waited >= Duration::from_millis(200), "{waited:?}");
+}
+
+#[tokio::test]
+async fn an_offer_is_made_only_once_the_stop_before_it_is_answered() {
+    let rig = Rig::new(Plan::Wait).await;
+    let streaming = rig.source.node.streaming();
+    // A `Stop` that went to the viewer a moment ago, and is not answered yet.
+    let answered = CancellationToken::new();
+    lock(&streaming.table)
+        .stops
+        .push((rig.viewer.id, answered.clone()));
+    let mut offer = Box::pin(rig.share(window()));
+    tokio::select! {
+        (outcome, _) = &mut offer => panic!("the offer ended: {outcome:?}"),
+        () = tokio::time::sleep(QUIET) => {}
+    }
+    assert!(
+        rig.app.asked().is_empty(),
+        "the offer went out before the Stop was answered"
+    );
+    answered.cancel();
+    asked_about(&rig, offer.as_mut()).await;
+}
+
+#[tokio::test]
+async fn an_offer_waits_for_every_stop_that_went_before_it() {
+    let rig = Rig::new(Plan::Accept).await;
+    let streaming = rig.source.node.streaming();
+    let (first, second) = (CancellationToken::new(), CancellationToken::new());
+    {
+        let mut table = lock(&streaming.table);
+        table.stops.push((rig.viewer.id, first.clone()));
+        table.stops.push((rig.viewer.id, second.clone()));
+    }
+    let waiting = streaming.settled(&rig.viewer.id, Duration::from_secs(60));
+    tokio::pin!(waiting);
+    first.cancel();
+    tokio::select! {
+        () = &mut waiting => panic!("the offer did not wait for the second Stop"),
+        () = tokio::time::sleep(QUIET) => {}
+    }
+    second.cancel();
+    tokio::time::timeout(PATIENCE, waiting)
+        .await
+        .expect("the offer went on waiting after both Stops were answered");
+}
+
+#[tokio::test]
+async fn a_stop_that_is_answered_is_not_kept() {
+    let rig = Rig::new(Plan::Accept).await;
+    let streaming = rig.source.node.streaming();
+    let (handle, _) = rig.started().await;
+    handle.end();
+    // The answer to the `Stop` that the end sent settles it, and the next one finds it gone.
+    streaming.settled(&rig.viewer.id, PATIENCE).await;
+    let (handle, _) = rig.started().await;
+    handle.end();
+    streaming.settled(&rig.viewer.id, PATIENCE).await;
+    let (handle, _) = rig.started().await;
+    drop(handle);
+    streaming.settled(&rig.viewer.id, PATIENCE).await;
+    // Only the last is left, and it is answered: the table is tidied when the next is added.
+    let kept = lock(&streaming.table).stops.len();
+    assert!(kept <= 1, "{kept} stops are kept");
 }
 
 // What is not offered.

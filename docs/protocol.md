@@ -326,7 +326,7 @@ The reference implementation also applies the following by default. They are not
 | Lifetime of a pairing ticket | 5 minutes (a setting, from 30 seconds to 15 minutes) |
 | QUIC keep-alive and idle timeout | 10 seconds and 30 seconds |
 
-The reference implementation takes part as a receiver once the application gives it a folder to receive into, and advertises `transfer.files` for as long as it has one. It sends files with `Node::send_files`, to the times below. It takes part as a viewer of windows once the application gives it a handler for them, and advertises `stream.view` for as long as it has one. It takes part as a source of windows once the application sets it up to show its own, and advertises `stream.share` for as long as it is set up; `Node::share` makes the offer. These defaults are not part of the wire format either.
+The reference implementation takes part as a receiver once the application gives it a folder to receive into, and advertises `transfer.files` for as long as it has one. It sends files with `Node::send_files`, to the times below. It takes part as a viewer of windows once the application gives it a handler for them, and advertises `stream.view` for as long as it has one. It takes part as a source of windows once the application sets it up to show its own, and advertises `stream.share` for as long as it is set up, and `stream.control` as well when it is set up to take input; `Node::share` makes the offer. These defaults are not part of the wire format either.
 
 | Behaviour | Default |
 | --- | --- |
@@ -606,7 +606,7 @@ Request  {"Stream": {"Stop": {"session": h'<same id>', "reason": "Ended"}}}
 Response {"Stream": {"Stopped": {"session": h'<same id>'}}}
 ```
 
-`reason` is `Ended` (the person stopped sharing or viewing), `WindowClosed` (the window that was shared is gone), `Failed` (something went wrong that the person did not choose, such as the permission for capture being taken away) or `Other` from a later version. Stopping changes nothing the second time: a device that never had the session, or has forgotten it, answers `Stopped` all the same, because there is nothing left to stop. A `Stop` that arrives while the offer waits for the person withdraws it, and the request of the offer is answered `Declined(Refused)`.
+`reason` is `Ended` (the person stopped sharing or viewing), `WindowClosed` (the window that was shared is gone), `Failed` (something went wrong that the person did not choose, such as the permission for capture being taken away) or `Other` from a later version. Stopping changes nothing the second time: a device that never had the session, or has forgotten it, answers `Stopped` all the same, because there is nothing left to stop. A `Stop` that arrives while the offer waits for the person withdraws it, and the request of the offer is answered `Declined(Refused)`. A viewer that answers `Stopped` has let go of the offer or the session that the `Stop` names, which then no longer holds its place (step 3 above). A source that ends a session sends a `Stop` as well as finishing its control stream, and one that offers again to the same device straight after a `Stop`, because the person gave up an offer or ended a session, SHOULD wait for the answer first (a few seconds at most): until then the viewer may still hold its place and answer `RateLimited` (step 3 above).
 
 ### The start of a stream
 

@@ -14,6 +14,13 @@
 //!
 //! A device has one session as a source at a time in this version, so it makes no offer while
 //! another is waiting for an answer or running.
+//!
+//! A viewer has one place too, for an offer that waits for its person or a window that is shown,
+//! and it lets go of it when it answers a `Stop` for it. So a `Stop` that this device sent (when
+//! an offer was given up, when a session was ended here) is waited for, a few seconds at most,
+//! before the next offer to the same device goes out: an offer that is made straight after would
+//! otherwise meet the viewer's place still taken, and be refused as `RateLimited` by a device
+//! that is not busy.
 
 use std::{fmt, sync::Arc, time::Duration};
 
@@ -35,9 +42,13 @@ use crate::{
     util::lock,
 };
 
-/// How long a `Stop` has to be answered. It is told to a device that may be gone, and nothing
-/// waits for it.
+/// How long a `Stop` has to be answered. It is told to a device that may be gone.
 const STOP_WAIT: Duration = Duration::from_secs(10);
+
+/// How long an offer waits for the `Stop`s that went to the same device before it. A device that
+/// is reachable answers in a moment; one that is not must not keep a person waiting, and its
+/// answer to the offer, if the place is still taken, is `RateLimited`, as it was.
+pub(crate) const SETTLE: Duration = Duration::from_secs(3);
 
 /// What a device needs to take part as a source.
 pub(crate) struct Sharer {
@@ -301,12 +312,17 @@ impl Streaming {
 /// told with a `Stop`, so it takes the question back from its person. The answer is an
 /// `Accepted` or a `Declined` for this session.
 pub(crate) async fn ask(
+    streaming: &Arc<Streaming>,
+    peer: DeviceId,
     connection: &Connection,
     offer: Offer,
     wait: Duration,
 ) -> Result<StreamReply> {
     let session = offer.session;
     let mut withdraw = Withdraw {
+        streaming: Arc::clone(streaming),
+        runtime: tokio::runtime::Handle::current(),
+        peer,
         connection: connection.clone(),
         session,
         armed: true,
@@ -329,6 +345,10 @@ pub(crate) async fn ask(
 
 /// Withdraws an offer that has not been answered, when it is dropped.
 struct Withdraw {
+    streaming: Arc<Streaming>,
+    /// Sends the `Stop`: whichever thread drops the call, it need not be in the runtime.
+    runtime: tokio::runtime::Handle,
+    peer: DeviceId,
     connection: Connection,
     session: SessionId,
     armed: bool,
@@ -336,24 +356,74 @@ struct Withdraw {
 
 impl Drop for Withdraw {
     fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        // A future that is dropped outside the runtime has nothing to send the `Stop` with.
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            let (connection, session) = (self.connection.clone(), self.session);
-            runtime.spawn(async move {
-                say_stop(&connection, session, StopReason::Ended).await;
-            });
+        if self.armed {
+            self.streaming.stop_later(
+                &self.runtime,
+                self.peer,
+                &self.connection,
+                self.session,
+                StopReason::Ended,
+            );
         }
     }
 }
 
 /// Tells the device at the other end that the session, or the offer, is over.
 ///
-/// Whether it is answered changes nothing: a viewer learns of the end of a session from its
-/// control stream too, and a question that it does not take back is dropped with the connection.
+/// Whether it is answered changes nothing for the session: a viewer learns of the end of a
+/// session from its control stream too, and a question that it does not take back is dropped
+/// with the connection.
 async fn say_stop(connection: &Connection, session: SessionId, reason: StopReason) {
     let request = Request::Stream(StreamRequest::Stop(Stop { session, reason }));
     let _ = call(connection, &request, STOP_WAIT).await;
+}
+
+impl Streaming {
+    /// Tells `peer` that the offer or the session `session` is over, from a place that cannot
+    /// wait for the answer, such as a drop. The next offer to the same device waits for it
+    /// ([`settled`](Self::settled)).
+    ///
+    /// The `Stop` is sent by a task of `runtime`. It is given and not looked for, since a drop
+    /// runs on whichever thread lets go: the platform ends a session from threads of its own,
+    /// which are not in the runtime, and from there no runtime would be found.
+    pub(crate) fn stop_later(
+        self: &Arc<Self>,
+        runtime: &tokio::runtime::Handle,
+        peer: DeviceId,
+        connection: &Connection,
+        session: SessionId,
+        reason: StopReason,
+    ) {
+        let answered = CancellationToken::new();
+        {
+            let mut table = lock(&self.table);
+            table.stops.retain(|(_, answered)| !answered.is_cancelled());
+            table.stops.push((peer, answered.clone()));
+        }
+        // The guard cancels the token when the task is done, and when it is dropped without ever
+        // having run, as it is when the runtime shuts down.
+        let done = answered.drop_guard();
+        let connection = connection.clone();
+        runtime.spawn(async move {
+            say_stop(&connection, session, reason).await;
+            drop(done);
+        });
+    }
+
+    /// Waits until the `Stop`s that were sent to `peer` have been answered, but no longer than
+    /// `within`: a device that does not answer must not keep an offer back for long.
+    pub(crate) async fn settled(&self, peer: &DeviceId, within: Duration) {
+        let pending: Vec<CancellationToken> = lock(&self.table)
+            .stops
+            .iter()
+            .filter(|(to, _)| to == peer)
+            .map(|(_, answered)| answered.clone())
+            .collect();
+        let all_answered = async {
+            for answered in pending {
+                answered.cancelled().await;
+            }
+        };
+        let _ = tokio::time::timeout(within, all_answered).await;
+    }
 }
