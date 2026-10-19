@@ -48,6 +48,18 @@ fn sample(sizes: &[usize]) -> (Folder, Arc<Selection>) {
     (folder, selection)
 }
 
+/// Files that give every one of four lanes something to hold on to, in whatever order the lanes ask
+/// for it.
+///
+/// A chunk holds at most one span, and a lane claims two pieces before the first byte it writes is
+/// taken: the one it writes and the one it reads ahead. A lane that asks when every piece is claimed
+/// has nothing to write and ends, as it should, so a test that holds all four lanes needs a span for
+/// each of the eight claims. With fewer, a lane that is slow to start finds none left, and the test
+/// sees it finished where it expected it held.
+fn spans_to_hold_four_lanes() -> (Folder, Arc<Selection>) {
+    sample(&[1 << 20; 8])
+}
+
 /// How many bytes lane 0 writes for the list of `selection`.
 fn list_len(selection: &Selection) -> u64 {
     ListFrames::new(selection.entries()).unwrap().len() as u64
@@ -535,8 +547,7 @@ async fn a_stop_of_408_ends_the_attempt_and_the_next_one_goes_on() {
 
 #[tokio::test]
 async fn a_lane_that_fails_ends_the_attempt_and_the_lanes_that_are_going_are_reset_with_408() {
-    // A chunk holds at most one span, so each lane has a file of its own to hold on to.
-    let (_folder, selection) = sample(&[1 << 20; 6]);
+    let (_folder, selection) = spans_to_hold_four_lanes();
     let me = id(1);
     let list = list_len(&selection);
     let script = Arc::new(friendly(me).lanes(move |_, lane| match lane {
@@ -1400,7 +1411,7 @@ async fn cancelling_while_finish_waits_for_its_answer_tells_the_receiver() {
 
 #[tokio::test]
 async fn cancelling_while_lanes_are_going_resets_every_lane_with_499_and_tells_the_receiver() {
-    let (_folder, selection) = sample(&[1 << 20; 6]);
+    let (_folder, selection) = spans_to_hold_four_lanes();
     let me = id(1);
     let list = list_len(&selection);
     let script = Arc::new(friendly(me).lanes(move |_, lane| {
