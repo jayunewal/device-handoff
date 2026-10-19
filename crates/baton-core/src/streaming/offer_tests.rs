@@ -14,7 +14,11 @@ use baton_proto::{
     message::{DeclineReason, capability},
     stream::{Codec, StreamRequest},
 };
-use baton_stream::control::{Config as Format, SourceMessage};
+use baton_stream::{
+    control::{Config as Format, SourceMessage},
+    input::{Button, Event, Modifiers, PointerAction},
+    input_queue::{Input, Refused},
+};
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -221,6 +225,86 @@ async fn a_window_that_grants_control_says_so_to_the_person() {
     let (outcome, _) = rig.share(window().with_control()).await;
     assert!(matches!(outcome.unwrap(), ShareOutcome::Started(_)));
     assert!(rig.app.asked()[0].control);
+}
+
+/// A picture is sent and shown, so that a position on the viewer has a picture to be in.
+async fn show_a_picture(rig: &Rig, handle: &SourceHandle) {
+    handle.begin().expect("no picture was wanted");
+    handle
+        .sent(Picture {
+            bytes: vec![0x42; 4096],
+            referenced: true,
+            ltr: None,
+            capture_time: 1000,
+        })
+        .unwrap()
+        .expect("the frame was dropped");
+    rig.until("the picture to be shown", |rig| {
+        rig.app.log.has(&Told::Show(0))
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn what_the_person_does_on_the_viewer_reaches_the_platform_of_the_source() {
+    let rig = Rig::new(Plan::Accept).await;
+    let (outcome, heard) = rig.share(window().with_control()).await;
+    let ShareOutcome::Started(handle) = outcome.unwrap() else {
+        panic!("the window was not shared");
+    };
+    let viewing = rig.app.handle(0);
+    assert!(viewing.control());
+    show_a_picture(&rig, &handle).await;
+
+    let tap = Input::Pointer {
+        x: 0.25,
+        y: 0.75,
+        modifiers: Modifiers::NONE,
+        action: PointerAction::Down(Button::Left),
+    };
+    viewing.input(tap).unwrap();
+    let deadline = Instant::now() + PATIENCE;
+    while heard.count("input") == 0 {
+        assert!(Instant::now() < deadline, "the source heard no input");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let events: Vec<Event> = heard
+        .batches()
+        .into_iter()
+        .flat_map(|batch| batch.events)
+        .collect();
+    assert_eq!(
+        events,
+        [Event::Pointer {
+            frame: 0,
+            x: 0.25,
+            y: 0.75,
+            modifiers: Modifiers::NONE,
+            action: PointerAction::Down(Button::Left),
+        }]
+    );
+}
+
+#[tokio::test]
+async fn a_viewer_that_was_not_granted_control_has_no_way_to_send_input() {
+    let rig = Rig::new(Plan::Accept).await;
+    let (outcome, heard) = rig.share(window()).await;
+    let ShareOutcome::Started(handle) = outcome.unwrap() else {
+        panic!("the window was not shared");
+    };
+    let viewing = rig.app.handle(0);
+    assert!(!viewing.control());
+    show_a_picture(&rig, &handle).await;
+
+    let tap = Input::Pointer {
+        x: 0.25,
+        y: 0.75,
+        modifiers: Modifiers::NONE,
+        action: PointerAction::Down(Button::Left),
+    };
+    assert_eq!(viewing.input(tap), Err(Refused::NotGranted));
+    tokio::time::sleep(QUIET).await;
+    assert_eq!(heard.count("input"), 0);
 }
 
 #[tokio::test]

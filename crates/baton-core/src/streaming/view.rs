@@ -13,6 +13,13 @@
 //! the source's: the source made its side of the session before it opened the first stream, so a
 //! stream that the viewer opens then is never one for a session that is not there yet.
 //!
+//! When the person at the source granted control, the same stream carries what the person does on
+//! the viewer. It is given to [`ViewHandle::input`], which tags a position with the frame that is
+//! on the screen and hands the event to the queue of `baton_stream::input_queue`. That keeps the
+//! limits of the protocol (a batch, the rate, what a position may be) and decides what is sent. A
+//! task of the session takes a batch out of the queue as soon as the stream to the source has room
+//! for it, so that what waits behind a slow stream is joined and not piled up.
+//!
 //! A session ends when the source ends it, when it breaks a rule, when the connection ends, when
 //! the person ends it, when the source does not open its control stream in time, and when a message
 //! of the source stalls ([`End`]). It ends once: the decoder is told, the pictures that are held
@@ -34,13 +41,19 @@ use baton_stream::{
     KIND_VIDEO,
     control::{KeyFrame, Report, SourceMessage, Thermal, ViewerMessage, Want},
     header::{FrameHeader, PREFIX_LEN, encode_prefix},
+    input_queue::{Input, Queue, Refused},
     viewer::{Action, Params as Rules, Refusal, Stats, StreamId, Viewer, Violation},
 };
 use iroh::endpoint::{Connection, ReadExactError, RecvStream};
-use tokio::{sync::mpsc, time::MissedTickBehavior};
+use tokio::{
+    sync::{Notify, mpsc},
+    time::MissedTickBehavior,
+};
 use tokio_util::sync::CancellationToken;
 
-use super::{ControlEnd, End, Streaming, Takes, WriteEnd, read_control, stop, write_control};
+use super::{
+    ControlEnd, End, Streaming, Takes, Viewing, WriteEnd, read_control, stop, write_control,
+};
 use crate::{trust::PairedDevice, uni::Arrival, util::lock};
 
 /// How much of a picture to ask the transport for at a time.
@@ -193,6 +206,10 @@ pub(super) struct View {
     state: Mutex<State>,
     /// What the viewer says to the source, in the order in which it says it.
     outbox: mpsc::Sender<ViewerMessage>,
+    /// What the person did on the viewer and has not been sent yet. Never held across a wait.
+    input: Mutex<Queue>,
+    /// Tells the task that sends the input that something was queued.
+    input_ready: Notify,
     /// Whether the source's control stream has been taken. A second one is a violation.
     source_control: AtomicBool,
     /// Cancelled when the source's control stream has been taken.
@@ -232,6 +249,40 @@ impl ViewHandle {
         self.view.say(ViewerMessage::Want(want));
     }
 
+    /// Whether the person at the source granted control of the window with the offer. If not,
+    /// [`input`](Self::input) takes nothing: a viewer cannot ask for control, and cannot turn it
+    /// on later.
+    #[must_use]
+    pub fn control(&self) -> bool {
+        lock(&self.view.input).granted()
+    }
+
+    /// Gives what the person did on the picture. A position is tagged with the frame that is on
+    /// the screen now. The event is sent soon, in a batch with others, unless it is refused:
+    /// nothing is sent while no picture has been shown, for a position outside the picture when no
+    /// button is down, for the release of something that is not down, and for more than the
+    /// protocol allows. None of that ends the session.
+    ///
+    /// # Errors
+    ///
+    /// The reason that the event was not taken. Typed text and key codes are not in it.
+    pub fn input(&self, input: Input) -> Result<(), Refused> {
+        let view = &self.view;
+        let shown = lock(&view.state).viewer.shown();
+        lock(&view.input).push(shown, input)?;
+        view.input_ready.notify_one();
+        Ok(())
+    }
+
+    /// Releases every button and key that is down, as when the person leaves the screen with a
+    /// finger on it. The source releases what it has pressed when the session ends, and when it
+    /// hears nothing from the viewer for ten seconds, but a viewer whose screen is gone while the
+    /// session goes on reports as ever, so it says so itself.
+    pub fn release_input(&self) {
+        lock(&self.view.input).release_all();
+        self.view.input_ready.notify_one();
+    }
+
     /// What has been counted so far.
     #[must_use]
     pub fn stats(&self) -> ViewStats {
@@ -262,6 +313,51 @@ impl Drop for ViewHandle {
     }
 }
 
+/// Moves what the person did from `input` to `outbox`, in batches, until `ended`. `now` is the
+/// time on the clock of the session.
+///
+/// A slot in `outbox` is reserved before the batch is taken, so that what the person does while
+/// the stream is full is still in the queue of the input, where moves are joined, and is not a
+/// batch that is too old by the time it is written.
+async fn pump_input(
+    input: &Mutex<Queue>,
+    ready: &Notify,
+    outbox: &mpsc::Sender<ViewerMessage>,
+    ended: &CancellationToken,
+    now: impl Fn() -> Duration,
+) {
+    loop {
+        let next = lock(input).next_at(now());
+        let Some(at) = next else {
+            tokio::select! {
+                () = ended.cancelled() => return,
+                () = ready.notified() => {}
+            }
+            continue;
+        };
+        // The rate leaves no room until some of the last second has gone.
+        let wait = at.saturating_sub(now());
+        if !wait.is_zero() {
+            tokio::select! {
+                () = ended.cancelled() => return,
+                () = tokio::time::sleep(wait) => {}
+            }
+            continue;
+        }
+        let slot = tokio::select! {
+            () = ended.cancelled() => return,
+            slot = outbox.reserve() => match slot {
+                Ok(slot) => slot,
+                Err(_) => return,
+            },
+        };
+        let batch = lock(input).take(now());
+        if let Some(batch) = batch {
+            slot.send(ViewerMessage::Input(batch));
+        }
+    }
+}
+
 impl View {
     /// Makes the session and starts what runs for as long as it does.
     pub(super) fn start(
@@ -269,10 +365,14 @@ impl View {
         session: SessionId,
         peer: DeviceId,
         connection: Connection,
-        decoder: Box<dyn Decoder>,
-        takes: Takes,
-        params: ViewParams,
+        viewing: Viewing,
+        control: bool,
     ) -> (Arc<Self>, ViewHandle) {
+        let Viewing {
+            decoder,
+            takes,
+            params,
+        } = viewing;
         let (outbox, queue) = mpsc::channel(OUTBOX);
         let view = Arc::new(Self {
             registry,
@@ -289,6 +389,8 @@ impl View {
                 closed: false,
             }),
             outbox,
+            input: Mutex::new(Queue::new(control)),
+            input_ready: Notify::new(),
             source_control: AtomicBool::new(false),
             control_taken: CancellationToken::new(),
             ended: CancellationToken::new(),
@@ -297,6 +399,9 @@ impl View {
         tokio::spawn(Arc::clone(&view).supervise());
         tokio::spawn(Arc::clone(&view).write_control(queue));
         tokio::spawn(Arc::clone(&view).keep_time());
+        if control {
+            tokio::spawn(Arc::clone(&view).send_input());
+        }
         let handle = ViewHandle {
             view: Arc::clone(&view),
         };
@@ -476,6 +581,22 @@ impl View {
         }
     }
 
+    /// Sends what the person did, in batches, once the source can be told.
+    async fn send_input(self: Arc<Self>) {
+        tokio::select! {
+            () = self.ended.cancelled() => return,
+            () = self.control_taken.cancelled() => {}
+        }
+        pump_input(
+            &self.input,
+            &self.input_ready,
+            &self.outbox,
+            &self.ended,
+            || self.now(),
+        )
+        .await;
+    }
+
     /// Reads the source's control stream until the session ends.
     pub(super) async fn read_source_control(self: Arc<Self>, arrival: Arrival) {
         let Arrival { mut recv, slot, .. } = arrival;
@@ -633,8 +754,9 @@ mod tests {
     use baton_proto::stream::Codec;
     use baton_stream::{
         KIND_CONTROL,
-        control::{Config, Pause, PauseReason},
+        control::{Config, InputBatch, Pause, PauseReason},
         header::Flags,
+        input::{Button, Event, Modifiers, NO_KEY, PointerAction},
     };
     use iroh::endpoint::SendStream;
 
@@ -788,6 +910,21 @@ mod tests {
 
         /// A rig whose viewer said that it can take `takes`.
         async fn taking(takes: Takes, params: ViewParams, control_streams: u32) -> Self {
+            Self::offered(takes, params, control_streams, false).await
+        }
+
+        /// A rig where the person at the source granted control with the offer.
+        async fn controlling() -> Self {
+            Self::offered(takes(), quick(), 2, true).await
+        }
+
+        /// A rig whose offer granted control, or did not.
+        async fn offered(
+            takes: Takes,
+            params: ViewParams,
+            control_streams: u32,
+            granted: bool,
+        ) -> Self {
             let streaming = Streaming::new();
             let sinks = Sinks::default()
                 .install(Kind::Video, 12, streaming.clone())
@@ -804,12 +941,15 @@ mod tests {
                     &paired,
                     accepted.clone(),
                     session_id(),
-                    Recording {
-                        log: log.clone(),
-                        refuse: Arc::clone(&refuse),
-                    },
-                    takes,
-                    params,
+                    Viewing::raw(
+                        Recording {
+                            log: log.clone(),
+                            refuse: Arc::clone(&refuse),
+                        },
+                        takes,
+                        params,
+                    ),
+                    granted,
                 )
                 .unwrap();
             Self {
@@ -993,9 +1133,8 @@ mod tests {
                 &paired,
                 accepted,
                 session_id(),
-                Keep(Arc::clone(&pictures)),
-                takes(),
-                ViewParams::default(),
+                Viewing::raw(Keep(Arc::clone(&pictures)), takes(), ViewParams::default()),
+                false,
             )
             .unwrap();
         // Larger than a chunk and than a packet, and not a round number.
@@ -1616,17 +1755,453 @@ mod tests {
             &paired,
             rig.accepted.clone(),
             session_id(),
-            Recording {
-                log: Log::default(),
-                refuse: Arc::default(),
-            },
-            takes(),
-            quick(),
+            Viewing::raw(
+                Recording {
+                    log: Log::default(),
+                    refuse: Arc::default(),
+                },
+                takes(),
+                quick(),
+            ),
+            false,
         );
         assert!(again.is_err());
         // The session that was there first is untouched.
         rig.frame(&key(0), &[0; 10]).await;
         rig.until("frame 0 to be decoded", |rig| rig.log.decoded() == [0])
             .await;
+    }
+    // What the person does.
+
+    fn pointer(x: f32, y: f32, action: PointerAction) -> Input {
+        Input::Pointer {
+            x,
+            y,
+            modifiers: Modifiers::NONE,
+            action,
+        }
+    }
+
+    /// A press of the left button, or a touch.
+    fn tap() -> Input {
+        pointer(0.5, 0.25, PointerAction::Down(Button::Left))
+    }
+
+    fn pressed(code: u16, down: bool) -> Input {
+        Input::Key {
+            code,
+            down,
+            modifiers: Modifiers::NONE,
+            repeat: false,
+            text: None,
+        }
+    }
+
+    fn typed(text: &str) -> Input {
+        Input::Key {
+            code: NO_KEY,
+            down: true,
+            modifiers: Modifiers::NONE,
+            repeat: false,
+            text: Some(text.to_owned()),
+        }
+    }
+
+    /// Reads the viewer's control stream until `count` events of input have arrived, and gives
+    /// them as the batches they came in, with the time each batch arrived. Reports are skipped.
+    async fn read_input(recv: &mut RecvStream, count: usize) -> Vec<(Instant, InputBatch)> {
+        // The reports keep coming, and each of them restarts the wait for a message, so the wait
+        // for the input has a limit of its own.
+        let deadline = Instant::now() + PATIENCE * 2;
+        let mut batches = Vec::new();
+        let mut events = 0;
+        while events < count {
+            assert!(Instant::now() < deadline, "the input did not arrive");
+            match read_message_from(recv).await.expect("the stream ended") {
+                ViewerMessage::Input(batch) => {
+                    events += batch.events.len();
+                    batches.push((Instant::now(), batch));
+                }
+                ViewerMessage::Report(_) => {}
+                other => panic!("unexpected message {other:?}"),
+            }
+        }
+        batches
+    }
+
+    fn events_of(batches: &[(Instant, InputBatch)]) -> Vec<Event> {
+        batches
+            .iter()
+            .flat_map(|(_, batch)| batch.events.clone())
+            .collect()
+    }
+
+    /// A rig where control was granted and the first picture is on the screen, with the viewer's
+    /// control stream open.
+    async fn showing_a_picture() -> (Rig, SendStream, RecvStream) {
+        let mut rig = Rig::controlling().await;
+        let source_control = rig.open_source_control().await;
+        let viewer_control = rig.viewer_control().await;
+        rig.frame(&key(0), &[0; 100]).await;
+        rig.until("frame 0 to be shown", |rig| rig.log.shown() == [0])
+            .await;
+        (rig, source_control, viewer_control)
+    }
+
+    #[tokio::test]
+    async fn what_the_person_does_reaches_the_source_with_the_frame_that_was_shown() {
+        let (rig, _source_control, mut viewer_control) = showing_a_picture().await;
+        assert!(rig.handle.control());
+        rig.handle.input(tap()).unwrap();
+        let batches = read_input(&mut viewer_control, 1).await;
+        assert_eq!(
+            events_of(&batches),
+            [Event::Pointer {
+                frame: 0,
+                x: 0.5,
+                y: 0.25,
+                modifiers: Modifiers::NONE,
+                action: PointerAction::Down(Button::Left),
+            }]
+        );
+        // The next picture is the one that the next position is in.
+        rig.frame(&delta(1), &[0; 100]).await;
+        rig.until("frame 1 to be shown", |rig| {
+            rig.log.shown().last() == Some(&1)
+        })
+        .await;
+        rig.handle
+            .input(pointer(0.5, 0.25, PointerAction::Up(Button::Left)))
+            .unwrap();
+        let batches = read_input(&mut viewer_control, 1).await;
+        assert!(matches!(
+            events_of(&batches)[..],
+            [Event::Pointer {
+                frame: 1,
+                action: PointerAction::Up(Button::Left),
+                ..
+            }]
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_session_where_control_was_not_granted_sends_no_input() {
+        let mut rig = Rig::new().await;
+        let _source_control = rig.open_source_control().await;
+        let mut viewer_control = rig.viewer_control().await;
+        rig.frame(&key(0), &[0; 100]).await;
+        rig.until("frame 0 to be shown", |rig| rig.log.shown() == [0])
+            .await;
+        assert!(!rig.handle.control());
+        assert_eq!(rig.handle.input(tap()), Err(Refused::NotGranted));
+        assert_eq!(rig.handle.input(pressed(4, true)), Err(Refused::NotGranted));
+        assert_eq!(rig.handle.input(typed("a")), Err(Refused::NotGranted));
+        rig.handle.release_input();
+        // The viewer goes on reporting, and nothing else comes.
+        for _ in 0..5 {
+            match read_message_from(&mut viewer_control).await.unwrap() {
+                ViewerMessage::Report(_) => {}
+                other => panic!("unexpected message {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_position_waits_for_a_picture_and_a_key_does_not() {
+        let mut rig = Rig::controlling().await;
+        let _source_control = rig.open_source_control().await;
+        let mut viewer_control = rig.viewer_control().await;
+        assert_eq!(rig.handle.input(tap()), Err(Refused::NoPicture));
+        rig.handle.input(pressed(4, true)).unwrap();
+        let batches = read_input(&mut viewer_control, 1).await;
+        assert_eq!(
+            events_of(&batches),
+            [Event::Key {
+                code: 4,
+                down: true,
+                modifiers: Modifiers::NONE,
+                repeat: false,
+                text: None,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn input_is_sent_when_the_source_has_opened_its_control_stream_and_not_before() {
+        let mut rig = Rig::controlling().await;
+        rig.handle.input(typed("hello")).unwrap();
+        // The viewer has not opened its stream, because the source has not opened its own.
+        nothing_arrives(&mut rig.control).await;
+        let _source_control = rig.open_source_control().await;
+        let mut viewer_control = rig.viewer_control().await;
+        let batches = read_input(&mut viewer_control, 1).await;
+        assert_eq!(texts(&events_of(&batches)), ["hello"]);
+    }
+
+    fn texts(events: &[Event]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                Event::Key { text, .. } => text.clone(),
+                Event::Pointer { .. } => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn what_is_sent_keeps_to_the_rate_that_the_source_takes() {
+        let (rig, _source_control, mut viewer_control) = showing_a_picture().await;
+        // 700 events, which is two seconds and a bit at 240 a second. The sliding second is the
+        // business of the queue and is checked there; what is checked here is that the task that
+        // sends takes its batches at the pace the queue gives, and not faster.
+        for number in 0..700_u32 {
+            rig.handle.input(typed(&(number % 10).to_string())).unwrap();
+        }
+        let started = Instant::now();
+        let batches = read_input(&mut viewer_control, 700).await;
+        assert!(started.elapsed() >= Duration::from_millis(1900));
+        assert_eq!(events_of(&batches).len(), 700);
+        assert!(batches.iter().all(|(_, batch)| batch.events.len() <= 64));
+        // And in order.
+        let expected: Vec<String> = (0..700_u32)
+            .map(|number| (number % 10).to_string())
+            .collect();
+        assert_eq!(texts(&events_of(&batches)), expected);
+    }
+
+    #[tokio::test]
+    async fn moves_that_wait_for_room_are_joined_into_the_latest() {
+        let (rig, _source_control, mut viewer_control) = showing_a_picture().await;
+        // The whole second is used up at once.
+        for _ in 0..240 {
+            rig.handle.input(typed("a")).unwrap();
+        }
+        let used = read_input(&mut viewer_control, 240).await;
+        let moved = Instant::now();
+        for step in 0..100_u8 {
+            let at = f32::from(step) / 100.0;
+            rig.handle
+                .input(pointer(at, at, PointerAction::Move))
+                .unwrap();
+        }
+        // They wait for the second to pass, and then one of them is sent: where the pointer is.
+        let batches = read_input(&mut viewer_control, 1).await;
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].1.events.len(), 1);
+        assert!(batches[0].0.duration_since(used[0].0) >= Duration::from_millis(900));
+        assert!(batches[0].0.duration_since(moved) >= Duration::from_millis(500));
+        assert!(matches!(
+            batches[0].1.events[..],
+            [Event::Pointer {
+                frame: 0,
+                action: PointerAction::Move,
+                ..
+            }]
+        ));
+        let Event::Pointer { x, y, .. } = batches[0].1.events[0] else {
+            unreachable!()
+        };
+        assert!(
+            (x - 0.99).abs() < 1e-6 && (y - 0.99).abs() < 1e-6,
+            "{x} {y}"
+        );
+    }
+
+    #[tokio::test]
+    async fn release_input_lifts_what_is_down() {
+        let (rig, _source_control, mut viewer_control) = showing_a_picture().await;
+        rig.handle.input(tap()).unwrap();
+        rig.handle.input(pressed(4, true)).unwrap();
+        let down = events_of(&read_input(&mut viewer_control, 2).await);
+        assert_eq!(down.len(), 2);
+        // The person leaves the screen with a finger and a key down.
+        rig.handle.release_input();
+        let up = events_of(&read_input(&mut viewer_control, 2).await);
+        assert!(matches!(
+            up[..],
+            [
+                Event::Pointer {
+                    frame: 0,
+                    action: PointerAction::Up(Button::Left),
+                    ..
+                },
+                Event::Key {
+                    code: 4,
+                    down: false,
+                    ..
+                }
+            ]
+        ));
+        // And nothing is down any more.
+        assert_eq!(
+            rig.handle.input(pressed(4, false)),
+            Err(Refused::NotPressed)
+        );
+    }
+
+    #[tokio::test]
+    async fn moves_that_pile_up_before_the_source_is_ready_are_joined() {
+        let mut rig = Rig::controlling().await;
+        rig.frame(&key(0), &[0; 100]).await;
+        rig.until("frame 0 to be shown", |rig| rig.log.shown() == [0])
+            .await;
+        // The source has not opened its control stream, so nothing can be sent yet. The task
+        // that sends gets its turn between the moves.
+        for step in 1..=4_u8 {
+            let at = f32::from(step) / 10.0;
+            rig.handle
+                .input(pointer(at, at, PointerAction::Move))
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        let _source_control = rig.open_source_control().await;
+        let mut viewer_control = rig.viewer_control().await;
+        let batches = read_input(&mut viewer_control, 1).await;
+        assert_eq!(
+            events_of(&batches),
+            [Event::Pointer {
+                frame: 0,
+                x: 0.4,
+                y: 0.4,
+                modifiers: Modifiers::NONE,
+                action: PointerAction::Move,
+            }]
+        );
+    }
+
+    /// Runs the pump and the person together, and fails the test if they do not both end in time.
+    async fn pumped(pump: impl Future<Output = ()>, person: impl Future<Output = ()>) {
+        tokio::time::timeout(PATIENCE, async {
+            tokio::join!(pump, person);
+        })
+        .await
+        .expect("the pump did not end");
+    }
+
+    /// The next message to the source, or a failure if none comes in time.
+    async fn received(stream: &mut mpsc::Receiver<ViewerMessage>) -> ViewerMessage {
+        tokio::time::timeout(PATIENCE, stream.recv())
+            .await
+            .expect("nothing came in time")
+            .expect("the stream was closed")
+    }
+
+    #[tokio::test]
+    async fn the_pump_sleeps_until_the_rate_leaves_room_and_does_not_spin() {
+        let (outbox, mut stream) = mpsc::channel(8);
+        let input = Mutex::new(Queue::new(true));
+        let ready = Notify::new();
+        let ended = CancellationToken::new();
+        // The whole second is used up, and one more event waits for it to pass.
+        for _ in 0..240 {
+            lock(&input).push(Some(0), typed("a")).unwrap();
+        }
+        while lock(&input).take(Duration::ZERO).is_some() {}
+        lock(&input).push(Some(0), typed("b")).unwrap();
+        let asked = std::cell::Cell::new(0_usize);
+        let began = Instant::now();
+        let pump = pump_input(&input, &ready, &outbox, &ended, || {
+            asked.set(asked.get() + 1);
+            began.elapsed()
+        });
+        let person = async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            // It asked when there is room, and waited for that time. It did not ask again and
+            // again.
+            assert!(asked.get() < 10, "{} questions", asked.get());
+            assert!(stream.try_recv().is_err());
+            ended.cancel();
+        };
+        pumped(pump, person).await;
+    }
+
+    #[tokio::test]
+    async fn the_pump_ends_with_the_session_while_it_waits_for_room() {
+        let (outbox, _stream) = mpsc::channel(1);
+        outbox
+            .try_send(ViewerMessage::KeyFrame(KeyFrame { tried: 0 }))
+            .unwrap();
+        let input = Mutex::new(Queue::new(true));
+        let ready = Notify::new();
+        let ended = CancellationToken::new();
+        let began = Instant::now();
+        lock(&input)
+            .push(Some(0), pointer(0.1, 0.1, PointerAction::Move))
+            .unwrap();
+        let pump = pump_input(&input, &ready, &outbox, &ended, || began.elapsed());
+        let person = async {
+            // The pump has found the move, and waits for room that does not come.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            ended.cancel();
+        };
+        pumped(pump, person).await;
+    }
+
+    #[tokio::test]
+    async fn the_pump_ends_by_itself_when_the_stream_to_the_source_is_gone() {
+        let (outbox, stream) = mpsc::channel(1);
+        drop(stream);
+        let input = Mutex::new(Queue::new(true));
+        let ready = Notify::new();
+        let ended = CancellationToken::new();
+        let began = Instant::now();
+        lock(&input)
+            .push(Some(0), pointer(0.1, 0.1, PointerAction::Move))
+            .unwrap();
+        let pump = pump_input(&input, &ready, &outbox, &ended, || began.elapsed());
+        pumped(pump, async {}).await;
+        // The session is not over: nothing wrote to it.
+        assert!(!ended.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn moves_that_wait_for_room_in_the_stream_are_joined_into_the_latest() {
+        // The stream to the source is full: there is room for nothing until a message is read.
+        let (outbox, mut stream) = mpsc::channel(1);
+        outbox
+            .try_send(ViewerMessage::KeyFrame(KeyFrame { tried: 0 }))
+            .unwrap();
+        let input = Mutex::new(Queue::new(true));
+        let ready = Notify::new();
+        let ended = CancellationToken::new();
+        let began = Instant::now();
+        let step = |at: f32| {
+            lock(&input)
+                .push(Some(0), pointer(at, at, PointerAction::Move))
+                .unwrap();
+            ready.notify_one();
+        };
+        let pump = pump_input(&input, &ready, &outbox, &ended, || began.elapsed());
+        let person = async {
+            step(0.1);
+            // The pump has found the move, and waits for room.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            step(0.2);
+            step(0.3);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            // Room is made, and what is sent is where the pointer is by then.
+            assert!(matches!(
+                received(&mut stream).await,
+                ViewerMessage::KeyFrame(_)
+            ));
+            let ViewerMessage::Input(batch) = received(&mut stream).await else {
+                panic!("the input did not come");
+            };
+            assert_eq!(
+                batch.events,
+                [Event::Pointer {
+                    frame: 0,
+                    x: 0.3,
+                    y: 0.3,
+                    modifiers: Modifiers::NONE,
+                    action: PointerAction::Move,
+                }]
+            );
+            // And nothing follows.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(stream.try_recv().is_err());
+            ended.cancel();
+        };
+        pumped(pump, person).await;
     }
 }

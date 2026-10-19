@@ -142,6 +142,17 @@ impl Viewing {
         self
     }
 
+    /// A viewer that takes what `takes` says, whether or not that is within the protocol, for the
+    /// tests of the session.
+    #[cfg(test)]
+    pub(crate) fn raw(decoder: impl Decoder, takes: Takes, params: ViewParams) -> Self {
+        Self {
+            decoder: Box::new(decoder),
+            takes,
+            params,
+        }
+    }
+
     fn accepted(&self, session: SessionId) -> Response {
         Response::Stream(StreamReply::Accepted(Accepted {
             session,
@@ -433,7 +444,14 @@ impl Streaming {
                     if claim.withdrawn.is_cancelled() {
                         return declined(DeclineReason::Refused);
                     }
-                    self.view_in(&mut table, paired, connection.clone(), session, viewing)
+                    self.view_in(
+                        &mut table,
+                        paired,
+                        connection.clone(),
+                        session,
+                        viewing,
+                        offer.control,
+                    )
                 };
                 // The window is shown now, and that keeps other offers out from here on.
                 drop(claim);
