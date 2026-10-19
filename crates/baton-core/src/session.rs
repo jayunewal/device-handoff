@@ -109,6 +109,13 @@ pub(crate) fn our_hello(shared: &Shared) -> Hello {
     if shared.streaming.views() {
         capabilities.push(capability::STREAM_VIEW.to_owned());
     }
+    // A device that was set up to show its own windows offers them, and may take input.
+    if shared.streaming.shares() {
+        capabilities.push(capability::STREAM_SHARE.to_owned());
+    }
+    if shared.streaming.takes_control() {
+        capabilities.push(capability::STREAM_CONTROL.to_owned());
+    }
     Hello {
         protocol_minor: PROTOCOL_MINOR,
         device: shared.info.clone(),
@@ -523,15 +530,14 @@ impl Session {
     /// requests are all that the pool sees. What goes on beyond them, the lanes of a transfer or
     /// the frames of a window that is shown, makes no request, so whoever runs it holds the
     /// connection. When the last hold ends, the connection counts as used at that moment.
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "held by the sender of files and by window streaming, which come next"
-        )
-    )]
     pub(crate) fn hold(&self) -> Hold {
         self.lease.hold()
+    }
+
+    /// How many holds are alive.
+    #[cfg(test)]
+    pub(crate) fn holds(&self) -> usize {
+        lock(&self.lease.0).holds
     }
 }
 
@@ -571,13 +577,6 @@ impl Lease {
 /// Keeps a pooled connection open while it lives. See [`Session::hold`].
 #[derive(Debug)]
 #[must_use = "the connection is kept open only while the hold lives"]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "held by the sender of files and by window streaming, which come next"
-    )
-)]
 pub(crate) struct Hold(Arc<Lease>);
 
 impl Drop for Hold {

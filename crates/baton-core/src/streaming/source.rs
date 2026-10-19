@@ -52,10 +52,11 @@ use iroh::endpoint::{Connection, SendStream, WriteError};
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
-use super::{ControlEnd, End, Streaming, WriteEnd, read_control, stop, write_control};
+use super::{ControlEnd, End, Streaming, Takes, WriteEnd, read_control, stop, write_control};
 use crate::{
     error::{Error, Result},
     gate::code,
+    session::Hold,
     trust::PairedDevice,
     uni::Arrival,
     util::lock,
@@ -76,12 +77,17 @@ const UNKNOWN_PATH: Path = Path {
     rate: 0,
 };
 
+/// The error for a picture format that the viewer did not say it takes.
+fn beyond_what_the_viewer_takes() -> Error {
+    Error::Config("the picture is beyond what the viewer can take".to_owned())
+}
+
 /// What the platform hears from the viewer and from the session.
 ///
 /// Every method is called with the session's lock held, so none of them waits and none of them
 /// calls the [`SourceHandle`]: a platform that takes time, or that has something to ask, hands
 /// the work to a thread of its own.
-pub(crate) trait SourceEvents: Send + 'static {
+pub trait SourceEvents: Send + 'static {
     /// How the viewer is doing: the newest frame it showed, the time it takes to decode, the
     /// frames it dropped and how hot the device is.
     fn report(&mut self, report: Report);
@@ -121,6 +127,32 @@ pub(crate) trait SourceEvents: Send + 'static {
     fn ended(&mut self);
 }
 
+impl SourceEvents for Box<dyn SourceEvents> {
+    fn report(&mut self, report: Report) {
+        (**self).report(report);
+    }
+
+    fn want(&mut self, want: Want) {
+        (**self).want(want);
+    }
+
+    fn input(&mut self, batch: InputBatch, arrived: Duration) {
+        (**self).input(batch, arrived);
+    }
+
+    fn held(&mut self, tokens: Vec<LtrToken>) {
+        (**self).held(tokens);
+    }
+
+    fn recovery(&mut self) {
+        (**self).recovery();
+    }
+
+    fn ended(&mut self) {
+        (**self).ended();
+    }
+}
+
 /// The time limits and sizes of the source's side of a session. The defaults are where ADR 0009
 /// starts.
 #[derive(Debug, Clone, Copy)]
@@ -150,12 +182,15 @@ impl Default for SourceParams {
 }
 
 /// What a session needs to begin, besides who it is with.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct SourceSetup {
     /// The picture the source starts with. Its `epoch` is ignored: the source numbers the epochs.
     pub(crate) config: Config,
     /// Whether the person at the source granted the viewer control of the window.
     pub(crate) control: bool,
+    /// What the viewer said it can take. The first picture format and every later one stay
+    /// within it.
+    pub(crate) takes: Takes,
     /// The limits.
     pub(crate) params: SourceParams,
 }
@@ -165,24 +200,27 @@ pub(super) struct Whom {
     pub(super) session: SessionId,
     pub(super) peer: DeviceId,
     pub(super) connection: Connection,
+    /// Keeps the connection in the pool for as long as the session runs.
+    pub(super) hold: Option<Hold>,
 }
 
 /// A picture that the encoder made.
 #[derive(Debug, Clone)]
-pub(crate) struct Picture {
+pub struct Picture {
     /// The encoded frame, in the format that the session agreed on.
-    pub(crate) bytes: Vec<u8>,
+    pub bytes: Vec<u8>,
     /// Whether the encoder says that a later frame may refer to it.
-    pub(crate) referenced: bool,
+    pub referenced: bool,
     /// The token of the frame, if the encoder marked it as a long-term reference.
-    pub(crate) ltr: Option<LtrToken>,
+    pub ltr: Option<LtrToken>,
     /// When the picture was captured, in microseconds since the session began.
-    pub(crate) capture_time: u64,
+    pub capture_time: u64,
 }
 
 /// Why a picture was not sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum NotSent {
+#[non_exhaustive]
+pub enum NotSent {
     /// The picture is larger than a viewer takes. Nothing was sent, and the next frame is made
     /// again as the same kind of frame; the encoder is to make smaller ones.
     #[error("the picture is larger than the protocol allows")]
@@ -194,11 +232,12 @@ pub(crate) enum NotSent {
 
 /// What a session has counted, for the person and for tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SourceStats {
+#[non_exhaustive]
+pub struct SourceStats {
     /// What the rules for the frames have counted.
-    pub(crate) frames: Stats,
+    pub frames: Stats,
     /// The frame streams that are open or being reset.
-    pub(crate) streams: usize,
+    pub streams: usize,
 }
 
 /// How a frame's stream ended.
@@ -262,6 +301,8 @@ pub(super) struct Source {
     params: SourceParams,
     /// Whether the viewer may control the window.
     control: bool,
+    /// What the viewer takes, which the pictures stay within.
+    takes: Takes,
     began: Instant,
     core: Mutex<Core>,
     /// What the source says to the viewer, in the order in which it says it.
@@ -277,7 +318,7 @@ pub(super) struct Source {
 }
 
 /// What the owner of a session holds. Dropping it ends the session.
-pub(crate) struct SourceHandle {
+pub struct SourceHandle {
     source: Arc<Source>,
 }
 
@@ -301,7 +342,7 @@ impl SourceHandle {
     /// [`recovery_pending`](Self::recovery_pending) is true.
     ///
     /// A `Some` is answered with [`sent`](Self::sent) or [`cancel`](Self::cancel).
-    pub(crate) fn begin(&self) -> Option<FrameKind> {
+    pub fn begin(&self) -> Option<FrameKind> {
         let source = &self.source;
         let path = source.path();
         let mut core = lock(&source.core);
@@ -316,13 +357,13 @@ impl SourceHandle {
     }
 
     /// The frame that [`begin`](Self::begin) announced could not be made. Nothing was sent.
-    pub(crate) fn cancel(&self) {
+    pub fn cancel(&self) {
         lock(&self.source.core).sender.cancel();
     }
 
     /// Whether the next frame has to be something other than a delta, so a picture is wanted even
     /// if the screen has not changed.
-    pub(crate) fn recovery_pending(&self) -> bool {
+    pub fn recovery_pending(&self) -> bool {
         lock(&self.source.core).sender.recovery_pending()
     }
 
@@ -334,7 +375,7 @@ impl SourceHandle {
     /// # Errors
     ///
     /// The picture is larger than a viewer takes, or the session is over. Nothing was sent.
-    pub(crate) fn sent(&self, picture: Picture) -> std::result::Result<Option<u64>, NotSent> {
+    pub fn sent(&self, picture: Picture) -> std::result::Result<Option<u64>, NotSent> {
         let source = &self.source;
         let path = source.path();
         let now = source.now();
@@ -377,11 +418,14 @@ impl SourceHandle {
     /// # Errors
     ///
     /// `config` is beyond a limit of the protocol. Nothing changed.
-    pub(crate) fn new_epoch(&self, mut config: Config) -> Result<()> {
+    pub fn new_epoch(&self, mut config: Config) -> Result<()> {
         let source = &self.source;
         SourceMessage::Config(config)
             .validate()
             .map_err(|error| Error::protocol(&error))?;
+        if !source.takes.allows(&config) {
+            return Err(beyond_what_the_viewer_takes());
+        }
         let mut core = lock(&source.core);
         if source.end.get().is_some() {
             return Ok(());
@@ -398,25 +442,25 @@ impl SourceHandle {
     /// Stops sending pictures for a while, and says why. The platform's gate drops the events
     /// of the viewer until [`resume`](Self::resume), except the release of a press that it
     /// delivered, so [`SourceEvents::input`] is still called.
-    pub(crate) fn pause(&self, reason: PauseReason) {
+    pub fn pause(&self, reason: PauseReason) {
         lock(&self.source.core).paused = true;
         self.source.say(SourceMessage::Pause(Pause { reason }));
     }
 
     /// Goes on sending pictures.
-    pub(crate) fn resume(&self) {
+    pub fn resume(&self) {
         lock(&self.source.core).paused = false;
         self.source.say(SourceMessage::Resume);
     }
 
     /// An event of the viewer was dropped for this reason. The viewer is told, at most once a
     /// second, which reason dropped the most.
-    pub(crate) fn dropped(&self, reason: Reason) {
+    pub fn dropped(&self, reason: Reason) {
         lock(&self.source.core).notices.dropped(reason);
     }
 
     /// What has been counted so far.
-    pub(crate) fn stats(&self) -> SourceStats {
+    pub fn stats(&self) -> SourceStats {
         let core = lock(&self.source.core);
         SourceStats {
             frames: core.sender.stats(),
@@ -425,12 +469,12 @@ impl SourceHandle {
     }
 
     /// Ends the session.
-    pub(crate) fn end(&self) {
+    pub fn end(&self) {
         self.source.end(End::Local);
     }
 
     /// Waits until the session is over, and says why.
-    pub(crate) async fn ended(&self) -> End {
+    pub async fn ended(&self) -> End {
         self.source.ended.cancelled().await;
         self.source.end.get().copied().unwrap_or(End::Internal)
     }
@@ -453,12 +497,16 @@ impl Source {
         let SourceSetup {
             mut config,
             control,
+            takes,
             params,
         } = setup;
         let sender = Sender::new(whom.session, params.rules);
         config.epoch = sender.epoch();
         let first = SourceMessage::Config(config);
         first.validate().map_err(|error| Error::protocol(&error))?;
+        if !takes.allows(&config) {
+            return Err(beyond_what_the_viewer_takes());
+        }
         let (outbox, queue) = mpsc::channel(OUTBOX);
         // The first message waits for the stream to be opened.
         let _ = outbox.try_send(first);
@@ -470,6 +518,7 @@ impl Source {
             runtime: tokio::runtime::Handle::current(),
             params,
             control,
+            takes,
             began: Instant::now(),
             core: Mutex::new(Core {
                 sender,
@@ -486,7 +535,7 @@ impl Source {
             ended: CancellationToken::new(),
             end: OnceLock::new(),
         });
-        tokio::spawn(Arc::clone(&source).supervise());
+        tokio::spawn(Arc::clone(&source).supervise(whom.hold));
         tokio::spawn(Arc::clone(&source).write_control(queue));
         tokio::spawn(Arc::clone(&source).keep_time());
         let handle = SourceHandle {
@@ -546,11 +595,14 @@ impl Source {
     }
 
     /// Ends the session when the connection ends.
-    async fn supervise(self: Arc<Self>) {
+    ///
+    /// The hold keeps the connection in the pool until then.
+    async fn supervise(self: Arc<Self>, hold: Option<Hold>) {
         tokio::select! {
             () = self.ended.cancelled() => {}
             _ = self.connection.closed() => self.end(End::Connection),
         }
+        drop(hold);
     }
 
     /// Writes the source's control stream: the 17 bytes that start every stream of a session, and
@@ -890,10 +942,21 @@ mod tests {
         }
     }
 
+    /// What a viewer that can take a great deal says.
+    fn takes() -> Takes {
+        Takes {
+            max_width: 3840,
+            max_height: 2160,
+            max_fps: 120,
+            codecs: vec![Codec::H264],
+        }
+    }
+
     fn setup(control: bool, params: SourceParams) -> SourceSetup {
         SourceSetup {
             config: config(),
             control,
+            takes: takes(),
             params,
         }
     }
@@ -937,6 +1000,7 @@ mod tests {
                 .source(
                     &paired,
                     dialed.clone(),
+                    None,
                     session_id(),
                     setup,
                     Recording(log.clone()),
@@ -1798,6 +1862,7 @@ mod tests {
         let again = rig.streaming.source(
             &paired,
             rig.dialed.clone(),
+            None,
             session_id(),
             setup(true, quick()),
             Recording(Log::default()),
@@ -1814,6 +1879,7 @@ mod tests {
         let refused = rig.streaming.source(
             &paired,
             rig.dialed.clone(),
+            None,
             other,
             invalid,
             Recording(Log::default()),

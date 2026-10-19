@@ -331,7 +331,7 @@ impl Streaming {
     /// Whether this device takes part in window streaming at all, which is whether it advertises
     /// one of its capabilities.
     fn takes_part(&self) -> bool {
-        self.viewer.is_some()
+        self.viewer.is_some() || self.sharer.is_some()
     }
 
     /// Answers a request of section 9 that `paired` made on `connection`, which has the link
