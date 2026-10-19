@@ -42,13 +42,13 @@ use crate::{
 };
 
 /// Long enough for a slow machine, short enough that a hang does not take the run with it.
-const WAIT: Duration = Duration::from_secs(30);
+pub(crate) const WAIT: Duration = Duration::from_secs(30);
 
 /// Long enough for something that should not happen to have happened.
-const QUIET: Duration = Duration::from_millis(400);
+pub(crate) const QUIET: Duration = Duration::from_millis(400);
 
 /// Waits until `condition` holds.
-async fn until(what: &str, condition: impl Fn() -> bool) {
+pub(crate) async fn until(what: &str, condition: impl Fn() -> bool) {
     let deadline = Instant::now() + WAIT;
     while !condition() {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
@@ -57,7 +57,10 @@ async fn until(what: &str, condition: impl Fn() -> bool) {
 }
 
 /// Waits for an event that `pick` likes, and gives what it made of it.
-async fn next_matching<T>(events: &mut Events, mut pick: impl FnMut(Event) -> Option<T>) -> T {
+pub(crate) async fn next_matching<T>(
+    events: &mut Events,
+    mut pick: impl FnMut(Event) -> Option<T>,
+) -> T {
     tokio::time::timeout(WAIT, async {
         loop {
             let event = events.next().await.expect("the app stopped while waiting");
@@ -71,7 +74,7 @@ async fn next_matching<T>(events: &mut Events, mut pick: impl FnMut(Event) -> Op
 }
 
 /// Waits for a window to end, and gives how.
-async fn window_ended(events: &mut Events) -> WindowEnd {
+pub(crate) async fn window_ended(events: &mut Events) -> WindowEnd {
     next_matching(events, |event| match event {
         Event::WindowEnded { end, .. } => Some(end),
         _ => None,
@@ -235,13 +238,13 @@ impl PickedWindow for Picked {
 
 // Two devices.
 
-struct Dev {
-    app: App,
+pub(crate) struct Dev {
+    pub(crate) app: App,
     _dir: TempDir,
 }
 
 impl Dev {
-    async fn start(name: &str, windows: Windows) -> Self {
+    pub(crate) async fn start(name: &str, windows: Windows) -> Self {
         let dir = tempfile::tempdir().unwrap();
         // Settings that keep the device to this computer.
         std::fs::write(
@@ -258,14 +261,14 @@ impl Dev {
         Self { app, _dir: dir }
     }
 
-    fn id(&self) -> String {
+    pub(crate) fn id(&self) -> String {
         self.app.me().id
     }
 }
 
 /// Pairs the two the way two people would: the offerer shows a ticket, the joiner enters it, and
 /// the offerer says yes.
-async fn pair(offerer: &Dev, joiner: &Dev) {
+pub(crate) async fn pair(offerer: &Dev, joiner: &Dev) {
     let mut events = offerer.app.events();
     let offer = offerer.app.offer_pairing().await.unwrap();
     let app = joiner.app.clone();
@@ -443,7 +446,7 @@ impl Rig {
 
 /// The sample that a decoder is to be given for a picture of the encoder: the units that are not
 /// delimiters, parameter sets or filler, each behind its length in four bytes.
-fn avcc(picture: &[u8]) -> Vec<u8> {
+pub(crate) fn avcc(picture: &[u8]) -> Vec<u8> {
     const DELIMITER: u8 = 9;
     const FILLER: u8 = 12;
     units(picture)
@@ -458,7 +461,7 @@ fn avcc(picture: &[u8]) -> Vec<u8> {
 }
 
 /// The units of a picture of the encoder that are of this kind, without their start codes.
-fn units_of(picture: &[u8], wanted: u8) -> Vec<Vec<u8>> {
+pub(crate) fn units_of(picture: &[u8], wanted: u8) -> Vec<Vec<u8>> {
     units(picture)
         .into_iter()
         .filter(|unit| kind(unit) == wanted)

@@ -25,15 +25,23 @@ use std::{
     process::Command,
 };
 
-use baton_proto::limits::{MAX_CODECS, MAX_FRAME_RATE, MAX_PICTURE_EDGE};
+use baton_proto::limits::{
+    MAX_CODECS, MAX_FRAME_RATE, MAX_NAME_BYTES, MAX_PICTURE_BYTES, MAX_PICTURE_EDGE,
+    MAX_STREAM_TITLE_BYTES, MAX_WINDOW_EDGE,
+};
 use baton_stream_abi::{
     abi::{
-        self, BatonBytes, BatonDecoderState, BatonFrame, BatonLimits, BatonMessage, BatonScreen,
-        BatonSourceMessage, BatonViewerVTable, BatonWindow, DecodeFn, EndedFn, LimitsFn, OpenFn,
-        ReleaseFn, ShowFn, SourceFn, StateFn,
+        self, BatonBytes, BatonDecoderState, BatonFormat, BatonFrame, BatonLimits, BatonMessage,
+        BatonPicked, BatonPicture, BatonScreen, BatonSharerVTable, BatonSourceMessage, BatonTakes,
+        BatonViewerVTable, BatonWindow, CancelPickFn, ControlFn, DecodeFn, EndedFn, LimitsFn,
+        OpenFn, PickFn, PrepareFn, ReleaseFn, ShowFn, SourceFn, StartFn, StateFn,
     },
     exports::{
-        baton_stream_abi_version, baton_stream_link_decode_failed, baton_stream_register_viewer,
+        baton_stream_abi_version, baton_stream_link_decode_failed, baton_stream_pick_done,
+        baton_stream_register_sharer, baton_stream_register_viewer, baton_stream_source_begin,
+        baton_stream_source_cancel, baton_stream_source_clock, baton_stream_source_end,
+        baton_stream_source_new_epoch, baton_stream_source_pause,
+        baton_stream_source_recovery_pending, baton_stream_source_resume, baton_stream_source_sent,
     },
 };
 
@@ -526,6 +534,41 @@ fn rust_structs() -> Vec<RustStruct> {
             thermal: u32 = "uint32_t",
             reserved: u32 = "uint32_t",
         }),
+        rust_struct!(BatonTakes {
+            size: u32 = "uint32_t",
+            max_width: u32 = "uint32_t",
+            max_height: u32 = "uint32_t",
+            max_fps: u32 = "uint32_t",
+            codecs: u32 = "uint32_t",
+            reserved: u32 = "uint32_t",
+        }),
+        rust_struct!(BatonFormat {
+            size: u32 = "uint32_t",
+            codec: u32 = "uint32_t",
+            width: u32 = "uint32_t",
+            height: u32 = "uint32_t",
+            fps: u32 = "uint32_t",
+            reserved: u32 = "uint32_t",
+        }),
+        rust_struct!(BatonPicked {
+            size: u32 = "uint32_t",
+            width: u32 = "uint32_t",
+            height: u32 = "uint32_t",
+            reserved: u32 = "uint32_t",
+            context: *mut c_void = "void *",
+            title: BatonBytes = "BatonBytes",
+            app: BatonBytes = "BatonBytes",
+        }),
+        rust_struct!(BatonPicture {
+            size: u32 = "uint32_t",
+            flags: u32 = "uint32_t",
+            capture_time: u64 = "uint64_t",
+            length_size: u32 = "uint32_t",
+            reserved: u32 = "uint32_t",
+            sample: BatonBytes = "BatonBytes",
+            sets: *const BatonBytes = "const BatonBytes *",
+            set_count: usize = "size_t",
+        }),
         rust_struct!(BatonViewerVTable {
             version: u32 = "uint32_t",
             size: u32 = "uint32_t",
@@ -536,6 +579,18 @@ fn rust_structs() -> Vec<RustStruct> {
             show: Option<ShowFn> = "BatonShowFn",
             source: Option<SourceFn> = "BatonSourceFn",
             state: Option<StateFn> = "BatonStateFn",
+            ended: Option<EndedFn> = "BatonEndedFn",
+            release: Option<ReleaseFn> = "BatonReleaseFn",
+        }),
+        rust_struct!(BatonSharerVTable {
+            version: u32 = "uint32_t",
+            size: u32 = "uint32_t",
+            context: *mut c_void = "void *",
+            control: Option<ControlFn> = "BatonControlFn",
+            pick: Option<PickFn> = "BatonPickFn",
+            cancel_pick: Option<CancelPickFn> = "BatonCancelPickFn",
+            prepare: Option<PrepareFn> = "BatonPrepareFn",
+            start: Option<StartFn> = "BatonStartFn",
             ended: Option<EndedFn> = "BatonEndedFn",
             release: Option<ReleaseFn> = "BatonReleaseFn",
         }),
@@ -592,6 +647,18 @@ fn rust_fn_types() -> Vec<CFunction> {
             is unsafe extern "C" fn(*mut c_void)),
         rust_fn_type!(ReleaseFn as "BatonReleaseFn": "void" ["void *"]
             is unsafe extern "C" fn(*mut c_void)),
+        rust_fn_type!(ControlFn as "BatonControlFn": "uint32_t" ["void *"]
+            is unsafe extern "C" fn(*mut c_void) -> u32),
+        rust_fn_type!(PickFn as "BatonPickFn": "int32_t" ["void *", "uint64_t", "BatonMessage *"]
+            is unsafe extern "C" fn(*mut c_void, u64, *mut BatonMessage) -> i32),
+        rust_fn_type!(CancelPickFn as "BatonCancelPickFn": "void" ["void *", "uint64_t"]
+            is unsafe extern "C" fn(*mut c_void, u64)),
+        rust_fn_type!(PrepareFn as "BatonPrepareFn": "int32_t"
+            ["void *", "const BatonTakes *", "BatonFormat *"]
+            is unsafe extern "C" fn(*mut c_void, *const BatonTakes, *mut BatonFormat) -> i32),
+        rust_fn_type!(StartFn as "BatonStartFn": "int32_t"
+            ["void *", "uint64_t", "BatonMessage *"]
+            is unsafe extern "C" fn(*mut c_void, u64, *mut BatonMessage) -> i32),
     ]
 }
 
@@ -601,6 +668,19 @@ fn rust_exports() -> Vec<CFunction> {
     let _: extern "C" fn() -> u32 = baton_stream_abi_version;
     let _: unsafe extern "C" fn(*const BatonViewerVTable) -> i32 = baton_stream_register_viewer;
     let _: extern "C" fn(u64) -> i32 = baton_stream_link_decode_failed;
+    let _: unsafe extern "C" fn(*const BatonSharerVTable) -> i32 = baton_stream_register_sharer;
+    let _: unsafe extern "C" fn(u64, *const BatonPicked, *const BatonBytes) -> i32 =
+        baton_stream_pick_done;
+    let _: unsafe extern "C" fn(u64, *mut u64) -> i32 = baton_stream_source_clock;
+    let _: unsafe extern "C" fn(u64, *mut u32) -> i32 = baton_stream_source_begin;
+    let _: extern "C" fn(u64) -> i32 = baton_stream_source_cancel;
+    let _: unsafe extern "C" fn(u64, *mut u32) -> i32 = baton_stream_source_recovery_pending;
+    let _: unsafe extern "C" fn(u64, *const BatonPicture, *mut u32, *mut u64) -> i32 =
+        baton_stream_source_sent;
+    let _: unsafe extern "C" fn(u64, *const BatonFormat) -> i32 = baton_stream_source_new_epoch;
+    let _: extern "C" fn(u64, u32) -> i32 = baton_stream_source_pause;
+    let _: extern "C" fn(u64) -> i32 = baton_stream_source_resume;
+    let _: unsafe extern "C" fn(u64, *const BatonBytes) -> i32 = baton_stream_source_end;
     vec![
         function("baton_stream_abi_version", "uint32_t", &[]),
         function(
@@ -609,6 +689,58 @@ fn rust_exports() -> Vec<CFunction> {
             &["const BatonViewerVTable *"],
         ),
         function("baton_stream_link_decode_failed", "int32_t", &["uint64_t"]),
+        function(
+            "baton_stream_register_sharer",
+            "int32_t",
+            &["const BatonSharerVTable *"],
+        ),
+        function(
+            "baton_stream_pick_done",
+            "int32_t",
+            &["uint64_t", "const BatonPicked *", "const BatonBytes *"],
+        ),
+        function(
+            "baton_stream_source_clock",
+            "int32_t",
+            &["uint64_t", "uint64_t *"],
+        ),
+        function(
+            "baton_stream_source_begin",
+            "int32_t",
+            &["uint64_t", "uint32_t *"],
+        ),
+        function("baton_stream_source_cancel", "int32_t", &["uint64_t"]),
+        function(
+            "baton_stream_source_recovery_pending",
+            "int32_t",
+            &["uint64_t", "uint32_t *"],
+        ),
+        function(
+            "baton_stream_source_sent",
+            "int32_t",
+            &[
+                "uint64_t",
+                "const BatonPicture *",
+                "uint32_t *",
+                "uint64_t *",
+            ],
+        ),
+        function(
+            "baton_stream_source_new_epoch",
+            "int32_t",
+            &["uint64_t", "const BatonFormat *"],
+        ),
+        function(
+            "baton_stream_source_pause",
+            "int32_t",
+            &["uint64_t", "uint32_t"],
+        ),
+        function("baton_stream_source_resume", "int32_t", &["uint64_t"]),
+        function(
+            "baton_stream_source_end",
+            "int32_t",
+            &["uint64_t", "const BatonBytes *"],
+        ),
     ]
 }
 
@@ -665,6 +797,16 @@ fn rust_numbers() -> Vec<(String, i64)> {
         THERMAL_CRITICAL,
         THERMAL_OTHER,
         MESSAGE_MAX,
+        BEGIN_NOT_NOW,
+        BEGIN_KEY,
+        BEGIN_RECOVERY,
+        BEGIN_DELTA,
+        SETS_MAX,
+        SET_BYTES_MAX,
+        SENT,
+        SENT_STALE,
+        SENT_TOO_LARGE,
+        SENT_OVER,
     ]
 }
 
@@ -810,6 +952,41 @@ fn the_header_says_what_the_protocol_allows() {
         text.contains("there are one to eight codecs"),
         "the header's number of codecs is not the protocol's"
     );
+
+    // What a window that is shared is held to.
+    assert!(
+        text.contains(&format!(
+            "(an edge from 1 to {MAX_PICTURE_EDGE} pixels, a rate from 1 to {MAX_FRAME_RATE})"
+        )),
+        "the header's limits of the format of a picture are not the protocol's"
+    );
+    assert!(
+        text.contains(&format!(
+            "a window larger than {MAX_WINDOW_EDGE} reads as {MAX_WINDOW_EDGE}"
+        )),
+        "the header's longest edge of a window is not the protocol's"
+    );
+    assert!(
+        text.contains(&format!(
+            "They are cut to {MAX_STREAM_TITLE_BYTES} and {MAX_NAME_BYTES} bytes"
+        )),
+        "the header's longest title and application name are not the protocol's"
+    );
+    assert_eq!(MAX_PICTURE_BYTES, 8 * 1024 * 1024);
+    assert!(
+        text.contains("A sample of more than 8 MiB is not read"),
+        "the header's largest picture is not the protocol's"
+    );
+    // The sentences that the person is shown are cut to the length of every message.
+    assert_eq!(
+        text.matches(&format!(
+            "at most {} bytes, cut to one line",
+            abi::MESSAGE_MAX
+        ))
+        .count(),
+        2,
+        "the header's longest sentence is not the one of `abi`"
+    );
 }
 
 #[test]
@@ -891,11 +1068,8 @@ static void ended(void *screen) { (void)screen; }
 
 static void release(void *screen) { (void)screen; }
 
-int32_t register_platform(void) {
+static int32_t register_viewer(void) {
     BatonViewerVTable table;
-    if (baton_stream_abi_version() != BATON_STREAM_ABI_VERSION) {
-        return BATON_E_ARGUMENT;
-    }
     table.version = BATON_STREAM_ABI_VERSION;
     table.size = (uint32_t)sizeof table;
     table.context = NULL;
@@ -909,6 +1083,171 @@ int32_t register_platform(void) {
     table.release = release;
     (void)baton_stream_link_decode_failed(1);
     return baton_stream_register_viewer(&table);
+}
+
+static uint32_t control(void *context) {
+    (void)context;
+    return 1;
+}
+
+static int32_t pick(void *context, uint64_t request, BatonMessage *message) {
+    (void)context;
+    (void)request;
+    if (message->cap == 0) {
+        return BATON_E_PLATFORM;
+    }
+    return BATON_OK;
+}
+
+static void cancel_pick(void *context, uint64_t request) {
+    (void)context;
+    (void)request;
+}
+
+static int32_t prepare(void *picked, const BatonTakes *takes, BatonFormat *format) {
+    (void)picked;
+    if ((takes->codecs & BATON_CODEC_H264) == 0 || takes->max_width == 0) {
+        return BATON_E_ARGUMENT;
+    }
+    format->size = (uint32_t)sizeof *format;
+    format->codec = BATON_CODEC_H264;
+    format->width = takes->max_width < 1920 ? takes->max_width : 1920;
+    format->height = takes->max_height < 1080 ? takes->max_height : 1080;
+    format->fps = takes->max_fps < 30 ? takes->max_fps : 30;
+    format->reserved = 0;
+    return BATON_OK;
+}
+
+static int32_t start(void *picked, uint64_t link, BatonMessage *message) {
+    (void)picked;
+    (void)message;
+    return link == 0 ? BATON_E_PLATFORM : BATON_OK;
+}
+
+static void window_ended(void *picked) { (void)picked; }
+
+static void window_released(void *picked) { (void)picked; }
+
+static int32_t register_sharer(void) {
+    BatonSharerVTable table;
+    table.version = BATON_STREAM_ABI_VERSION;
+    table.size = (uint32_t)sizeof table;
+    table.context = NULL;
+    table.control = control;
+    table.pick = pick;
+    table.cancel_pick = cancel_pick;
+    table.prepare = prepare;
+    table.start = start;
+    table.ended = window_ended;
+    table.release = window_released;
+    return baton_stream_register_sharer(&table);
+}
+
+int32_t register_platform(void) {
+    int32_t status;
+    if (baton_stream_abi_version() != BATON_STREAM_ABI_VERSION) {
+        return BATON_E_ARGUMENT;
+    }
+    status = register_viewer();
+    return status == BATON_OK ? register_sharer() : status;
+}
+
+/* What the picker of the system does when the person has chosen, given up, or it failed. */
+int32_t answer_pick(uint64_t request, void *window, int32_t how) {
+    static const char title[] = "Notes";
+    static const char app[] = "Text editor";
+    static const char failure[] = "The list of windows could not be shown.";
+    BatonPicked picked;
+    BatonBytes sentence;
+    if (how == 0) {
+        picked.size = (uint32_t)sizeof picked;
+        picked.width = 1200;
+        picked.height = 800;
+        picked.reserved = 0;
+        picked.context = window;
+        picked.title.ptr = (const uint8_t *)title;
+        picked.title.len = sizeof title - 1;
+        picked.app.ptr = (const uint8_t *)app;
+        picked.app.len = sizeof app - 1;
+        return baton_stream_pick_done(request, &picked, NULL);
+    }
+    if (how == 1) {
+        return baton_stream_pick_done(request, NULL, NULL);
+    }
+    sentence.ptr = (const uint8_t *)failure;
+    sentence.len = sizeof failure - 1;
+    return baton_stream_pick_done(request, NULL, &sentence);
+}
+
+/* What a capture thread does for a window that is shared, with the link that start was given. */
+int32_t capture(uint64_t link, uint32_t pending_picture) {
+    static const uint8_t sequence_set[] = {0x67, 0x42, 0x00, 0x1f};
+    static const uint8_t picture_set[] = {0x68, 0xce, 0x3c, 0x80};
+    static const uint8_t slice[] = {0, 0, 0, 5, 0x65, 1, 2, 3, 4};
+    static const char sorry[] = "The system stopped capturing the window.";
+    uint64_t micros = 0;
+    uint64_t number = 0;
+    uint32_t kind = BATON_BEGIN_NOT_NOW;
+    uint32_t pending = 0;
+    uint32_t outcome = BATON_SENT_OVER;
+    BatonBytes sets[2];
+    BatonBytes sentence;
+    BatonPicture picture;
+    BatonFormat format;
+    int32_t status = baton_stream_source_clock(link, &micros);
+    if (status != BATON_OK) {
+        return status;
+    }
+    status = baton_stream_source_recovery_pending(link, &pending);
+    if (status != BATON_OK) {
+        return status;
+    }
+    status = baton_stream_source_begin(link, &kind);
+    if (status != BATON_OK || kind == BATON_BEGIN_NOT_NOW) {
+        return status;
+    }
+    if (kind == BATON_BEGIN_DELTA && pending_picture == 0) {
+        return baton_stream_source_cancel(link);
+    }
+    sets[0].ptr = sequence_set;
+    sets[0].len = sizeof sequence_set;
+    sets[1].ptr = picture_set;
+    sets[1].len = sizeof picture_set;
+    picture.size = (uint32_t)sizeof picture;
+    picture.flags = BATON_FRAME_REFERENCED;
+    picture.capture_time = micros;
+    picture.length_size = 4;
+    picture.reserved = 0;
+    picture.sample.ptr = slice;
+    picture.sample.len = sizeof slice;
+    picture.sets = sets;
+    picture.set_count = 2;
+    status = baton_stream_source_sent(link, &picture, &outcome, &number);
+    if (status != BATON_OK) {
+        return status;
+    }
+    if (outcome == BATON_SENT_STALE || outcome == BATON_SENT_TOO_LARGE) {
+        format.size = (uint32_t)sizeof format;
+        format.codec = BATON_CODEC_H264;
+        format.width = 1280;
+        format.height = 720;
+        format.fps = 30;
+        format.reserved = 0;
+        status = baton_stream_source_new_epoch(link, &format);
+        if (status != BATON_OK) {
+            return status;
+        }
+    }
+    if (outcome == BATON_SENT_OVER) {
+        return BATON_E_UNKNOWN_LINK;
+    }
+    if (number == 0) {
+        (void)baton_stream_source_pause(link, BATON_PAUSE_LOCKED);
+        (void)baton_stream_source_resume(link);
+    }
+    sentence.ptr = (const uint8_t *)sorry;
+    sentence.len = sizeof sorry - 1;
+    return baton_stream_source_end(link, pending_picture == 0 ? NULL : &sentence);
 }
 "#;
 
@@ -1009,6 +1348,39 @@ fn a_cpp_compiler_takes_the_header_and_a_platform_that_uses_it() {
 }
 
 #[test]
+fn the_platform_sample_uses_every_function_of_the_header() {
+    // A compiler that takes the sample says nothing about a function that the sample leaves out.
+    let parsed = parse(&header());
+    for prototype in &parsed.prototypes {
+        assert!(
+            PLATFORM.contains(&format!("{}(", prototype.name)),
+            "the platform sample never calls {}",
+            prototype.name
+        );
+    }
+    for vtable in parsed
+        .structs
+        .iter()
+        .filter(|c_struct| c_struct.name.ends_with("VTable"))
+    {
+        for field in &vtable.fields {
+            if parsed
+                .fn_types
+                .iter()
+                .any(|function| function.name == field.c_type)
+            {
+                assert!(
+                    PLATFORM.contains(&format!("table.{} = ", field.name)),
+                    "the platform sample never sets {}.{}",
+                    vtable.name,
+                    field.name
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn a_compiler_refuses_a_header_whose_numbers_are_wrong() {
     // The test above is only worth something if a compiler does look at the numbers.
     let Some(found) = compilers("CC", &["cc", "gcc", "clang"]) else {
@@ -1024,6 +1396,15 @@ fn a_compiler_refuses_a_header_whose_numbers_are_wrong() {
         (
             "    uint32_t thermal;   /* BATON_THERMAL_ */\n    uint32_t reserved;\n}",
             "    uint32_t thermal;   /* BATON_THERMAL_ */\n}",
+        ),
+        ("sizeof(BatonPicture) == 56", "sizeof(BatonPicture) == 48"),
+        (
+            "offsetof(BatonSharerVTable, start) == 48",
+            "offsetof(BatonSharerVTable, start) == 40",
+        ),
+        (
+            "    const BatonBytes *sets;  /* set_count entries */\n    size_t set_count;\n} BatonPicture;",
+            "    const BatonBytes *sets;  /* set_count entries */\n} BatonPicture;",
         ),
     ] {
         assert_eq!(text.matches(right).count(), 1, "the header has `{right}`");

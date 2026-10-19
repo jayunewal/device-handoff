@@ -1,22 +1,39 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! The small C interface through which the platform code of a device (Swift on an Apple device)
-//! shows the windows that other devices share. `include/baton_stream_abi.h` is the contract; this
-//! crate is the Rust side of it, and holds every line of `unsafe` code that the interface needs.
+//! shows the windows that other devices share, and shares a window of its own.
+//! `include/baton_stream_abi.h` is the contract; this crate is the Rust side of it, and holds every
+//! line of `unsafe` code that the interface needs.
 //!
 //! The Rust side takes the pictures off the network and puts them in order, and the platform
 //! decodes and draws them (`docs/adr/0009-window-streaming.md` says why the pictures never pass
-//! through the user interface). The two meet here:
+//! through the user interface). In the other direction the platform captures a window and encodes
+//! it, and the Rust side decides when a picture may be made and how it goes out, and sends it.
+//! The two meet here:
 //!
-//! - The platform registers a vtable once, at launch ([`exports::baton_stream_register_viewer`]).
+//! - The platform registers a vtable once for each of the two, at launch
+//!   ([`exports::baton_stream_register_viewer`] and [`exports::baton_stream_register_sharer`]).
 //!   [`registered_windows`] turns what it registered into the [`Windows`](baton_app::Windows) that
-//!   the app is started with, and the app then shows a window by asking the platform for a screen.
+//!   the app is started with, and the app then shows a window by asking the platform for a screen,
+//!   and shares one by asking it for the picker of the system.
 //! - Each screen is a decoder that the session calls with its lock held. It converts the picture
 //!   from the form of the wire (H.264 in Annex B form) into the form the Apple decoder takes
 //!   (AVCC), holds the parameter sets to the size the device said it can show, and passes the
 //!   result across the interface.
 //! - A decoder that fails later, on a thread of its own, says so with a link that `open` gave it
 //!   ([`exports::baton_stream_link_decode_failed`]).
+//! - The window that the person picks ([`exports::baton_stream_pick_done`]) belongs to the Rust
+//!   side from then on, and is passed from one owner to the next: it is prepared only after the
+//!   other person says yes, started when the session runs, and let go of exactly once, started or
+//!   not. A task that waits for the end of the session closes its link, tells the platform with
+//!   `ended` and then lets go, on a thread of the runtime and with no lock held, so that the
+//!   platform can stop its capture threads in `ended`.
+//! - The capture threads of the platform ask the session with the link that `start` gave
+//!   ([`exports::baton_stream_source_begin`] and the functions beside it) whether to make a
+//!   picture, and hand over the ones they made. The Rust side converts each picture from AVCC to
+//!   the form of the wire and refuses one that cannot go on it. A call that comes after the end,
+//!   before the link is closed, is answered as the session would; after that, as a link that is
+//!   not open.
 //!
 //! # Why this crate has `unsafe` code
 //!
@@ -25,17 +42,18 @@
 //! everywhere in it except in two modules (and in the tests, which play the platform with
 //! functions of its kind):
 //!
-//! - `platform` calls the platform. It reads the vtable that the platform registered, and holds
-//!   the only calls of the functions in it. What it builds for a call (the structs of the header)
-//!   it builds from Rust types and keeps alive until the call returns, and what the platform
-//!   writes back (a size, a sentence, a pointer it will be given again) is checked before it is
-//!   used. A screen is released exactly once.
+//! - `platform` calls the platform. It reads the vtables that the platform registered, and holds
+//!   the only calls of the functions in them. What it builds for a call (the structs of the
+//!   header) it builds from Rust types and keeps alive until the call returns, and what the
+//!   platform writes back (a size, a sentence, a pointer it will be given again) is checked before
+//!   it is used. A screen and a window are each released exactly once.
 //! - `exports` is the functions that the platform calls. Each checks its arguments, catches a
 //!   panic, and answers with a number.
 //!
 //! A pointer is never kept past the call it was given in, in either direction, and a number
-//! that stands for something the Rust side holds (the link of a screen) is looked up in a table
-//! and not trusted: a platform that calls with a number that is not open is told so.
+//! that stands for something the Rust side holds (the link of a screen or of a shared window, the
+//! request of a pick) is looked up in a table and not trusted: a platform that calls with a number
+//! that is not open is told so.
 //!
 //! # Keeping the functions in a library
 //!
@@ -54,7 +72,9 @@
 //!
 //! The tests play the platform in Rust, through the same C functions: they hold the layout to the
 //! header, run a session against the registry, and check that nothing leaks and that a wrong call
-//! is refused. No Swift code calls this yet, and a real Apple decoder has not been given a frame.
+//! is refused. The Swift of the viewer calls the half for showing windows, and CI decodes a short
+//! video with it on a Mac. No Swift code calls the half for sharing yet, so nothing real has been
+//! captured or encoded through it.
 
 #[cfg(not(target_pointer_width = "64"))]
 compile_error!(
@@ -67,12 +87,17 @@ pub mod exports;
 #[cfg(test)]
 mod fake;
 #[cfg(test)]
+mod fake_sharer;
+#[cfg(test)]
 mod fixture;
 #[allow(unsafe_code)]
 mod platform;
 mod registry;
 #[cfg(test)]
 mod session_tests;
+mod sharer;
+#[cfg(test)]
+mod sharing_tests;
 mod viewer;
 
 pub use registry::{Error, Registry, registered_windows};

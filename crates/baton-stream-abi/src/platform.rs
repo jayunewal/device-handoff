@@ -15,6 +15,9 @@
 //!   `release` once, when it is dropped. Its methods take what a call needs as Rust types and
 //!   build the structs of the interface here, so a pointer that the platform is given always
 //!   points into memory that this module keeps alive for the call.
+//! - [`SharerCalls`] and [`PickedHandle`] are the same two for sharing: the vtable of the sharer,
+//!   and one window that the person picked, whose pointer the platform gave with its answer
+//!   ([`SharerCalls::adopt`]) and which is released once, when the handle is dropped.
 //!
 //! Every call is made inside [`within`], which marks the thread. The functions of the interface
 //! that the platform calls refuse to run on a thread that is inside a call into the platform,
@@ -25,9 +28,11 @@ use std::{cell::Cell, ffi::c_void, ptr::NonNull};
 use crate::{
     Error,
     abi::{
-        ABI_VERSION, BatonBytes, BatonDecoderState, BatonFrame, BatonLimits, BatonMessage,
-        BatonScreen, BatonSourceMessage, BatonViewerVTable, BatonWindow, DecodeFn, EndedFn,
-        LimitsFn, MESSAGE_MAX, OK, OpenFn, ReleaseFn, ShowFn, SourceFn, StateFn, size_of_u32,
+        ABI_VERSION, BatonBytes, BatonDecoderState, BatonFormat, BatonFrame, BatonLimits,
+        BatonMessage, BatonScreen, BatonSharerVTable, BatonSourceMessage, BatonTakes,
+        BatonViewerVTable, BatonWindow, CancelPickFn, ControlFn, DecodeFn, EndedFn, LimitsFn,
+        MESSAGE_MAX, OK, OpenFn, PickFn, PrepareFn, ReleaseFn, ShowFn, SourceFn, StartFn, StateFn,
+        size_of_u32,
     },
     registry::Registry,
 };
@@ -53,6 +58,36 @@ fn within<R>(call: impl FnOnce() -> R) -> R {
     INSIDE.with(|depth| depth.set(depth.get().saturating_add(1)));
     let _leave = Leave;
     call()
+}
+
+/// Reads a vtable that the platform registered: a copy of the struct, if it is whole.
+///
+/// # Errors
+///
+/// The pointer is null or not aligned, the version is not the one of this library, or the size is
+/// smaller than the struct that this version knows. A larger one is accepted: the end of it
+/// belongs to a newer version.
+///
+/// # Safety
+///
+/// `table` is either null, or points to a struct that begins with a `u32` version and a `u32`
+/// size, as the two vtables of the header do, and is `size` bytes long, that nothing writes to
+/// during this call.
+unsafe fn read_table<T: Copy>(table: *const T) -> Result<T, Error> {
+    if table.is_null() || !table.is_aligned() {
+        return Err(Error::Argument);
+    }
+    let head = table.cast::<u32>();
+    // SAFETY: not null and aligned (the vtables hold pointers, so they are aligned for a `u32`
+    // too), and the caller promises that a struct that has these two fields first is there; they
+    // are read before anything else of it.
+    let (version, size) = unsafe { (head.read(), head.add(1).read()) };
+    if version != ABI_VERSION || usize::try_from(size).map_or(true, |size| size < size_of::<T>()) {
+        return Err(Error::Argument);
+    }
+    // SAFETY: the struct is at least as long as `T` (the caller promises it is `size` bytes), and
+    // the pointer is aligned. The bytes after `T` belong to a newer version and are not read.
+    Ok(unsafe { table.read() })
 }
 
 /// The functions that the platform registered, and the pointer that `limits` and `open` take.
@@ -92,25 +127,8 @@ impl Calls {
     /// `vtable` is either null, or points to a struct that begins with a `u32` version and a
     /// `u32` size and is `size` bytes long, that nothing writes to during this call.
     pub(crate) unsafe fn read(vtable: *const BatonViewerVTable) -> Result<Self, Error> {
-        if vtable.is_null() || !vtable.is_aligned() {
-            return Err(Error::Argument);
-        }
-        // SAFETY: not null and aligned, and the caller promises that a struct that has these two
-        // fields first is there; they are read before anything else of it.
-        let (version, size) = unsafe {
-            (
-                (&raw const (*vtable).version).read(),
-                (&raw const (*vtable).size).read(),
-            )
-        };
-        let known = size_of::<BatonViewerVTable>();
-        if version != ABI_VERSION || usize::try_from(size).map_or(true, |size| size < known) {
-            return Err(Error::Argument);
-        }
-        // SAFETY: the struct is at least as long as `known` says (the caller promises it is `size`
-        // bytes), and the pointer is aligned. The bytes after `known` belong to a newer version
-        // and are not read.
-        let table = unsafe { vtable.read() };
+        // SAFETY: the caller's promise about `vtable` is this function's own.
+        let table = unsafe { read_table(vtable) }?;
         match (
             table.limits,
             table.open,
@@ -365,6 +383,219 @@ impl Drop for ScreenHandle {
     }
 }
 
+/// Makes a call that may write the sentence of a failure, and gives the failure if the call
+/// fails. The platform is given room for the sentence, which is read as far as it fits.
+fn with_message(call: impl FnOnce(*mut BatonMessage) -> i32) -> Result<(), Failure> {
+    let mut text = [0_u8; MESSAGE_MAX as usize];
+    let mut message = BatonMessage {
+        size: size_of_u32::<BatonMessage>(),
+        cap: MESSAGE_MAX,
+        len: 0,
+        reserved: 0,
+        text: text.as_mut_ptr(),
+    };
+    if call(&raw mut message) == OK {
+        Ok(())
+    } else {
+        Err(Failure(sentence(&text, message.len)))
+    }
+}
+
+/// What the viewer of the other device takes, for `prepare`.
+pub(crate) struct Takes {
+    pub(crate) max_width: u32,
+    pub(crate) max_height: u32,
+    pub(crate) max_fps: u32,
+    pub(crate) codecs: u32,
+}
+
+/// The picture that `prepare` chose, as the platform wrote it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Chosen {
+    pub(crate) codec: u32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) fps: u32,
+}
+
+/// The functions that the platform registered to share windows, and the pointer that `control`,
+/// `pick` and `cancel_pick` take.
+#[derive(Clone, Copy)]
+pub(crate) struct SharerCalls {
+    context: *mut c_void,
+    control: ControlFn,
+    pick: PickFn,
+    cancel_pick: CancelPickFn,
+    prepare: PrepareFn,
+    start: StartFn,
+    ended: EndedFn,
+    release: ReleaseFn,
+}
+
+// SAFETY: a `SharerCalls` exists only for a vtable that the platform registered, and the header's
+// rules for that are the platform's promise: `control`, `pick` and `cancel_pick` may be called
+// from any thread, at any time, also at the same time, and `context` stays valid for as long as
+// the process runs. Rust never reads through `context`.
+unsafe impl Send for SharerCalls {}
+// SAFETY: as above; `SharerCalls` has no interior mutability and is only read.
+unsafe impl Sync for SharerCalls {}
+
+impl SharerCalls {
+    /// Reads the vtable that the platform registered. Nothing is kept of `vtable` after this: the
+    /// struct is copied, and the platform may free it.
+    ///
+    /// # Errors
+    ///
+    /// The pointer is null or not aligned, the version is not the one of this library, the size
+    /// is smaller than the struct that this version knows (a larger one is accepted: the end of
+    /// it belongs to a newer version), or a function is missing.
+    ///
+    /// # Safety
+    ///
+    /// `vtable` is either null, or points to a struct that begins with a `u32` version and a
+    /// `u32` size and is `size` bytes long, that nothing writes to during this call.
+    pub(crate) unsafe fn read(vtable: *const BatonSharerVTable) -> Result<Self, Error> {
+        // SAFETY: the caller's promise about `vtable` is this function's own.
+        let table = unsafe { read_table(vtable) }?;
+        match (
+            table.control,
+            table.pick,
+            table.cancel_pick,
+            table.prepare,
+            table.start,
+            table.ended,
+            table.release,
+        ) {
+            (
+                Some(control),
+                Some(pick),
+                Some(cancel_pick),
+                Some(prepare),
+                Some(start),
+                Some(ended),
+                Some(release),
+            ) => Ok(Self {
+                context: table.context,
+                control,
+                pick,
+                cancel_pick,
+                prepare,
+                start,
+                ended,
+                release,
+            }),
+            _ => Err(Error::Argument),
+        }
+    }
+
+    /// Whether the person can let another device control a window that they share.
+    pub(crate) fn control(&self) -> bool {
+        // SAFETY: the function is the platform's, called as the header says.
+        within(|| unsafe { (self.control)(self.context) }) == 1
+    }
+
+    /// Has the platform show the picker for `request`.
+    ///
+    /// # Errors
+    ///
+    /// The platform could not: it says why, if it can.
+    pub(crate) fn pick(&self, request: u64) -> Result<(), Failure> {
+        // SAFETY: the message and the buffer behind it live until the call returns; the function
+        // is the platform's, called as the header says.
+        with_message(|message| within(|| unsafe { (self.pick)(self.context, request, message) }))
+    }
+
+    /// Tells the platform that nobody waits for the answer to `request` any more.
+    pub(crate) fn cancel_pick(&self, request: u64) {
+        // SAFETY: the function is the platform's, called as the header says.
+        within(|| unsafe { (self.cancel_pick)(self.context, request) });
+    }
+
+    /// Takes the window that the platform gave with its answer to a pick. The pointer is the
+    /// platform's own: Rust only hands it back, and releases it once, when the handle is dropped.
+    pub(crate) fn adopt(&self, window: NonNull<c_void>) -> PickedHandle {
+        PickedHandle {
+            calls: *self,
+            context: window,
+        }
+    }
+}
+
+/// One window that the person picked. Dropping it releases the window.
+pub(crate) struct PickedHandle {
+    calls: SharerCalls,
+    context: NonNull<c_void>,
+}
+
+// SAFETY: the header's rule for a window is that its calls may come from any thread as long as
+// they do not overlap. Every call but `release` takes `&mut self`, and `release` runs when the
+// handle is dropped, which needs it to be unborrowed; and a handle has one owner at a time,
+// which `sharer` passes it on to (the pick, the offer, the task that waits for the end of the
+// session), so two calls never overlap. Rust never reads through `context`.
+unsafe impl Send for PickedHandle {}
+
+impl PickedHandle {
+    /// Has the platform choose the picture to begin with, within `takes`. `None` if no picture
+    /// within it can be made.
+    pub(crate) fn prepare(&mut self, takes: &Takes) -> Option<Chosen> {
+        let c_takes = BatonTakes {
+            size: size_of_u32::<BatonTakes>(),
+            max_width: takes.max_width,
+            max_height: takes.max_height,
+            max_fps: takes.max_fps,
+            codecs: takes.codecs,
+            reserved: 0,
+        };
+        let mut format = BatonFormat {
+            size: size_of_u32::<BatonFormat>(),
+            codec: 0,
+            width: 0,
+            height: 0,
+            fps: 0,
+            reserved: 0,
+        };
+        // SAFETY: both structs live until the call returns, and `context` is the window the
+        // platform gave, not yet released (that happens in `drop`).
+        let code = within(|| unsafe {
+            (self.calls.prepare)(self.context.as_ptr(), &raw const c_takes, &raw mut format)
+        });
+        (code == OK).then_some(Chosen {
+            codec: format.codec,
+            width: format.width,
+            height: format.height,
+            fps: format.fps,
+        })
+    }
+
+    /// Has the platform start to capture and encode the window. `link` is the number that the
+    /// platform gives to the functions about the session.
+    ///
+    /// # Errors
+    ///
+    /// The platform could not: it says why, if it can.
+    pub(crate) fn start(&mut self, link: u64) -> Result<(), Failure> {
+        // SAFETY: the message and the buffer behind it live until the call returns, and `context`
+        // is the window the platform gave, not yet released.
+        with_message(|message| {
+            within(|| unsafe { (self.calls.start)(self.context.as_ptr(), link, message) })
+        })
+    }
+
+    /// Tells the platform that the session is over.
+    pub(crate) fn ended(&mut self) {
+        // SAFETY: `context` is the window the platform gave, not yet released.
+        within(|| unsafe { (self.calls.ended)(self.context.as_ptr()) });
+    }
+}
+
+impl Drop for PickedHandle {
+    fn drop(&mut self) {
+        // SAFETY: `context` is the window the platform gave. This is the only place that releases
+        // it, and it runs once; nothing calls the window after that.
+        within(|| unsafe { (self.calls.release)(self.context.as_ptr()) });
+    }
+}
+
 impl Registry {
     /// Registers the viewer that the platform describes in `vtable`, once. The vtable is copied,
     /// and `limits` is called before this returns.
@@ -388,6 +619,30 @@ impl Registry {
         // SAFETY: the caller's promise about `vtable` is this function's own.
         let calls = unsafe { Calls::read(vtable) }?;
         self.register(calls)
+    }
+
+    /// Registers the sharer that the platform describes in `vtable`, once. The vtable is copied.
+    /// A platform registers a viewer, a sharer or both, in any order.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Reentrant`] if this thread is inside a call into the platform,
+    /// [`Error::Registered`] if a sharer was registered before, and [`Error::Argument`] if the
+    /// vtable is not valid. Nothing is registered then.
+    ///
+    /// # Safety
+    ///
+    /// `vtable` is either null, or points to a struct that begins with a `u32` version and a
+    /// `u32` size and is `size` bytes long, that nothing writes to during this call. Whatever
+    /// the vtable's `context` points to, and its functions, are the platform's: they keep working
+    /// for as long as the process runs, as the header requires.
+    pub unsafe fn register_sharer(&self, vtable: *const BatonSharerVTable) -> Result<(), Error> {
+        if inside_call() {
+            return Err(Error::Reentrant);
+        }
+        // SAFETY: the caller's promise about `vtable` is this function's own.
+        let calls = unsafe { SharerCalls::read(vtable) }?;
+        self.register_sharing(calls)
     }
 }
 

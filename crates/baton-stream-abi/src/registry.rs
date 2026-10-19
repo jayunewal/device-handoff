@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! What the platform registered, and the links that its screens use to say that a decoder failed.
+//! What the platform registered, and the links that its windows use to reach the Rust side.
 //!
-//! A [`Registry`] holds the viewer of one device. There is one for the process
-//! ([`registered_windows`]), which the functions of the interface use, and a test makes its own.
+//! A [`Registry`] holds the viewer and the sharer of one device, and the links of the screens and
+//! of the windows that run. There is one for the process ([`registered_windows`]), which the
+//! functions of the interface use, and a test makes its own.
 
 use std::{
     collections::BTreeMap,
@@ -13,12 +14,13 @@ use std::{
 
 use baton_app::{
     Windows,
-    windows::{ScreenLink, WindowViewer},
+    windows::{ScreenLink, WindowSharer, WindowViewer},
 };
 
 use crate::{
     abi::{E_ARGUMENT, E_PANIC, E_PLATFORM, E_REENTRANT, E_REGISTERED, E_UNKNOWN_LINK, OK},
-    platform::{Calls, inside_call},
+    platform::{Calls, SharerCalls, inside_call},
+    sharer::{AbiSharer, Picks, SourceLink},
     viewer::AbiViewer,
 };
 
@@ -30,13 +32,13 @@ pub enum Error {
     /// platform gave and the interface does not allow.
     #[error("a pointer, a size or a value that the platform gave is not valid")]
     Argument,
-    /// A viewer was registered already.
-    #[error("a viewer was registered already")]
+    /// A viewer, or a sharer, was registered already.
+    #[error("a viewer or a sharer was registered already")]
     Registered,
     /// A call of the platform failed.
     #[error("a call of the platform failed")]
     Platform,
-    /// The link is not open.
+    /// The link is not open, or nobody waits for the request.
     #[error("the link is not open")]
     UnknownLink,
     /// Called from inside a call of the platform, on the thread that the call is made on.
@@ -75,11 +77,21 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The links of the screens that are open, by the number that the platform was given for each.
+/// What a link stands for.
+enum Linked {
+    /// The screen of a window that is shown here: a decoder says that it failed with it.
+    Screen(ScreenLink),
+    /// The session of a window that is shared from here: the platform's capture uses it.
+    Source(Arc<SourceLink>),
+}
+
+/// The links that are open, by the number that the platform was given for each: one for each
+/// screen that shows a window and one for each window that is shared.
 ///
 /// A number is never used twice, and one that is not open answers `UnknownLink`, so a platform
 /// that calls with a link after its screen was released, or with a number it made up, is told so
-/// and nothing else happens.
+/// and nothing else happens. A number is a screen's or a session's, never both: the function that
+/// serves one does not find the other.
 #[derive(Default)]
 pub(crate) struct Links {
     table: Mutex<LinkTable>,
@@ -88,16 +100,25 @@ pub(crate) struct Links {
 #[derive(Default)]
 struct LinkTable {
     last: u64,
-    open: BTreeMap<u64, ScreenLink>,
+    open: BTreeMap<u64, Linked>,
 }
 
 impl Links {
-    /// Opens a link and gives its number, which is not 0.
+    /// Opens a link for a screen and gives its number, which is not 0.
     pub(crate) fn add(&self, link: ScreenLink) -> u64 {
+        self.insert(Linked::Screen(link))
+    }
+
+    /// Opens a link for a window that is shared and gives its number, which is not 0.
+    pub(crate) fn add_source(&self, link: Arc<SourceLink>) -> u64 {
+        self.insert(Linked::Source(link))
+    }
+
+    fn insert(&self, linked: Linked) -> u64 {
         let mut table = lock(&self.table);
         table.last = table.last.saturating_add(1);
         let number = table.last;
-        table.open.insert(number, link);
+        table.open.insert(number, linked);
         number
     }
 
@@ -106,9 +127,20 @@ impl Links {
         lock(&self.table).open.remove(&number);
     }
 
-    /// The link that is open under `number`.
-    fn get(&self, number: u64) -> Option<ScreenLink> {
-        lock(&self.table).open.get(&number).cloned()
+    /// The screen's link that is open under `number`.
+    fn screen(&self, number: u64) -> Option<ScreenLink> {
+        match lock(&self.table).open.get(&number) {
+            Some(Linked::Screen(link)) => Some(link.clone()),
+            _ => None,
+        }
+    }
+
+    /// The session's link that is open under `number`.
+    fn source(&self, number: u64) -> Option<Arc<SourceLink>> {
+        match lock(&self.table).open.get(&number) {
+            Some(Linked::Source(link)) => Some(Arc::clone(link)),
+            _ => None,
+        }
     }
 
     /// How many links are open.
@@ -121,13 +153,16 @@ impl Links {
 #[derive(Default)]
 pub struct Registry {
     viewer: Mutex<Option<Arc<AbiViewer>>>,
+    sharer: Mutex<Option<Arc<AbiSharer>>>,
     pub(crate) links: Arc<Links>,
+    pub(crate) picks: Arc<Picks>,
 }
 
 impl fmt::Debug for Registry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Registry")
             .field("viewer", &lock(&self.viewer).is_some())
+            .field("sharer", &lock(&self.sharer).is_some())
             .finish_non_exhaustive()
     }
 }
@@ -140,7 +175,8 @@ impl Registry {
     }
 
     /// Takes the viewer of the platform, once. `Calls` is made only by reading a vtable that the
-    /// platform registered.
+    /// platform registered. The limits that it states are held to what the protocol allows, so a
+    /// platform that is set up wrongly fails here and not at the first window.
     pub(crate) fn register(&self, calls: Calls) -> Result<(), Error> {
         let mut slot = lock(&self.viewer);
         if slot.is_some() {
@@ -148,7 +184,20 @@ impl Registry {
         }
         let limits = calls.limits()?;
         let viewer = AbiViewer::new(calls, &limits, Arc::clone(&self.links))?;
+        viewer.limits().check().map_err(|_| Error::Argument)?;
         *slot = Some(Arc::new(viewer));
+        Ok(())
+    }
+
+    /// Takes the sharer of the platform, once. `SharerCalls` is made only by reading a vtable
+    /// that the platform registered.
+    pub(crate) fn register_sharing(&self, calls: SharerCalls) -> Result<(), Error> {
+        let mut slot = lock(&self.sharer);
+        if slot.is_some() {
+            return Err(Error::Registered);
+        }
+        let sharer = AbiSharer::new(calls, Arc::clone(&self.links), Arc::clone(&self.picks));
+        *slot = Some(Arc::new(sharer));
         Ok(())
     }
 
@@ -159,14 +208,25 @@ impl Registry {
         Some(viewer)
     }
 
-    /// What a device is given to take part in window streaming with: the viewer that was
-    /// registered, and nothing else yet.
+    /// The sharer that was registered, if one was.
+    #[must_use]
+    pub fn sharer(&self) -> Option<Arc<dyn WindowSharer>> {
+        let sharer = lock(&self.sharer).clone()?;
+        Some(sharer)
+    }
+
+    /// What a device is given to take part in window streaming with: the viewer and the sharer
+    /// that were registered, if they were. A device that registered neither takes no part.
     #[must_use]
     pub fn windows(&self) -> Windows {
-        match self.viewer() {
-            Some(viewer) => Windows::none().showing(viewer),
-            None => Windows::none(),
+        let mut windows = Windows::none();
+        if let Some(viewer) = self.viewer() {
+            windows = windows.showing(viewer);
         }
+        if let Some(sharer) = self.sharer() {
+            windows = windows.sharing(sharer);
+        }
+        windows
     }
 
     /// The decoder of the screen that `link` was given for failed after it took a frame.
@@ -179,17 +239,38 @@ impl Registry {
         if inside_call() {
             return Err(Error::Reentrant);
         }
-        let link = self.links.get(link).ok_or(Error::UnknownLink)?;
+        let link = self.links.screen(link).ok_or(Error::UnknownLink)?;
         link.decode_failed();
         Ok(())
     }
 
-    /// How many screens are open: the links that were given to the platform and have not been
-    /// closed. A screen that was released is not counted, so this is also how a test shows that
-    /// nothing is left behind.
+    /// The session of the window that `link` was given for, for the functions that the platform
+    /// calls about a window that it shares.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Reentrant`] if this thread is inside a call of the platform, and
+    /// [`Error::UnknownLink`] if no session is open under that number: it was never given, or
+    /// its session is over.
+    pub(crate) fn source(&self, link: u64) -> Result<Arc<SourceLink>, Error> {
+        if inside_call() {
+            return Err(Error::Reentrant);
+        }
+        self.links.source(link).ok_or(Error::UnknownLink)
+    }
+
+    /// How many links are open: the screens and the windows that were given to the platform and
+    /// have not been closed. A screen that was released is not counted, so this is also how a
+    /// test shows that nothing is left behind.
     #[must_use]
     pub fn open_links(&self) -> usize {
         self.links.len()
+    }
+
+    /// How many picks wait for the platform's answer.
+    #[must_use]
+    pub fn waiting_picks(&self) -> usize {
+        self.picks.len()
     }
 }
 
@@ -214,8 +295,9 @@ pub fn registered_windows() -> Windows {
 mod tests {
     use super::*;
     use crate::{
-        abi::{BatonViewerVTable, CODEC_H264},
+        abi::{ABI_VERSION, BatonLimits, BatonSharerVTable, BatonViewerVTable, CODEC_H264},
         fake::{Call, Fake, register_table},
+        fake_sharer::{self, FakeSharer, PickPlan, SharerCall},
     };
 
     fn register(registry: &Registry, fake: &Arc<Fake>) -> Result<(), Error> {
@@ -256,14 +338,59 @@ mod tests {
     }
 
     #[test]
-    fn the_codecs_that_the_app_is_told_are_the_ones_the_platform_took() {
+    fn limits_that_the_protocol_does_not_allow_are_refused_when_the_viewer_registers() {
+        type Change = fn(&mut BatonLimits);
         let registry = Registry::new();
         let fake = Fake::new();
-        // A platform that decodes none names none. Whether that is a viewer is for the app to say
-        // when it starts, which asks for one codec at least.
-        fake.set_limits(|limits| limits.codecs = 0);
-        register(&registry, &fake).unwrap();
-        assert_eq!(registry.viewer().unwrap().limits().codecs, Vec::new());
+        let table = fake.vtable();
+        // Each of these is a platform that is set up wrongly, and it fails at the registration
+        // and not at the first window that is offered to it.
+        let wrong: [(&str, Change); 8] = [
+            ("no width", |limits| limits.max_width = 0),
+            ("a width beyond the largest picture", |limits| {
+                limits.max_width = 3841;
+            }),
+            ("no height", |limits| limits.max_height = 0),
+            ("a height beyond the largest picture", |limits| {
+                limits.max_height = 3841;
+            }),
+            ("no rate", |limits| limits.max_fps = 0),
+            ("a rate beyond the highest", |limits| limits.max_fps = 121),
+            ("no codec", |limits| limits.codecs = 0),
+            ("a rate beyond 16 bits", |limits| limits.max_fps = 65_536),
+        ];
+        for (what, change) in wrong {
+            fake.set_limits(|limits| *limits = Fake::default_limits());
+            fake.set_limits(change);
+            assert_eq!(
+                register_table(&registry, &table),
+                Err(Error::Argument),
+                "{what}"
+            );
+            assert!(registry.viewer().is_none(), "{what}");
+        }
+
+        // The largest that the protocol allows is accepted, and so is the smallest.
+        for (width, height, fps) in [(3840, 3840, 120), (1, 1, 1)] {
+            let registry = Registry::new();
+            fake.set_limits(|limits| {
+                *limits = Fake::default_limits();
+                limits.max_width = width;
+                limits.max_height = height;
+                limits.max_fps = fps;
+            });
+            register_table(&registry, &table).unwrap();
+            let limits = registry.viewer().unwrap().limits();
+            assert_eq!(
+                (
+                    limits.max_width,
+                    limits.max_height,
+                    u32::from(limits.max_fps)
+                ),
+                (width, height, fps)
+            );
+        }
+        assert!(fake.complaints().is_empty(), "{:?}", fake.complaints());
     }
 
     #[test]
@@ -332,6 +459,231 @@ mod tests {
         fake.set_limits(|limits| *limits = Fake::default_limits());
         register_table(&registry, &table).unwrap();
         assert!(registry.viewer().is_some());
+    }
+
+    #[test]
+    fn a_registry_has_no_sharer_until_the_platform_registers_one() {
+        let registry = Registry::new();
+        assert!(registry.sharer().is_none());
+        assert!(format!("{:?}", registry.windows()).contains("shares: false"));
+        assert_eq!(registry.waiting_picks(), 0);
+    }
+
+    #[test]
+    fn a_registered_sharer_asks_the_platform_each_time_whether_a_window_can_be_controlled() {
+        let registry = Registry::new();
+        let platform = FakeSharer::new();
+        platform.register_in(&registry).unwrap();
+        // Registering reads the table and asks nothing.
+        assert_eq!(platform.log(), []);
+        assert!(format!("{:?}", registry.windows()).contains("shares: true"));
+        assert!(format!("{:?}", registry.windows()).contains("shows: false"));
+
+        let sharer = registry.sharer().unwrap();
+        assert!(!sharer.control());
+        platform.set_control(true);
+        assert!(sharer.control());
+        platform.set_control(false);
+        assert!(!sharer.control());
+        // Only a 1 is a yes: the header says 1 or 0.
+        platform.set_control_number(2);
+        assert!(!sharer.control());
+        assert_eq!(platform.count(|call| *call == SharerCall::Control), 4);
+        assert!(
+            platform.complaints().is_empty(),
+            "{:?}",
+            platform.complaints()
+        );
+    }
+
+    #[test]
+    fn a_sharer_can_be_registered_once() {
+        let registry = Registry::new();
+        let (first, second) = (FakeSharer::new(), FakeSharer::new());
+        second.set_control(true);
+        first.register_in(&registry).unwrap();
+        assert_eq!(second.register_in(&registry), Err(Error::Registered));
+        // The first is the one that stays.
+        assert!(!registry.sharer().unwrap().control());
+        assert_eq!(second.log(), []);
+    }
+
+    #[test]
+    fn a_viewer_and_a_sharer_are_registered_separately_and_in_any_order() {
+        for sharer_first in [false, true] {
+            let registry = Registry::new();
+            let (viewer, platform) = (Fake::new(), FakeSharer::new());
+            if sharer_first {
+                platform.register_in(&registry).unwrap();
+                assert!(registry.viewer().is_none());
+                register(&registry, &viewer).unwrap();
+            } else {
+                register(&registry, &viewer).unwrap();
+                assert!(registry.sharer().is_none());
+                platform.register_in(&registry).unwrap();
+            }
+            let windows = format!("{:?}", registry.windows());
+            assert!(windows.contains("shows: true"), "{windows}");
+            assert!(windows.contains("shares: true"), "{windows}");
+            // One of each, and a second of either is refused whatever the other did.
+            assert_eq!(register(&registry, &Fake::new()), Err(Error::Registered));
+            assert_eq!(
+                FakeSharer::new().register_in(&registry),
+                Err(Error::Registered)
+            );
+        }
+        // A viewer that is refused does not take the place of the sharer, or the other way round.
+        let registry = Registry::new();
+        let viewer = Fake::new();
+        viewer.set_limits(|limits| limits.max_width = 0);
+        assert_eq!(register(&registry, &viewer), Err(Error::Argument));
+        FakeSharer::new().register_in(&registry).unwrap();
+        assert!(registry.viewer().is_none());
+    }
+
+    #[test]
+    fn a_sharer_table_that_is_not_whole_is_refused_and_leaves_nothing_registered() {
+        let registry = Registry::new();
+        let platform = FakeSharer::new();
+        let table = platform.vtable();
+        let refused = |table: BatonSharerVTable| fake_sharer::register_table(&registry, &table);
+
+        assert_eq!(
+            refused(BatonSharerVTable {
+                version: ABI_VERSION + 1,
+                ..table
+            }),
+            Err(Error::Argument)
+        );
+        assert_eq!(
+            refused(BatonSharerVTable {
+                version: 0,
+                ..table
+            }),
+            Err(Error::Argument)
+        );
+        for size in [0, 4, 8, table.size - 1] {
+            assert_eq!(
+                refused(BatonSharerVTable { size, ..table }),
+                Err(Error::Argument),
+                "size {size}"
+            );
+        }
+        let missing: [(&str, BatonSharerVTable); 7] = [
+            (
+                "control",
+                BatonSharerVTable {
+                    control: None,
+                    ..table
+                },
+            ),
+            (
+                "pick",
+                BatonSharerVTable {
+                    pick: None,
+                    ..table
+                },
+            ),
+            (
+                "cancel_pick",
+                BatonSharerVTable {
+                    cancel_pick: None,
+                    ..table
+                },
+            ),
+            (
+                "prepare",
+                BatonSharerVTable {
+                    prepare: None,
+                    ..table
+                },
+            ),
+            (
+                "start",
+                BatonSharerVTable {
+                    start: None,
+                    ..table
+                },
+            ),
+            (
+                "ended",
+                BatonSharerVTable {
+                    ended: None,
+                    ..table
+                },
+            ),
+            (
+                "release",
+                BatonSharerVTable {
+                    release: None,
+                    ..table
+                },
+            ),
+        ];
+        for (name, table) in missing {
+            assert_eq!(refused(table), Err(Error::Argument), "{name} is missing");
+        }
+        // SAFETY: a null pointer is one of the cases that the function is given.
+        #[allow(unsafe_code)]
+        let null = unsafe { registry.register_sharer(std::ptr::null()) };
+        assert_eq!(null, Err(Error::Argument));
+        // SAFETY: a pointer that is not aligned is refused before anything is read through it.
+        #[allow(unsafe_code)]
+        let unaligned = unsafe {
+            let bytes = [0_u64; 16];
+            registry.register_sharer(bytes.as_ptr().cast::<u8>().add(1).cast())
+        };
+        assert_eq!(unaligned, Err(Error::Argument));
+        assert!(registry.sharer().is_none());
+
+        // The platform was asked nothing by any of this, and one that is whole is registered
+        // afterwards, also when it is of a newer version of the struct (which is longer).
+        assert_eq!(platform.log(), []);
+        refused(BatonSharerVTable {
+            size: table.size + 16,
+            ..table
+        })
+        .unwrap();
+        assert!(registry.sharer().is_some());
+    }
+
+    #[test]
+    fn a_sharer_cannot_be_registered_from_inside_a_call_of_the_platform() {
+        let registry = Arc::new(Registry::new());
+        let platform = FakeSharer::new();
+        platform.register_in(&registry).unwrap();
+        platform.plan_pick(PickPlan::Later);
+        let inside = Arc::new(Mutex::new(Vec::new()));
+        let (heard, other, mine) = (
+            Arc::clone(&inside),
+            FakeSharer::new(),
+            Arc::clone(&registry),
+        );
+        platform.on_call(move |_, call| {
+            if matches!(call, SharerCall::Pick { .. }) {
+                // A call that was let in would find the sharer registered already, and a refusal
+                // for the wrong reason.
+                let fresh = Registry::new();
+                heard
+                    .lock()
+                    .unwrap()
+                    .push((other.register_in(&fresh), other.register_in(&mine)));
+            }
+        });
+        let sharer = registry.sharer().unwrap();
+        let mut pick = sharer.pick();
+        let waker = std::task::Waker::noop();
+        assert!(
+            pick.as_mut()
+                .poll(&mut std::task::Context::from_waker(waker))
+                .is_pending()
+        );
+        assert_eq!(
+            *inside.lock().unwrap(),
+            [(Err(Error::Reentrant), Err(Error::Reentrant))]
+        );
+        drop(pick);
+        assert_eq!(registry.waiting_picks(), 0);
     }
 
     #[test]

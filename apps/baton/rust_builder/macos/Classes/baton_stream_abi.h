@@ -2,22 +2,35 @@
 
 /*
  * The interface between the platform code of a device (Swift on an Apple device) and the Rust
- * side of Baton when a device shows a window that another device shares.
+ * side of Baton, for the two things that a device does with windows: it shows a window that
+ * another device shares, and it shares a window of its own.
  *
- * The Rust side takes the pictures off the network and puts them in order. The platform decodes
- * them, draws them, and says how it is doing. This file is the whole of what they say to each
- * other, and docs/adr/0009-window-streaming.md says why it is this small. It is written by hand,
- * and the tests of the crate read it: the sizes and offsets that the BATON_STATIC_ASSERT lines at
- * the end hold are the ones that the Rust structs have, so a struct that changes on one side and
- * not on the other fails a test.
+ * Showing. The Rust side takes the pictures off the network and puts them in order. The platform
+ * decodes them, draws them, and says how it is doing.
+ *
+ * Sharing. The person picks the window with the picker of the system, and the platform captures
+ * it and encodes it. The Rust side offers the window to the other device, decides when a picture
+ * may be made and how it goes out, and sends it.
+ *
+ * This file is the whole of what the two sides say to each other, and
+ * docs/adr/0009-window-streaming.md says why it is this small. It is written by hand, and the
+ * tests of the crate read it: the sizes and offsets that the BATON_STATIC_ASSERT lines at the
+ * end hold are the ones that the Rust structs have, so a struct that changes on one side and not
+ * on the other fails a test.
  *
  * Who calls what.
  *
- *   The platform calls three functions, once at launch and later:
- *     baton_stream_abi_version, baton_stream_register_viewer, baton_stream_link_decode_failed.
- *   The Rust side calls the functions of the vtable that the platform registered:
- *     limits and open (about the device), and decode, show, source, state, ended and release
- *     (about one screen, with the pointer that open gave).
+ *   The platform calls these functions of the Rust side:
+ *     at launch: baton_stream_abi_version, baton_stream_register_viewer and
+ *       baton_stream_register_sharer;
+ *     while a window is shown: baton_stream_link_decode_failed;
+ *     while the person picks a window to share: baton_stream_pick_done;
+ *     while a window is shared: the baton_stream_source_ functions.
+ *   The Rust side calls the functions of the vtables that the platform registered:
+ *     viewer: limits and open (about the device), and decode, show, source, state, ended and
+ *       release (about one screen, with the pointer that open gave);
+ *     sharer: control, pick and cancel_pick (about the device), and prepare, start, ended and
+ *       release (about one window, with the pointer that baton_stream_pick_done gave).
  *
  * Rules that hold for every call.
  *
@@ -34,16 +47,25 @@
  *     reads it. BatonBytes, a pointer and a length, is the one struct that does not begin so.
  *   - No call waits for long. The Rust side makes the calls of a screen while it holds the lock
  *     of the session, so a decoder that takes time hands the picture to a thread of its own, and
- *     reports a failure that comes later with baton_stream_link_decode_failed.
- *   - A function of this interface that is called from inside a call of the vtable, on the same
+ *     reports a failure that comes later with baton_stream_link_decode_failed. The calls of a
+ *     window that is shared hold no lock that a function of this interface needs, so ended and
+ *     release may stop the platform's capture threads, also ones that are inside a function of
+ *     this interface at that moment.
+ *   - A function of this interface that is called from inside a call of a vtable, on the same
  *     thread, is refused with BATON_E_REENTRANT. From another thread it is allowed, but the call
  *     of the vtable must not wait for that thread.
+ *   - An out argument of a function of this interface, a pointer that the Rust side writes
+ *     through, is written only when the function returns BATON_OK. It is never read, so it need
+ *     not be set.
  *   - Threads. limits is called on the thread that registers, before the registration returns.
  *     open is called on a thread of the app's runtime, and two calls of open may overlap each
  *     other and the calls of any screen that is open, so whatever open shares with other calls
  *     (a table of screens, a pool of textures) is kept under a lock. The calls of one screen
  *     never overlap, but two calls may come on two threads, so a screen keeps nothing in
- *     thread-local storage. The calls of two screens may overlap.
+ *     thread-local storage. The calls of two screens may overlap. The same holds for the
+ *     sharer: control, pick and cancel_pick are called on a thread of the app's runtime and may
+ *     overlap each other; the calls of one window (prepare, start, ended, release) never
+ *     overlap, and release is the last; the calls of two windows may overlap.
  *   - Nothing in the platform may unwind into the Rust side: a Swift error or an exception
  *     is caught before it leaves the call.
  */
@@ -65,11 +87,14 @@ extern "C" {
 #define BATON_OK 0
 /* A null pointer, a wrong version or size, a function that is missing, or a value that is wrong. */
 #define BATON_E_ARGUMENT (-1)
-/* A viewer was registered already. There is one for the life of the process. */
+/* A viewer, or a sharer, was registered already; there is one of each for the process. */
 #define BATON_E_REGISTERED (-2)
 /* A call of the vtable failed: it returned something else than BATON_OK. */
 #define BATON_E_PLATFORM (-3)
-/* The link is not one that is open: it was never given, or its screen was released. */
+/*
+ * The link is not one that is open: it was never given, or its screen was released, or its
+ * session is over. The same for the request of a pick that nobody waits for.
+ */
 #define BATON_E_UNKNOWN_LINK (-4)
 /* Called from inside a call of the vtable, on the thread that the call is made on. */
 #define BATON_E_REENTRANT (-5)
@@ -123,8 +148,25 @@ extern "C" {
 #define BATON_THERMAL_CRITICAL 3u
 #define BATON_THERMAL_OTHER 4u
 
-/* The most bytes of a message that explains why a window could not be shown. */
+/* The most bytes of a message that explains why a window could not be shown or shared. */
 #define BATON_MESSAGE_MAX 256u
+
+/* What baton_stream_source_begin says about the next picture. */
+#define BATON_BEGIN_NOT_NOW 0u  /* make no picture now; ask again */
+#define BATON_BEGIN_KEY 1u      /* make a key frame */
+#define BATON_BEGIN_RECOVERY 2u /* make a recovery frame; a platform that holds no long-term
+                                   references is never asked for one, and makes a key frame */
+#define BATON_BEGIN_DELTA 3u    /* make a frame that follows the one before */
+
+/* The most parameter sets that a picture is given with, and the most bytes of one. */
+#define BATON_SETS_MAX 256u
+#define BATON_SET_BYTES_MAX 4096u
+
+/* What baton_stream_source_sent says became of the picture. */
+#define BATON_SENT 0u           /* it went out; the number says which frame it is */
+#define BATON_SENT_STALE 1u     /* it is of no use any more: drop it and begin again */
+#define BATON_SENT_TOO_LARGE 2u /* it is larger than the protocol allows: nothing went out */
+#define BATON_SENT_OVER 3u      /* the session is over: nothing went out */
 
 /*
  * Bytes in memory that the other side owns: text (UTF-8, no terminator) or a picture. When len is
@@ -243,6 +285,84 @@ typedef struct BatonDecoderState {
 } BatonDecoderState;
 
 /*
+ * What the viewer of the other device can take: the largest picture, the highest rate and the
+ * codecs, as it said when it accepted the window. The picture that prepare chooses stays within
+ * it.
+ */
+typedef struct BatonTakes {
+    uint32_t size;       /* written by the Rust side: the bytes the platform may read */
+    uint32_t max_width;  /* the widest picture in pixels */
+    uint32_t max_height; /* the highest picture in pixels */
+    uint32_t max_fps;    /* the most frames a second */
+    uint32_t codecs;     /* the codecs its decoder takes, as BATON_CODEC_ bits */
+    uint32_t reserved;
+} BatonTakes;
+
+/*
+ * The picture that the platform makes of a window: how it is coded and how large it is. The
+ * picture shows the whole window, scaled to this size. prepare chooses the first one, and
+ * baton_stream_source_new_epoch gives each later one, which begins with a key frame. The numbers
+ * are held to what the protocol allows (an edge from 1 to 3840 pixels, a rate from 1 to 120) and
+ * to what the viewer takes, and a format beyond either is refused.
+ */
+typedef struct BatonFormat {
+    uint32_t size;
+    uint32_t codec;  /* one BATON_CODEC_ bit */
+    uint32_t width;  /* the size of the picture in pixels */
+    uint32_t height;
+    uint32_t fps;    /* the most frames a second that the platform makes */
+    uint32_t reserved;
+} BatonFormat;
+
+/*
+ * The window that the person picked, as baton_stream_pick_done gives it. context is the
+ * platform's own pointer for the window, which the Rust side hands back as the first argument of
+ * every call about it until release, and is not NULL. The platform keeps it valid until then.
+ *
+ * width and height are the size of the window in pixels, from 1; a window larger than 16384 reads
+ * as 16384. The window may be larger than any picture that is sent, which is scaled down. title
+ * and app are copied before the call returns. They are cut to 512 and 256 bytes, and may be
+ * empty. A title names a document, a person or a page: do not log it.
+ */
+typedef struct BatonPicked {
+    uint32_t size;
+    uint32_t width;
+    uint32_t height;
+    uint32_t reserved;
+    void *context;
+    BatonBytes title;
+    BatonBytes app;
+} BatonPicked;
+
+/*
+ * A picture that the encoder made, as baton_stream_source_sent gives it.
+ *
+ * sample is the picture in the form that the Apple encoder makes (AVCC): NAL units behind lengths
+ * of length_size bytes, 1, 2 or 4, in network order. Parameter sets, delimiters and filler that it
+ * holds are not sent. sets holds the parameter sets of the format of the encoder, sequence and
+ * picture parameter sets in any order, each without a start code, and is NULL when there are none.
+ * A key frame (one that holds a slice of an IDR picture) always goes out with them, so the
+ * platform gives them with it and has them checked: at least one of each. Any other picture is
+ * sent without them, so the platform may give them with every picture and they are not read. At
+ * most BATON_SETS_MAX of them, of at most BATON_SET_BYTES_MAX bytes each.
+ *
+ * flags holds BATON_FRAME_REFERENCED if a later frame may refer to this one. The kind of the frame
+ * is the one that baton_stream_source_begin said, so the other bits are ignored.
+ * capture_time is when the window was captured, in the microseconds that
+ * baton_stream_source_clock counts. A sample of more than 8 MiB is not read.
+ */
+typedef struct BatonPicture {
+    uint32_t size;
+    uint32_t flags;
+    uint64_t capture_time;
+    uint32_t length_size;
+    uint32_t reserved;
+    BatonBytes sample;
+    const BatonBytes *sets;  /* set_count entries */
+    size_t set_count;
+} BatonPicture;
+
+/*
  * The functions of the platform. All of them are mandatory. A function that returns int32_t
  * returns BATON_OK, or something else for a failure.
  *
@@ -291,6 +411,65 @@ typedef struct BatonViewerVTable {
     BatonReleaseFn release;
 } BatonViewerVTable;
 
+/*
+ * The functions of the platform that shares windows. All of them are mandatory. The first two are
+ * about the device and take the context of the table; the others are about one window, and take
+ * the pointer that baton_stream_pick_done gave. BatonEndedFn and BatonReleaseFn are the types of
+ * ended and release above, with the pointer of the window in place of the one of the screen.
+ *
+ *   control:     whether the person can let another device control a window that they share, 1
+ *                or 0. A platform that cannot post input says 0, and no window is offered with
+ *                control. Called each time the app asks what the device can do.
+ *   pick:        the person wants to share a window: shows the picker of the system. request is
+ *                the number that baton_stream_pick_done is given when the person has chosen, or
+ *                given up, or the picker failed. Does not wait for the person. On a failure to
+ *                show the picker fills in message if it can, as open does.
+ *   cancel_pick: nobody waits for the answer any more: takes the picker down if it is up. An
+ *                answer that comes anyway is refused with BATON_E_UNKNOWN_LINK, and the window
+ *                it names stays with the platform.
+ *   prepare:     the other device said yes, and takes is what it can take. Chooses the picture to
+ *                begin with, within that, fills in format, and gets ready to make it. A failure
+ *                means that no picture within what it takes can be made, and the person is told
+ *                so. Called at most once for a window.
+ *   start:       the session runs, and link is its number for the baton_stream_source_
+ *                functions: valid until the session is over, and a number that is not used again.
+ *                Starts to capture the window and to encode it, as the rules of the pictures
+ *                below say. Does not wait for the first picture. A failure ends the session, and
+ *                is shown to the person with the sentence in message, if it wrote one (as open
+ *                does); nothing follows it but release.
+ *   ended:       the session is over, whoever ended it: the other device, the connection, or the
+ *                platform with baton_stream_source_end. It is called from a thread of the Rust
+ *                side a moment after the end, with no lock held, so it may wait for the capture
+ *                threads of the platform to leave the functions of this interface: the link is
+ *                closed before ended is called, and a call that is on its way is answered with
+ *                BATON_E_UNKNOWN_LINK. Stop capturing and encoding, and let go of what the
+ *                capture holds. Called only after a start that returned BATON_OK, once. No call
+ *                follows but release, which can come without ended when the runtime of the app
+ *                is shut down before the end is told.
+ *   release:     the window is not needed any more, whether or not ended came first, and
+ *                whether or not it was ever started. Let go of all of it, the picker's
+ *                result included. Called exactly once, and nothing follows.
+ */
+typedef uint32_t (*BatonControlFn)(void *context);
+typedef int32_t (*BatonPickFn)(void *context, uint64_t request, BatonMessage *message);
+typedef void (*BatonCancelPickFn)(void *context, uint64_t request);
+typedef int32_t (*BatonPrepareFn)(void *picked, const BatonTakes *takes, BatonFormat *format);
+typedef int32_t (*BatonStartFn)(void *picked, uint64_t link, BatonMessage *message);
+
+/* What the platform registers to share windows, as the table above does to show them. */
+typedef struct BatonSharerVTable {
+    uint32_t version;
+    uint32_t size;
+    void *context;
+    BatonControlFn control;
+    BatonPickFn pick;
+    BatonCancelPickFn cancel_pick;
+    BatonPrepareFn prepare;
+    BatonStartFn start;
+    BatonEndedFn ended;
+    BatonReleaseFn release;
+} BatonSharerVTable;
+
 /* The version of the interface that the library was built with, for the platform to compare. */
 uint32_t baton_stream_abi_version(void);
 
@@ -312,6 +491,121 @@ int32_t baton_stream_register_viewer(const BatonViewerVTable *vtable);
  * BATON_E_UNKNOWN_LINK, BATON_E_REENTRANT or BATON_E_PANIC.
  */
 int32_t baton_stream_link_decode_failed(uint64_t link);
+
+/*
+ * Registers the platform's sharer. Call it once, at launch, before the app starts. A platform
+ * registers a viewer, a sharer or both: a device that has registered a sharer lets the person
+ * share a window, and a device that has not shares none (an iPhone registers only a viewer). The
+ * vtable is copied; the platform keeps whatever its context points to for as long as the process
+ * lives. Returns BATON_OK, or BATON_E_ARGUMENT (the vtable is wrong), BATON_E_REGISTERED,
+ * BATON_E_REENTRANT or BATON_E_PANIC. A registration that fails leaves nothing registered.
+ */
+int32_t baton_stream_register_sharer(const BatonSharerVTable *vtable);
+
+/*
+ * The answer to a pick, once for each request, from any thread but not from inside a call of the
+ * vtable (pick that cannot show the picker fails instead). One of three:
+ *
+ *   - picked is not NULL and failure is NULL: the person chose a window. On BATON_OK the Rust side
+ *     owns picked->context and calls release for it exactly once. On any other result the window
+ *     stays with the platform, which lets go of it itself.
+ *   - picked is NULL and failure holds a sentence: the picker failed. The person is told it, so
+ *     it says what happened in plain words (at most 256 bytes, cut to one line).
+ *   - picked is NULL, and failure is NULL or empty: the person gave up. Nothing is shown.
+ *
+ * Returns BATON_OK, or BATON_E_UNKNOWN_LINK (nobody waits for this request: it was never given,
+ * it was answered, or cancel_pick took it down), BATON_E_ARGUMENT (a pointer, a size or a value is
+ * wrong; the person is waiting, so the request is answered with a failure all the same),
+ * BATON_E_REENTRANT or BATON_E_PANIC.
+ */
+int32_t baton_stream_pick_done(uint64_t request, const BatonPicked *picked,
+                               const BatonBytes *failure);
+
+/*
+ * The functions the platform calls about a window that it shares, with the link that start gave.
+ * They may be called from any thread, also at the same time, and none waits for long. Not from
+ * inside a call of the vtable: BATON_E_REENTRANT. A link that is not open, because the session
+ * is over or the number was never given, is answered with BATON_E_UNKNOWN_LINK, which a capture
+ * thread takes as the end and stops at. The link closes a moment after the end, and a call that
+ * comes between the two is answered as the session would have: begin says BATON_BEGIN_NOT_NOW,
+ * sent says BATON_SENT_OVER, and the others return BATON_OK and change nothing.
+ *
+ * The pictures. For each picture that it could make, the platform asks baton_stream_source_begin.
+ * BATON_BEGIN_NOT_NOW means that none is wanted now, because too many are in flight, or the
+ * session is paused, or the viewer has gone quiet, and the platform skips the picture. Nothing
+ * says when that stops holding, and a window that has stopped changing delivers no newer picture,
+ * so the platform asks again on its own frame clock, with the newest picture that the capture
+ * hands over when it is asked for one, for as long as the window has changed since the last
+ * picture it gave to baton_stream_source_sent, or baton_stream_source_recovery_pending says that
+ * a picture is wanted: the first picture of a session is, and so is the one after a frame that
+ * was given up on. Any other answer is a kind of picture to make: BATON_BEGIN_KEY, a key frame
+ * (an IDR picture, from which a decoder can start); BATON_BEGIN_DELTA, a frame that follows the
+ * one before; BATON_BEGIN_RECOVERY, one that refers to a long-term reference that the viewer
+ * holds, which a platform that marks no picture as one never gets. The platform answers it with
+ * exactly one of baton_stream_source_sent and baton_stream_source_cancel, before it asks begin
+ * again.
+ */
+
+/* The microseconds since the session began: the clock of the capture_time of a picture. */
+int32_t baton_stream_source_clock(uint64_t link, uint64_t *micros);
+
+/* Asks whether to make a picture, and which kind: *kind is a BATON_BEGIN_ number. */
+int32_t baton_stream_source_begin(uint64_t link, uint32_t *kind);
+
+/* The picture that begin announced could not be made. Nothing is sent. */
+int32_t baton_stream_source_cancel(uint64_t link);
+
+/* *pending is 1 if the next picture has to be something other than a delta, so one is wanted
+   even if the window has not changed, and 0 if not. */
+int32_t baton_stream_source_recovery_pending(uint64_t link, uint32_t *pending);
+
+/*
+ * The picture that begin announced was made: sends it. Returns BATON_OK, and *outcome says what
+ * became of the picture (a BATON_SENT_ number), and *number is the number of its frame if it
+ * went out, and 0 if not. A picture that is not sent leaves the frame given up on, and the next
+ * begin answers again.
+ *
+ * Returns BATON_E_ARGUMENT if the picture was not taken, because a pointer, a size or a length is
+ * wrong, or the sample is not a picture that can go on the wire: a length that reaches beyond its
+ * end, a NAL unit that could be taken for more than one, a key frame that lacks a sequence or a
+ * picture parameter set or holds no slice of an IDR picture. The frame that begin announced is
+ * given up on then too.
+ */
+int32_t baton_stream_source_sent(uint64_t link, const BatonPicture *picture, uint32_t *outcome,
+                                 uint64_t *number);
+
+/*
+ * The size of the picture changed, because the window did or the viewer wants less: starts a new
+ * epoch, which begins with a key frame, and tells the viewer. The frames in flight are of the
+ * old size, and so is a picture that is being made, which baton_stream_source_sent drops
+ * (BATON_SENT_STALE). Returns BATON_E_ARGUMENT, and changes nothing, if the format is beyond what
+ * the protocol allows or the viewer takes. Once the session is over it returns BATON_OK and
+ * changes nothing, since the end can come while the platform is resizing.
+ */
+int32_t baton_stream_source_new_epoch(uint64_t link, const BatonFormat *format);
+
+/*
+ * Stops the pictures for a while, and tells the viewer why: BATON_PAUSE_LOCKED when the Mac is
+ * locked or its display is off, BATON_PAUSE_HIDDEN when the window is minimized or not on screen.
+ * begin answers BATON_BEGIN_NOT_NOW until baton_stream_source_resume.
+ */
+int32_t baton_stream_source_pause(uint64_t link, uint32_t reason);
+
+/* The pictures go on. */
+int32_t baton_stream_source_resume(uint64_t link);
+
+/*
+ * Ends the session. When sentence is NULL or empty, the person closed the window or ended the
+ * session themselves, and nothing is shown. Otherwise something went wrong, such as a capture
+ * that cannot begin or that the system stopped, and the sentence says what happened in plain
+ * words that the person can act on (at most 256 bytes, cut to one line): the person is shown it.
+ * The first sentence counts, and a session that is over already is told as it ended, whatever the
+ * sentence says: the other device or the connection may have ended it first, or the platform
+ * itself with no sentence. ended is called a moment later, from a thread of the Rust side, and not
+ * before this returns. Ending a session that is over while its link is still open returns
+ * BATON_OK and changes nothing.
+ */
+int32_t baton_stream_source_end(uint64_t link, const BatonBytes *sentence);
 
 /*
  * The layout. These lines make a compiler that disagrees with the numbers refuse to build, and
@@ -390,6 +684,41 @@ BATON_STATIC_ASSERT(offsetof(BatonDecoderState, decode_us) == 4, "BatonDecoderSt
 BATON_STATIC_ASSERT(offsetof(BatonDecoderState, thermal) == 8, "BatonDecoderState.thermal");
 BATON_STATIC_ASSERT(offsetof(BatonDecoderState, reserved) == 12, "BatonDecoderState.reserved");
 
+BATON_STATIC_ASSERT(sizeof(BatonTakes) == 24, "BatonTakes");
+BATON_STATIC_ASSERT(offsetof(BatonTakes, size) == 0, "BatonTakes.size");
+BATON_STATIC_ASSERT(offsetof(BatonTakes, max_width) == 4, "BatonTakes.max_width");
+BATON_STATIC_ASSERT(offsetof(BatonTakes, max_height) == 8, "BatonTakes.max_height");
+BATON_STATIC_ASSERT(offsetof(BatonTakes, max_fps) == 12, "BatonTakes.max_fps");
+BATON_STATIC_ASSERT(offsetof(BatonTakes, codecs) == 16, "BatonTakes.codecs");
+BATON_STATIC_ASSERT(offsetof(BatonTakes, reserved) == 20, "BatonTakes.reserved");
+
+BATON_STATIC_ASSERT(sizeof(BatonFormat) == 24, "BatonFormat");
+BATON_STATIC_ASSERT(offsetof(BatonFormat, size) == 0, "BatonFormat.size");
+BATON_STATIC_ASSERT(offsetof(BatonFormat, codec) == 4, "BatonFormat.codec");
+BATON_STATIC_ASSERT(offsetof(BatonFormat, width) == 8, "BatonFormat.width");
+BATON_STATIC_ASSERT(offsetof(BatonFormat, height) == 12, "BatonFormat.height");
+BATON_STATIC_ASSERT(offsetof(BatonFormat, fps) == 16, "BatonFormat.fps");
+BATON_STATIC_ASSERT(offsetof(BatonFormat, reserved) == 20, "BatonFormat.reserved");
+
+BATON_STATIC_ASSERT(sizeof(BatonPicked) == 56, "BatonPicked");
+BATON_STATIC_ASSERT(offsetof(BatonPicked, size) == 0, "BatonPicked.size");
+BATON_STATIC_ASSERT(offsetof(BatonPicked, width) == 4, "BatonPicked.width");
+BATON_STATIC_ASSERT(offsetof(BatonPicked, height) == 8, "BatonPicked.height");
+BATON_STATIC_ASSERT(offsetof(BatonPicked, reserved) == 12, "BatonPicked.reserved");
+BATON_STATIC_ASSERT(offsetof(BatonPicked, context) == 16, "BatonPicked.context");
+BATON_STATIC_ASSERT(offsetof(BatonPicked, title) == 24, "BatonPicked.title");
+BATON_STATIC_ASSERT(offsetof(BatonPicked, app) == 40, "BatonPicked.app");
+
+BATON_STATIC_ASSERT(sizeof(BatonPicture) == 56, "BatonPicture");
+BATON_STATIC_ASSERT(offsetof(BatonPicture, size) == 0, "BatonPicture.size");
+BATON_STATIC_ASSERT(offsetof(BatonPicture, flags) == 4, "BatonPicture.flags");
+BATON_STATIC_ASSERT(offsetof(BatonPicture, capture_time) == 8, "BatonPicture.capture_time");
+BATON_STATIC_ASSERT(offsetof(BatonPicture, length_size) == 16, "BatonPicture.length_size");
+BATON_STATIC_ASSERT(offsetof(BatonPicture, reserved) == 20, "BatonPicture.reserved");
+BATON_STATIC_ASSERT(offsetof(BatonPicture, sample) == 24, "BatonPicture.sample");
+BATON_STATIC_ASSERT(offsetof(BatonPicture, sets) == 40, "BatonPicture.sets");
+BATON_STATIC_ASSERT(offsetof(BatonPicture, set_count) == 48, "BatonPicture.set_count");
+
 BATON_STATIC_ASSERT(sizeof(BatonViewerVTable) == 80, "BatonViewerVTable");
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, version) == 0, "BatonViewerVTable.version");
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, size) == 4, "BatonViewerVTable.size");
@@ -402,6 +731,19 @@ BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, source) == 48, "BatonViewerVTabl
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, state) == 56, "BatonViewerVTable.state");
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, ended) == 64, "BatonViewerVTable.ended");
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, release) == 72, "BatonViewerVTable.release");
+
+BATON_STATIC_ASSERT(sizeof(BatonSharerVTable) == 72, "BatonSharerVTable");
+BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, version) == 0, "BatonSharerVTable.version");
+BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, size) == 4, "BatonSharerVTable.size");
+BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, context) == 8, "BatonSharerVTable.context");
+BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, control) == 16, "BatonSharerVTable.control");
+BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, pick) == 24, "BatonSharerVTable.pick");
+BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, cancel_pick) == 32,
+                    "BatonSharerVTable.cancel_pick");
+BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, prepare) == 40, "BatonSharerVTable.prepare");
+BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, start) == 48, "BatonSharerVTable.start");
+BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, ended) == 56, "BatonSharerVTable.ended");
+BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, release) == 64, "BatonSharerVTable.release");
 
 #ifdef __cplusplus
 }

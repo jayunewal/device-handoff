@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! The library starts the app with the viewer that the platform registered through the C
-//! interface of `baton-stream-abi`, as the Swift code of the app does: once for the process,
+//! The library starts the app with the viewer and the sharer that the platform registered through
+//! the C interface of `baton-stream-abi`, as the Swift code of the app does: once for the process,
 //! before the app starts.
 //!
 //! The platform of this test is written as a real one is, with C functions and pointers, and it
-//! never makes a screen: what is tested is that the app is given the viewer.
+//! never makes a screen or a window: what is tested is that the app is given the viewer and the
+//! sharer.
 
 #![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -14,10 +15,11 @@ use std::{ffi::c_void, mem::size_of, ptr};
 use baton_ffi::api::baton::Baton;
 use baton_stream_abi::{
     abi::{
-        ABI_VERSION, BatonDecoderState, BatonFrame, BatonLimits, BatonMessage, BatonScreen,
-        BatonSourceMessage, BatonViewerVTable, BatonWindow, CODEC_H264, E_PLATFORM, OK,
+        ABI_VERSION, BatonDecoderState, BatonFormat, BatonFrame, BatonLimits, BatonMessage,
+        BatonScreen, BatonSharerVTable, BatonSourceMessage, BatonTakes, BatonViewerVTable,
+        BatonWindow, CODEC_H264, E_PLATFORM, OK,
     },
-    exports::baton_stream_register_viewer,
+    exports::{baton_stream_register_sharer, baton_stream_register_viewer},
 };
 use tempfile::TempDir;
 
@@ -64,6 +66,24 @@ unsafe extern "C" fn ended(_: *mut c_void) {}
 
 unsafe extern "C" fn release(_: *mut c_void) {}
 
+unsafe extern "C" fn control(_: *mut c_void) -> u32 {
+    1
+}
+
+unsafe extern "C" fn pick(_: *mut c_void, _: u64, _: *mut BatonMessage) -> i32 {
+    E_PLATFORM
+}
+
+unsafe extern "C" fn cancel_pick(_: *mut c_void, _: u64) {}
+
+unsafe extern "C" fn prepare(_: *mut c_void, _: *const BatonTakes, _: *mut BatonFormat) -> i32 {
+    E_PLATFORM
+}
+
+unsafe extern "C" fn begin(_: *mut c_void, _: u64, _: *mut BatonMessage) -> i32 {
+    E_PLATFORM
+}
+
 /// A Baton in a folder of its own, with settings that keep it to this computer.
 async fn start() -> (Baton, TempDir) {
     let folder = tempfile::tempdir().unwrap();
@@ -84,9 +104,9 @@ async fn start() -> (Baton, TempDir) {
 }
 
 #[tokio::test]
-async fn the_app_is_started_with_the_viewer_that_the_platform_registered() {
-    // This is the only test of the process, since a viewer is registered once for its life.
-    // Before one is, the device takes no window.
+async fn the_app_is_started_with_the_viewer_and_the_sharer_that_the_platform_registered() {
+    // This is the only test of the process, since a viewer and a sharer are registered once for
+    // its life. Before they are, the device takes no window and shares none.
     let (before, _folder) = start().await;
     let abilities = before.window_abilities();
     assert!(!abilities.can_show);
@@ -119,4 +139,31 @@ async fn the_app_is_started_with_the_viewer_that_the_platform_registered() {
     assert!(!abilities.can_share);
     assert!(!abilities.can_control);
     after.stop().await;
+
+    let vtable = BatonSharerVTable {
+        version: ABI_VERSION,
+        size: size_of_u32::<BatonSharerVTable>(),
+        context: ptr::null_mut(),
+        control: Some(control),
+        pick: Some(pick),
+        cancel_pick: Some(cancel_pick),
+        prepare: Some(prepare),
+        start: Some(begin),
+        ended: Some(ended),
+        release: Some(release),
+    };
+    // SAFETY: a vtable that is whole, with functions that keep to the header.
+    assert_eq!(
+        unsafe { baton_stream_register_sharer(&raw const vtable) },
+        OK
+    );
+
+    // The next one also shares the windows of this device, and lets the person grant control of
+    // them, since the platform says it can post input.
+    let (last, _folder) = start().await;
+    let abilities = last.window_abilities();
+    assert!(abilities.can_show);
+    assert!(abilities.can_share);
+    assert!(abilities.can_control);
+    last.stop().await;
 }
