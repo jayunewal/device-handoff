@@ -65,6 +65,7 @@ class _SendScreenState extends State<SendScreen> {
 
   /// Asks the person for what to send with [choose], and sends it.
   Future<void> _choose(Future<List<String>> Function() choose) async {
+    final chooser = widget.chooser;
     final List<String> paths;
     try {
       paths = await choose();
@@ -76,8 +77,14 @@ class _SendScreenState extends State<SendScreen> {
       );
       return;
     }
-    if (!mounted || paths.isEmpty) return;
-    await _files.send(paths);
+    if (paths.isEmpty) return;
+    try {
+      if (mounted) await _files.send(paths);
+    } finally {
+      // What the dialog copied is not needed once the sending is over, however it went, or if the
+      // screen was gone before there was anything to send.
+      await chooser.release(paths);
+    }
   }
 
   Future<void> _chooseFolder() => _choose(() async {

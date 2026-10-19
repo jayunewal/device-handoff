@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import 'dart:async';
+
 import 'package:baton/src/awake.dart';
 import 'package:baton/src/backend.dart';
 import 'package:baton/src/file_chooser.dart';
@@ -52,12 +54,18 @@ class _Chooser implements FileChooser {
   /// How many dialogs were opened.
   int opened = 0;
 
+  /// When it is set, [files] waits for it, so that a test can decide when the person chooses.
+  Completer<List<String>>? hold;
+
+  /// What the screen let go of, one list for each time it did.
+  final List<List<String>> released = [];
+
   @override
   Future<List<String>> files() async {
     opened++;
     final failure = this.failure;
     if (failure != null) throw failure;
-    return chosen;
+    return hold?.future ?? chosen;
   }
 
   @override
@@ -67,6 +75,9 @@ class _Chooser implements FileChooser {
     if (failure != null) throw failure;
     return chosenFolder;
   }
+
+  @override
+  Future<void> release(List<String> paths) async => released.add(paths);
 }
 
 const _sent = FilesSent(files: 2, bytes: 4000, failed: 0, leftOut: 0);
@@ -592,6 +603,138 @@ void main() {
     expect(find.text('Baton could not open the file chooser.'), findsOneWidget);
     expect(session.filesSent, isEmpty);
     expect(_enabled(tester, 'Choose files'), isTrue);
+    expect(chooser.released, isEmpty);
+  });
+
+  testWidgets('lets go of what the dialog copied once the files are sent', (
+    tester,
+  ) async {
+    final chooser = _Chooser()
+      ..chosen = ['/tmp/copies/holiday.jpg', '/tmp/copies/notes.txt'];
+    final session = await _show(tester, chooser: chooser);
+
+    await tester.tap(find.text('Choose files'));
+    await tester.pump();
+    expect(chooser.released, isEmpty, reason: 'the files are still going');
+
+    session.transfer.finish(_sent);
+    await tester.pump();
+
+    expect(chooser.released, [
+      ['/tmp/copies/holiday.jpg', '/tmp/copies/notes.txt'],
+    ]);
+  });
+
+  testWidgets('lets go of it when the files could not be sent', (tester) async {
+    final chooser = _Chooser()..chosen = ['/tmp/copies/holiday.jpg'];
+    final session = _session()
+      ..sendFilesFailure = const BatonError(
+        kind: ErrorKind.unreachable,
+        message: 'Baton could not reach Kitchen iPad',
+      );
+    await _show(tester, session: session, chooser: chooser);
+
+    await tester.tap(find.text('Choose files'));
+    await tester.pump();
+
+    expect(chooser.released, [
+      ['/tmp/copies/holiday.jpg'],
+    ]);
+  });
+
+  testWidgets('lets go of it when the other device does not take the files', (
+    tester,
+  ) async {
+    final chooser = _Chooser()..chosen = ['/tmp/copies/holiday.jpg'];
+    final session = await _show(tester, chooser: chooser);
+    await tester.tap(find.text('Choose files'));
+    await tester.pump();
+    expect(chooser.released, isEmpty);
+
+    session.transfer.fail(
+      const BatonError(
+        kind: ErrorKind.declined,
+        message: 'Kitchen iPad did not take the files.',
+      ),
+    );
+    await tester.pump();
+
+    expect(chooser.released, [
+      ['/tmp/copies/holiday.jpg'],
+    ]);
+  });
+
+  testWidgets('lets go of it when the person stops the files', (tester) async {
+    final chooser = _Chooser()..chosen = ['/tmp/copies/holiday.jpg'];
+    await _show(tester, chooser: chooser);
+    await tester.tap(find.text('Choose files'));
+    await tester.pump();
+    expect(chooser.released, isEmpty);
+
+    await tester.tap(find.text('Stop sending'));
+    await tester.pump();
+
+    expect(chooser.released, [
+      ['/tmp/copies/holiday.jpg'],
+    ]);
+  });
+
+  testWidgets('lets go of it when the screen is left while the files go', (
+    tester,
+  ) async {
+    final chooser = _Chooser()..chosen = ['/tmp/copies/holiday.jpg'];
+    await _showOpened(tester, chooser: chooser);
+    await tester.tap(find.text('Choose files'));
+    await tester.pump();
+    await tester.pageBack();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(chooser.released, isEmpty, reason: 'the files are still going');
+
+    await tester.tap(find.text('Stop'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Send to Kitchen iPad'), findsNothing);
+    expect(find.text('Open'), findsOneWidget);
+    expect(chooser.released, [
+      ['/tmp/copies/holiday.jpg'],
+    ]);
+  });
+
+  testWidgets('lets go of what was chosen after the screen had gone', (
+    tester,
+  ) async {
+    final chooser = _Chooser()..hold = Completer();
+    final session = await _show(tester, chooser: chooser);
+    await tester.tap(find.text('Choose files'));
+    await tester.pump();
+
+    // The screen goes away while the dialog is open, and then the person chooses.
+    await tester.pumpWidget(const SizedBox());
+    chooser.hold!.complete(['/tmp/copies/holiday.jpg']);
+    await tester.pump();
+
+    expect(
+      session.filesSent,
+      isEmpty,
+      reason: 'there is no screen to send from',
+    );
+    expect(chooser.released, [
+      ['/tmp/copies/holiday.jpg'],
+    ]);
+  });
+
+  testWidgets('lets go of nothing when a dialog is closed without a choice', (
+    tester,
+  ) async {
+    final chooser = _Chooser();
+    await _show(tester, chooser: chooser);
+
+    await tester.tap(find.text('Choose files'));
+    await tester.pump();
+
+    expect(chooser.opened, 1);
+    expect(chooser.released, isEmpty);
   });
 
   testWidgets('gives the files up when the person stops, and says no more', (
