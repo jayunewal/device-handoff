@@ -15,12 +15,13 @@
 //!
 //! A session ends when the source ends it, when it breaks a rule, when the connection ends, when
 //! the person ends it, when the source does not open its control stream in time, and when a message
-//! of the source stalls. It ends once: the decoder is told, the pictures that are held are dropped,
-//! and later streams of the session are stopped with code 499. The decoder is told nothing after
-//! that, whatever was on its way.
+//! of the source stalls ([`End`]). It ends once: the decoder is told, the pictures that are held
+//! are dropped, and later streams of the session are stopped with code 499. The decoder is told
+//! nothing after that, whatever was on its way.
 
 use std::{
     collections::{HashMap, VecDeque},
+    ops::ControlFlow,
     sync::{
         Arc, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, Ordering},
@@ -30,7 +31,7 @@ use std::{
 
 use baton_proto::{DeviceId, close_code, id::SessionId};
 use baton_stream::{
-    KIND_CONTROL, KIND_VIDEO,
+    KIND_VIDEO,
     control::{KeyFrame, Report, SourceMessage, Thermal, ViewerMessage, Want},
     header::{FrameHeader, PREFIX_LEN, encode_prefix},
     viewer::{Action, Params as Rules, Refusal, Stats, StreamId, Viewer, Violation},
@@ -39,14 +40,8 @@ use iroh::endpoint::{Connection, ReadExactError, RecvStream};
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
-use super::{Streaming, stop};
-use crate::{
-    gate::code,
-    trust::PairedDevice,
-    uni::Arrival,
-    util::lock,
-    wire::{ReadFailure, read_next, write_message},
-};
+use super::{ControlEnd, End, Streaming, WriteEnd, read_control, stop, write_control};
+use crate::{trust::PairedDevice, uni::Arrival, util::lock};
 
 /// How much of a picture to ask the transport for at a time.
 const READ_CHUNK: usize = 64 * 1024;
@@ -120,26 +115,6 @@ pub(crate) trait Decoder: Send + 'static {
 
     /// The session is over. The decoder lets go of everything it holds, and is called no more.
     fn ended(&mut self);
-}
-
-/// Why a session ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum End {
-    /// This device ended it, by dropping or ending the handle.
-    Local,
-    /// The source ended it: it finished or reset its control stream.
-    Source,
-    /// The connection ended.
-    Connection,
-    /// The source broke a rule of the protocol.
-    Violation,
-    /// The source did not open its control stream in time.
-    NoControl,
-    /// The source began a message of its control stream and did not finish it in time. The time is
-    /// this device's choice and the source broke no rule, so the viewer finishes its own stream.
-    Stalled,
-    /// Something here went wrong that should not be able to.
-    Internal,
 }
 
 /// What a session has counted, for the person and for tests.
@@ -447,92 +422,52 @@ impl View {
         consistent
     }
 
-    /// Writes the viewer's control stream: the 17 bytes that start every stream of a session, and
-    /// then the messages that wait in the queue, one after the other.
-    async fn write_control(self: Arc<Self>, mut queue: mpsc::Receiver<ViewerMessage>) {
+    /// Writes the viewer's control stream, once the source's has been taken: the 17 bytes that
+    /// start every stream of a session, and then the messages that wait in the queue.
+    async fn write_control(self: Arc<Self>, queue: mpsc::Receiver<ViewerMessage>) {
         tokio::select! {
             () = self.ended.cancelled() => return,
             () = self.control_taken.cancelled() => {}
         }
-        let opened = tokio::select! {
-            () = self.ended.cancelled() => return,
-            opened = self.connection.open_uni() => opened,
-        };
-        let Ok(mut send) = opened else {
-            self.end(End::Connection);
-            return;
-        };
-        let start = encode_prefix(KIND_CONTROL, self.session);
-        if send.write_all(&start).await.is_err() {
-            self.end(End::Connection);
-            return;
-        }
-        loop {
-            tokio::select! {
-                () = self.ended.cancelled() => break,
-                message = queue.recv() => {
-                    let Some(message) = message else { break };
-                    if write_message(&mut send, &message).await.is_err() {
-                        self.end(End::Source);
-                        break;
-                    }
-                }
-            }
-        }
-        // The source reads the end of the stream as the end of the session, and a reset as the
-        // viewer saying that the source broke a rule.
-        match self.end.get() {
-            Some(End::Violation) => {
-                let _ = send.reset(code(close_code::PROTOCOL_VIOLATION));
-            }
-            Some(End::Internal) => {
-                let _ = send.reset(code(close_code::INTERNAL));
-            }
-            _ => {
-                let _ = send.finish();
-            }
+        match write_control(
+            &self.connection,
+            self.session,
+            queue,
+            &self.ended,
+            &self.end,
+        )
+        .await
+        {
+            Ok(()) => {}
+            Err(WriteEnd::Connection) => self.end(End::Connection),
+            Err(WriteEnd::Peer) => self.end(End::Peer),
         }
     }
 
     /// Reads the source's control stream until the session ends.
     pub(super) async fn read_source_control(self: Arc<Self>, arrival: Arrival) {
         let Arrival { mut recv, slot, .. } = arrival;
-        let _slot = slot;
+        // The place of the stream in the count is let go before the session is ended, so that a
+        // session that follows can open its control stream (protocol.md section 9).
         if self.source_control.swap(true, Ordering::SeqCst) {
             // A session has one control stream from each side.
             stop(&mut recv, close_code::PROTOCOL_VIOLATION);
+            drop(slot);
             self.end(End::Violation);
             return;
         }
         self.control_taken.cancel();
-        loop {
-            let next = tokio::select! {
-                () = self.ended.cancelled() => {
-                    stop(&mut recv, close_code::CANCELLED);
-                    return;
-                }
-                next = read_next::<SourceMessage>(&mut recv, self.params.stall) => next,
-            };
-            match next {
-                Ok(Some(message)) => self.deliver(message),
-                // The source finished its stream between two messages, or reset it, or the
-                // connection went: it has ended the session.
-                Ok(None) | Err(ReadFailure::Transport(_)) => {
-                    self.end(End::Source);
-                    return;
-                }
-                Err(ReadFailure::BadHeader(_) | ReadFailure::BadPayload(_)) => {
-                    stop(&mut recv, close_code::PROTOCOL_VIOLATION);
-                    self.end(End::Violation);
-                    return;
-                }
-                // The time is this device's own choice, so the source broke no rule.
-                Err(ReadFailure::TimedOut) => {
-                    stop(&mut recv, close_code::TIMEOUT);
-                    self.end(End::Stalled);
-                    return;
-                }
-            }
+        let ended = read_control(recv, self.params.stall, &self.ended, |message| {
+            self.deliver(message);
+            ControlFlow::Continue(())
+        })
+        .await;
+        drop(slot);
+        match ended {
+            ControlEnd::Over => {}
+            ControlEnd::Peer => self.end(End::Peer),
+            ControlEnd::Violation => self.end(End::Violation),
+            ControlEnd::Stalled => self.end(End::Stalled),
         }
     }
 
@@ -659,6 +594,7 @@ mod tests {
 
     use baton_proto::stream::Codec;
     use baton_stream::{
+        KIND_CONTROL,
         control::{Config, Pause, PauseReason},
         header::Flags,
     };
@@ -666,8 +602,10 @@ mod tests {
 
     use super::*;
     use crate::{
+        gate::code,
         testing::{Device, PATIENCE, connect, next, nothing_arrives, stopped_with},
         uni::{Kind, Sinks},
+        wire::{ReadFailure, read_next, write_message},
     };
 
     /// What the decoder of a test was told.
@@ -860,8 +798,8 @@ mod tests {
 
         /// Whether the viewer has taken the source's control stream.
         fn control_taken(&self) -> bool {
-            lock(&self.streaming.views)
-                .get(&session_id())
+            self.streaming
+                .viewing(&session_id())
                 .is_some_and(|view| view.control_taken.is_cancelled())
         }
 
@@ -1418,7 +1356,7 @@ mod tests {
         let rig = Rig::new().await;
         let mut send = rig.open_source_control().await;
         send.finish().unwrap();
-        assert_eq!(rig.ended().await, End::Source);
+        assert_eq!(rig.ended().await, End::Peer);
         assert!(rig.log.has_ended());
     }
 
@@ -1457,10 +1395,7 @@ mod tests {
         assert_eq!(ends(&mut viewer_control).await, Ok(()));
         assert!(log.has_ended());
         // The session is forgotten, so that its id is free again.
-        wait_until("the session to be forgotten", || {
-            lock(&streaming.views).is_empty()
-        })
-        .await;
+        wait_until("the session to be forgotten", || streaming.is_empty()).await;
         // Frames that come after are for a session that is not running.
         let mut send = dialed.open_uni().await.unwrap();
         send.write_all(&key(0).encode().unwrap()).await.unwrap();
@@ -1506,6 +1441,21 @@ mod tests {
         assert!(view.apply(&mut state, vec![Action::Show(0)]));
         drop(state);
         assert_eq!(rig.log.all(), told);
+    }
+
+    #[tokio::test]
+    async fn the_pictures_that_wait_are_dropped_when_the_session_ends() {
+        let rig = Rig::new().await;
+        // Frame 1 waits for the key frame, which has not come.
+        rig.frame(&delta(1), &[0; 100]).await;
+        rig.until("frame 1 to wait", |rig| {
+            rig.handle.stats().held_bytes == 100
+        })
+        .await;
+        let view = &rig.handle.view;
+        assert_eq!(lock(&view.state).pictures.len(), 1);
+        rig.handle.end();
+        assert!(lock(&view.state).pictures.is_empty());
     }
 
     #[tokio::test]

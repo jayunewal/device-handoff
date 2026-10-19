@@ -46,6 +46,11 @@ pub const KIND_VIDEO: u8 = 2;
 /// First byte of a unidirectional stream that carries control messages.
 pub const KIND_CONTROL: u8 = 3;
 
+/// How many frame streams a viewer reads at once, and so how many a source keeps open or is
+/// resetting: six in flight, and up to six more that were reset and that the viewer still counts
+/// (ADR 0009).
+pub const MAX_FRAME_STREAMS: usize = 12;
+
 // A receiver tells the kinds apart by this byte alone, and stops a stream whose kind it does not
 // know (docs/protocol.md section 8). The kinds live in two crates, so the check that no two of
 // them are the same is here, where all three can be seen, and fails to compile when a kind is

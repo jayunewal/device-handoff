@@ -58,8 +58,9 @@ const MAX_DECODED: usize = 4096;
 pub struct Params {
     /// How long to wait before asking again for a key frame that did not come.
     pub key_request_interval: Duration,
-    /// How many frame streams are read at once. The source keeps six frames in flight and may
-    /// have reset up to six more that the viewer still counts.
+    /// How many frame streams are read at once, [`crate::MAX_FRAME_STREAMS`] unless a test says
+    /// otherwise. The source keeps six frames in flight and may have reset up to six more that
+    /// the viewer still counts.
     pub max_streams: usize,
     /// How many bytes of pictures are held, whether a stream is still delivering them or they
     /// wait for the frame they depend on. It is the connection window of the reference
@@ -72,7 +73,7 @@ impl Default for Params {
     fn default() -> Self {
         Self {
             key_request_interval: Duration::from_millis(500),
-            max_streams: 12,
+            max_streams: crate::MAX_FRAME_STREAMS,
             max_held_bytes: 16 * 1024 * 1024,
         }
     }
