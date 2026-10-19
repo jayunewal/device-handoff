@@ -33,11 +33,23 @@
 //! # For how long
 //!
 //! A receiver lets go of a transfer by itself an hour after its last attempt ended, and it ends an
-//! attempt that moves no byte after thirty seconds. Each entry carries the time of the last word that
-//! this device had with the receiver about the transfer, as far as it knows: the time the transfer
-//! began, while it is going, and the time it was left once it is not. An entry older than [`HELD_FOR`]
-//! is dropped, because no receiver can hold it any more. An entry that a run of the program wrote and
-//! did not live to end is taken as left when the next run starts, because nothing says when it was.
+//! attempt that moves no byte after thirty seconds. It counts that time on a clock that stops while
+//! the device sleeps, and an app that is suspended counts none of it, so this device cannot tell
+//! when a receiver has let go. A transfer that was left is kept until the receiver says that it has
+//! (it answers a `Cancel`), the device is not paired any more, or it turns this device away.
+//!
+//! Each entry carries the time of the last word that this device had with the receiver about the
+//! transfer, as far as it knows: the time the transfer began, while it is going, and the time it was
+//! left once it is not. It decides how often the receiver is looked for: a receiver that has been
+//! awake since [`HELD_FOR`] has let go of the transfer, and only one that slept can still hold it,
+//! so [`recent`](Holds::recent) says when the pauses between the tries may grow longer. An entry
+//! that a run of the program wrote and did not live to end is taken as left when the next run starts,
+//! because nothing says when it was.
+//!
+//! A device that is never reached again would keep its entries for ever, so at most [`MOST_LEFT`] are
+//! kept for a device, and the one that was left first is the first to go. A receiver holds at most
+//! [`GOING_PER_PEER`](crate::transfer::incoming::GOING_PER_PEER) transfers of a device at a time, and
+//! lets go of the one that was left first first.
 
 use std::{
     fmt,
@@ -46,7 +58,7 @@ use std::{
     time::Duration,
 };
 
-use baton_proto::{DeviceId, id::TransferId};
+use baton_proto::{DeviceId, close_code, id::TransferId};
 use data_encoding::HEXLOWER;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
@@ -63,10 +75,15 @@ use crate::{
 /// Newest file format this build reads and writes.
 const FORMAT_VERSION: u32 = 1;
 
-/// How long a receiver may go on holding a transfer after this device last had a word with it: the
-/// hour that it keeps a transfer that has no attempt going, the half minute that it takes to end an
-/// attempt that moves no byte, and some slack.
+/// How long a receiver that stays awake may go on holding a transfer after this device last had a
+/// word with it: the hour that it keeps a transfer that has no attempt going, the half minute that it
+/// takes to end an attempt that moves no byte, and some slack. A receiver that sleeps counts less.
 pub(crate) const HELD_FOR: Duration = KEEP_IDLE.saturating_add(Duration::from_mins(5));
+
+/// The most transfers that are kept as left for one device. A receiver holds at most
+/// [`GOING_PER_PEER`](crate::transfer::incoming::GOING_PER_PEER) of them at a time, so this is many
+/// times what it can hold, and it keeps the file small for a device that is never reached again.
+pub(crate) const MOST_LEFT: usize = 16;
 
 /// A transfer that a receiver may hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,7 +180,8 @@ impl Holds {
 
     /// Writes down that the transfer `id` to `peer` is not going any more. `clear` says that the
     /// receiver holds nothing of it, and the transfer is struck out. Otherwise it is left for
-    /// [`loose`](Self::loose) to give back, from now on.
+    /// [`loose`](Self::loose) to give back, from now on, and if that makes more than [`MOST_LEFT`]
+    /// left for the device, the one that was left first, which is not this one, is struck out.
     pub(crate) fn ended(&self, peer: &DeviceId, id: TransferId, clear: bool, now: u64) {
         let mut holds = lock(&self.0.holds);
         let Some(at) = holds
@@ -177,6 +195,19 @@ impl Holds {
         } else {
             holds[at].going = false;
             holds[at].since = now;
+            let of_peer = |hold: &Hold| hold.peer == *peer && !hold.going;
+            while holds.iter().filter(|hold| of_peer(hold)).count() > MOST_LEFT {
+                let first = holds
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, hold)| hold.id != id && of_peer(hold))
+                    .min_by_key(|(_, hold)| hold.since)
+                    .map(|(place, _)| place);
+                let Some(first) = first else {
+                    break;
+                };
+                holds.remove(first);
+            }
         }
         self.save(&holds);
         drop(holds);
@@ -185,9 +216,10 @@ impl Holds {
         }
     }
 
-    /// The transfers to give back, by device: every one that is not going, except the ones that no
-    /// receiver can hold any more (it is [`HELD_FOR`] since the last word) and those of a device that
-    /// is not paired, which cannot be told anything. Those are struck out.
+    /// The transfers to give back, by device: every one that is not going, except those of a device
+    /// that is not paired, which cannot be told anything. Those are struck out. However long ago a
+    /// transfer was left, it is given back: the receiver may have slept since (see the module
+    /// documentation).
     pub(crate) fn loose(
         &self,
         paired: &dyn Fn(&DeviceId) -> bool,
@@ -201,7 +233,7 @@ impl Holds {
             }
             // A clock that was set back: the last word cannot have been after now.
             hold.since = hold.since.min(now);
-            paired(&hold.peer) && now - hold.since <= HELD_FOR.as_secs()
+            paired(&hold.peer)
         });
         if holds.len() != before {
             self.save(&holds);
@@ -214,6 +246,15 @@ impl Holds {
             }
         }
         by_peer
+    }
+
+    /// Whether the last word with a receiver about some transfer that was left is no more than
+    /// [`HELD_FOR`] old. A receiver that has been awake since then has let go of what is older, and
+    /// only one that slept can still hold it, so it is looked for less often.
+    pub(crate) fn recent(&self, now: u64) -> bool {
+        lock(&self.0.holds)
+            .iter()
+            .any(|hold| !hold.going && now.saturating_sub(hold.since) <= HELD_FOR.as_secs())
     }
 
     /// Strikes out the transfer `id` of `peer`, which has let go of it.
@@ -310,16 +351,18 @@ impl Ledger {
 }
 
 /// Whether a receiver holds nothing of a transfer that ended like this: it finished, it said no, it
-/// ended the transfer itself, it was told that the transfer is given up, or it turned this device
-/// away for good, and nothing more can be said to it. Any other end leaves a receiver that may be
-/// holding what it was sent.
+/// ended the transfer itself, it was told that the transfer is given up, or it ended the connection
+/// because it does not know this device, which loses it every transfer of the device. Any other end
+/// leaves a receiver that may be holding what it was sent, one that was refused with 400 included:
+/// that is a reply that could not be read, or a request that the receiver took for a violation, and
+/// neither makes it let go.
 pub(crate) fn receiver_is_clear(outcome: &Outcome) -> bool {
     match outcome {
         Outcome::Done(_)
         | Outcome::Declined(_)
         | Outcome::Stopped(_)
         | Outcome::Cancelled { told: true }
-        | Outcome::Failed(outcome::Error::Refused(_)) => true,
+        | Outcome::Failed(outcome::Error::Refused(close_code::NOT_PAIRED)) => true,
         Outcome::Cancelled { told: false } | Outcome::Failed(_) => false,
     }
 }
@@ -422,7 +465,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::{clock::ManualClock, transfer::send::outcome::Sent};
+    use crate::{
+        clock::ManualClock,
+        transfer::{incoming::GOING_PER_PEER, send::outcome::Sent},
+    };
 
     const NOW: u64 = 1_000_000;
 
@@ -527,16 +573,29 @@ mod tests {
             after.all(),
             [(peer(1), id(1), false), (peer(1), id(2), false)]
         );
-        // The first was not ended, so the last word with its receiver may have been any time up to
-        // the start of this run, and an hour is counted from there. The second was left at NOW + 20.
-        let just_in_time = later + HELD_FOR.as_secs();
+        // Both are given back, however long ago the program was closed, and what was struck out
+        // stays out.
         assert_eq!(
-            after.loose(&everyone, just_in_time),
-            [(peer(1), vec![id(1)])]
+            after.loose(&everyone, later + 10 * HELD_FOR.as_secs()),
+            [(peer(1), vec![id(1), id(2)])]
         );
-        // What was struck out stays out, and what was dropped is not in the file either.
-        let again = Holds::open_at(path, just_in_time);
-        assert_eq!(again.all(), [(peer(1), id(1), false)]);
+        assert_eq!(Holds::open_at(path, later).all(), after.all());
+    }
+
+    #[test]
+    fn what_was_not_ended_counts_from_the_start_of_the_next_run() {
+        let (_dir, path) = kept();
+        let before = Holds::open_at(path.clone(), NOW);
+        before.begin(peer(1), id(1), NOW);
+        drop(before);
+
+        let later = NOW + 3 * HELD_FOR.as_secs();
+        let after = Holds::open_at(path, later);
+
+        // The last word with its receiver may have been any time up to the start of this run, so
+        // the hour is counted from there.
+        assert!(after.recent(later + HELD_FOR.as_secs()));
+        assert!(!after.recent(later + HELD_FOR.as_secs() + 1));
     }
 
     #[test]
@@ -558,22 +617,43 @@ mod tests {
     }
 
     #[test]
-    fn a_hold_that_no_receiver_can_have_any_more_is_dropped() {
+    fn a_hold_is_kept_however_long_ago_it_was_left() {
         let (_dir, path) = kept();
         let holds = Holds::open_at(path.clone(), NOW);
         holds.begin(peer(1), id(1), NOW);
         holds.ended(&peer(1), id(1), false, NOW);
 
-        // On the last second that a receiver can have it, it is still given back.
-        let last = NOW + HELD_FOR.as_secs();
-        assert_eq!(holds.loose(&everyone, last), [(peer(1), vec![id(1)])]);
-        // A second later it is not, and the file says so.
-        assert_eq!(holds.loose(&everyone, last + 1), []);
-        assert_eq!(Holds::open_at(path, last + 1).all(), []);
+        // A receiver counts its hour on a clock that stops while it sleeps, so what it holds is
+        // given back the first time that it can be reached, whatever the clock of this device says.
+        let much_later = NOW + 1_000 * HELD_FOR.as_secs();
+        assert_eq!(holds.loose(&everyone, much_later), [(peer(1), vec![id(1)])]);
+        assert_eq!(
+            Holds::open_at(path, much_later).all(),
+            [(peer(1), id(1), false)]
+        );
     }
 
     #[test]
-    fn a_transfer_that_was_left_after_a_long_time_is_kept_from_when_it_was_left() {
+    fn a_transfer_was_left_lately_for_an_hour_and_a_little_more() {
+        let holds = Holds::memory();
+        assert!(!holds.recent(NOW), "nothing is left");
+        holds.begin(peer(1), id(1), NOW);
+        assert!(!holds.recent(NOW), "a transfer that is going was not left");
+
+        holds.ended(&peer(1), id(1), false, NOW);
+
+        assert!(holds.recent(NOW));
+        assert!(holds.recent(NOW + HELD_FOR.as_secs()));
+        assert!(!holds.recent(NOW + HELD_FOR.as_secs() + 1));
+        // One that was left lately is enough, whatever else is old.
+        let later = NOW + 2 * HELD_FOR.as_secs();
+        holds.begin(peer(2), id(2), later);
+        holds.ended(&peer(2), id(2), false, later);
+        assert!(holds.recent(later));
+    }
+
+    #[test]
+    fn the_hour_of_a_transfer_that_was_left_after_a_long_time_counts_from_when_it_was_left() {
         let holds = Holds::memory();
         holds.begin(peer(1), id(1), NOW);
 
@@ -583,24 +663,80 @@ mod tests {
         holds.ended(&peer(1), id(1), false, left);
 
         let last = left + HELD_FOR.as_secs();
-        assert_eq!(holds.loose(&everyone, last), [(peer(1), vec![id(1)])]);
-        assert_eq!(holds.loose(&everyone, last + 1), []);
+        assert!(holds.recent(last));
+        assert!(!holds.recent(last + 1));
     }
 
     #[test]
-    fn a_clock_that_was_set_back_does_not_make_a_hold_last_for_ever() {
+    fn a_clock_that_was_set_back_does_not_make_a_hold_recent_for_ever() {
         let holds = Holds::memory();
         holds.begin(peer(1), id(1), 5_000_000);
         holds.ended(&peer(1), id(1), false, 5_000_000);
 
-        // The clock now shows a time long before the last word. The word was no later than now, so
-        // the hour counts from now.
+        // The clock now shows a time long before the last word. Before anything looks at it, a last
+        // word that is after now was just now.
+        assert!(holds.recent(NOW));
+        // The word was no later than now, so the hour counts from now.
         assert_eq!(holds.loose(&everyone, NOW), [(peer(1), vec![id(1)])]);
-        assert_eq!(
-            holds.loose(&everyone, NOW + HELD_FOR.as_secs()),
-            [(peer(1), vec![id(1)])]
-        );
-        assert_eq!(holds.loose(&everyone, NOW + HELD_FOR.as_secs() + 1), []);
+        assert!(holds.recent(NOW + HELD_FOR.as_secs()));
+        assert!(!holds.recent(NOW + HELD_FOR.as_secs() + 1));
+    }
+
+    #[test]
+    fn what_is_kept_for_a_device_is_many_times_what_a_receiver_holds() {
+        // A receiver turns a device away once it has that many transfers going, so what it can hold
+        // of a device is that many at most, and the one that was left first is the first it lets go of.
+        assert!(MOST_LEFT >= 4 * usize::from(GOING_PER_PEER));
+    }
+
+    #[test]
+    fn at_most_so_many_transfers_are_kept_as_left_for_a_device_and_the_first_to_be_left_goes_first()
+    {
+        let (_dir, path) = kept();
+        let holds = Holds::open_at(path.clone(), NOW);
+        let most = u8::try_from(MOST_LEFT).unwrap();
+        let ids: Vec<u8> = (1..=most + 3).collect();
+        for &n in &ids {
+            holds.begin(peer(1), id(n), NOW);
+        }
+        // What another device holds is not counted against this one, and a transfer that is going
+        // is not left yet.
+        holds.begin(peer(2), id(100), NOW);
+        holds.ended(&peer(2), id(100), false, NOW);
+        holds.begin(peer(1), id(101), NOW);
+
+        for &n in &ids {
+            holds.ended(&peer(1), id(n), false, NOW + 100 + u64::from(n));
+        }
+
+        // The first three that were left are gone.
+        let mut left: Vec<_> = ids[3..].iter().map(|&n| (peer(1), id(n), false)).collect();
+        left.push((peer(2), id(100), false));
+        let mut all = left.clone();
+        all.push((peer(1), id(101), true));
+        assert_eq!(holds.all(), all);
+        // The file says so, and the transfer that was going is left when the file is read.
+        left.push((peer(1), id(101), false));
+        assert_eq!(Holds::open_at(path, NOW).all(), left);
+    }
+
+    #[test]
+    fn the_transfer_that_was_just_left_is_not_the_one_that_goes_when_the_clock_was_set_back() {
+        let holds = Holds::memory();
+        let most = u8::try_from(MOST_LEFT).unwrap();
+        for n in 1..=most {
+            holds.begin(peer(1), id(n), 5_000_000);
+            holds.ended(&peer(1), id(n), false, 5_000_000);
+        }
+
+        // Left at a time that is before the others.
+        holds.begin(peer(1), id(most + 1), NOW);
+        holds.ended(&peer(1), id(most + 1), false, NOW);
+
+        let all = holds.all();
+        assert_eq!(all.len(), MOST_LEFT);
+        assert!(all.contains(&(peer(1), id(most + 1), false)), "{all:?}");
+        assert!(!all.contains(&(peer(1), id(1), false)), "{all:?}");
     }
 
     #[test]
@@ -806,8 +942,8 @@ mod tests {
     #[test]
     fn a_hold_outlasts_what_a_receiver_keeps_a_transfer_for() {
         // The receiver lets go by itself an hour after the last attempt ended, and ends an attempt
-        // that moves no byte after half a minute: a hold that is dropped sooner could be one that a
-        // receiver still has, and would never be given back.
+        // that moves no byte after half a minute: a hold that is looked for less often sooner than
+        // that could be one that a receiver that stayed awake still has.
         let (held, kept) = (HELD_FOR, KEEP_IDLE);
         assert!(held >= kept + Duration::from_secs(30), "{held:?} {kept:?}");
     }
@@ -822,6 +958,9 @@ mod tests {
             (Outcome::Cancelled { told: true }, true),
             (Outcome::Cancelled { told: false }, false),
             (Outcome::Failed(outcome::Error::Refused(403)), true),
+            // A reply that could not be read, or a request that was taken for a violation: the
+            // receiver may well have accepted the offer.
+            (Outcome::Failed(outcome::Error::Refused(400)), false),
             (
                 Outcome::Failed(outcome::Error::GaveUp(outcome::Why::Connection)),
                 false,

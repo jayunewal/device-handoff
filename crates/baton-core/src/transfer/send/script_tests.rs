@@ -1741,16 +1741,29 @@ async fn a_transfer_stays_written_down_unless_the_receiver_is_known_to_hold_noth
         ),
         (
             "turns the sender away when it connects",
-            friendly(me).connects(|_| Connect::Refused(404)),
+            friendly(me).connects(|_| Connect::Refused(close_code::NOT_PAIRED)),
+            false,
+        ),
+        (
+            "ends the connection with 400 when it connects, and was never offered anything",
+            friendly(me).connects(|_| Connect::Refused(close_code::PROTOCOL_VIOLATION)),
             false,
         ),
         (
             "turns the sender away at the offer",
             Script::new(move |call| match call.kind {
-                Kind::Offer => Step::Refused(7),
+                Kind::Offer => Step::Refused(close_code::NOT_PAIRED),
                 _ => normal(me, call),
             }),
             false,
+        ),
+        (
+            "ends the connection with 400 at the offer, which it may have had",
+            Script::new(move |call| match call.kind {
+                Kind::Offer => Step::Refused(close_code::PROTOCOL_VIOLATION),
+                _ => normal(me, call),
+            }),
+            true,
         ),
         (
             "cannot be reached, and was never offered anything",

@@ -7,7 +7,10 @@
 //! does not keep the others waiting), and sends `Cancel` for each one (section 8, Cancel). A receiver
 //! that answers has let go, or never had the transfer, and the transfer is struck out. One that
 //! cannot be reached, or does not answer, is tried again after a pause that doubles up to a few
-//! minutes, for as long as [`Holds`] says that a receiver can hold the transfer at all.
+//! minutes, for as long as [`Holds`] keeps the transfer. A receiver counts the hour that it holds a
+//! transfer on a clock that does not run while it sleeps, so a transfer is not given up for being
+//! old: once the last word about every transfer that is left is more than an hour old, only a
+//! receiver that slept can still hold one, and the pauses grow to half an hour.
 //!
 //! It starts with the node, so what an earlier run left behind is given up as soon as the device
 //! that holds it is there, and a transfer that is left while the node runs wakes it at once.
@@ -34,8 +37,10 @@ use crate::clock::Clock;
 pub(crate) struct Pace {
     /// The pause after a look that left something to be done. It doubles with each look that does.
     pub(crate) start: Duration,
-    /// The longest pause.
+    /// The longest pause while a transfer was left lately (see [`Holds::recent`]).
     pub(crate) max: Duration,
+    /// The longest pause when none was.
+    pub(crate) late: Duration,
     /// The longest each `Cancel` is waited for.
     pub(crate) wait: Duration,
 }
@@ -45,6 +50,7 @@ impl Default for Pace {
         Self {
             start: Duration::from_secs(1),
             max: Duration::from_mins(5),
+            late: Duration::from_mins(30),
             wait: Duration::from_secs(10),
         }
     }
@@ -99,12 +105,18 @@ pub(crate) async fn run(
             continue;
         }
         // What is left is tried again after a pause, or at once when another transfer is left, for
-        // which the device may be there.
+        // which the device may be there. The pauses grow longer when nothing was left lately.
+        let now = clock.now_unix();
+        let recent = holds
+            .with(move |holds| holds.recent(now))
+            .await
+            .unwrap_or(true);
+        let most = if recent { pace.max } else { pace.late };
         tokio::select! {
             biased;
             () = stop.cancelled() => return,
             _ = left.changed() => pause = pace.start,
-            () = sleep(pause) => pause = pause.saturating_mul(2).min(pace.max),
+            () = sleep(pause) => pause = pause.saturating_mul(2).min(most),
         }
     }
 }
@@ -189,6 +201,7 @@ mod tests {
         Pace {
             start: Duration::from_millis(20),
             max: Duration::from_millis(80),
+            late: Duration::from_millis(320),
             wait: Duration::from_millis(200),
         }
     }
@@ -302,6 +315,17 @@ mod tests {
             .iter()
             .filter(|event| matches!(event, Event::Connect(_)))
             .count()
+    }
+
+    #[test]
+    fn the_pauses_start_at_a_second_and_grow_to_five_minutes_or_half_an_hour() {
+        // The numbers that the documentation gives: protocol.md and architecture.md.
+        let pace = Pace::default();
+
+        assert_eq!(pace.start, Duration::from_secs(1));
+        assert_eq!(pace.max, Duration::from_mins(5));
+        assert_eq!(pace.late, Duration::from_mins(30));
+        assert_eq!(pace.wait, Duration::from_secs(10));
     }
 
     #[tokio::test]
@@ -640,6 +664,7 @@ mod tests {
         let slow = Pace {
             start: Duration::from_secs(60),
             max: Duration::from_secs(60),
+            late: Duration::from_secs(60),
             wait: Duration::from_millis(200),
         };
         let release = Release::paced(
@@ -711,20 +736,89 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_transfer_that_no_receiver_can_hold_any_more_is_dropped_without_a_word() {
+    async fn a_transfer_that_was_left_long_ago_is_given_up_the_first_time_the_receiver_is_reached()
+    {
         let holds = Holds::memory();
         left(&holds, 1, &[1]);
         let script = Arc::new(Script::new(gives_up(&[1])));
 
+        // Far longer ago than a receiver keeps a transfer: it counts that hour on a clock that
+        // stops while it sleeps, and may have slept through all of this time.
         let release = Release::start(
             &holds,
             vec![(peer(1), Arc::clone(&script))],
             |_| true,
-            NOW + HELD_FOR.as_secs() + 1,
+            NOW + 100 * HELD_FOR.as_secs(),
         );
         release.until_nothing_is_held().await;
 
-        assert_eq!(connections(&script), 0);
+        assert_eq!(cancels_of(&script), [id(1)]);
+        assert_eq!(connections(&script), 1);
+        release.stop().await;
+    }
+
+    // The clock is paused, as in the tests of the pauses above.
+    #[tokio::test(start_paused = true)]
+    async fn the_pauses_grow_longer_once_what_was_left_is_more_than_an_hour_old() {
+        let holds = Holds::memory();
+        left(&holds, 1, &[1]);
+        let tries = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let script = Arc::new(Script::new(gives_up(&[1])).connects({
+            let tries = Arc::clone(&tries);
+            move |n| {
+                lock(&tries).push(tokio::time::Instant::now());
+                if n < 7 { Connect::Lost } else { Connect::Ok }
+            }
+        }));
+
+        // A receiver that stayed awake for the hour since the last word has let go. One that did
+        // not, and is not there, is looked for less and less often, and never given up on.
+        let now = NOW + HELD_FOR.as_secs() + 1;
+        let release = Release::start(&holds, vec![(peer(1), script)], |_| true, now);
+        release.until_nothing_is_held().await;
+
+        // Six connections fail. The pauses after them are 20, 40, 80 and 160 ms, and 320 ms twice,
+        // which is the most when nothing was left lately.
+        let tries = lock(&tries).clone();
+        let gaps: Vec<Duration> = tries.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        assert_eq!(gaps.len(), 6, "{gaps:?}");
+        for (gap, pause) in gaps.iter().zip([20, 40, 80, 160, 320, 320]) {
+            let pause = Duration::from_millis(pause);
+            let slack = Duration::from_millis(15);
+            assert!(*gap >= pause && *gap < pause + slack, "{gaps:?}");
+        }
+        release.stop().await;
+    }
+
+    // The clock is paused, as in the tests of the pauses above.
+    #[tokio::test(start_paused = true)]
+    async fn the_pauses_stay_short_while_one_of_the_transfers_was_left_lately() {
+        let holds = Holds::memory();
+        left(&holds, 1, &[1]);
+        let now = NOW + HELD_FOR.as_secs() + 1;
+        holds.begin(peer(1), id(2), now);
+        holds.ended(&peer(1), id(2), false, now);
+        let tries = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let script = Arc::new(Script::new(gives_up(&[1, 2])).connects({
+            let tries = Arc::clone(&tries);
+            move |n| {
+                lock(&tries).push(tokio::time::Instant::now());
+                if n < 6 { Connect::Lost } else { Connect::Ok }
+            }
+        }));
+
+        let release = Release::start(&holds, vec![(peer(1), script)], |_| true, now);
+        release.until_nothing_is_held().await;
+
+        // The one that is old would let the pauses grow to 320 ms, and the other keeps them at 80.
+        let tries = lock(&tries).clone();
+        let gaps: Vec<Duration> = tries.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        assert_eq!(gaps.len(), 5, "{gaps:?}");
+        for (gap, pause) in gaps.iter().zip([20, 40, 80, 80, 80]) {
+            let pause = Duration::from_millis(pause);
+            let slack = Duration::from_millis(15);
+            assert!(*gap >= pause && *gap < pause + slack, "{gaps:?}");
+        }
         release.stop().await;
     }
 
