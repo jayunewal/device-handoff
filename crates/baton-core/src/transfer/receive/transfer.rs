@@ -1284,6 +1284,15 @@ mod tests {
         .await;
     }
 
+    /// Waits until the list is in and file `X` is written and checked, which a lane that was given
+    /// the list and `X` does one after the other. A stop that comes as soon as the list is in can
+    /// meet `X` half way, and `X` is then one of the files that did not come out well.
+    async fn until_x_is_checked(rig: &Rig) {
+        until_the_list_is_in(rig).await;
+        let intake = rig.transfer.shared.state.borrow().intake.clone().unwrap();
+        until("file x to be checked", || !intake.wants(X)).await;
+    }
+
     /// A stream that remembers whether anyone read it.
     struct Probe<'a> {
         bytes: &'a [u8],
@@ -2078,7 +2087,7 @@ mod tests {
             let attempt = attempt.clone();
             async move { attempt.lane(0, &mut rx).await }
         });
-        until_the_list_is_in(&rig).await;
+        until_x_is_checked(&rig).await;
 
         assert!(
             rig.transfer
@@ -2116,7 +2125,7 @@ mod tests {
             let attempt = attempt.clone();
             async move { attempt.lane(0, &mut rx).await }
         });
-        until_the_list_is_in(&rig).await;
+        until_x_is_checked(&rig).await;
 
         let end = attempt.out_of_room().await;
 
