@@ -5,7 +5,7 @@
 use tokio::sync::broadcast::{self, error::RecvError};
 use tokio_util::sync::CancellationToken;
 
-use crate::model::{OfferOutcome, PairingRequest, Received};
+use crate::model::{OfferOutcome, PairingRequest, Received, TransferEnd, TransferRequest};
 
 /// Something a screen may want to react to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,12 +26,26 @@ pub enum Event {
     },
     /// The offer that was showing ended.
     OfferEnded(OfferOutcome),
+    /// A device wants to send files. Show what it offers, with who is asking, and answer with
+    /// [`App::answer_transfer`](crate::App::answer_transfer): the person has two minutes, and
+    /// no answer is a no.
+    TransferRequested(TransferRequest),
+    /// A request for files no longer needs an answer: the other device gave up, was unpaired, or
+    /// the time ran out. Take the question off the screen.
+    TransferRequestEnded {
+        /// The [`TransferRequest::id`] that ended.
+        id: u64,
+    },
+    /// A transfer that the person said yes to has ended. The files that arrived are in the
+    /// folder already.
+    TransferEnded(TransferEnd),
     /// Events were missed because they came faster than they were read. Read the devices and
     /// the inbox again.
     ///
-    /// A pairing request, or the end of an offer, among the missed events is not recovered
-    /// this way yet: a request nobody answers runs out as a no after two minutes, and an
-    /// offer ends when its time is up.
+    /// A pairing request, a request for files, the end of an offer or the end of a transfer
+    /// among the missed events is not recovered this way yet: a request nobody answers runs
+    /// out as a no after two minutes, an offer ends when its time is up, and a transfer that
+    /// was taken shows no end.
     Resync,
 }
 

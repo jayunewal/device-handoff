@@ -9,10 +9,16 @@
 //! blocked. Every wait has a limit, so a hang fails the test instead of stalling the run.
 #![allow(missing_docs, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::{path::Path, task::Poll, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    task::Poll,
+    time::Duration,
+};
 
 use baton_app::{
-    App, ErrorKind, Event, Events, OfferOutcome, Options, Platform, ReceivedItem, Route, settings,
+    App, ErrorKind, Event, Events, FileSend, FilesSent, OfferOutcome, Options, Platform,
+    ReceivedItem, Receiving, Route, SendStage, TransferResult, settings,
 };
 use tempfile::TempDir;
 use tokio::sync::oneshot;
@@ -25,18 +31,44 @@ struct Dev {
     app: App,
     /// Kept so the folder lives as long as the device does.
     _dir: TempDir,
+    /// The folder that files are received in, for a device that takes files.
+    received: Option<TempDir>,
 }
 
 impl Dev {
     async fn start(name: &str) -> Self {
+        Self::start_with(name, false).await
+    }
+
+    /// A device that takes files, into a folder of its own.
+    async fn start_taking_files(name: &str) -> Self {
+        Self::start_with(name, true).await
+    }
+
+    async fn start_with(name: &str, takes_files: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         write_settings(dir.path(), Some(name), false);
-        let app = App::start(Options::new(dir.path())).await.unwrap();
-        Self { app, _dir: dir }
+        let received = takes_files.then(|| tempfile::tempdir().unwrap());
+        let mut options = Options::new(dir.path());
+        options.receive_dir = received.as_ref().map(|folder| folder.path().to_path_buf());
+        let app = App::start(options).await.unwrap();
+        Self {
+            app,
+            _dir: dir,
+            received,
+        }
     }
 
     fn id(&self) -> String {
         self.app.me().id
+    }
+
+    /// The folder that received files are put in.
+    fn received(&self) -> &Path {
+        self.received
+            .as_ref()
+            .expect("a device that takes files")
+            .path()
     }
 }
 
@@ -653,4 +685,417 @@ async fn an_offer_that_is_being_made_as_the_app_stops_is_not_handed_out() {
         .unwrap()
         .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Stopped, "{error}");
+}
+
+// Files.
+
+/// What is in `root`, by path from it: a folder is `None`, and a file has its bytes. The hidden
+/// folder that Baton keeps what is still arriving in is left out.
+fn tree(root: &Path) -> BTreeMap<String, Option<Vec<u8>>> {
+    fn walk(root: &Path, at: &Path, found: &mut BTreeMap<String, Option<Vec<u8>>>) {
+        for entry in std::fs::read_dir(at).unwrap() {
+            let entry = entry.unwrap();
+            if at == root
+                && entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".baton-incoming-")
+            {
+                continue;
+            }
+            let path = entry.path();
+            let shown = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .replace('\\', "/");
+            if entry.file_type().unwrap().is_dir() {
+                found.insert(shown, None);
+                walk(root, &path, found);
+            } else {
+                found.insert(shown, Some(std::fs::read(&path).unwrap()));
+            }
+        }
+    }
+    let mut found = BTreeMap::new();
+    walk(root, root, &mut found);
+    found
+}
+
+/// A file, and a folder with a file and a folder inside it, ready to be sent: 100 017 bytes in
+/// three files. The folder it lives in is kept by the caller.
+fn sample_files() -> (TempDir, Vec<PathBuf>) {
+    let source = tempfile::tempdir().unwrap();
+    let docs = source.path().join("docs");
+    std::fs::create_dir_all(docs.join("sub")).unwrap();
+    std::fs::write(source.path().join("hello.txt"), b"hello from B").unwrap();
+    std::fs::write(docs.join("a.txt"), b"first").unwrap();
+    std::fs::write(docs.join("sub").join("b.bin"), vec![7; 100_000]).unwrap();
+    let paths = vec![source.path().join("hello.txt"), docs];
+    (source, paths)
+}
+
+/// What [`sample_files`] comes to in the folder that receives it.
+fn sample_tree() -> BTreeMap<String, Option<Vec<u8>>> {
+    BTreeMap::from([
+        ("docs".to_owned(), None),
+        ("docs/a.txt".to_owned(), Some(b"first".to_vec())),
+        ("docs/sub".to_owned(), None),
+        ("docs/sub/b.bin".to_owned(), Some(vec![7; 100_000])),
+        ("hello.txt".to_owned(), Some(b"hello from B".to_vec())),
+    ])
+}
+
+/// One file with the name `name`, ready to be sent.
+fn one_file(name: &str, content: &[u8]) -> (TempDir, Vec<PathBuf>) {
+    let source = tempfile::tempdir().unwrap();
+    let path = source.path().join(name);
+    std::fs::write(&path, content).unwrap();
+    (source, vec![path])
+}
+
+/// Waits for a device to be asked whether it takes files.
+async fn question(events: &mut Events) -> baton_app::TransferRequest {
+    next_matching(events, |event| match event {
+        Event::TransferRequested(request) => Some(request),
+        _ => None,
+    })
+    .await
+}
+
+/// Waits for the end of a transfer that is being sent.
+async fn finished(sending: &FileSend) -> baton_app::Result<FilesSent> {
+    tokio::time::timeout(WAIT, sending.outcome())
+        .await
+        .expect("the transfer never ended")
+}
+
+/// Whether no event of the kind `is` comes for a little while.
+async fn none_comes(events: &mut Events, is: impl Fn(&Event) -> bool) -> bool {
+    tokio::time::timeout(Duration::from_millis(300), async {
+        loop {
+            match events.next().await {
+                Some(event) if is(&event) => return,
+                Some(_) => {}
+                None => std::future::pending::<()>().await,
+            }
+        }
+    })
+    .await
+    .is_err()
+}
+
+#[tokio::test]
+async fn files_are_sent_when_the_person_says_yes_and_arrive_as_they_were() {
+    let a = Dev::start_taking_files("Device A").await;
+    let b = Dev::start("Device B").await;
+    assert_eq!(a.app.receiving(), Receiving::On);
+    assert_eq!(b.app.receiving(), Receiving::Off);
+    pair(&a, &b).await;
+    let mut a_events = a.app.events();
+    let (_source, paths) = sample_files();
+
+    let sending = b.app.send_files(&a.id(), paths).await.unwrap();
+
+    // The person is asked who wants to send what, and nothing is kept before they answer.
+    let request = question(&mut a_events).await;
+    assert_eq!(
+        (request.device_name.as_str(), &request.device_id),
+        ("Device B", &b.id())
+    );
+    assert_eq!(
+        (request.items, request.files, request.folders, request.bytes),
+        (2, 3, 2, 100_017)
+    );
+    let shown: Vec<_> = request
+        .preview
+        .iter()
+        .map(|item| (item.name.as_str(), item.folder, item.files, item.bytes))
+        .collect();
+    assert_eq!(
+        shown,
+        [("docs", true, 2, 100_005), ("hello.txt", false, 0, 12)]
+    );
+    assert!(tree(a.received()).is_empty(), "nothing is kept before yes");
+
+    assert!(a.app.answer_transfer(request.id, true));
+    assert!(
+        !a.app.answer_transfer(request.id, true),
+        "an answer counts once"
+    );
+
+    let sent = finished(&sending).await.unwrap();
+    assert_eq!(
+        sent,
+        FilesSent {
+            files: 3,
+            bytes: 100_017,
+            failed: 0,
+            left_out: 0
+        }
+    );
+    let end = next_matching(&mut a_events, |event| match event {
+        Event::TransferEnded(end) => Some(end),
+        _ => None,
+    })
+    .await;
+    assert_eq!(end.request, request.id);
+    assert_eq!(end.result, TransferResult::Received { failed: 0 });
+    assert_eq!(
+        (end.device_name.as_str(), end.files, end.bytes),
+        ("Device B", 3, 100_017)
+    );
+    assert_eq!(end.preview, request.preview);
+    assert_eq!(tree(a.received()), sample_tree());
+
+    // The sender's screen has what it needs to show a finished bar, and asking again gets the
+    // same answer.
+    let progress = sending.progress();
+    assert_eq!(progress.stage, SendStage::Over);
+    assert_eq!(
+        (progress.files, progress.bytes, progress.sent),
+        (3, 100_017, 100_017)
+    );
+    assert_eq!(finished(&sending).await.unwrap(), sent);
+}
+
+#[tokio::test]
+async fn files_the_person_declines_are_not_kept_and_the_sender_is_told() {
+    let a = Dev::start_taking_files("Device A").await;
+    let b = Dev::start("Device B").await;
+    pair(&a, &b).await;
+    let mut a_events = a.app.events();
+    let (_source, paths) = sample_files();
+
+    let sending = b.app.send_files(&a.id(), paths).await.unwrap();
+    let request = question(&mut a_events).await;
+    assert!(a.app.answer_transfer(request.id, false));
+
+    let error = finished(&sending).await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Declined, "{error}");
+    assert!(
+        error.message().contains("Device A did not take the files"),
+        "{error}"
+    );
+    assert!(tree(a.received()).is_empty(), "a no keeps nothing");
+    assert!(
+        none_comes(&mut a_events, |event| {
+            matches!(event, Event::TransferEnded(_))
+        })
+        .await,
+        "a transfer that was not taken has no end to show"
+    );
+}
+
+#[tokio::test]
+async fn a_sender_that_gives_up_takes_the_question_off_the_screen() {
+    let a = Dev::start_taking_files("Device A").await;
+    let b = Dev::start("Device B").await;
+    pair(&a, &b).await;
+    let mut a_events = a.app.events();
+    let (_source, paths) = sample_files();
+    let sending = b.app.send_files(&a.id(), paths).await.unwrap();
+    let request = question(&mut a_events).await;
+
+    sending.cancel();
+
+    next_matching(&mut a_events, |event| match event {
+        Event::TransferRequestEnded { id } if id == request.id => Some(()),
+        _ => None,
+    })
+    .await;
+    assert!(
+        !a.app.answer_transfer(request.id, true),
+        "a question that was taken back cannot be answered"
+    );
+    let error = finished(&sending).await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Cancelled, "{error}");
+    assert!(tree(a.received()).is_empty());
+}
+
+#[tokio::test]
+async fn a_send_that_is_given_up_while_it_goes_is_dropped_and_leaves_no_files() {
+    let a = Dev::start_taking_files("Device A").await;
+    let b = Dev::start("Device B").await;
+    pair(&a, &b).await;
+    let mut a_events = a.app.events();
+    // Large enough that it cannot be over before the cancel is made. It is a hole in the
+    // file system, so it costs nothing to make.
+    let source = tempfile::tempdir().unwrap();
+    let big = source.path().join("big.bin");
+    std::fs::File::create(&big)
+        .unwrap()
+        .set_len(64 << 20)
+        .unwrap();
+    let sending = b.app.send_files(&a.id(), vec![big]).await.unwrap();
+    let request = question(&mut a_events).await;
+    assert!(a.app.answer_transfer(request.id, true));
+
+    tokio::time::timeout(WAIT, async {
+        while sending.progress().sent == 0 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("no byte was sent");
+    assert_eq!(sending.progress().stage, SendStage::Sending);
+    sending.cancel();
+
+    let error = finished(&sending).await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Cancelled, "{error}");
+    let end = next_matching(&mut a_events, |event| match event {
+        Event::TransferEnded(end) => Some(end),
+        _ => None,
+    })
+    .await;
+    assert_eq!(end.request, request.id);
+    assert_eq!(end.result, TransferResult::Dropped);
+    assert!(tree(a.received()).is_empty(), "half a file is never kept");
+}
+
+#[tokio::test]
+async fn two_questions_at_once_are_answered_one_by_one() {
+    let a = Dev::start_taking_files("Device A").await;
+    let b = Dev::start("Device B").await;
+    pair(&a, &b).await;
+    let mut a_events = a.app.events();
+    let (_one, one) = one_file("one.txt", b"the first");
+    let (_two, two) = one_file("two.txt", b"the second");
+    let first = b.app.send_files(&a.id(), one).await.unwrap();
+    let second = b.app.send_files(&a.id(), two).await.unwrap();
+
+    let asked = [question(&mut a_events).await, question(&mut a_events).await];
+    assert_ne!(asked[0].id, asked[1].id);
+    let named = |name: &str| {
+        asked
+            .iter()
+            .find(|request| request.preview[0].name == name)
+            .unwrap()
+            .id
+    };
+    assert!(a.app.answer_transfer(named("two.txt"), false));
+    assert!(a.app.answer_transfer(named("one.txt"), true));
+
+    assert_eq!(finished(&first).await.unwrap().files, 1);
+    assert_eq!(
+        finished(&second).await.unwrap_err().kind(),
+        ErrorKind::Declined
+    );
+    assert_eq!(
+        tree(a.received()),
+        BTreeMap::from([("one.txt".to_owned(), Some(b"the first".to_vec()))])
+    );
+}
+
+#[tokio::test]
+async fn names_are_cleaned_before_the_person_sees_them() {
+    let a = Dev::start_taking_files("Device A").await;
+    let b = Dev::start("Device B").await;
+    pair(&a, &b).await;
+    let mut a_events = a.app.events();
+    // A right-to-left override makes the end of a name read as something else.
+    let (_source, paths) = one_file("photo\u{202E}gnp.exe", b"x");
+    let sending = b.app.send_files(&a.id(), paths).await.unwrap();
+
+    let request = question(&mut a_events).await;
+
+    assert_eq!(request.preview[0].name, "photognp.exe");
+    assert!(a.app.answer_transfer(request.id, false));
+    finished(&sending).await.unwrap_err();
+}
+
+#[tokio::test]
+async fn a_device_that_takes_no_files_says_so_to_the_sender() {
+    let a = Dev::start("Device A").await;
+    let b = Dev::start("Device B").await;
+    assert_eq!(a.app.receiving(), Receiving::Off);
+    pair(&a, &b).await;
+    let (_source, paths) = sample_files();
+
+    let sending = b.app.send_files(&a.id(), paths).await.unwrap();
+
+    let error = finished(&sending).await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Declined, "{error}");
+    assert!(
+        error.message().contains("Device A did not take the files"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn a_folder_that_cannot_be_used_leaves_the_device_running_and_taking_no_files() {
+    let dir = tempfile::tempdir().unwrap();
+    write_settings(dir.path(), Some("Device A"), false);
+    let nowhere = tempfile::tempdir().unwrap();
+    let mut options = Options::new(dir.path());
+    options.receive_dir = Some(nowhere.path().join("not-there"));
+    let a = Dev {
+        app: App::start(options).await.unwrap(),
+        _dir: dir,
+        received: None,
+    };
+    let b = Dev::start("Device B").await;
+    assert_eq!(
+        a.app.receiving(),
+        Receiving::Unusable("The folder for received files is not there.".to_owned())
+    );
+    pair(&a, &b).await;
+    let (_source, paths) = sample_files();
+
+    let sending = b.app.send_files(&a.id(), paths).await.unwrap();
+
+    let error = finished(&sending).await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Declined, "{error}");
+    assert!(
+        nowhere.path().read_dir().unwrap().next().is_none(),
+        "no folder was made for the files"
+    );
+}
+
+#[tokio::test]
+async fn files_that_cannot_be_sent_are_refused_before_anything_is_offered() {
+    let a = Dev::start_taking_files("Device A").await;
+    let b = Dev::start("Device B").await;
+    pair(&a, &b).await;
+    let (source, paths) = sample_files();
+
+    // A device that is not paired.
+    let stranger = "0".repeat(64);
+    let error = b.app.send_files(&stranger, paths).await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::NotPaired, "{error}");
+
+    // Nothing chosen, and something that is not there.
+    for chosen in [Vec::new(), vec![source.path().join("gone.txt")]] {
+        let error = b.app.send_files(&a.id(), chosen).await.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::BadItem, "{error}");
+    }
+    assert!(
+        none_comes(&mut a.app.events(), |event| {
+            matches!(event, Event::TransferRequested(_))
+        })
+        .await,
+        "nothing was offered"
+    );
+}
+
+#[tokio::test]
+async fn stopping_the_app_turns_a_question_that_is_showing_into_a_no() {
+    let a = Dev::start_taking_files("Device A").await;
+    let b = Dev::start("Device B").await;
+    pair(&a, &b).await;
+    let mut a_events = a.app.events();
+    let (_source, paths) = sample_files();
+    let _sending = b.app.send_files(&a.id(), paths).await.unwrap();
+    let request = question(&mut a_events).await;
+
+    a.app.stop().await;
+
+    assert!(!a.app.answer_transfer(request.id, true));
+    assert!(tree(a.received()).is_empty());
+    let (_other, paths) = one_file("late.txt", b"x");
+    assert_eq!(
+        a.app.send_files(&b.id(), paths).await.unwrap_err().kind(),
+        ErrorKind::Stopped
+    );
 }
