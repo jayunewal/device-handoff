@@ -7,9 +7,9 @@
 //! that it breaks or a field was renamed, quietly stops the fuzzer from starting deep inside the
 //! readers. The first byte of a seed picks the part, as in the target, and the rest is what the part
 //! reads. Each seed is listed here with what the part must make of it: refuse it, read it and write
-//! it in another form, or read it and write the same bytes, which is what a seed named for a
-//! message must do if it is the message as the reference sends it. The table has no seed missing
-//! and none that is not a file.
+//! it in another form, read it and write the same bytes, which is what a seed named for a message
+//! must do if it is the message as the reference sends it, or give the size of the picture that a
+//! parameter set describes. The table has no seed missing and none that is not a file.
 
 // Tests may unwrap and index freely. Clippy exempts #[test] functions and #[cfg(test)]
 // modules, but not the helper functions of an integration test.
@@ -25,6 +25,7 @@ use std::{collections::BTreeSet, path::Path};
 use baton_proto::{frame, message::Message};
 use baton_stream::{
     control::{SourceMessage, ViewerMessage},
+    h264,
     header::{FrameHeader, PREFIX_LEN, decode_prefix, encode_prefix},
 };
 
@@ -41,8 +42,10 @@ enum Outcome {
     Read,
     /// It refuses it, for the reason that the name gives.
     Refused,
+    /// It gives the width and the height of the picture that a sequence parameter set describes.
+    Sized(u32, u32),
 }
-use Outcome::{Read, Refused, Written};
+use Outcome::{Read, Refused, Sized, Written};
 
 #[rustfmt::skip]
 const SEEDS: &[(&str, Outcome)] = &[
@@ -56,6 +59,50 @@ const SEEDS: &[(&str, Outcome)] = &[
     ("header-of-a-lane", Refused),
     ("header-recovery-frame", Written),
     ("header-reserved-flag", Refused),
+    ("picture-256-units", Written),
+    ("picture-257-units", Refused),
+    ("picture-delta-frame-from-an-encoder", Written),
+    ("picture-key-frame-from-an-encoder", Written),
+    ("picture-key-frame-without-parameter-sets", Read),
+    ("picture-parameter-sets-only", Refused),
+    ("picture-something-before-the-start-code", Refused),
+    ("picture-start-codes-of-three-bytes-and-zeros-around-them", Written),
+    ("picture-unit-with-the-forbidden-bit", Refused),
+    ("picture-without-a-start-code", Refused),
+    ("sample-cut-short", Refused),
+    ("sample-delta-frame", Written),
+    ("sample-empty-unit", Refused),
+    ("sample-key-frame", Written),
+    ("sample-key-frame-and-a-candidate-set-that-is-a-slice", Written),
+    ("sample-key-frame-in-lengths-of-two-bytes", Written),
+    ("sample-key-frame-with-parameter-sets-of-its-own", Written),
+    ("sample-length-of-3-bytes", Refused),
+    ("sample-of-parameter-sets-alone", Refused),
+    ("sample-unit-that-ends-in-a-zero", Refused),
+    ("sample-unit-with-a-start-code-inside", Refused),
+    ("sample-unit-with-the-forbidden-bit", Refused),
+    ("size-255-offsets-of-picture-order", Sized(1920, 1080)),
+    ("size-256-offsets-of-picture-order", Refused),
+    ("size-bit-depth-of-15-bits", Refused),
+    ("size-chroma-format-4", Refused),
+    ("size-constrained-baseline", Sized(176, 144)),
+    ("size-cropped-away", Refused),
+    ("size-cut-short", Refused),
+    ("size-high-1920-by-1080-cropped-at-the-bottom", Sized(1920, 1080)),
+    ("size-high-3840-by-2160", Sized(3840, 2160)),
+    ("size-high-4-2-2", Sized(320, 240)),
+    ("size-high-4-4-4-cropped", Sized(326, 242)),
+    ("size-interlaced", Sized(320, 240)),
+    ("size-main-64-by-48", Sized(64, 48)),
+    ("size-monochrome", Sized(320, 240)),
+    ("size-number-of-31-zeros-that-nothing-reads", Sized(1920, 1080)),
+    ("size-number-of-32-zeros", Refused),
+    ("size-number-that-does-not-end", Refused),
+    ("size-picture-order-type-3", Refused),
+    ("size-picture-parameter-set", Refused),
+    ("size-scaling-lists-in-4-2-0", Sized(320, 240)),
+    ("size-scaling-lists-in-4-4-4-cropped", Sized(316, 233)),
+    ("size-wider-than-32-bits", Refused),
     ("source-config", Written),
     ("source-config-a-field-of-a-later-version", Read),
     ("source-config-codec-of-a-later-version", Read),
@@ -110,6 +157,9 @@ fn part(name: &str) -> u8 {
         Some("header") => 1,
         Some("source") => 2,
         Some("viewer") => 3,
+        Some("picture") => 4,
+        Some("sample") => 5,
+        Some("size") => 6,
         _ => panic!("the seed {name} has a name that says nothing about what it is for"),
     }
 }
@@ -160,6 +210,80 @@ fn message<M: Message + PartialEq + std::fmt::Debug>(data: &[u8]) -> Outcome {
     }
 }
 
+/// A picture off the wire is made into a sample for a decoder, and the sample into a picture again.
+fn picture(data: &[u8]) -> Outcome {
+    let mut sample = Vec::new();
+    let Ok(taken) = h264::annex_b_to_avcc(data, &mut sample) else {
+        assert!(sample.is_empty(), "a refused picture left something behind");
+        return Refused;
+    };
+    let sets: Vec<&[u8]> = taken.parameter_sets().collect();
+    let mut wire = Vec::new();
+    let Ok(summary) = h264::avcc_to_annex_b(&sample, h264::AVCC_LENGTH_SIZE, &sets, &mut wire)
+    else {
+        assert!(wire.is_empty(), "a refused sample left something behind");
+        return Read;
+    };
+    assert_eq!(summary.idr, taken.idr);
+    let mut again = Vec::new();
+    let back = h264::annex_b_to_avcc(&wire, &mut again).unwrap();
+    assert_eq!(again, sample);
+    assert_eq!(back.idr, taken.idr);
+    if taken.idr {
+        assert_eq!(back, taken);
+    }
+    Written
+}
+
+/// What the part of the target for a sample makes of it with the parameter sets of the platform
+/// (the first of its three tries, which is the one that a seed is named for), and the same checks.
+fn sample(data: &[u8]) -> Outcome {
+    const SPS: &[u8] = &[0x67, 0x42, 0xc0, 0x0a, 0xda, 0x7b, 0x01, 0x10];
+    const PPS: &[u8] = &[0x68, 0xce, 0x0f, 0xc8];
+    let ([length_size, cut], rest) = data.split_first_chunk::<2>().expect("a sample has a head");
+    let length_size = usize::from(*length_size % 6);
+    let (candidate, sample) = rest.split_at(usize::from(*cut) % (rest.len() + 1));
+    let fixed: [&[u8]; 2] = [SPS, PPS];
+    let with_the_candidate_first: [&[u8]; 2] = [candidate, PPS];
+    let with_the_candidate_last: [&[u8]; 2] = [SPS, candidate];
+    let mut outcome = None;
+    for sets in [fixed, with_the_candidate_first, with_the_candidate_last] {
+        let mut wire = Vec::new();
+        let got = match h264::avcc_to_annex_b(sample, length_size, &sets, &mut wire) {
+            Err(_) => {
+                assert!(wire.is_empty(), "a refused sample left something behind");
+                Refused
+            }
+            Ok(summary) => {
+                let mut again = Vec::new();
+                let back = h264::annex_b_to_avcc(&wire, &mut again).unwrap();
+                assert_eq!(back.idr, summary.idr);
+                assert!(back.sps.len() + back.pps.len() >= usize::from(summary.idr) * 2);
+                Written
+            }
+        };
+        outcome.get_or_insert(got);
+    }
+    outcome.unwrap()
+}
+
+/// What the part of the target for the size of a picture makes of a sequence parameter set, and the
+/// same checks: a size is never nothing, and a set that is cut short gives that size or none.
+fn size(data: &[u8]) -> Outcome {
+    let size = h264::picture_size(data);
+    if let Some((width, height)) = size {
+        assert!(width > 0 && height > 0);
+    }
+    for length in 0..data.len().min(96) {
+        let cut = h264::picture_size(&data[..length]);
+        assert!(
+            cut.is_none() || cut == size,
+            "a set cut at {length} gave another size"
+        );
+    }
+    size.map_or(Refused, |(width, height)| Sized(width, height))
+}
+
 #[test]
 fn the_committed_fuzz_seeds_are_still_what_they_are_named_for() {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../baton-proto/fuzz/seeds/stream");
@@ -178,12 +302,15 @@ fn the_committed_fuzz_seeds_are_still_what_they_are_named_for() {
     for (name, expected) in SEEDS {
         let bytes = std::fs::read(directory.join(name)).unwrap();
         let (mode, data) = bytes.split_first().expect("a seed is not empty");
-        assert_eq!(mode % 4, part(name), "the seed {name} picks another part");
-        let got = match mode % 4 {
+        assert_eq!(mode % 7, part(name), "the seed {name} picks another part");
+        let got = match mode % 7 {
             0 => start(data),
             1 => header(data),
             2 => message::<SourceMessage>(data),
-            _ => message::<ViewerMessage>(data),
+            3 => message::<ViewerMessage>(data),
+            4 => picture(data),
+            5 => sample(data),
+            _ => size(data),
         };
         assert_eq!(
             got, *expected,

@@ -20,6 +20,8 @@
 //! - [`input`] holds the events that a viewer sends and the checks on their numbers.
 //! - [`gate`] holds the rules that confine a viewer's input to the shared window.
 //! - [`control`] holds the messages on the two control streams of a session.
+//! - [`h264`] turns an H.264 picture from the form it has on the wire into the form that the
+//!   encoder and the decoder of a platform use, and back.
 
 // This crate reads bytes that a paired device wrote. An index that is out of bounds panics, and
 // a panic on input from the network is a remote crash, so the code spells out what happens when
@@ -28,6 +30,7 @@
 
 pub mod control;
 pub mod gate;
+pub mod h264;
 pub mod header;
 pub mod input;
 pub mod sender;
