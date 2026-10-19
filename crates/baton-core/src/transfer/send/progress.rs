@@ -10,7 +10,8 @@ use tokio::sync::watch;
 
 /// What a transfer is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Stage {
+#[non_exhaustive]
+pub enum Stage {
     /// Making a connection to the other device.
     Connecting,
     /// The offer is made, and the answer is awaited. A person may be deciding.
@@ -27,19 +28,20 @@ pub(crate) enum Stage {
 
 /// How far a transfer has got.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Progress {
+#[non_exhaustive]
+pub struct Progress {
     /// What the transfer is doing now.
-    pub(crate) stage: Stage,
+    pub stage: Stage,
     /// The attempt that is going, from 1.
-    pub(crate) attempt: u32,
+    pub attempt: u32,
     /// How many files the transfer holds, folders not counted.
-    pub(crate) files: u32,
+    pub files: u32,
     /// How many bytes those files add up to.
-    pub(crate) bytes: u64,
+    pub bytes: u64,
     /// How many bytes of files have been written to the connection in this attempt, counting the
     /// chunks that were written whole. It starts again at 0 with each attempt, because an attempt
     /// sends everything.
-    pub(crate) sent: u64,
+    pub sent: u64,
 }
 
 /// The engine's end of a [`Progress`].

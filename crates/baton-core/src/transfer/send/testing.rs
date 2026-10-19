@@ -1074,7 +1074,7 @@ impl Drop for Withdrawn<'_> {
 }
 
 impl Person {
-    fn new(destination: Destination) -> Self {
+    pub(super) fn new(destination: Destination) -> Self {
         Self {
             destination,
             verdict: Mutex::new(Verdict::Accept),
@@ -1156,6 +1156,11 @@ impl Folder {
         }
     }
 
+    /// Where the folder is.
+    pub(super) fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// Makes the file `path` with `content`, and the folders on the way.
     pub(super) fn make(&self, path: &str, content: &[u8]) -> PathBuf {
         let at = self.root.join(path);
@@ -1172,9 +1177,14 @@ impl Folder {
     }
 
     /// What the walk makes of the items `names`.
-    pub(super) fn select(&self, names: &[&str]) -> Arc<Selection> {
+    pub(super) fn walk(&self, names: &[&str]) -> Selection {
         let chosen: Vec<PathBuf> = names.iter().map(|name| self.root.join(name)).collect();
-        Arc::new(Selection::walk(&chosen).unwrap())
+        Selection::walk(&chosen).unwrap()
+    }
+
+    /// What the walk makes of the items `names`, to share between the engine and the test.
+    pub(super) fn select(&self, names: &[&str]) -> Arc<Selection> {
+        Arc::new(self.walk(names))
     }
 }
 
@@ -1225,7 +1235,14 @@ impl Rig {
         id: TransferId,
     ) -> Sending {
         let wire: Arc<dyn Wire> = Arc::clone(&self.wire) as Arc<dyn Wire>;
-        engine::start(wire, Arc::clone(selection), policy, id).unwrap()
+        engine::start(
+            wire,
+            Arc::clone(selection),
+            policy,
+            id,
+            &CancellationToken::new(),
+        )
+        .unwrap()
     }
 }
 

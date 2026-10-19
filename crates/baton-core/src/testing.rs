@@ -78,19 +78,24 @@ impl TestNode {
 
     /// Makes the two nodes paired devices that know where to find each other.
     pub(crate) fn pair_with(&self, other: &Self) {
-        for (trust, peer) in [(&self.trust, other), (&other.trust, self)] {
-            let info = DeviceInfo {
-                name: "Device".to_owned(),
-                platform: Platform::Linux,
-                app_version: "0.0.0-test".to_owned(),
-            };
-            trust.pair(peer.id, &info, 1).unwrap();
-            let hints = ContactHints {
-                relay: None,
-                addrs: peer.node.status().direct_addrs,
-            };
-            trust.record_contact(&peer.id, 1, &hints).unwrap();
-        }
+        self.know(other);
+        other.know(self);
+    }
+
+    /// Makes `other` a paired device of this node that it knows where to find, which `other` does
+    /// not know of this node: a device that was unpaired from the other end.
+    pub(crate) fn know(&self, other: &Self) {
+        let info = DeviceInfo {
+            name: "Device".to_owned(),
+            platform: Platform::Linux,
+            app_version: "0.0.0-test".to_owned(),
+        };
+        self.trust.pair(other.id, &info, 1).unwrap();
+        let hints = ContactHints {
+            relay: None,
+            addrs: other.node.status().direct_addrs,
+        };
+        self.trust.record_contact(&other.id, 1, &hints).unwrap();
     }
 }
 

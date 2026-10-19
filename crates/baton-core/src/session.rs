@@ -365,7 +365,7 @@ async fn serve_stream(
             abandon(&mut send, &mut recv, close_code::TIMEOUT);
             return;
         }
-        Err(ReadFailure::Transport(_)) => return,
+        Err(ReadFailure::Reset(_) | ReadFailure::Transport(_)) => return,
     };
 
     // The list of paired devices may have changed since the connection was accepted.
@@ -674,7 +674,11 @@ fn dial_address(peer: &PairedDevice, use_relay: bool) -> Result<EndpointAddr> {
 }
 
 /// Opens a session connection to `peer` and introduces this device.
-async fn connect(endpoint: &Endpoint, shared: &Shared, peer: &PairedDevice) -> Result<Session> {
+pub(crate) async fn connect(
+    endpoint: &Endpoint,
+    shared: &Shared,
+    peer: &PairedDevice,
+) -> Result<Session> {
     let address = dial_address(peer, shared.relay_enabled)?;
     let connection = tokio::time::timeout(
         shared.tuning.connect_timeout,

@@ -10,8 +10,9 @@
 //!
 //! On top of these, a [`Node`] connects the device to others: it finds paired
 //! devices, [pairs](Node::offer_pairing) new ones, and [sends](Node::send) items
-//! to them. What a device does with the items it receives is decided by a
-//! [`HandoffHandler`] that the application supplies.
+//! to them, or [files and folders](Node::send_files). What a device does with the
+//! items it receives is decided by a [`HandoffHandler`] that the application
+//! supplies, and what it does with files by a [`TransferHandler`].
 //!
 //! The wire formats live in [`baton_proto`]; security reasoning for the pieces
 //! here is in `docs/security.md` in the repository.

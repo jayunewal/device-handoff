@@ -2,8 +2,10 @@
 
 //! A node that takes files, reached over real connections on loopback.
 //!
-//! The side that sends is not built yet, so the other node speaks section 8 by hand: it asks what a
-//! sender asks, and opens lanes with the bytes that a sender writes.
+//! The other node speaks section 8 by hand: it asks what a sender asks, and opens lanes with the
+//! bytes that a sender writes, in the order and with the endings that a test wants. That lets these
+//! tests do what the sender of `send` never does, and show the receiving node alone. Whole
+//! transfers between two nodes are in `send::node_tests`.
 
 use std::{
     fs,
@@ -35,7 +37,7 @@ use crate::{
     HandoffHandler, PairedDevice, Tuning,
     gate::code,
     session::call,
-    testing::TestNode,
+    testing::{QUIET, TestNode},
     util::{BoxFuture, lock},
 };
 
@@ -646,6 +648,47 @@ async fn transfers_that_follow_each_other_find_the_lanes_of_the_last_let_go() {
             .iter()
             .all(|(_, ending)| matches!(ending, Ending::Done(_)))
     );
+}
+
+#[tokio::test]
+async fn a_device_with_two_transfers_going_has_all_eight_lanes_open_and_a_ninth_stream_waits() {
+    let rig = Rig::new().await;
+    let connection = rig.connection().await;
+    let transfers = [id(1), id(2)];
+    for transfer in transfers {
+        assert_eq!(offer(&connection, transfer).await, accepted(transfer));
+    }
+
+    // A sender that has both going has every lane of both open, and none of them has ended.
+    let mut lanes = Vec::new();
+    for transfer in transfers {
+        for number in 0..LANES_GRANTED {
+            let frames = if number == 0 {
+                sample_lane()
+            } else {
+                Vec::new()
+            };
+            lanes.push(open_lane(&connection, transfer, number, &frames).await);
+        }
+    }
+
+    // That is as many streams as the connection allows. A ninth waits for one of these to end.
+    let ninth = tokio::time::timeout(QUIET, connection.open_uni()).await;
+    assert!(ninth.is_err(), "a ninth stream was let through");
+
+    for send in &mut lanes {
+        send.finish().unwrap();
+    }
+    for transfer in transfers {
+        let reply = finish(&connection, transfer).await;
+        assert!(
+            matches!(&reply, TransferReply::Done(done) if done.failed.is_empty() && done.more_failed == 0),
+            "{reply:?}"
+        );
+    }
+    for send in &lanes {
+        assert_let_go(send).await;
+    }
 }
 
 // The end of a node and of a pairing.
