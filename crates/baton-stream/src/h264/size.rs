@@ -111,8 +111,42 @@ fn unescaped(unit: &[u8]) -> Vec<u8> {
 /// by: the chroma format, a bit depth, the picture order type, the number of offsets of type 1,
 /// and a number of more than 32 bits. It reads as far as the cropping and checks nothing else
 /// on the way, so a set that is wrong in another way is for the decoder to refuse.
+///
+/// This is the size that is shown, and not the size that a decoder allocates for: a set can crop
+/// a picture of any size down to this one. A viewer checks a set with [`picture_fits`].
 #[must_use]
 pub fn picture_size(sps: &[u8]) -> Option<(u32, u32)> {
+    sizes(sps).map(|sizes| sizes.shown)
+}
+
+/// Whether the pictures that the sequence parameter set `sps` describes are within what a viewer
+/// said it takes, `max_width` by `max_height` pixels: the picture that is shown is no larger, and
+/// the picture that is coded, which a decoder allocates for, is no larger than that rounded up to
+/// 32 pixels each way. An encoder codes whole blocks of 16 pixels, and rows of blocks in pairs
+/// when a frame may be coded as two fields, so what it makes of a picture that fits does too, and
+/// a set that crops a larger picture down does not. A set that [`picture_size`] has no size for
+/// does not fit either.
+#[must_use]
+pub fn picture_fits(sps: &[u8], max_width: u32, max_height: u32) -> bool {
+    sizes(sps).is_some_and(|sizes| {
+        let (width, height) = sizes.shown;
+        let (coded_width, coded_height) = sizes.coded;
+        width <= max_width
+            && height <= max_height
+            && coded_width <= u64::from(max_width).next_multiple_of(32)
+            && coded_height <= u64::from(max_height).next_multiple_of(32)
+    })
+}
+
+/// The sizes of the pictures that a sequence parameter set describes.
+struct Sizes {
+    /// What is shown: the picture that is coded, with the cropping taken off.
+    shown: (u32, u32),
+    /// What is coded, in whole blocks of 16 pixels.
+    coded: (u64, u64),
+}
+
+fn sizes(sps: &[u8]) -> Option<Sizes> {
     if kind(sps) != Some(NAL_SPS) {
         return None;
     }
@@ -198,14 +232,15 @@ pub fn picture_size(sps: &[u8]) -> Option<(u32, u32)> {
         2 => (2, fields),
         _ => (1, fields),
     };
-    let width = width_in_blocks
-        .checked_mul(16)?
-        .checked_sub(unit_x.checked_mul(left.checked_add(right)?)?)?;
-    let height = height_in_units
-        .checked_mul(16 * fields)?
-        .checked_sub(unit_y.checked_mul(top.checked_add(bottom)?)?)?;
+    let coded_width = width_in_blocks.checked_mul(16)?;
+    let coded_height = height_in_units.checked_mul(16 * fields)?;
+    let width = coded_width.checked_sub(unit_x.checked_mul(left.checked_add(right)?)?)?;
+    let height = coded_height.checked_sub(unit_y.checked_mul(top.checked_add(bottom)?)?)?;
     let (width, height) = (u32::try_from(width).ok()?, u32::try_from(height).ok()?);
-    (width > 0 && height > 0).then_some((width, height))
+    (width > 0 && height > 0).then_some(Sizes {
+        shown: (width, height),
+        coded: (coded_width, coded_height),
+    })
 }
 
 #[cfg(test)]
@@ -335,6 +370,16 @@ mod tests {
     }
 
     #[test]
+    fn the_sets_of_a_real_encoder_fit_a_viewer_of_their_size_and_no_smaller() {
+        for (what, set, (width, height)) in ENCODER_SETS {
+            let sps = hex(set);
+            assert!(picture_fits(&sps, width, height), "{what}");
+            assert!(!picture_fits(&sps, width - 1, height), "{what}");
+            assert!(!picture_fits(&sps, width, height - 1), "{what}");
+        }
+    }
+
+    #[test]
     fn the_sets_with_scaling_lists_give_the_size_that_a_decoder_reads_from_them() {
         for (what, set, size) in WRITTEN_BY_HAND {
             assert_eq!(picture_size(&hex(set)), Some(size), "{what}");
@@ -441,7 +486,12 @@ mod tests {
 
     impl Fields {
         fn high(&self) -> bool {
-            WITH_CHROMA_FORMAT.contains(&self.profile)
+            // The profiles of the standard (7.3.2.1.1), written out here and not taken from the
+            // code under test, so that one missing from its list is found.
+            matches!(
+                self.profile,
+                100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135
+            )
         }
 
         /// The size that the standard gives for these fields, worked out as it states it.
@@ -581,6 +631,12 @@ mod tests {
                 Just(44),
                 Just(118),
                 Just(128),
+                Just(83),
+                Just(86),
+                Just(134),
+                Just(135),
+                Just(138),
+                Just(139),
             ],
             0..=3_u32,
             any::<bool>(),
@@ -668,6 +724,38 @@ mod tests {
     #[test]
     fn a_set_with_the_cropping_of_a_full_hd_picture_gives_1920_by_1080() {
         assert_eq!(picture_size(&base().unit()), Some((1920, 1080)));
+    }
+
+    #[test]
+    fn cropping_does_not_make_a_larger_picture_fit() {
+        // 65,536 by 65,536 pixels are coded, and all but 1920 by 1080 of them cropped away: what
+        // is shown fits a viewer of 1920 by 1080, and what a decoder allocates for does not.
+        let huge = Fields {
+            width_in_blocks: 4096,
+            height_in_units: 4096,
+            crop: Some([15904, 15904, 16114, 16114]),
+            ..base()
+        };
+        assert_eq!(picture_size(&huge.unit()), Some((1920, 1080)));
+        assert!(!picture_fits(&huge.unit(), 1920, 1080));
+        assert!(picture_fits(&base().unit(), 1920, 1080));
+        // Two blocks more than a picture of 1920 by 1080 needs, each way, cropped away.
+        let wider = Fields {
+            width_in_blocks: 122,
+            crop: Some([0, 16, 0, 4]),
+            ..base()
+        };
+        assert_eq!(picture_size(&wider.unit()), Some((1920, 1080)));
+        assert!(!picture_fits(&wider.unit(), 1920, 1080));
+        let higher = Fields {
+            height_in_units: 70,
+            crop: Some([0, 0, 0, 20]),
+            ..base()
+        };
+        assert_eq!(picture_size(&higher.unit()), Some((1920, 1080)));
+        assert!(!picture_fits(&higher.unit(), 1920, 1080));
+        // A set with no size fits nothing.
+        assert!(!picture_fits(&[], u32::MAX, u32::MAX));
     }
 
     #[test]
