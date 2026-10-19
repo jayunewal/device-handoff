@@ -15,11 +15,11 @@ pub const ABI_VERSION: u32 = 1;
 pub const OK: i32 = 0;
 /// A null pointer, a wrong version or size, a function that is missing, or a wrong value.
 pub const E_ARGUMENT: i32 = -1;
-/// A viewer was registered already.
+/// A viewer, or a sharer, was registered already.
 pub const E_REGISTERED: i32 = -2;
 /// A call of the vtable failed.
 pub const E_PLATFORM: i32 = -3;
-/// The link is not open.
+/// The link is not open, or nobody waits for the request.
 pub const E_UNKNOWN_LINK: i32 = -4;
 /// Called from inside a call of the vtable, on the thread that the call is made on.
 pub const E_REENTRANT: i32 = -5;
@@ -98,6 +98,29 @@ pub const THERMAL_OTHER: u32 = 4;
 
 /// The most bytes of the sentence that explains a failure.
 pub const MESSAGE_MAX: u32 = 256;
+
+/// Make no picture now; ask again.
+pub const BEGIN_NOT_NOW: u32 = 0;
+/// Make a key frame.
+pub const BEGIN_KEY: u32 = 1;
+/// Make a recovery frame.
+pub const BEGIN_RECOVERY: u32 = 2;
+/// Make a frame that follows the one before.
+pub const BEGIN_DELTA: u32 = 3;
+
+/// The picture went out.
+pub const SENT: u32 = 0;
+/// The picture is of no use any more: drop it and begin again.
+pub const SENT_STALE: u32 = 1;
+/// The picture is larger than the protocol allows: nothing went out.
+pub const SENT_TOO_LARGE: u32 = 2;
+/// The session is over: nothing went out.
+pub const SENT_OVER: u32 = 3;
+
+/// The most parameter sets that a picture is given with.
+pub const SETS_MAX: u32 = 256;
+/// The most bytes of a parameter set.
+pub const SET_BYTES_MAX: u32 = 4096;
 
 /// The size of a struct for its `size` field. The structs of the interface are a few dozen bytes.
 #[allow(clippy::cast_possible_truncation)]
@@ -261,6 +284,84 @@ pub struct BatonDecoderState {
     pub reserved: u32,
 }
 
+/// What the viewer of the other device can take.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BatonTakes {
+    /// The bytes the platform may read.
+    pub size: u32,
+    /// The widest picture in pixels.
+    pub max_width: u32,
+    /// The highest picture in pixels.
+    pub max_height: u32,
+    /// The most frames a second.
+    pub max_fps: u32,
+    /// The codecs its decoder takes, as bits.
+    pub codecs: u32,
+    /// Zero.
+    pub reserved: u32,
+}
+
+/// The picture that the platform makes of a window.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BatonFormat {
+    /// The bytes of this struct.
+    pub size: u32,
+    /// One `CODEC_` bit.
+    pub codec: u32,
+    /// The width of the picture in pixels.
+    pub width: u32,
+    /// The height of the picture in pixels.
+    pub height: u32,
+    /// The most frames a second.
+    pub fps: u32,
+    /// Zero.
+    pub reserved: u32,
+}
+
+/// The window that the person picked.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BatonPicked {
+    /// The bytes of this struct.
+    pub size: u32,
+    /// The width of the window in pixels.
+    pub width: u32,
+    /// The height of the window in pixels.
+    pub height: u32,
+    /// Zero.
+    pub reserved: u32,
+    /// The platform's own pointer for the window.
+    pub context: *mut c_void,
+    /// The title. What it is called is not for a log.
+    pub title: BatonBytes,
+    /// The name of the application.
+    pub app: BatonBytes,
+}
+
+/// A picture that the encoder made.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BatonPicture {
+    /// The bytes of this struct.
+    pub size: u32,
+    /// `FRAME_REFERENCED`, or nothing.
+    pub flags: u32,
+    /// When the window was captured, in microseconds on the clock of the session.
+    pub capture_time: u64,
+    /// The bytes of each length in `sample`: 1, 2 or 4.
+    pub length_size: u32,
+    /// Zero.
+    pub reserved: u32,
+    /// The picture in AVCC form.
+    pub sample: BatonBytes,
+    /// The parameter sets of the format of the encoder.
+    pub sets: *const BatonBytes,
+    /// How many parameter sets.
+    pub set_count: usize,
+}
+
 /// Fills in what the device can show.
 pub type LimitsFn = unsafe extern "C" fn(context: *mut c_void, limits: *mut BatonLimits) -> i32;
 /// Makes the decoder and the screen for a window.
@@ -306,6 +407,51 @@ pub struct BatonViewerVTable {
     pub source: Option<SourceFn>,
     /// See [`StateFn`].
     pub state: Option<StateFn>,
+    /// See [`EndedFn`].
+    pub ended: Option<EndedFn>,
+    /// See [`ReleaseFn`].
+    pub release: Option<ReleaseFn>,
+}
+
+/// Whether the person can let another device control a window that they share.
+pub type ControlFn = unsafe extern "C" fn(context: *mut c_void) -> u32;
+/// Shows the picker of the system.
+pub type PickFn =
+    unsafe extern "C" fn(context: *mut c_void, request: u64, message: *mut BatonMessage) -> i32;
+/// Takes the picker down.
+pub type CancelPickFn = unsafe extern "C" fn(context: *mut c_void, request: u64);
+/// Chooses the picture to begin with, within what the other device takes.
+pub type PrepareFn = unsafe extern "C" fn(
+    picked: *mut c_void,
+    takes: *const BatonTakes,
+    format: *mut BatonFormat,
+) -> i32;
+/// Starts to capture and encode the window.
+pub type StartFn =
+    unsafe extern "C" fn(picked: *mut c_void, link: u64, message: *mut BatonMessage) -> i32;
+
+/// What the platform registers to share windows. A function that is `None` here is a registration
+/// that is refused. `ended` and `release` are called with the pointer of the window, where the
+/// viewer's are called with the pointer of a screen.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BatonSharerVTable {
+    /// The version of the interface the platform was written for.
+    pub version: u32,
+    /// The bytes of this struct as the platform knows it.
+    pub size: u32,
+    /// The first argument of `control`, `pick` and `cancel_pick`.
+    pub context: *mut c_void,
+    /// See [`ControlFn`].
+    pub control: Option<ControlFn>,
+    /// See [`PickFn`].
+    pub pick: Option<PickFn>,
+    /// See [`CancelPickFn`].
+    pub cancel_pick: Option<CancelPickFn>,
+    /// See [`PrepareFn`].
+    pub prepare: Option<PrepareFn>,
+    /// See [`StartFn`].
+    pub start: Option<StartFn>,
     /// See [`EndedFn`].
     pub ended: Option<EndedFn>,
     /// See [`ReleaseFn`].

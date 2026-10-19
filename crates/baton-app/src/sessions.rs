@@ -15,23 +15,19 @@ use std::{
 use baton_core::{
     PairedDevice,
     streaming::{
-        DecodeError, Decoder, DecoderState, End, ShareOutcome, SourceHandle, Takes, ViewHandle,
-        Viewing, WindowHandler, WindowOffer, WindowShare, WindowVerdict,
+        End, ShareOutcome, SourceHandle, Takes, ViewHandle, Viewing, WindowHandler, WindowOffer,
+        WindowShare, WindowVerdict,
     },
     util::BoxFuture,
 };
 use baton_proto::{DeviceId, message::DeclineReason};
-use baton_stream::{
-    control::{SourceMessage, Thermal},
-    header::FrameHeader,
-};
 use tokio::sync::broadcast;
 
 use crate::{
     Error, ErrorKind, Event, Result,
     app::{Questions, locked},
     model::{WindowAbilities, WindowEnd, WindowRequest, WindowRole, WindowSession, WindowShared},
-    windows::{PickedWindow, ScreenLink, ShowLimits, WindowSharer, WindowViewer},
+    windows::{PickedWindow, ScreenLink, SharingFailure, WindowSharer, WindowViewer},
 };
 
 /// A session that runs, and how to end it.
@@ -96,20 +92,12 @@ impl Sessions {
         let Some(viewer) = &self.viewer else {
             return Ok(());
         };
-        let ShowLimits {
-            max_width,
-            max_height,
-            max_fps,
-            codecs,
-        } = viewer.limits();
-        Viewing::new(Unused, max_width, max_height, max_fps, codecs)
-            .map(|_| ())
-            .map_err(|error| {
-                Error::new(
-                    ErrorKind::Other,
-                    format!("This device is set up wrongly to show windows ({error})."),
-                )
-            })
+        viewer.limits().check().map_err(|error| {
+            Error::new(
+                ErrorKind::Other,
+                format!("This device is set up wrongly to show windows ({error})."),
+            )
+        })
     }
 
     pub(crate) fn sharer(&self) -> Option<&Arc<dyn WindowSharer>> {
@@ -138,9 +126,15 @@ impl Sessions {
     }
 
     /// Takes note of a session that started, tells the screens, and reports its end when it comes.
-    /// `ended` waits for the end. It is given apart from `live` because a window that this device
-    /// shares is waited for without holding its handle, which the platform owns.
-    fn begin(self: &Arc<Self>, session: WindowSession, live: Live, ended: BoxFuture<'static, End>) {
+    /// `ended` waits for the end and says how it is told. It is given apart from `live` because a
+    /// window that this device shares is waited for without holding its handle, which the
+    /// platform owns.
+    fn begin(
+        self: &Arc<Self>,
+        session: WindowSession,
+        live: Live,
+        ended: BoxFuture<'static, WindowEnd>,
+    ) {
         let id = session.id;
         locked(&self.live).insert(id, live);
         self.emit(Event::WindowStarted(session));
@@ -149,10 +143,7 @@ impl Sessions {
             let end = ended.await;
             locked(&sessions.live).remove(&id);
             tracing::debug!(session = id, ?end, "window session ended");
-            sessions.emit(Event::WindowEnded {
-                id,
-                end: window_end(end),
-            });
+            sessions.emit(Event::WindowEnded { id, end });
         });
     }
 
@@ -264,7 +255,7 @@ impl Sessions {
         accepted.link.connect(&handle);
         let ended = {
             let handle = Arc::clone(&handle);
-            Box::pin(async move { handle.ended().await })
+            Box::pin(async move { window_end(handle.ended().await) })
         };
         self.begin(session, Live::Viewing(handle), ended);
     }
@@ -300,6 +291,7 @@ impl Sessions {
                     return Err(Error::new(ErrorKind::Other, "The window was lost."));
                 };
                 let handle = Arc::new(handle);
+                let failure = SharingFailure::new(&handle);
                 let session = WindowSession {
                     id: self.next_id(),
                     role: WindowRole::Sharing,
@@ -315,9 +307,9 @@ impl Sessions {
                 self.begin(
                     session.clone(),
                     Live::Sharing(Arc::downgrade(&handle)),
-                    Box::pin(handle.on_end()),
+                    Box::pin(sharing_end(handle.on_end(), failure.clone())),
                 );
-                picked.start(handle);
+                picked.start(handle, failure);
                 Ok(WindowShared::Started(session))
             }
             Ok(ShareOutcome::Declined(reason)) => {
@@ -334,32 +326,30 @@ impl Sessions {
     }
 }
 
-/// A decoder that is never used: it stands in for the real one when the limits are checked.
-struct Unused;
-
-impl Decoder for Unused {
-    fn decode(&mut self, _: &FrameHeader, _: Vec<u8>) -> std::result::Result<(), DecodeError> {
-        Err(DecodeError)
-    }
-
-    fn show(&mut self, _: u64) {}
-
-    fn source(&mut self, _: SourceMessage) {}
-
-    fn state(&self) -> DecoderState {
-        DecoderState {
-            decode_us: 0,
-            thermal: Thermal::Nominal,
-        }
-    }
-
-    fn ended(&mut self) {}
-}
-
 /// The text of a title or a name, or `None` if there is none.
 fn non_empty(text: &str) -> Option<String> {
     let text = text.trim();
     (!text.is_empty()).then(|| text.to_owned())
+}
+
+/// How a window that this device shares ended, as a screen is told, once its session is over.
+async fn sharing_end(ended: impl Future<Output = End>, failure: SharingFailure) -> WindowEnd {
+    sharing_outcome(ended.await, failure.message())
+}
+
+/// How a window that this device shares ended, as a screen is told: with the sentence that the
+/// platform gave if it ended the session to say that something went wrong, made fit for a screen,
+/// and as any other session otherwise. A session that the other device or the connection ended
+/// first is told as that, whatever the platform says afterwards.
+fn sharing_outcome(end: End, sentence: Option<String>) -> WindowEnd {
+    if end == End::Local {
+        let sentence =
+            sentence.map(|message| Error::new(ErrorKind::Other, message).message().to_owned());
+        if let Some(sentence) = sentence.filter(|sentence| !sentence.is_empty()) {
+            return WindowEnd::Failed(sentence);
+        }
+    }
+    window_end(end)
 }
 
 /// How a session ended, as a screen is told.
@@ -432,6 +422,56 @@ mod tests {
                 matches!(window_end(failed), WindowEnd::Failed(_)),
                 "{failed:?}"
             );
+        }
+    }
+
+    #[test]
+    fn a_window_that_the_platform_ended_is_told_with_its_sentence_if_it_gave_one() {
+        assert_eq!(
+            sharing_outcome(End::Local, Some("The capture stopped.".to_owned())),
+            WindowEnd::Failed("The capture stopped.".to_owned())
+        );
+        // The sentence is made fit for a screen.
+        assert_eq!(
+            sharing_outcome(
+                End::Local,
+                Some("The capture\nstopped.\u{202e}\u{7}".to_owned())
+            ),
+            WindowEnd::Failed("The capture stopped.".to_owned())
+        );
+        // No sentence, and a sentence with nothing in it, are the person closing the window.
+        for nothing in [
+            None,
+            Some(String::new()),
+            Some(" \n\t".to_owned()),
+            Some("\u{200b}".to_owned()),
+        ] {
+            assert_eq!(
+                sharing_outcome(End::Local, nothing.clone()),
+                WindowEnd::ThisDevice,
+                "{nothing:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_window_that_something_else_ended_is_told_as_that_whatever_the_platform_says() {
+        for end in [
+            End::Peer,
+            End::Connection,
+            End::Silent,
+            End::Stalled,
+            End::NoControl,
+            End::Violation,
+            End::Internal,
+        ] {
+            for sentence in [None, Some("The capture stopped.".to_owned())] {
+                assert_eq!(
+                    sharing_outcome(end, sentence.clone()),
+                    window_end(end),
+                    "{end:?}: {sentence:?}"
+                );
+            }
         }
     }
 

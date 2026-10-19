@@ -304,7 +304,14 @@ jobs:
           set -eu
           lib=apps/baton/build/macos/Build/Products/Release/Baton.app/Contents/Frameworks/baton_ffi.framework/Versions/A/baton_ffi
           lipo -archs "$lib"
-          for symbol in frb_get_rust_content_hash frb_pde_ffi_dispatcher_primary frb_init_frb_dart_api_dl baton_stream_abi_version baton_stream_register_viewer baton_stream_link_decode_failed; do
+          for symbol in \
+            frb_get_rust_content_hash frb_pde_ffi_dispatcher_primary frb_init_frb_dart_api_dl \
+            baton_stream_abi_version baton_stream_register_viewer baton_stream_link_decode_failed \
+            baton_stream_register_sharer baton_stream_pick_done baton_stream_source_clock \
+            baton_stream_source_begin baton_stream_source_cancel \
+            baton_stream_source_recovery_pending baton_stream_source_sent \
+            baton_stream_source_new_epoch baton_stream_source_pause baton_stream_source_resume \
+            baton_stream_source_end; do
             nm -gU "$lib" | grep -q " _$symbol\$" || { echo "$symbol is missing from $lib" >&2; exit 1; }
           done
       - name: Check that the app is sandboxed, and may use the network both ways, the camera and Downloads
@@ -383,7 +390,14 @@ jobs:
           set -eu
           lib=apps/baton/build/ios/iphoneos/Runner.app/Frameworks/baton_ffi.framework/baton_ffi
           lipo -archs "$lib"
-          for symbol in frb_get_rust_content_hash frb_pde_ffi_dispatcher_primary frb_init_frb_dart_api_dl baton_stream_abi_version baton_stream_register_viewer baton_stream_link_decode_failed; do
+          for symbol in \
+            frb_get_rust_content_hash frb_pde_ffi_dispatcher_primary frb_init_frb_dart_api_dl \
+            baton_stream_abi_version baton_stream_register_viewer baton_stream_link_decode_failed \
+            baton_stream_register_sharer baton_stream_pick_done baton_stream_source_clock \
+            baton_stream_source_begin baton_stream_source_cancel \
+            baton_stream_source_recovery_pending baton_stream_source_sent \
+            baton_stream_source_new_epoch baton_stream_source_pause baton_stream_source_resume \
+            baton_stream_source_end; do
             nm -gU "$lib" | grep -q " _$symbol\$" || { echo "$symbol is missing from $lib" >&2; exit 1; }
           done
       - name: Start an iPhone simulator
