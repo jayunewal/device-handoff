@@ -84,6 +84,7 @@ use crate::{
     transfer::{
         incoming::{FINISH_WAIT, Incoming, LANE_STREAMS, TransferHandler},
         lanes::LaneSink,
+        receive::STALL,
         send::{self, Holds, Ledger, NodeWire, Pace, Policy, Selection, Sending, Wire},
     },
     transport,
@@ -97,6 +98,23 @@ const MDNS_SERVICE: &str = "baton";
 
 /// How long to wait for the relay before making a ticket without it.
 const RELAY_WAIT: Duration = Duration::from_secs(3);
+
+/// The table of the transfers that other devices offer, when the application takes transfers. Its
+/// waits are the tuning's, so that a test can shorten them.
+fn incoming_table(
+    transfers: Option<Arc<dyn TransferHandler>>,
+    intake: &Intake,
+    tuning: &Tuning,
+) -> Option<Incoming> {
+    transfers.map(|handler| {
+        Incoming::with_waits(
+            handler,
+            intake.item_charge(),
+            tuning.finish_wait,
+            tuning.stall,
+        )
+    })
+}
 
 /// Installs what takes the unidirectional streams of the kinds that this node takes part in: the
 /// lanes of a transfer when it receives files, the frames of window streaming when it shows
@@ -158,6 +176,9 @@ pub struct Tuning {
     /// How long a `Finish` of a transfer waits for the files to settle. When they have not by
     /// then, the request ends without an answer (a stop with 408) and the sender asks again.
     pub finish_wait: Duration,
+    /// How long a transfer that is being received may move no byte before its attempt is
+    /// stopped (section 8, Time). The sender may try again, and the files that were received stay.
+    pub stall: Duration,
 }
 
 impl Default for Tuning {
@@ -170,6 +191,7 @@ impl Default for Tuning {
             invalid_delay: Duration::from_millis(250),
             idle_connection: Duration::from_mins(2),
             finish_wait: FINISH_WAIT,
+            stall: STALL,
         }
     }
 }
@@ -380,9 +402,7 @@ impl NodeBuilder {
         let registry = Arc::new(ConnectionRegistry::default());
         let stop = CancellationToken::new();
         let intake = Intake::new(&config.handoff);
-        let incoming = transfers.map(|handler| {
-            Incoming::with_finish_wait(handler, intake.item_charge(), tuning.finish_wait)
-        });
+        let incoming = incoming_table(transfers, &intake, &tuning);
         let (sinks, streaming) =
             take_streams(sinks, incoming.as_ref(), windows, sharing, &intake, &tuning);
         let uni = Arc::new(Uni::new(sinks, &trust, &stop, tuning.request_deadline));
@@ -1251,5 +1271,10 @@ mod tests {
         assert!(tuning.pair_connection_limit() > tuning.approval_timeout);
         assert!(tuning.join_reply_deadline() > tuning.approval_timeout);
         assert!(tuning.reply_deadline > tuning.request_deadline);
+    }
+
+    #[test]
+    fn a_transfer_that_moves_no_byte_is_stopped_after_thirty_seconds_unless_tuned() {
+        assert_eq!(Tuning::default().stall, Duration::from_secs(30));
     }
 }

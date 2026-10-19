@@ -453,6 +453,70 @@ async fn a_finish_that_the_files_do_not_settle_for_is_stopped_with_408_and_asked
 }
 
 #[tokio::test]
+async fn a_finish_on_a_connection_that_has_no_attempt_is_not_found_at_once_and_the_transfer_goes_on()
+ {
+    let rig = Rig::new().await;
+    let first = rig.connection().await;
+    let transfer = id(1);
+    assert_eq!(offer(&first, transfer).await, accepted(transfer));
+    // The list and part of `x` are on their way, and the connection goes with them.
+    let _lane = open_lane(&first, transfer, 0, &most_of_the_sample()).await;
+    first.close(code(close_code::NORMAL), b"gone");
+    let second = rig.connection().await;
+
+    // The sender asks for the outcome on the new connection. The files that are missing can only
+    // come with an attempt, so it is not waited for, and the answer is that there is none.
+    let error = ask(&second, TransferRequest::Finish(sample_finish(transfer)))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("NotFound"), "{error}");
+
+    // The transfer is still there: offered again on the new connection, it goes on and ends.
+    assert_eq!(offer(&second, transfer).await, accepted(transfer));
+    let mut lane = open_lane(&second, transfer, 0, &sample_lane()).await;
+    lane.finish().unwrap();
+    assert!(matches!(
+        finish(&second, transfer).await,
+        TransferReply::Done(done) if done.failed.is_empty() && done.more_failed == 0
+    ));
+    assert_eq!(fs::read(rig.scratch.path().join("x")).unwrap(), sample_x());
+}
+
+#[tokio::test]
+async fn a_finish_on_a_new_connection_after_a_stall_is_not_found_and_the_files_come_again() {
+    let rig = Rig::with(Spec {
+        tuning: Tuning {
+            stall: Duration::from_secs(1),
+            ..Tuning::default()
+        },
+        ..Spec::new()
+    })
+    .await;
+    let first = rig.connection().await;
+    let transfer = id(1);
+    assert_eq!(offer(&first, transfer).await, accepted(transfer));
+    // The sender goes quiet in the middle of `x`, and the receiver stops the attempt.
+    let quiet = open_lane(&first, transfer, 0, &most_of_the_sample()).await;
+    assert_eq!(stopped_with(&quiet).await, u64::from(close_code::TIMEOUT));
+    first.close(code(close_code::NORMAL), b"gone");
+    let second = rig.connection().await;
+
+    // The files without an outcome are not `Incomplete` yet: the sender can send them again.
+    let error = ask(&second, TransferRequest::Finish(sample_finish(transfer)))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("NotFound"), "{error}");
+    assert_eq!(offer(&second, transfer).await, accepted(transfer));
+    let mut lane = open_lane(&second, transfer, 0, &sample_lane()).await;
+    lane.finish().unwrap();
+    assert!(matches!(
+        finish(&second, transfer).await,
+        TransferReply::Done(done) if done.failed.is_empty() && done.more_failed == 0
+    ));
+    assert_eq!(fs::read(rig.scratch.path().join("x")).unwrap(), sample_x());
+}
+
+#[tokio::test]
 async fn a_cancel_for_a_transfer_that_is_not_there_is_answered_cancelled() {
     let rig = Rig::new().await;
     let connection = rig.connection().await;

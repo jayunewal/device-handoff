@@ -34,6 +34,7 @@ mod transfer;
 pub use attempt::{Lanes, Ledger, done};
 pub use intake::{Concluded, Halt, Intake};
 pub use lane::{Counted, Fault, Frame, LaneReader, SpanBuf};
+pub(crate) use transfer::STALL;
 pub use transfer::{Attempt, Dropped, LaneEnd, Over, Transfer};
 
 /// A rule of a transfer that the sender broke.

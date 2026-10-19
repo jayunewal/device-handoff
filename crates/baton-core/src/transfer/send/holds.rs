@@ -687,6 +687,8 @@ mod tests {
         // A receiver turns a device away once it has that many transfers going, so what it can hold
         // of a device is that many at most, and the one that was left first is the first it lets go of.
         assert!(MOST_LEFT >= 4 * usize::from(GOING_PER_PEER));
+        // The number that the documentation gives: protocol.md and architecture.md.
+        assert_eq!(MOST_LEFT, 16);
     }
 
     #[test]

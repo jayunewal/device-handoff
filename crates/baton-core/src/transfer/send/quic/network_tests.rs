@@ -21,7 +21,7 @@ use crate::{
     transfer::{
         incoming::Ending,
         send::testing::{Person, id, until, within},
-        testing::{WAIT, destination, sample_finish, sample_offer},
+        testing::{WAIT, destination, sample_finish, sample_lane, sample_offer},
     },
 };
 
@@ -183,15 +183,7 @@ async fn a_device_that_takes_no_files_now_is_offered_none_but_is_told_to_let_go_
     );
     assert_eq!(nodes.person.questions(), 1);
 
-    // `Finish` of what it holds goes to the device too, which waits for files that never come.
-    let finished = link
-        .request(
-            TransferRequest::Finish(sample_finish(id(1))),
-            Duration::from_secs(1),
-        )
-        .await;
-    assert_eq!(finished, Err(WireError::TimedOut));
-    // So does `Cancel`. The device gives up what it holds, and says so.
+    // `Cancel` goes to the device too. It gives up what it holds, and says so.
     let cancelled = link
         .request(TransferRequest::Cancel(Cancel { id: id(1) }), WAIT)
         .await;
@@ -219,6 +211,45 @@ async fn a_device_that_takes_no_files_now_is_offered_none_but_is_told_to_let_go_
         .request(TransferRequest::Finish(sample_finish(id(3))), WAIT)
         .await;
     assert_eq!(finish, unsupported);
+}
+
+#[tokio::test]
+async fn a_device_that_takes_no_files_now_still_tells_how_a_transfer_it_took_ended() {
+    let nodes = Nodes::new().await;
+    // A whole transfer that the device took while it took files. It has the outcome.
+    let first = nodes.link().await;
+    let offered = first
+        .request(TransferRequest::Offer(sample_offer(id(1))), WAIT)
+        .await;
+    assert!(matches!(
+        offered,
+        Ok(Reply::Transfer(TransferReply::Accepted(_)))
+    ));
+    let mut lane = within("opening the lane", first.open(id(1), 0))
+        .await
+        .unwrap();
+    let mut bytes = sample_lane();
+    while !bytes.is_empty() {
+        let taken = lane.write(&bytes).await.unwrap();
+        bytes.drain(..taken);
+    }
+    lane.finish().unwrap();
+    let done = first
+        .request(TransferRequest::Finish(sample_finish(id(1))), WAIT)
+        .await;
+    assert!(matches!(done, Ok(Reply::Transfer(TransferReply::Done(_)))));
+
+    // The person turns receiving off. The hello of a new connection says that it takes no files,
+    // and a sender that did not hear the answer asks again on it. The answer is the device's own,
+    // the outcome, and not the one that the device gives about a transfer it does not hold, which
+    // a link that made one up would give.
+    nodes.person.stops_taking_files();
+    let link = nodes.link().await;
+    let again = link
+        .request(TransferRequest::Finish(sample_finish(id(1))), WAIT)
+        .await;
+
+    assert_eq!(again, done);
 }
 
 // Lanes.

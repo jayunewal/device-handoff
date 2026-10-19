@@ -472,7 +472,9 @@ mod tests {
         let fixture = Fixture::new(&selection);
         let started = std::time::Instant::now();
 
-        let result = run(link, id(1), fixture.plan(1, STALL), None).await;
+        let result = timeout(PATIENT, run(link, id(1), fixture.plan(1, STALL), None))
+            .await
+            .expect("the lane did not stall");
 
         assert_eq!(result, Err(Halt::Stalled));
         assert!(started.elapsed() >= STALL);
@@ -484,19 +486,26 @@ mod tests {
     #[tokio::test]
     async fn a_read_that_does_not_come_back_in_the_stall_time_stalls() {
         // The read waits for a message that is sent only after `joined` has answered, so an answer
-        // that comes at all did not wait for the read. How long it took is not asked: a busy
-        // computer can be slow to wake any thread.
+        // that comes at all did not wait for the read. How long it took is asked only roughly: a
+        // busy computer can be slow to wake any thread, but the answer is made at the stall time
+        // and not at a multiple of it.
         let (release, held) = std::sync::mpsc::channel::<()>();
         let read = tokio::task::spawn_blocking(move || {
             let _ = held.recv();
             (Chunk::new(), false)
         });
+        let started = std::time::Instant::now();
 
-        let result = timeout(PATIENT, joined(read, Duration::from_millis(50)))
+        let result = timeout(PATIENT, joined(read, STALL))
             .await
             .expect("the answer waited for the read");
 
         assert!(matches!(result, Err(Halt::Stalled)));
+        assert!(
+            started.elapsed() < 5 * STALL,
+            "the answer took {:?}",
+            started.elapsed()
+        );
         // The read is let go of, and it ends by itself once it is told to.
         let _ = release.send(());
     }
@@ -537,7 +546,9 @@ mod tests {
 
         let (script, link) = connection(|_, _| Take::OpenHangs).await;
         let started = std::time::Instant::now();
-        let result = run(link, id(1), fixture.plan(1, STALL), None).await;
+        let result = timeout(PATIENT, run(link, id(1), fixture.plan(1, STALL), None))
+            .await
+            .expect("the lane did not stall");
         assert_eq!(result, Err(Halt::Stalled));
         assert!(started.elapsed() >= STALL);
         assert_eq!(script.log().opened(), Vec::new());

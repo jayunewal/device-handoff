@@ -81,7 +81,7 @@ use tokio::{sync::watch, task::AbortHandle, time::Instant};
 
 use super::{
     destination::{Destination, Room},
-    receive::{Attempt, Over, Transfer},
+    receive::{Attempt, Over, STALL, Transfer},
 };
 use crate::{
     trust::PairedDevice,
@@ -239,8 +239,10 @@ pub enum Ending {
 /// Why a `Finish` has no outcome to give.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum FinishError {
-    /// The transfer is not known: it was not accepted, it was given up, or it was forgotten. The
-    /// session answers `Error { code: NotFound }`.
+    /// The transfer is not known: it was not accepted, it was given up, or it was forgotten. Or it
+    /// is still being received, and the request came on a connection that has no attempt of it: the
+    /// receiver has no outcome for that connection, and the sender is to offer the transfer again.
+    /// The session answers `Error { code: NotFound }`.
     #[error("the transfer is not known")]
     NotFound,
     /// The files did not settle in time. The session ends the request without an answer, and the
@@ -440,6 +442,8 @@ struct Shared {
     charge: Box<dyn Fn(&DeviceId) -> bool + Send + Sync>,
     /// The longest `Finish` waits for the outcome.
     finish_wait: Duration,
+    /// How long the attempt of a transfer may move no byte before it is stopped.
+    stall: Duration,
     entries: Mutex<HashMap<Key, Arc<Entry>>>,
     /// Numbers the offers in the order they arrive.
     arrivals: AtomicU64,
@@ -477,21 +481,24 @@ impl Incoming {
         handler: Arc<dyn TransferHandler>,
         charge: impl Fn(&DeviceId) -> bool + Send + Sync + 'static,
     ) -> Self {
-        Self::with_finish_wait(handler, charge, FINISH_WAIT)
+        Self::with_waits(handler, charge, FINISH_WAIT, STALL)
     }
 
     /// Like [`Incoming::new`], with a `Finish` that waits for the outcome for `finish_wait` at most,
-    /// where it waits for three minutes otherwise.
-    pub fn with_finish_wait(
+    /// where it waits for three minutes otherwise, and an attempt that is stopped when it moves no
+    /// byte for `stall`, where it is stopped after thirty seconds otherwise.
+    pub fn with_waits(
         handler: Arc<dyn TransferHandler>,
         charge: impl Fn(&DeviceId) -> bool + Send + Sync + 'static,
         finish_wait: Duration,
+        stall: Duration,
     ) -> Self {
         Self {
             shared: Arc::new(Shared {
                 handler,
                 charge: Box::new(charge),
                 finish_wait,
+                stall,
                 entries: Mutex::new(HashMap::new()),
                 arrivals: AtomicU64::new(0),
                 closed: AtomicBool::new(false),
@@ -539,13 +546,28 @@ impl Incoming {
         }
     }
 
-    /// Answers `Finish`: waits until the transfer has its outcome, and gives it.
+    /// Answers `Finish`, which came on the connection `link`: waits until the transfer has its
+    /// outcome, and gives it.
+    ///
+    /// A `Finish` on a connection that has no attempt of the transfer, as when a sender whose
+    /// connection went asks on a new one for an outcome it did not hear, is answered only if the
+    /// transfer can be ended at once without giving up a file that the sender could still send (see
+    /// [`Transfer::is_complete`]). It is not the end of anything that connection carried, and what
+    /// the receiver waits for, if anything, went with the connection that was lost. So it does not
+    /// wait, and an attempt that stopped for a stall is not ended by it: the sender is told that
+    /// there is no outcome and offers the transfer again.
     ///
     /// # Errors
     ///
-    /// [`FinishError::NotFound`] for a transfer that was not accepted, was given up or is forgotten,
+    /// [`FinishError::NotFound`] for a transfer that was not accepted, was given up or is
+    /// forgotten, and for one that has no outcome to give a connection that has no attempt of it,
     /// and [`FinishError::TimedOut`] when the files did not settle in time.
-    pub async fn finish(&self, from: &DeviceId, finish: &Finish) -> Result<Done, FinishError> {
+    pub async fn finish(
+        &self,
+        from: &DeviceId,
+        link: Link,
+        finish: &Finish,
+    ) -> Result<Done, FinishError> {
         let entry = self
             .known(&(*from, finish.id))
             .ok_or(FinishError::NotFound)?;
@@ -555,6 +577,9 @@ impl Incoming {
             }
             Stage::Finished(done) => done,
             Stage::Accepted(transfer) => {
+                if !on_attempt(&entry, link) && !transfer.is_complete() {
+                    return Err(FinishError::NotFound);
+                }
                 match tokio::time::timeout(self.shared.finish_wait, transfer.finish(finish)).await {
                     Ok(Ok(done)) => done,
                     Ok(Err(_)) => return Err(FinishError::NotFound),
@@ -720,7 +745,8 @@ impl Incoming {
                 tokio::time::timeout(ASK_TIME, handler.offered(&asked.from, &asked.offer)).await;
             match verdict {
                 Ok(Verdict::Accept) => {
-                    let transfer = Transfer::new(destination, asked.offer.clone());
+                    let stall = table.shared.stall;
+                    let transfer = Transfer::with_stall(destination, asked.offer.clone(), stall);
                     if asked.decide(Stage::Accepted(transfer.clone())) {
                         table.keep(&asked, transfer);
                     }
@@ -834,6 +860,14 @@ impl Incoming {
     }
 }
 
+/// Whether the attempt that is going, or went last, is the one that was begun on `link`.
+fn on_attempt(entry: &Entry, link: Link) -> bool {
+    lock(&entry.inner)
+        .current
+        .as_ref()
+        .is_some_and(|(on, _)| *on == link)
+}
+
 /// Begins the attempt on `link` if it has none and this copy of the offer is the newest.
 fn attempt_on(entry: &Entry, transfer: &Transfer, link: Link, seq: u64) -> Result<(), Over> {
     let mut inner = lock(&entry.inner);
@@ -863,9 +897,12 @@ fn forget_the_oldest_ended(entries: &mut HashMap<Key, Arc<Entry>>) -> bool {
 mod tests {
     use std::{fs, pin::Pin, task::Poll};
 
-    use baton_proto::{Platform, transfer::list::ListEntry};
+    use baton_proto::{
+        Platform,
+        transfer::{FailReason, list::ListEntry},
+    };
     use tokio::{
-        io::{AsyncWriteExt, duplex},
+        io::{AsyncWriteExt, DuplexStream, duplex},
         sync::oneshot,
         task::JoinHandle,
     };
@@ -948,6 +985,12 @@ mod tests {
             &end_with(0, blake3::hash(&x)),
             &end_with(1, blake3::hash(b"")),
         ])
+    }
+
+    /// One lane that carries the list and the bytes of `x`, and nothing that says `x` is whole
+    /// and nothing of `zero`: what a connection that went can have carried. No file has an outcome.
+    fn most_of_it() -> Vec<u8> {
+        lane(&[&list(&chunk(entries())), &span(0, 0, &bytes(1, 10))])
     }
 
     /// Waits for `work`, but not for ever.
@@ -1156,16 +1199,31 @@ mod tests {
 
         /// A table whose limit on items says `allow` for each new transfer.
         fn allowing(allow: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+            Self::with(allow, None)
+        }
+
+        /// A table that stops an attempt that has moved no byte for `stall`.
+        fn stalling_after(stall: Duration) -> Self {
+            Self::with(|| true, Some(stall))
+        }
+
+        /// A table with the waits that `Incoming::new` gives, or `stall` if it is `Some`.
+        fn with(allow: impl Fn() -> bool + Send + Sync + 'static, stall: Option<Duration>) -> Self {
             let (scratch, destination) = destination();
             let fake = Arc::new(Fake::new(destination));
             let charged = Arc::new(Mutex::new(Vec::new()));
-            let table = Incoming::new(Arc::clone(&fake) as Arc<dyn TransferHandler>, {
+            let handler = Arc::clone(&fake) as Arc<dyn TransferHandler>;
+            let charge = {
                 let charged = Arc::clone(&charged);
                 move |from: &DeviceId| {
                     lock(&charged).push(*from);
                     allow()
                 }
-            });
+            };
+            let table = match stall {
+                None => Incoming::new(handler, charge),
+                Some(stall) => Incoming::with_waits(handler, charge, FINISH_WAIT, stall),
+            };
             Self {
                 scratch,
                 fake,
@@ -1191,11 +1249,35 @@ mod tests {
             tokio::spawn(async move { table.offer(&from, Link(link), offer).await })
         }
 
-        /// Has the `Finish` of the sample answered by a task of its own.
+        /// Has the `Finish` of the sample answered by a task of its own, as when it comes on
+        /// connection 1.
         fn finishing(&self, from: &DeviceId, n: u8) -> JoinHandle<Result<Done, FinishError>> {
+            self.finishing_on(from, 1, n)
+        }
+
+        /// Has the `Finish` of the sample that comes on connection `link` answered by a task of its
+        /// own.
+        fn finishing_on(
+            &self,
+            from: &DeviceId,
+            link: usize,
+            n: u8,
+        ) -> JoinHandle<Result<Done, FinishError>> {
             let table = self.table.clone();
             let from = *from;
-            tokio::spawn(async move { table.finish(&from, &finish(n)).await })
+            tokio::spawn(async move { table.finish(&from, Link(link), &finish(n)).await })
+        }
+
+        /// The answer to the `Finish` of the sample that comes on connection `link`, for as long as a
+        /// test waits for one.
+        async fn finish_on(
+            &self,
+            from: &DeviceId,
+            link: usize,
+            n: u8,
+        ) -> Result<Done, FinishError> {
+            let request = finish(n);
+            within("the finish", self.table.finish(from, Link(link), &request)).await
         }
 
         /// Has the `Cancel` answered by a task of its own.
@@ -1534,7 +1616,11 @@ mod tests {
 
         let guard = rig.received_whole(&from, 1).await;
         drop(guard);
-        let done = rig.table.finish(&from.id, &finish(1)).await.unwrap();
+        let done = rig
+            .table
+            .finish(&from.id, Link(1), &finish(1))
+            .await
+            .unwrap();
         let third = rig.table.offer(&from, Link(1), offer(3)).await;
 
         assert!(done.failed.is_empty() && done.more_failed == 0, "{done:?}");
@@ -1688,8 +1774,16 @@ mod tests {
         let guard = rig.received_whole(&from, 1).await;
         drop(guard);
 
-        let done = rig.table.finish(&from.id, &finish(1)).await.unwrap();
-        let again = rig.table.finish(&from.id, &finish(1)).await.unwrap();
+        let done = rig
+            .table
+            .finish(&from.id, Link(1), &finish(1))
+            .await
+            .unwrap();
+        let again = rig
+            .table
+            .finish(&from.id, Link(1), &finish(1))
+            .await
+            .unwrap();
 
         assert_eq!(done.id, id(1));
         assert!(done.failed.is_empty() && done.more_failed == 0, "{done:?}");
@@ -1715,8 +1809,14 @@ mod tests {
         drop(rig.received_whole(&from, 1).await);
         assert_eq!(rig.fake.places(), [], "nothing is in place before Finish");
 
-        rig.table.finish(&from.id, &finish(1)).await.unwrap();
-        rig.table.finish(&from.id, &finish(1)).await.unwrap();
+        rig.table
+            .finish(&from.id, Link(1), &finish(1))
+            .await
+            .unwrap();
+        rig.table
+            .finish(&from.id, Link(1), &finish(1))
+            .await
+            .unwrap();
         rig.fake.until_ended(1).await;
         settle().await;
 
@@ -1752,11 +1852,18 @@ mod tests {
         rig.fake.says(Verdict::Accept);
         let from = device(2);
         drop(rig.received_whole(&from, 1).await);
-        let done = rig.table.finish(&from.id, &finish(1)).await.unwrap();
+        let done = rig
+            .table
+            .finish(&from.id, Link(1), &finish(1))
+            .await
+            .unwrap();
 
         rig.table.cancel(&from.id, id(1)).await;
 
-        assert_eq!(rig.table.finish(&from.id, &finish(1)).await, Ok(done));
+        assert_eq!(
+            rig.table.finish(&from.id, Link(1), &finish(1)).await,
+            Ok(done)
+        );
         assert_eq!(rig.received("x"), Some(bytes(1, 10)));
         rig.fake.until_ended(1).await;
         assert!(matches!(rig.fake.endings()[0].2, Ending::Done(_)));
@@ -1770,22 +1877,34 @@ mod tests {
         let not_found = Err(FinishError::NotFound);
 
         // Never heard of.
-        assert_eq!(rig.table.finish(&from.id, &finish(1)).await, not_found);
+        assert_eq!(
+            rig.table.finish(&from.id, Link(1), &finish(1)).await,
+            not_found
+        );
 
         // Waiting for the person.
         let asking = rig.offering(&from, 1, offer(2));
         rig.fake.until_waiting(1).await;
-        assert_eq!(rig.table.finish(&from.id, &finish(2)).await, not_found);
+        assert_eq!(
+            rig.table.finish(&from.id, Link(1), &finish(2)).await,
+            not_found
+        );
 
         // Turned down.
         rig.fake.answer(id(2), Verdict::Refuse);
         within("the reply", asking).await.unwrap();
-        assert_eq!(rig.table.finish(&from.id, &finish(2)).await, not_found);
+        assert_eq!(
+            rig.table.finish(&from.id, Link(1), &finish(2)).await,
+            not_found
+        );
 
         // Taken, but offered by another device.
         rig.fake.says(Verdict::Accept);
         rig.table.offer(&from, Link(1), offer(3)).await;
-        assert_eq!(rig.table.finish(&device(3).id, &finish(3)).await, not_found);
+        assert_eq!(
+            rig.table.finish(&device(3).id, Link(1), &finish(3)).await,
+            not_found
+        );
     }
 
     #[tokio::test]
@@ -1801,6 +1920,161 @@ mod tests {
 
         let reply = within("the finish", finishing).await.unwrap();
         assert_eq!(reply, Err(FinishError::NotFound));
+    }
+
+    // A `Finish` from a connection that has no attempt of the transfer.
+
+    #[tokio::test]
+    async fn a_finish_from_a_connection_with_no_attempt_is_not_found_while_files_are_missing() {
+        let rig = Rig::new();
+        rig.fake.says(Verdict::Accept);
+        let from = device(2);
+        rig.table.offer(&from, Link(1), offer(1)).await;
+        let (attempt, guard) = rig.table.lane(&from.id, id(1), Link(1)).unwrap();
+        let end = attempt.lane(0, &mut most_of_it().as_slice()).await;
+        assert_eq!(end, LaneEnd::Finished);
+        drop(guard);
+
+        // Asked on a new connection, which has no attempt, there is no outcome to give and nothing
+        // to wait for: the files can only come with an attempt.
+        assert_eq!(
+            rig.finish_on(&from.id, 2, 1).await,
+            Err(FinishError::NotFound)
+        );
+        assert_eq!(rig.fake.endings(), [], "the transfer is not over");
+
+        // The connection of the attempt waits for the files, as it always did.
+        let mut waiting = rig.finishing(&from.id, 1);
+        assert!(still_waiting(&mut waiting).await);
+
+        // The sender offers again on the new connection and sends it all.
+        let reply = rig.table.offer(&from, Link(2), offer(1)).await;
+        assert_eq!(reply, accepted(id(1)));
+        let (second, guard) = rig.table.lane(&from.id, id(1), Link(2)).unwrap();
+        let end = second.lane(0, &mut everything().as_slice()).await;
+        assert_eq!(end, LaneEnd::Finished);
+        drop(guard);
+        let done = rig.finish_on(&from.id, 2, 1).await.unwrap();
+
+        assert!(done.failed.is_empty() && done.more_failed == 0, "{done:?}");
+        assert_eq!(rig.received("x"), Some(bytes(1, 10)));
+        assert_eq!(within("the first finish", waiting).await.unwrap(), Ok(done));
+    }
+
+    #[tokio::test]
+    async fn only_the_connection_of_the_latest_attempt_has_a_finish_wait() {
+        let rig = Rig::new();
+        rig.fake.says(Verdict::Accept);
+        let from = device(2);
+        rig.table.offer(&from, Link(1), offer(1)).await;
+        let (attempt, guard) = rig.table.lane(&from.id, id(1), Link(1)).unwrap();
+        let end = attempt.lane(0, &mut most_of_it().as_slice()).await;
+        assert_eq!(end, LaneEnd::Finished);
+        drop(guard);
+        let reply = rig.table.offer(&from, Link(2), offer(1)).await;
+        assert_eq!(reply, accepted(id(1)));
+
+        // The attempt is on connection 2 now, and connection 1 has none.
+        assert_eq!(
+            rig.finish_on(&from.id, 1, 1).await,
+            Err(FinishError::NotFound)
+        );
+        let mut waiting = rig.finishing_on(&from.id, 2, 1);
+        assert!(still_waiting(&mut waiting).await);
+        assert_eq!(rig.fake.endings(), []);
+        rig.table.cancel(&from.id, id(1)).await;
+        assert_eq!(
+            within("the finish", waiting).await.unwrap(),
+            Err(FinishError::NotFound)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_finish_from_a_connection_with_no_attempt_is_answered_when_nothing_is_missing() {
+        let rig = Rig::new();
+        rig.fake.says(Verdict::Accept);
+        let from = device(2);
+        // Everything arrived, and the `Finish` that the sender made for it did not.
+        drop(rig.received_whole(&from, 1).await);
+
+        let done = rig.finish_on(&from.id, 2, 1).await.unwrap();
+
+        assert!(done.failed.is_empty() && done.more_failed == 0, "{done:?}");
+        assert_eq!(rig.received("x"), Some(bytes(1, 10)));
+        // It is the outcome now, and any connection is given it. The application hears once.
+        let again = rig.table.finish(&from.id, Link(3), &finish(1)).await;
+        assert_eq!(again, Ok(done.clone()));
+        let again = rig.table.finish(&from.id, Link(1), &finish(1)).await;
+        assert_eq!(again, Ok(done.clone()));
+        rig.fake.until_ended(1).await;
+        settle().await;
+        assert_eq!(rig.fake.endings(), [(from.id, id(1), Ending::Done(done))]);
+    }
+
+    /// How long a quiet attempt lasts in the tests that wait for a stall. Real time, because the
+    /// attempt writes files (a paused clock would run on while that work is pending).
+    const QUICK_STALL: Duration = Duration::from_secs(1);
+
+    /// The first attempt of the transfer 1 on connection 1: the list and `x` came, the sender went
+    /// quiet with its lane open, and the table stopped the attempt after `QUICK_STALL`.
+    async fn stalled(rig: &Rig, from: &PairedDevice) -> DuplexStream {
+        rig.table.offer(from, Link(1), offer(1)).await;
+        let (attempt, guard) = rig.table.lane(&from.id, id(1), Link(1)).unwrap();
+        let (mut tx, mut rx) = duplex(1 << 16);
+        tx.write_all(&most_of_it()).await.unwrap();
+        let end = within("the stall", attempt.lane(0, &mut rx)).await;
+        assert_eq!(end, LaneEnd::Stopped(408));
+        drop(guard);
+        tx
+    }
+
+    #[tokio::test]
+    async fn a_finish_from_a_new_connection_does_not_end_an_attempt_that_stalled() {
+        let rig = Rig::stalling_after(QUICK_STALL);
+        rig.fake.says(Verdict::Accept);
+        let from = device(2);
+        let _quiet = stalled(&rig, &from).await;
+
+        // The sender is back on a new connection and asks for the outcome before it offers. The
+        // files without an outcome are not `Incomplete` yet, because it can send them again.
+        assert_eq!(
+            rig.finish_on(&from.id, 2, 1).await,
+            Err(FinishError::NotFound)
+        );
+        settle().await;
+        assert_eq!(rig.fake.endings(), [], "the transfer is not over");
+        let reply = rig.table.offer(&from, Link(2), offer(1)).await;
+        assert_eq!(reply, accepted(id(1)));
+        let (second, guard) = rig.table.lane(&from.id, id(1), Link(2)).unwrap();
+        let end = second.lane(0, &mut everything().as_slice()).await;
+        assert_eq!(end, LaneEnd::Finished);
+        drop(guard);
+        let done = rig.finish_on(&from.id, 2, 1).await.unwrap();
+
+        assert!(done.failed.is_empty() && done.more_failed == 0, "{done:?}");
+        assert_eq!(rig.received("x"), Some(bytes(1, 10)));
+        rig.fake.until_ended(1).await;
+        assert_eq!(rig.fake.endings(), [(from.id, id(1), Ending::Done(done))]);
+    }
+
+    #[tokio::test]
+    async fn a_finish_from_the_connection_of_a_stalled_attempt_ends_the_transfer_with_what_there_is()
+     {
+        let rig = Rig::stalling_after(QUICK_STALL);
+        rig.fake.says(Verdict::Accept);
+        let from = device(2);
+        let _quiet = stalled(&rig, &from).await;
+
+        let done = rig.finish_on(&from.id, 1, 1).await.unwrap();
+
+        // `x` has no `End` and `zero` nothing, and the stall time is up.
+        let failed: Vec<_> = done.failed.iter().map(|f| (f.file, f.reason)).collect();
+        assert_eq!(
+            failed,
+            [(0, FailReason::Incomplete), (1, FailReason::Incomplete)]
+        );
+        rig.fake.until_ended(1).await;
+        assert_eq!(rig.fake.endings(), [(from.id, id(1), Ending::Done(done))]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1839,7 +2113,7 @@ mod tests {
         assert_eq!(end, LaneEnd::Stopped(400));
         rig.fake.until_ended(1).await;
         assert_eq!(rig.fake.endings(), [(from.id, id(1), Ending::Dropped)]);
-        let finished = rig.table.finish(&from.id, &finish(1)).await;
+        let finished = rig.table.finish(&from.id, Link(1), &finish(1)).await;
         assert_eq!(finished, Err(FinishError::NotFound));
         assert!(rig.table.lane(&from.id, id(1), Link(1)).is_none());
         let repeat = rig.table.offer(&from, Link(1), offer(1)).await;
@@ -1946,7 +2220,7 @@ mod tests {
         assert_eq!(rig.fake.endings(), [(from.id, id(1), Ending::Dropped)]);
         assert_eq!(rig.staging_folders(), 0);
         assert_eq!(rig.received("x"), None);
-        let finished = rig.table.finish(&from.id, &finish(1)).await;
+        let finished = rig.table.finish(&from.id, Link(1), &finish(1)).await;
         assert_eq!(finished, Err(FinishError::NotFound));
     }
 
@@ -2006,7 +2280,11 @@ mod tests {
         rig.table.offer(&from, Link(1), offer(2)).await;
         let (_attempt, _other) = rig.table.lane(&from.id, id(2), Link(1)).unwrap();
 
-        let done = within("the finish", rig.table.finish(&from.id, &finish(1))).await;
+        let done = within(
+            "the finish",
+            rig.table.finish(&from.id, Link(1), &finish(1)),
+        )
+        .await;
         let done = done.unwrap();
         assert!(done.failed.is_empty() && done.more_failed == 0, "{done:?}");
         within("the cancel", rig.table.cancel(&from.id, id(2))).await;
@@ -2344,7 +2622,7 @@ mod tests {
 
         is_send(&lane);
         is_send(&rig.table.offer(&from, Link(1), offer(1)));
-        is_send(&rig.table.finish(&from.id, &finish(1)));
+        is_send(&rig.table.finish(&from.id, Link(1), &finish(1)));
         is_send(&rig.table.cancel(&from.id, id(1)));
         is_send(&rig.table.forget(&from.id));
         is_send(&rig.table.shutdown());
