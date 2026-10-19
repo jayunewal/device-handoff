@@ -67,6 +67,12 @@
 //! will not get further. The answer is made once, whoever asks and however often, and the work
 //! (putting the items in place) runs on a thread of its own that publishes the outcome itself, so
 //! that a `Finish` whose request is dropped cannot leave the transfer half ended.
+//!
+//! That is for a `Finish` that comes on the connection of the attempt, where it ends what the
+//! attempt carried. One that comes on any other connection asks for an outcome that the sender did
+//! not hear, and it is not the end of anything that connection carried, so an attempt that stopped
+//! for a stall must not be ended by it: the owner asks [`Transfer::is_complete`] before it
+//! lets such a `Finish` in.
 
 use std::{
     fmt,
@@ -99,7 +105,7 @@ use crate::{
 };
 
 /// How long a transfer may move no byte before its attempt is stopped (section 8, Time).
-const STALL: Duration = Duration::from_secs(30);
+pub(crate) const STALL: Duration = Duration::from_secs(30);
 
 /// How often the timer of an attempt looks at the count of bytes, as a part of the time it waits.
 const TICKS_PER_STALL: u32 = 10;
@@ -212,6 +218,16 @@ impl State {
             Phase::Done(_) | Phase::Dropped => true,
             Phase::Receiving => self.ready(),
             Phase::Concluding => false,
+        }
+    }
+
+    /// Whether the transfer can be ended without giving up a file that the sender could still send:
+    /// it is being ended or is over, or every file has an outcome. A stop is not that: it leaves
+    /// files that have none, and they are `Incomplete` or `NoSpace` once the transfer is ended.
+    fn complete(&self) -> bool {
+        match self.phase {
+            Phase::Concluding | Phase::Done(_) | Phase::Dropped => true,
+            Phase::Receiving => self.intake.is_some() && self.settled,
         }
     }
 }
@@ -465,7 +481,9 @@ impl Transfer {
         Self::with_stall(destination, offer, STALL)
     }
 
-    fn with_stall(destination: Destination, offer: Offer, stall: Duration) -> Self {
+    /// Like [`Transfer::new`], with an attempt that is stopped when it moves no byte for `stall`,
+    /// where it is stopped after thirty seconds otherwise.
+    pub(crate) fn with_stall(destination: Destination, offer: Offer, stall: Duration) -> Self {
         let (state, _) = watch::channel(State {
             phase: Phase::Receiving,
             attempt: 0,
@@ -580,6 +598,15 @@ impl Transfer {
     /// Whether the transfer has ended: its items are in place, or it was given up.
     pub fn is_over(&self) -> bool {
         self.shared.state.borrow().over()
+    }
+
+    /// Whether `Finish` can end the transfer without giving up a file that the sender could still
+    /// send: the items are being put in place or are in place, the transfer was given up, or every
+    /// file has an outcome. A `Finish` from a connection that has no attempt of the transfer is
+    /// answered only then. A stalled attempt is not that: its files that have no outcome would be
+    /// `Incomplete`, and the sender may send them if it is told that the transfer is not over.
+    pub fn is_complete(&self) -> bool {
+        self.shared.state.borrow().complete()
     }
 
     /// Waits until the transfer has ended, and gives how it ended: `Some` with the outcome when its
@@ -2009,6 +2036,91 @@ mod tests {
         }
         assert_eq!(rig.transfer.finish(&finish).await.unwrap(), first);
         rig.assert_all_in_place(&first);
+    }
+
+    #[tokio::test]
+    async fn a_transfer_is_complete_when_every_file_has_an_outcome() {
+        let rig = Rig::new();
+        assert!(!rig.transfer.is_complete(), "before an attempt");
+        let attempt = rig.attempt();
+        assert!(!rig.transfer.is_complete(), "before the list");
+
+        // The list and one file, and the lane ends: the others have no outcome yet.
+        let first = lane(&[&Rig::list(), &rig.x()]);
+        assert_eq!(run(&attempt, 0, &first).await, LaneEnd::Finished);
+        assert!(!rig.transfer.is_complete(), "with files missing");
+
+        let rest = lane(&[&rig.y_spans(), &rig.y_end(), &rig.z()]);
+        assert_eq!(run(&attempt, 1, &rest).await, LaneEnd::Finished);
+        assert!(!rig.transfer.is_complete(), "with the empty file missing");
+
+        assert_eq!(run(&attempt, 2, &Rig::zero()).await, LaneEnd::Finished);
+        assert!(rig.transfer.is_complete(), "with every file settled");
+    }
+
+    #[tokio::test]
+    async fn a_stalled_attempt_is_not_complete_and_a_new_one_that_settles_every_file_is() {
+        let rig = Rig::stalling_after(Duration::from_millis(100));
+        let first = rig.attempt();
+        let (mut tx, mut rx) = duplex(MIB);
+        tx.write_all(&lane(&[&Rig::list(), &rig.x()]))
+            .await
+            .unwrap();
+        assert_eq!(
+            within("the stall", first.lane(0, &mut rx)).await,
+            LaneEnd::Stopped(408)
+        );
+
+        // A stop lets `Finish` answer, with the files that have no outcome as `Incomplete`. That
+        // is not an end that a connection with no attempt may bring about.
+        assert!(!rig.transfer.is_complete(), "after the stall");
+        let second = rig.attempt();
+        assert!(!rig.transfer.is_complete(), "a new attempt starts over");
+        assert_eq!(run(&second, 0, &rig.everything()).await, LaneEnd::Finished);
+        assert!(rig.transfer.is_complete(), "after the second attempt");
+        drop(tx);
+    }
+
+    #[tokio::test]
+    async fn a_transfer_that_is_ending_over_or_given_up_is_complete_whatever_it_lacks() {
+        let state = |phase| State {
+            phase,
+            attempt: 1,
+            stop: None,
+            intake: None,
+            settled: false,
+        };
+        let done = Done {
+            id: Rig::finish().id,
+            failed: Vec::new(),
+            more_failed: 0,
+        };
+
+        assert!(state(Phase::Concluding).complete());
+        assert!(state(Phase::Done(done)).complete());
+        assert!(state(Phase::Dropped).complete());
+        // Being received with no list, a transfer has nothing to end, whatever else it says.
+        assert!(!state(Phase::Receiving).complete());
+        assert!(
+            !State {
+                settled: true,
+                ..state(Phase::Receiving)
+            }
+            .complete()
+        );
+
+        let rig = Rig::new();
+        rig.transfer.cancel().await;
+        assert!(rig.transfer.is_complete());
+    }
+
+    #[tokio::test]
+    async fn a_transfer_made_without_a_stall_time_stops_a_quiet_attempt_after_thirty_seconds() {
+        let (_scratch, destination) = destination();
+
+        let transfer = Transfer::new(destination, offer_for(&entries()));
+
+        assert_eq!(transfer.shared.stall, Duration::from_secs(30));
     }
 
     #[tokio::test]

@@ -622,8 +622,11 @@ async fn a_finish_that_was_lost_before_the_receiver_had_the_files_is_not_waited_
             Fate::Pass
         }
     });
+    // The question about the outcome is answered at once, since the new connection has no attempt
+    // and there is no outcome. The wait for it is longer than the test allows for the whole
+    // transfer, so a receiver that waited would fail the test.
     let policy = Policy {
-        probe_wait: Duration::from_millis(200),
+        probe_wait: Duration::from_secs(60),
         ..steady()
     };
 
@@ -644,15 +647,66 @@ async fn a_finish_that_was_lost_before_the_receiver_had_the_files_is_not_waited_
 }
 
 #[tokio::test]
+async fn a_finish_that_was_lost_and_is_asked_about_after_a_stall_is_followed_by_all_the_files_again()
+ {
+    let stall = Duration::from_secs(1);
+    let rig = Rig::stalling_after(stall);
+    let content = bytes(1, 2_500_000);
+    rig.files.make("big", &content);
+    let selection = rig.files.select(&["big"]);
+    // The first connection carries the list and the first of the file, and the rest of it goes
+    // with the connection, and so does the `Finish`. The receiver holds what came, and stops the
+    // attempt when it has moved no byte for the stall time.
+    rig.wire.on_put(|put| {
+        if put.conn == 1 && put.on_conn >= 1_000_000 {
+            Fault::Vanish
+        } else {
+            Fault::Pass
+        }
+    });
+    let late = Gate::new();
+    let held_up = late.clone();
+    rig.wire
+        .on_call(move |call| match (call.conn, call.kind, call.nth) {
+            (1, Kind::Finish, _) => Fate::Lose,
+            // The sender is back on a new connection, and its question about the outcome reaches
+            // the receiver after the attempt was stopped.
+            (2, Kind::Finish, 0) => Fate::After(held_up.clone()),
+            _ => Fate::Pass,
+        });
+    let sending = rig.start(&selection, steady(), rig.id());
+    let log = rig.wire.log();
+    until("the question about the outcome", || {
+        log.requests(Kind::Finish) == 2
+    })
+    .await;
+    tokio::time::sleep(3 * stall).await;
+    late.open();
+
+    let outcome = ended(sending).await;
+
+    let Outcome::Done(sent) = outcome else {
+        panic!("{outcome:?}");
+    };
+    // The receiver had no outcome to give, and the file came again: none of it is `Incomplete`.
+    assert!(sent.done.failed.is_empty(), "{:?}", sent.done);
+    assert_eq!(log.connections(), 2);
+    assert_eq!(log.requests(Kind::Offer), 2);
+    assert_eq!(log.requests(Kind::Finish), 3);
+    assert_eq!(rig.person.questions(), 1);
+    assert_eq!(tree(&rig.received), expect(&[("big", Some(&content))]));
+}
+
+#[tokio::test]
 async fn a_connection_that_goes_with_the_finish_is_followed_by_an_attempt_that_delivers() {
     let rig = Rig::new();
     let content = bytes(1, 1000);
     rig.files.make("a", &content);
     let selection = rig.files.select(&["a"]);
-    // The connection goes as `Finish` is sent, and the lanes with it. Whether the receiver has the
-    // list of the attempt by then is up to the scheduler: if it does not, its `Finish` waits for an
-    // attempt that has one, and only an offer moves the transfer on. If it does, the question about
-    // the outcome is answered. The transfer arrives either way.
+    // The connection goes as `Finish` is sent, and the lanes with it. Whether the receiver has all
+    // of the files of the attempt by then is up to the scheduler. If it has, the question about the
+    // outcome is answered with it, and if it has not, the answer is that there is none: either
+    // way at once, since the new connection has no attempt. The transfer arrives either way.
     rig.wire.on_call(|call| {
         if call.conn == 1 && call.kind == Kind::Finish && call.nth == 0 {
             Fate::Lose
@@ -661,7 +715,7 @@ async fn a_connection_that_goes_with_the_finish_is_followed_by_an_attempt_that_d
         }
     });
     let policy = Policy {
-        probe_wait: Duration::from_millis(200),
+        probe_wait: Duration::from_secs(60),
         ..steady()
     };
 
