@@ -20,6 +20,7 @@ import 'package:baton/src/rust_backend.dart';
 import 'package:baton/src/support_folder.dart';
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
@@ -157,6 +158,64 @@ void main() {
       expect(
         await const SystemFileShower().show(['${folder.path}/not-there.txt']),
         isFalse,
+      );
+    },
+    skip:
+        defaultTargetPlatform != TargetPlatform.iOS &&
+        defaultTargetPlatform != TargetPlatform.macOS,
+  );
+
+  testWidgets(
+    'shows windows with the viewer that the Swift code gave the library',
+    (tester) async {
+      // Flutter registers the plugin of the app (rust_builder/macos/Classes/BatonStreamPlugin.swift)
+      // before any Dart runs, and the plugin gives the library the viewer with which this device
+      // shows the windows of other devices. Nothing else here can try that chain: a plugin that was
+      // not registered, or a table that the library did not take, would leave a device that says no
+      // to every window that another one offers.
+      final backend = RustBackend(dataDir: (await _folder()).path);
+      await backend.setDeviceName('Test device');
+      final session = await backend.start();
+      addTearDown(session.stop);
+
+      final status = await _streamStatus();
+      expect(
+        session.windowAbilities().canShow,
+        isTrue,
+        reason: 'the plugin says: $status',
+      );
+      expect(status['viewer'], 0, reason: 'the plugin says: $status');
+    },
+    skip:
+        defaultTargetPlatform != TargetPlatform.iOS &&
+        defaultTargetPlatform != TargetPlatform.macOS,
+  );
+
+  testWidgets(
+    'draws windows from textures that Flutter gave the plugin',
+    (tester) async {
+      // The textures that windows are drawn from are taken from Flutter by the plugin, on the
+      // platform thread. Flutter on an iPhone gives them when the plugin is registered. On a Mac
+      // it gives none until its engine runs, which is after that, and the plugin asks again until
+      // it has them. A window that is offered to a device without them is refused, so this is
+      // what makes sure a Mac has them, and nothing else here sees it.
+      final deadline = DateTime.now().add(const Duration(seconds: 30));
+      var status = await _streamStatus();
+      while (status['textures'] != status['wanted'] &&
+          DateTime.now().isBefore(deadline)) {
+        await tester.pump(const Duration(milliseconds: 200));
+        status = await _streamStatus();
+      }
+
+      expect(
+        status['wanted'],
+        greaterThan(0),
+        reason: 'the plugin says: $status',
+      );
+      expect(
+        status['textures'],
+        status['wanted'],
+        reason: 'the plugin says: $status',
       );
     },
     skip:
@@ -395,6 +454,14 @@ Future<void> _until(
     await tester.pump(const Duration(milliseconds: 200));
   }
   await tester.pump(const Duration(milliseconds: 500));
+}
+
+/// What the plugin that shows windows says it did (BatonStreamPlugin.swift): the number that the
+/// registration of the viewer gave back, how many textures it has and wants, and how many times
+/// it asked Flutter for them. The app does not use the channel; it is there for this.
+Future<Map<String, int>> _streamStatus() async {
+  const channel = MethodChannel('io.github.jayunewal.baton/stream');
+  return await channel.invokeMapMethod<String, int>('status') ?? {};
 }
 
 /// What there is to say about the app and its screen when a wait runs out, for the log: a

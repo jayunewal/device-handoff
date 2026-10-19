@@ -54,6 +54,12 @@ check "app mac iphone" apps/baton/pubspec.lock
 check "app mac iphone" apps/baton/integration_test/app_test.dart
 check "app mac iphone" apps/baton/rust_builder/cargokit/build_tool/pubspec.yaml
 check "app mac iphone" apps/baton/rust_builder/cargokit/build_pod.sh
+# The Swift of the viewer is one set of files for both kinds of Apple device: the Mac job tests it,
+# the iPhone job builds it for an iPhone, and the Linux job checks that the two folders agree.
+check "app mac iphone" apps/baton/rust_builder/macos/Classes/BatonViewer.swift
+check "app mac iphone" apps/baton/rust_builder/ios/Classes/BatonStreamPlugin.swift
+check "app mac iphone" apps/baton/rust_builder/swift_tests/run.sh apps/baton/rust_builder/swift_tests/Tests.swift
+check "app mac iphone" apps/baton/rust_builder/ios/baton_ffi.podspec apps/baton/rust_builder/macos/baton_ffi.podspec
 check "app mac iphone" apps/baton/flutter_rust_bridge.yaml
 check "app mac iphone" apps/baton/ios/Runner/Info.plist apps/baton/macos/Runner/Info.plist
 check "app mac iphone" apps/baton/lib/main.dart README.md
