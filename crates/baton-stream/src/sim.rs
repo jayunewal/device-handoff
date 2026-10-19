@@ -951,11 +951,56 @@ mod tests {
         assert!(report.shown.is_empty());
     }
 
+    /// A run in which a picture is due in the last two seconds even after a stall that ends at
+    /// `until`: the stream has the time for five tries to get a key frame across. A try is the
+    /// wait of the viewer before it asks, the way there and back with a packet lost on it, and the
+    /// time a key frame needs on the link, up to 1.3 times the size in the config, which is more
+    /// than a second at a megabit. The decoder rejects a key frame now and then, and a run in
+    /// which only one try fits cannot be asked for a picture at its end.
+    fn long_enough(config: &Config, until: Duration) -> Duration {
+        let key = u64::try_from(config.sizes[0] * 13 / 10).unwrap_or(u64::MAX);
+        let crossing = Duration::from_micros(key * 1_000_000 / config.link.rate);
+        let attempt = config.viewer.key_request_interval + 6 * config.link.delay + crossing;
+        (until + 5 * attempt + 2 * S).max(config.run)
+    }
+
+    #[test]
+    fn a_link_of_a_megabit_that_stalls_late_shows_a_picture_again_after_a_key_frame_is_rejected() {
+        // What the property below found on CI: a stall from 5 s to 7.6 s while a key frame was on
+        // its way, which the decoder then rejected. The next one needs another 1.5 s on that
+        // link, so it comes just after a run of ten seconds ends.
+        let until = Duration::from_millis(7648);
+        let mut link = Link::new(1, 4);
+        link.loss_permille = 11;
+        link.stalls.push((Duration::from_secs(5), until));
+        let mut config = Config::new(link, 10 * S);
+        config.run = long_enough(&config, until);
+        config.decode_failure_permille = 9;
+        config.key_failure_permille = 42;
+        config.requests_first = None;
+        config.seed = 17_678_794_754_649_973_101;
+        let report = run(&config);
+        summary(
+            "a megabit, a late stall, a key frame rejected",
+            &config,
+            &report,
+        );
+        sound(&report);
+        let last = report.shown.last().expect("a picture is shown");
+        assert!(
+            last.at + 2 * S > config.run,
+            "the last picture came at {:?} of {:?}",
+            last.at,
+            config.run
+        );
+    }
+
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig::with_cases(24))]
 
         /// Whatever the link does, no wrong picture is shown, the limit on frames in flight
-        /// holds, and the picture keeps coming.
+        /// holds, and the picture keeps coming: one is shown in the last two seconds of a run
+        /// that is long enough for the stream to get a few key frames across after the stall.
         #[test]
         fn no_link_makes_the_rules_show_a_wrong_picture(
             megabits in 1_u64..200,
@@ -972,8 +1017,10 @@ mod tests {
             link.loss_permille = loss;
             link.ack_loss_permille = ack_loss;
             let from = Duration::from_secs(stall_at);
-            link.stalls.push((from, from + Duration::from_millis(stall_ms)));
+            let until = from + Duration::from_millis(stall_ms);
+            link.stalls.push((from, until));
             let mut config = Config::new(link, 10 * S);
+            config.run = long_enough(&config, until);
             config.decode_failure_permille = rejects;
             config.key_failure_permille = key_rejects;
             config.requests_first = None;
@@ -982,9 +1029,13 @@ mod tests {
             sound(&report);
             proptest::prop_assert!(report.max_in_flight <= 6);
             proptest::prop_assert!(!report.shown.is_empty());
-            // The last picture is no older than the stall and a generous deadline.
             let last = report.shown.last().unwrap();
-            proptest::prop_assert!(last.at > Duration::from_secs(8), "last picture at {:?}", last.at);
+            proptest::prop_assert!(
+                last.at + 2 * S > config.run,
+                "last picture at {:?} of {:?}",
+                last.at,
+                config.run
+            );
         }
     }
 }
