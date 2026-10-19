@@ -476,8 +476,16 @@ impl SourceHandle {
 
     /// Waits until the session is over, and says why.
     pub async fn ended(&self) -> End {
-        self.source.ended.cancelled().await;
-        self.source.end.get().copied().unwrap_or(End::Internal)
+        self.source.over().await
+    }
+
+    /// The wait of [`ended`](Self::ended) as a future of its own, for whoever has to watch a
+    /// session whose handle someone else owns. It does not hold the handle, so it does not keep
+    /// the session going: the session still ends when the last copy of the handle is dropped,
+    /// and the future is ready then.
+    pub fn on_end(&self) -> impl Future<Output = End> + Send + 'static {
+        let source = Arc::clone(&self.source);
+        async move { source.over().await }
     }
 }
 
@@ -548,6 +556,12 @@ impl Source {
     /// The device at the other end.
     pub(super) fn peer(&self) -> DeviceId {
         self.peer
+    }
+
+    /// Waits until the session is over, and says why.
+    async fn over(&self) -> End {
+        self.ended.cancelled().await;
+        self.end.get().copied().unwrap_or(End::Internal)
     }
 
     /// Whether `peer` on `connection` is the other end of this session.
@@ -1662,6 +1676,43 @@ mod tests {
             ..
         } = rig;
         drop(handle);
+        assert!(log.has(&Heard::Ended));
+        assert!(streaming.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_wait_for_the_end_that_is_given_out_says_why_the_session_ended() {
+        let rig = Rig::new().await;
+        let waiting = tokio::spawn(rig.handle.on_end());
+        rig.accepted.close(code(close_code::NORMAL), b"done");
+        let end = tokio::time::timeout(PATIENCE, waiting)
+            .await
+            .expect("the wait did not end")
+            .unwrap();
+        assert_eq!(end, End::Connection);
+        // One that is asked for after the end is ready at once, with the same answer.
+        let late = tokio::time::timeout(PATIENCE, rig.handle.on_end()).await;
+        assert_eq!(late, Ok(End::Connection));
+    }
+
+    #[tokio::test]
+    async fn a_wait_for_the_end_that_is_given_out_does_not_keep_the_session_going() {
+        let rig = Rig::new().await;
+        let Rig {
+            handle,
+            log,
+            streaming,
+            ..
+        } = rig;
+        // The wait holds the session and not its handle, so the last copy of the handle is
+        // dropped while it waits.
+        let waiting = tokio::spawn(handle.on_end());
+        drop(handle);
+        let end = tokio::time::timeout(PATIENCE, waiting)
+            .await
+            .expect("the session did not end")
+            .unwrap();
+        assert_eq!(end, End::Local);
         assert!(log.has(&Heard::Ended));
         assert!(streaming.is_empty());
     }

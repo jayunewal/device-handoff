@@ -538,7 +538,10 @@ pub enum Event {
         request: WindowRequest,
     },
     /// A window request no longer needs an answer: the other device withdrew it, the time ran
-    /// out, the connection ended, or the person answered. Take the question off the screen.
+    /// out, or the connection ended. Take the question off the screen. The person's own answer
+    /// is not announced with this event: a screen takes the question down when the person
+    /// answers, and draws the window when `Event.windowStarted` says so. A yes that comes as the
+    /// offer is withdrawn, or that cannot be carried out, ends with no event at all.
     WindowRequestEnded {
         /// The `WindowRequest.id` that ended.
         id: i64,

@@ -7,7 +7,7 @@
 use std::{
     collections::HashMap,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -39,8 +39,9 @@ use crate::{
 enum Live {
     /// A window of another device that is shown here.
     Viewing(Arc<ViewHandle>),
-    /// A window of this device that another one shows.
-    Sharing(Arc<SourceHandle>),
+    /// A window of this device that another one shows. The platform has the handle, and ends the
+    /// session by letting go of it, so the app keeps no copy that would keep it going.
+    Sharing(Weak<SourceHandle>),
 }
 
 /// A window that the person accepted, between the answer to the offer and the start of its
@@ -120,7 +121,12 @@ impl Sessions {
         let live = locked(&self.live).get(&id).cloned();
         match live {
             Some(Live::Viewing(handle)) => handle.end(),
-            Some(Live::Sharing(handle)) => handle.end(),
+            Some(Live::Sharing(handle)) => match handle.upgrade() {
+                Some(handle) => handle.end(),
+                // The platform let go of the handle, which ended the session. Its entry goes when
+                // the task that waits for the end gets to it.
+                None => return false,
+            },
             None => return false,
         }
         true
@@ -132,16 +138,15 @@ impl Sessions {
     }
 
     /// Takes note of a session that started, tells the screens, and reports its end when it comes.
-    fn begin(self: &Arc<Self>, session: WindowSession, live: Live) {
+    /// `ended` waits for the end. It is given apart from `live` because a window that this device
+    /// shares is waited for without holding its handle, which the platform owns.
+    fn begin(self: &Arc<Self>, session: WindowSession, live: Live, ended: BoxFuture<'static, End>) {
         let id = session.id;
-        locked(&self.live).insert(id, live.clone());
+        locked(&self.live).insert(id, live);
         self.emit(Event::WindowStarted(session));
         let sessions = Arc::clone(self);
         tokio::spawn(async move {
-            let end = match &live {
-                Live::Viewing(handle) => handle.ended().await,
-                Live::Sharing(handle) => handle.ended().await,
-            };
+            let end = ended.await;
             locked(&sessions.live).remove(&id);
             tracing::debug!(session = id, ?end, "window session ended");
             sessions.emit(Event::WindowEnded {
@@ -257,7 +262,11 @@ impl Sessions {
         };
         let handle = Arc::new(handle);
         accepted.link.connect(&handle);
-        self.begin(session, Live::Viewing(handle));
+        let ended = {
+            let handle = Arc::clone(&handle);
+            Box::pin(async move { handle.ended().await })
+        };
+        self.begin(session, Live::Viewing(handle), ended);
     }
 
     /// Offers the window that the person picked to `peer`, and starts the session if it says yes.
@@ -303,7 +312,11 @@ impl Sessions {
                     control,
                     screen: None,
                 };
-                self.begin(session.clone(), Live::Sharing(Arc::clone(&handle)));
+                self.begin(
+                    session.clone(),
+                    Live::Sharing(Arc::downgrade(&handle)),
+                    Box::pin(handle.on_end()),
+                );
                 picked.start(handle);
                 Ok(WindowShared::Started(session))
             }
@@ -423,6 +436,17 @@ mod tests {
     }
 
     #[test]
+    fn ending_a_window_that_the_platform_let_go_of_does_nothing() {
+        let (events, _) = broadcast::channel(8);
+        let sessions = Sessions::new(None, None, Questions::new(events.clone()), events);
+        // The entry of a session whose handle the platform dropped, before the task that waits
+        // for the end has removed it: the drop ended the session, and nothing is left to end.
+        locked(&sessions.live).insert(7, Live::Sharing(Weak::new()));
+        assert!(!sessions.end(7));
+        assert!(!sessions.end(8));
+    }
+
+    #[test]
     fn a_title_that_is_blank_is_no_title() {
         assert_eq!(non_empty("  "), None);
         assert_eq!(non_empty(""), None);
@@ -430,16 +454,18 @@ mod tests {
     }
 
     #[test]
-    fn what_the_person_is_told_of_a_window_that_was_not_taken_names_the_device() {
-        for reason in [
-            DeclineReason::Refused,
-            DeclineReason::Blocked,
-            DeclineReason::Unsupported,
-            DeclineReason::RateLimited,
-            DeclineReason::Invalid,
-            DeclineReason::Other,
+    fn what_the_person_is_told_of_a_window_that_was_not_taken_names_the_device_and_the_reason() {
+        for (reason, why) in [
+            (DeclineReason::Refused, "did not accept the window"),
+            (DeclineReason::Blocked, "its settings do not allow it"),
+            (DeclineReason::Unsupported, "may need a newer version"),
+            (DeclineReason::RateLimited, "busy with another window"),
+            (DeclineReason::Invalid, "could not read the offer"),
+            (DeclineReason::Other, "did not take the window"),
         ] {
-            assert!(declined_window("Kitchen iPad", reason).contains("Kitchen iPad"));
+            let told = declined_window("Kitchen iPad", reason);
+            assert!(told.contains("Kitchen iPad"), "{reason:?}: {told}");
+            assert!(told.contains(why), "{reason:?}: {told}");
         }
     }
 }

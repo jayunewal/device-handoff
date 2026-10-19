@@ -46,7 +46,12 @@ pub enum Event {
     /// [`App::answer_window`](crate::App::answer_window).
     WindowRequested(WindowRequest),
     /// A window request no longer needs an answer: the other device withdrew the offer, the time
-    /// ran out, the connection ended, or the person answered. Take the question off the screen.
+    /// ran out, or the connection ended. Take the question off the screen.
+    ///
+    /// The person's own answer is not announced with this event: a screen takes the question
+    /// down when the person answers, and draws the window when [`Event::WindowStarted`] says so.
+    /// A yes that comes as the offer is withdrawn, or that cannot be carried out, ends with no
+    /// event at all.
     ///
     /// `failure` is the sentence to show when the person said yes and this device could not show
     /// the window after all. The other device was told that the window was refused.
@@ -72,7 +77,9 @@ pub enum Event {
     /// A pairing request, a request for files, the end of an offer or the end of a transfer
     /// among the missed events is not recovered this way yet: a request nobody answers runs
     /// out as a no after two minutes, an offer ends when its time is up, and a transfer that
-    /// was taken shows no end.
+    /// was taken shows no end. The events of windows are not recovered either: a screen that
+    /// missed `WindowStarted` cannot end that window short of stopping the app, and a request to
+    /// show a window that it missed runs out as a no.
     Resync,
 }
 

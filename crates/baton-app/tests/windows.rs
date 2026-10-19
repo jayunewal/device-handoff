@@ -192,6 +192,8 @@ struct Sharer {
     control: bool,
     /// What the next pick gives; `None` is a person who gave up.
     next: Mutex<Option<Chosen>>,
+    /// If set, the pick fails with this.
+    fail: Mutex<Option<String>>,
     /// Waited for by the pick, if set, before it gives its answer.
     gate: Mutex<Option<oneshot::Receiver<()>>>,
     heard: Arc<Heard>,
@@ -203,6 +205,9 @@ struct Sharer {
     pictures: usize,
     /// Whether the platform can make a picture within what the viewer takes.
     makes_pictures: AtomicBool,
+    /// Whether the platform gives up the session as soon as it is started, which is how it says
+    /// that the capture could not begin.
+    lets_go_at_once: AtomicBool,
 }
 
 impl Sharer {
@@ -210,12 +215,14 @@ impl Sharer {
         Arc::new(Self {
             control,
             next: Mutex::new(next),
+            fail: Mutex::new(None),
             gate: Mutex::new(None),
             heard: Arc::new(Heard::default()),
             handle: Arc::new(Mutex::new(None)),
             dropped: Arc::new(AtomicUsize::new(0)),
             pictures: 3,
             makes_pictures: AtomicBool::new(true),
+            lets_go_at_once: AtomicBool::new(false),
         })
     }
 }
@@ -242,6 +249,9 @@ impl WindowSharer for Sharer {
     }
 
     fn pick(&self) -> BoxFuture<'static, Result<Option<Box<dyn PickedWindow>>, PlatformError>> {
+        if let Some(why) = self.fail.lock().unwrap().clone() {
+            return Box::pin(async move { Err(PlatformError::new(why)) });
+        }
         let chosen = self.next.lock().unwrap().take();
         let gate = self.gate.lock().unwrap().take();
         let shared = Picked {
@@ -251,6 +261,7 @@ impl WindowSharer for Sharer {
             dropped: Arc::clone(&self.dropped),
             pictures: self.pictures,
             makes_pictures: self.makes_pictures.load(Ordering::Relaxed),
+            lets_go_at_once: self.lets_go_at_once.load(Ordering::Relaxed),
         };
         Box::pin(async move {
             if let Some(gate) = gate {
@@ -268,6 +279,7 @@ struct Picked {
     dropped: Arc<AtomicUsize>,
     pictures: usize,
     makes_pictures: bool,
+    lets_go_at_once: bool,
 }
 
 impl Drop for Picked {
@@ -294,6 +306,10 @@ impl PickedWindow for Picked {
     }
 
     fn prepare(&mut self, takes: &Takes) -> Option<Config> {
+        self.heard.push(format!(
+            "takes {}x{} at {} fps, {:?}",
+            takes.max_width, takes.max_height, takes.max_fps, takes.codecs
+        ));
         (self.makes_pictures && takes.codecs.contains(&Codec::H264)).then(|| Config {
             epoch: 0,
             codec: Codec::H264,
@@ -304,6 +320,9 @@ impl PickedWindow for Picked {
     }
 
     fn start(self: Box<Self>, handle: Arc<SourceHandle>) {
+        if self.lets_go_at_once {
+            return;
+        }
         *self.handle.lock().unwrap() = Some(Arc::clone(&handle));
         let pictures = self.pictures;
         std::thread::spawn(move || {
@@ -578,6 +597,12 @@ async fn a_window_goes_from_one_device_to_the_other_and_the_viewer_ends_it() {
         pair.sharer.heard.count("report") > 0
     })
     .await;
+    // What the viewer can take is what the platform of the source chooses the picture within.
+    assert!(
+        pair.sharer.heard.has("takes 1920x1200 at 60 fps, [H264]"),
+        "{:?}",
+        pair.sharer.heard.0.lock().unwrap()
+    );
 
     // The person at the viewer closes the window: both ends hear how it ended, and both
     // platforms are told.
@@ -691,6 +716,91 @@ async fn the_device_that_shares_can_end_the_window_too() {
 }
 
 #[tokio::test]
+async fn a_platform_that_lets_go_of_the_window_ends_the_session() {
+    let pair = Pair::new(false).await;
+    let mut viewing_events = pair.viewing.app.events();
+    let mut sharing_events = pair.sharing.app.events();
+    let WindowShared::Started(shared) = pair.offered_and_answered(true, false).await else {
+        panic!("the window was not shared");
+    };
+    let shown = next_matching(&mut viewing_events, |event| match event {
+        Event::WindowStarted(session) => Some(session),
+        _ => None,
+    })
+    .await;
+    until("the pictures to be shown", || {
+        pair.viewer.heard.has("show 2")
+    })
+    .await;
+    // The platform's thread drops its copy of the handle once it has sent its pictures. The test
+    // holds the other, as a platform holds one for as long as it shares the window, and the
+    // platform lets go of it from a thread of its own: whichever copy goes last ends the session.
+    let handle = pair.sharer.handle.lock().unwrap().take().unwrap();
+    std::thread::spawn(move || drop(handle)).join().unwrap();
+
+    // Nobody ended the window by name: the platform let go of it, which is how it ends one.
+    let ended = next_matching(&mut sharing_events, |event| match event {
+        Event::WindowEnded { id, end } => Some((id, end)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(ended, (shared.id, WindowEnd::ThisDevice));
+    let ended = next_matching(&mut viewing_events, |event| match event {
+        Event::WindowEnded { id, end } => Some((id, end)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(ended, (shown.id, WindowEnd::OtherDevice));
+    until("both platforms to be told", || {
+        pair.viewer.heard.has("ended") && pair.sharer.heard.has("ended")
+    })
+    .await;
+    assert!(!pair.sharing.app.end_window(shared.id));
+}
+
+#[tokio::test]
+async fn a_platform_that_cannot_begin_to_capture_says_so_by_letting_go() {
+    let pair = Pair::new(false).await;
+    pair.sharer.lets_go_at_once.store(true, Ordering::Relaxed);
+    let mut viewing_events = pair.viewing.app.events();
+    let mut sharing_events = pair.sharing.app.events();
+    let WindowShared::Started(shared) = pair.offered_and_answered(true, false).await else {
+        panic!("the window was not shared");
+    };
+    let shown = next_matching(&mut viewing_events, |event| match event {
+        Event::WindowStarted(session) => Some(session),
+        _ => None,
+    })
+    .await;
+
+    // The window was started, and it ended at once.
+    let started = next_matching(&mut sharing_events, |event| match event {
+        Event::WindowStarted(session) => Some(session),
+        _ => None,
+    })
+    .await;
+    assert_eq!(started, shared);
+    let ended = next_matching(&mut sharing_events, |event| match event {
+        Event::WindowEnded { id, end } => Some((id, end)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(ended, (shared.id, WindowEnd::ThisDevice));
+    let ended = next_matching(&mut viewing_events, |event| match event {
+        Event::WindowEnded { id, end } => Some((id, end)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(ended, (shown.id, WindowEnd::OtherDevice));
+    until("both platforms to be told", || {
+        pair.viewer.heard.has("ended") && pair.sharer.heard.has("ended")
+    })
+    .await;
+    assert!(pair.sharer.handle.lock().unwrap().is_none());
+    assert!(!pair.sharing.app.end_window(shared.id));
+}
+
+#[tokio::test]
 async fn a_no_is_an_answer_and_not_an_error() {
     let pair = Pair::new(false).await;
     let mut viewing_events = pair.viewing.app.events();
@@ -713,6 +823,32 @@ async fn a_no_is_an_answer_and_not_an_error() {
     )
     .await;
     assert!(started.is_err(), "a window was shown that was declined");
+}
+
+#[tokio::test]
+async fn a_picker_that_fails_is_an_error_and_not_a_person_who_gave_up() {
+    let pair = Pair::new(false).await;
+    let mut viewing_events = pair.viewing.app.events();
+    *pair.sharer.fail.lock().unwrap() =
+        Some("Screen recording is off.\nTurn it on in Settings.".to_owned());
+    let error = pair
+        .sharing
+        .app
+        .share_window(&pair.viewing.id(), false)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Other);
+    assert_eq!(
+        error.message(),
+        "Screen recording is off. Turn it on in Settings."
+    );
+    // Nothing was offered, and the device is not left busy.
+    let asked = tokio::time::timeout(QUIET, pair.requested(&mut viewing_events)).await;
+    assert!(asked.is_err(), "a window was offered that was not picked");
+    *pair.sharer.fail.lock().unwrap() = None;
+    let WindowShared::Declined(_) = pair.offered_and_answered(false, false).await else {
+        panic!("the window should have been declined");
+    };
 }
 
 #[tokio::test]
@@ -741,7 +877,8 @@ async fn a_person_who_gives_up_choosing_offers_nothing() {
 #[tokio::test]
 async fn a_screen_that_cannot_be_made_refuses_the_window_and_says_why() {
     let pair = Pair::new(false).await;
-    *pair.viewer.fail.lock().unwrap() = Some("The decoder is busy.".to_owned());
+    // The platform's sentence is shown as one line.
+    *pair.viewer.fail.lock().unwrap() = Some("The decoder is busy.\nTry again later.".to_owned());
     let mut viewing_events = pair.viewing.app.events();
 
     let app = pair.sharing.app.clone();
@@ -757,7 +894,10 @@ async fn a_screen_that_cannot_be_made_refuses_the_window_and_says_why() {
     })
     .await;
     assert_eq!(id, request.id);
-    assert_eq!(failure.as_deref(), Some("The decoder is busy."));
+    assert_eq!(
+        failure.as_deref(),
+        Some("The decoder is busy. Try again later.")
+    );
     // The device that offered hears that the window was not taken.
     assert!(matches!(
         offer.await.unwrap().unwrap(),

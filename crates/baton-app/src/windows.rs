@@ -190,7 +190,10 @@ pub trait PickedWindow: Send + 'static {
     /// The session runs. The platform captures and encodes the window now: before it encodes a
     /// picture it asks `handle` whether to ([`SourceHandle::begin`]), and it hands over what it
     /// encoded ([`SourceHandle::sent`]). The session ends when the other device ends it, when
-    /// the connection ends, and when the last copy of `handle` is dropped.
+    /// the connection ends, and when the platform ends it, with [`SourceHandle::end`] or by
+    /// dropping the last copy of `handle`. The app keeps no copy of its own, so a platform that
+    /// lets go of the handle, because the window closed or the capture could not begin, has
+    /// ended the session.
     fn start(self: Box<Self>, handle: Arc<SourceHandle>);
 }
 

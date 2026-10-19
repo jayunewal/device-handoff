@@ -221,13 +221,7 @@ impl App {
         let stopped = CancellationToken::new();
         // Made before the node, because the part of it that takes files puts its questions to the
         // person through it.
-        let questions = Arc::new(Questions {
-            waiting: Mutex::new(HashMap::new()),
-            transfers: Mutex::new(HashMap::new()),
-            windows: Mutex::new(HashMap::new()),
-            next: AtomicU64::new(1),
-            events: events.clone(),
-        });
+        let questions = Questions::new(events.clone());
         let Windows { viewer, sharer } = windows;
         let sessions = Sessions::new(viewer, sharer, Arc::clone(&questions), events.clone());
         sessions.check_limits()?;
@@ -750,7 +744,9 @@ impl Inner {
         if let Some(open) = locked(&self.join).take() {
             open.cancel.cancel();
         }
-        // Questions that are open become a no.
+        // Questions that are open become a no. All three tables are cleared, so that a yes to a
+        // request for files or for a window that comes during the shutdown finds nothing and is
+        // refused, and the platform is not asked to open a screen for a window that cannot start.
         locked(&self.questions.waiting).clear();
         locked(&self.questions.transfers).clear();
         locked(&self.questions.windows).clear();
@@ -784,6 +780,16 @@ impl Inner {
 }
 
 impl Questions {
+    pub(crate) fn new(events: broadcast::Sender<Event>) -> Arc<Self> {
+        Arc::new(Self {
+            waiting: Mutex::new(HashMap::new()),
+            transfers: Mutex::new(HashMap::new()),
+            windows: Mutex::new(HashMap::new()),
+            next: AtomicU64::new(1),
+            events,
+        })
+    }
+
     /// Puts a pairing request to the person and waits for the answer. A request that stops
     /// mattering first, because the offer ended or the other device left, drops this
     /// future, and the screen is told to take the question away.

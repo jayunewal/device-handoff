@@ -475,6 +475,22 @@ mod tests {
     }
 
     #[test]
+    fn a_window_that_cannot_be_offered_is_told_in_words_of_its_own() {
+        let busy = Error::sharing(&Core::Busy, "Kitchen iPad");
+        assert_eq!(busy.kind(), ErrorKind::Other);
+        assert!(busy.message().contains("End it first"), "{busy}");
+
+        let old = Error::sharing(&Core::Unsupported("window".to_owned()), "Kitchen iPad");
+        assert_eq!(old.kind(), ErrorKind::Declined);
+        assert!(old.message().contains("Kitchen iPad"), "{old}");
+        assert!(old.message().contains("newer version"), "{old}");
+
+        let bad = Error::sharing(&Core::BadItem("title".to_owned()), "Kitchen iPad");
+        assert_eq!(bad.kind(), ErrorKind::BadItem);
+        assert!(bad.message().contains("title or size"), "{bad}");
+    }
+
+    #[test]
     fn a_folder_that_others_can_change_is_called_a_folder() {
         let dir = tempfile::tempdir().unwrap();
         let folder = Core::WritableByOthers {
