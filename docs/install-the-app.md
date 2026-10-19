@@ -193,7 +193,7 @@ What to know in this version:
 - A phone takes files only while Baton is open on its screen, as for links. The device that sends to it needs it to say yes within two minutes.
 - The device that takes files shows no bar. It says that files are coming and keeps its screen on for up to five minutes without news, so a very large transfer to a phone can outlast that. Keep touching the phone if you send something big.
 - Links inside folders, files that cannot be read and files that are too large are left out. Baton says how many after it has sent the rest.
-- On an iPhone or an iPad the dialog copies what you choose into the app's temporary space before it is sent, so a very large file needs room for a second copy while it goes.
+- On an iPhone or an iPad the dialog copies what you choose into the app's temporary space before it is sent. The copy stays there until iOS clears it, so a very large file takes room for a second copy for some time after it has gone.
 - If Baton is closed on the device that sends while files go, nothing is kept of that transfer. The device that takes the files lists it until it gives up waiting, which can take up to an hour, and a device that has left two transfers like that is turned away until they give up or Baton is opened again on the device that takes the files. Stopping a transfer with **Stop sending** does not do this: it tells the other device at once.
 
 ## Every seven days

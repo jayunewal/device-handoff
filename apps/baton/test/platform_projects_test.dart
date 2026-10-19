@@ -43,6 +43,13 @@ void main() {
     }
   });
 
+  test('the Mac app says why it puts files in Downloads', () {
+    expect(
+      _read('macos/Runner/Info.plist'),
+      contains('<key>NSDownloadsFolderUsageDescription'),
+    );
+  });
+
   test('the sandboxed Mac app may use the camera', () {
     for (final file in [
       'macos/Runner/DebugProfile.entitlements',
