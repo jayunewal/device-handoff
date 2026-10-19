@@ -476,6 +476,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_read_that_does_not_come_back_in_the_stall_time_stalls() {
+        let read = tokio::task::spawn_blocking(|| {
+            std::thread::sleep(Duration::from_millis(400));
+            (Chunk::new(), false)
+        });
+        let started = std::time::Instant::now();
+
+        let result = joined(read, Duration::from_millis(50)).await;
+
+        assert!(matches!(result, Err(Halt::Stalled)));
+        // The read is let go of and not waited for.
+        assert!(started.elapsed() < Duration::from_millis(300));
+    }
+
+    #[tokio::test]
     async fn a_stream_that_takes_nothing_and_says_nothing_is_lost() {
         let (_folder, selection, _list, _content) = sample();
         let (_script, link) = connection(|_, _| Take::Nothing).await;

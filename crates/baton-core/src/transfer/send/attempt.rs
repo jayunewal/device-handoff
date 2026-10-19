@@ -31,9 +31,20 @@
 //! # When the answer to `Finish` is not heard
 //!
 //! A connection that goes after `Finish` was sent may have gone after the receiver had the outcome.
-//! The attempt after it asks for the outcome before it offers, on its new connection: a receiver that
-//! has it says so, and nothing is sent again. A receiver that does not know the transfer, or is not
-//! done with it, is offered the transfer and sent everything, as after any other failure.
+//! The attempt after it asks for the outcome before it offers, on its new connection, by making the
+//! `Finish` again. A receiver that has the outcome says so at once, and nothing is sent again. One
+//! that does not know the transfer says so at once too, and is offered it and sent everything, as
+//! after any other failure.
+//!
+//! A receiver that says nothing within the `probe_wait` of the policy is in one of two states, and
+//! the sender cannot tell which. It is putting the files in place, and answers when it is done. Or it
+//! is waiting for files that went with the old connection, and never answers, because nothing that
+//! it waits for is on its way. So the attempt does not wait any longer. It offers the transfer. A
+//! receiver that waits for files takes the offer as it takes any repeat, and the attempt goes on and
+//! ends with its own `Finish`, as usual. A receiver that is done with the transfer accepts the offer
+//! all the same and stops the lanes with 499, which is how it stops a lane of a transfer that has
+//! ended, and the attempt then asks for the outcome again and waits for it as it waits for any
+//! `Finish`, instead of taking the stop for the receiver giving the transfer up.
 
 use std::{
     sync::{Arc, Mutex},
@@ -99,12 +110,23 @@ enum Answer {
     Cancelled,
 }
 
-/// What a `Finish` said, when its answer was never heard.
+/// What a `Finish` said, and what the outcome is made of when the receiver answers it.
 #[derive(Debug, Clone)]
 struct Unanswered {
     files: u32,
     bytes: u64,
     skipped: Vec<(u32, SkipReason)>,
+}
+
+impl Unanswered {
+    /// The `Finish` for the transfer `id` that says this.
+    fn request(&self, id: TransferId) -> TransferRequest {
+        TransferRequest::Finish(Finish {
+            id,
+            files: self.files,
+            bytes: self.bytes,
+        })
+    }
 }
 
 /// What an attempt leaves for the next.
@@ -161,9 +183,10 @@ impl Job {
             Ok(link) => link,
             Err(over) => return over,
         };
-        if let Some(over) = self.probe(&*link).await {
-            return over;
-        }
+        let earlier = match self.probe(&*link).await {
+            Ok(earlier) => earlier,
+            Err(over) => return over,
+        };
         self.tracker.stage(Stage::Asking);
         let allowed = match self.offer(&*link).await {
             Ok(allowed) => allowed,
@@ -171,9 +194,14 @@ impl Job {
         };
         self.tracker.stage(Stage::Sending);
         let producer = Arc::new(Producer::new(Arc::clone(&self.selection)));
-        let after = match self.send(&link, allowed, &producer).await {
-            Ok(after) => after,
-            Err(over) => return over,
+        let after = match (self.send(&link, allowed, &producer).await, &earlier) {
+            (Ok(after), _) => after,
+            // The receiver says that the transfer is over for new lanes, and it may be over because
+            // it is done: the `Finish` that was never answered says which.
+            (Err(Over::Final(Outcome::Stopped(close_code::CANCELLED))), Some(told)) => {
+                return self.outcome_after_stop(&*link, told).await;
+            }
+            (Err(over), _) => return over,
         };
         self.tracker.stage(Stage::Finishing);
         self.finish(&*link, after, &producer).await
@@ -191,39 +219,37 @@ impl Job {
     }
 
     /// Asks for the outcome of a `Finish` that was never answered, before anything is offered.
-    /// `None` means that there is no outcome to be had, and the attempt goes on.
-    async fn probe(&self, link: &dyn Link) -> Option<Over> {
-        let told = lock(&self.memory).unanswered.clone()?;
-        let request = TransferRequest::Finish(Finish {
-            id: self.id,
-            files: told.files,
-            bytes: told.bytes,
-        });
-        let reply = tokio::select! {
-            biased;
-            () = self.cancel.cancelled() => return Some(Over::Final(self.cancelled(link).await)),
-            reply = link.request(request, self.policy.probe_wait) => reply,
+    ///
+    /// `Err` is for an attempt that is over: the receiver gave the outcome, or something that ends
+    /// the attempt. `Ok(None)` is for a receiver that has no outcome to give, and the attempt goes
+    /// on. `Ok(Some(_))` is for one that said nothing in time, which is the `Finish` it was asked
+    /// about, for the attempt to ask about again if it has to.
+    ///
+    /// It is the same `Finish`, but it is not waited for as one is. See the module documentation.
+    async fn probe(&self, link: &dyn Link) -> Result<Option<Unanswered>, Over> {
+        let Some(told) = lock(&self.memory).unanswered.clone() else {
+            return Ok(None);
         };
-        match reply {
-            Ok(Reply::Transfer(TransferReply::Done(done))) if done.id == self.id => {
-                Some(Over::Final(Outcome::Done(Sent {
-                    done,
-                    files: told.files,
-                    bytes: told.bytes,
-                    skipped: told.skipped,
-                })))
-            }
-            Err(WireError::Lost) => Some(self.retry(Why::Connection)),
-            Err(WireError::Refused(code)) => {
-                Some(Over::Final(Outcome::Failed(Error::Refused(code))))
-            }
-            // The receiver does not know the transfer, or is not done with it, or said something
-            // else. It will be told what it needs to know by the offer.
-            _ => {
-                lock(&self.memory).unanswered = None;
-                None
-            }
+        let answer = self
+            .ask(link, &told.request(self.id), self.policy.probe_wait, 1)
+            .await;
+        if matches!(answer, Answer::Silent) {
+            return Ok(Some(told));
         }
+        if let Some(over) = self.ended(link, answer, &told).await {
+            return Err(over);
+        }
+        lock(&self.memory).unanswered = None;
+        Ok(None)
+    }
+
+    /// The receiver stopped the lanes of an attempt with 499 after it said nothing to the question
+    /// about the outcome of the `Finish` that `told` describes. Asks again, and waits as for any
+    /// `Finish`. A receiver that has no such transfer gave it up, and that is what 499 meant.
+    async fn outcome_after_stop(&self, link: &dyn Link, told: &Unanswered) -> Over {
+        self.outcome(link, told)
+            .await
+            .unwrap_or(Over::Final(Outcome::Stopped(close_code::CANCELLED)))
     }
 
     /// Makes the offer, and gives the number of lanes the receiver allows.
@@ -354,45 +380,53 @@ impl Job {
     /// mind.
     async fn finish(&self, link: &dyn Link, after: After, producer: &Producer) -> Over {
         let totals = producer.totals();
-        let skipped = producer.skipped();
-        let request = TransferRequest::Finish(Finish {
-            id: self.id,
+        let told = Unanswered {
             files: totals.ended_files,
             bytes: totals.ended_bytes,
-        });
-        lock(&self.memory).unanswered = Some(Unanswered {
-            files: totals.ended_files,
-            bytes: totals.ended_bytes,
-            skipped: skipped.clone(),
-        });
+            skipped: producer.skipped(),
+        };
+        lock(&self.memory).unanswered = Some(told.clone());
+        if let Some(over) = self.outcome(link, &told).await {
+            return over;
+        }
+        lock(&self.memory).unanswered = None;
+        match after {
+            After::NoRoom => Over::Final(Outcome::Stopped(close_code::NO_SPACE)),
+            After::Written => self.retry(Why::Forgotten),
+        }
+    }
+
+    /// Makes the `Finish` that `told` describes, waits for the answer as long as a `Finish` is
+    /// waited for, and gives what it makes of the attempt (see [`ended`](Self::ended)).
+    async fn outcome(&self, link: &dyn Link, told: &Unanswered) -> Option<Over> {
         let answer = self
             .ask(
                 link,
-                &request,
+                &told.request(self.id),
                 self.policy.finish_wait,
                 self.policy.finish_tries,
             )
             .await;
-        match answer {
+        self.ended(link, answer, told).await
+    }
+
+    /// What the answer to the `Finish` that `told` describes makes of the attempt. It is the same
+    /// whether the `Finish` was sent at the end of the attempt or asked about at the start of the
+    /// next. `None` is for a receiver that has no transfer of this id: it gave it up, or never had
+    /// room for it, and the caller decides what that means.
+    async fn ended(&self, link: &dyn Link, answer: Answer, told: &Unanswered) -> Option<Over> {
+        Some(match answer {
             Answer::Reply(Reply::Transfer(TransferReply::Done(done))) if done.id == self.id => {
                 Over::Final(Outcome::Done(Sent {
                     done,
-                    files: totals.ended_files,
-                    bytes: totals.ended_bytes,
-                    skipped,
+                    files: told.files,
+                    bytes: told.bytes,
+                    skipped: told.skipped.clone(),
                 }))
             }
-            // A receiver that has no transfer of this id gave it up, or never had room for it.
-            // After 507 that is the end, and otherwise the offer is made again.
             Answer::Reply(
                 Reply::Error(ErrorCode::NotFound) | Reply::Transfer(TransferReply::Declined(_)),
-            ) => {
-                lock(&self.memory).unanswered = None;
-                match after {
-                    After::NoRoom => Over::Final(Outcome::Stopped(close_code::NO_SPACE)),
-                    After::Written => self.retry(Why::Forgotten),
-                }
-            }
+            ) => return None,
             Answer::Reply(Reply::Error(ErrorCode::Internal | ErrorCode::Other)) => {
                 self.retry(Why::Receiver)
             }
@@ -406,7 +440,7 @@ impl Job {
             Answer::Lost => self.retry(Why::Connection),
             Answer::Refused(code) => Over::Final(Outcome::Failed(Error::Refused(code))),
             Answer::Cancelled => Over::Final(self.cancelled(link).await),
-        }
+        })
     }
 
     /// Makes `request`, and makes it again on a new stream each time `wait` runs out, up to `tries`

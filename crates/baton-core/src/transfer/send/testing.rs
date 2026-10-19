@@ -390,6 +390,8 @@ pub(super) enum Connect {
     Lost,
     TimedOut,
     Refused(u32),
+    /// The connection is never made, and the caller is left to give up on it.
+    Hang,
 }
 
 pub(super) fn accepted(id: TransferId, lanes: u8) -> Step {
@@ -433,6 +435,8 @@ struct ScriptState {
     take: Takes,
     connect: Connects,
     lanes: Mutex<Vec<(usize, u8, Arc<Taken>)>>,
+    /// Every request that was made, in order, and the wait it was given.
+    sent: Mutex<Vec<(TransferRequest, Duration)>>,
 }
 
 /// A wire that has no receiver: a test says what each request gets, and what each lane does.
@@ -449,6 +453,7 @@ impl Script {
             take: Box::new(|_, _| Take::All),
             connect: Box::new(|_| Connect::Ok),
             lanes: Mutex::new(Vec::new()),
+            sent: Mutex::new(Vec::new()),
         }))
     }
 
@@ -478,6 +483,22 @@ impl Script {
         self.0.log.clone()
     }
 
+    /// The requests that were made, in order, as the receiver got them.
+    pub(super) fn requests(&self) -> Vec<TransferRequest> {
+        lock(&self.0.sent)
+            .iter()
+            .map(|(request, _)| request.clone())
+            .collect()
+    }
+
+    /// The kind of each request that was made, in order, and the wait the engine gave it.
+    pub(super) fn deadlines(&self) -> Vec<(Kind, Duration)> {
+        lock(&self.0.sent)
+            .iter()
+            .map(|(request, deadline)| (Kind::of(request), *deadline))
+            .collect()
+    }
+
     /// What lane `lane` of connection `conn` was given and how it was closed, if it was opened.
     pub(super) fn lane(&self, conn: usize, lane: u8) -> Option<Arc<Taken>> {
         lock(&self.0.lanes)
@@ -501,13 +522,14 @@ impl Wire for Script {
                         calls: Mutex::new(HashMap::new()),
                     }) as Box<dyn Link>)
                 }
+                Connect::Hang => std::future::pending().await,
                 failed => {
                     state.log.push(Event::ConnectFailed(number));
                     Err(match failed {
                         Connect::Lost => WireError::Lost,
                         Connect::TimedOut => WireError::TimedOut,
                         Connect::Refused(code) => WireError::Refused(code),
-                        Connect::Ok => unreachable!("handled above"),
+                        Connect::Ok | Connect::Hang => unreachable!("handled above"),
                     })
                 }
             }
@@ -525,7 +547,7 @@ impl Link for ScriptLink {
     fn request(
         &self,
         request: TransferRequest,
-        _deadline: Duration,
+        deadline: Duration,
     ) -> BoxFuture<'_, Result<Reply, WireError>> {
         Box::pin(async move {
             let kind = Kind::of(&request);
@@ -536,6 +558,7 @@ impl Link for ScriptLink {
                 *count - 1
             };
             self.state.log.push(Event::Request(self.number, kind));
+            lock(&self.state.sent).push((request, deadline));
             let call = Call {
                 conn: self.number,
                 kind,
@@ -604,6 +627,9 @@ pub(super) enum Fault {
     Cut,
     /// The write waits until the gate is open, and is asked about again.
     Wait(Gate),
+    /// The write is taken and goes nowhere, as when the connection goes before the bytes arrive. The
+    /// lane is not ended for the receiver either: it waits for what never comes.
+    Vanish,
 }
 
 /// What a fault does to a request.
@@ -722,6 +748,7 @@ impl Wire for Direct {
                 dead: CancellationToken::new(),
                 bytes: AtomicU64::new(0),
                 calls: Mutex::new(HashMap::new()),
+                kept: Mutex::new(Vec::new()),
             }))) as Box<dyn Link>)
         })
     }
@@ -738,6 +765,9 @@ struct Conn {
     /// What all the lanes of the connection have taken.
     bytes: AtomicU64,
     calls: Mutex<HashMap<Kind, usize>>,
+    /// The pipes of lanes whose bytes vanished, which are not closed until the connection is let go
+    /// of.
+    kept: Mutex<Vec<DuplexStream>>,
 }
 
 impl Conn {
@@ -879,6 +909,7 @@ impl Link for DirectLink {
                 lane,
                 count: 0,
                 closed: false,
+                vanished: false,
             }) as Box<dyn LaneOut>)
         })
     }
@@ -915,6 +946,8 @@ struct DirectLane {
     lane: Arc<LaneState>,
     count: u64,
     closed: bool,
+    /// Whether a write vanished.
+    vanished: bool,
 }
 
 impl DirectLane {
@@ -952,6 +985,10 @@ impl LaneOut for DirectLane {
                         return Err(LaneError::Lost);
                     }
                     Fault::Wait(gate) => gate.passed().await,
+                    Fault::Vanish => {
+                        self.vanished = true;
+                        return Ok(bytes.len());
+                    }
                 }
             }
             let Some(tx) = self.tx.as_mut() else {
@@ -985,8 +1022,12 @@ impl LaneOut for DirectLane {
         if self.conn.dead.is_cancelled() {
             return Err(LaneError::Lost);
         }
-        // Closing the pipe is the end of the stream: what was written is still read.
-        self.tx = None;
+        // Closing the pipe is the end of the stream: what was written is still read. A lane whose
+        // bytes vanished has no end to show, and its pipe stays open.
+        match self.tx.take() {
+            Some(tx) if self.vanished => lock(&self.conn.kept).push(tx),
+            _ => {}
+        }
         self.close(Closed::Finished);
         Ok(())
     }
@@ -1237,7 +1278,7 @@ pub(super) fn steady() -> Policy {
     Policy {
         offer_wait: Duration::from_secs(20),
         finish_wait: Duration::from_secs(20),
-        probe_wait: Duration::from_secs(5),
+        probe_wait: Duration::from_secs(10),
         cancel_wait: Duration::from_secs(5),
         stall: Duration::from_secs(20),
         patience: Duration::from_secs(60),

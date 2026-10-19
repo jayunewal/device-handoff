@@ -42,6 +42,12 @@ pub(crate) trait Link: Send + Sync {
 
     /// Opens lane `number` of the transfer `id`, and writes its header. It waits for as long as the
     /// receiver allows no more streams, and the caller bounds that.
+    ///
+    /// The caller drops the future when the time it allows runs out, and when the attempt is given
+    /// up. A stream that was opened by then must not be left to be finished: QUIC finishes a stream
+    /// that is dropped, and the receiver would take a lane that has its header and no frames for a
+    /// lane that ended, which for lane 0 is a violation. So an implementation resets the stream
+    /// until it hands the lane over, as a lane that is handed over is reset when it is dropped.
     fn open_lane(
         &self,
         id: TransferId,
@@ -61,7 +67,8 @@ pub(crate) trait LaneOut: Send {
     /// # Errors
     ///
     /// The lane was stopped before it was ended, which is [`LaneError::Stopped`] with the code, or
-    /// the connection went.
+    /// the connection went. QUIC does not report a stop when a stream that was stopped is finished,
+    /// so an implementation looks for the stop, without waiting, before it finishes the stream.
     fn finish(&mut self) -> Result<(), LaneError>;
 
     /// Gives the lane up with `code`: what was written may or may not arrive, and the receiver is
