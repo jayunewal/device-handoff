@@ -44,6 +44,12 @@ abstract class Baton implements RustOpaqueInterface {
   /// was answered already, the other device gave up, or the person's two minutes ran out.
   bool answerTransfer({required PlatformInt64 request, required bool accept});
 
+  /// Answers a `WindowRequest`. Returns `false` if it is not waiting any more, because it
+  /// was answered already or the other device gave up. A yes starts the window if this
+  /// device can show it: `Event.windowStarted` says so, and `Event.windowRequestEnded` says
+  /// why not.
+  bool answerWindow({required PlatformInt64 request, required bool accept});
+
   /// Gives up on a `join_pairing` that is still waiting.
   void cancelJoin();
 
@@ -55,6 +61,10 @@ abstract class Baton implements RustOpaqueInterface {
 
   /// The devices paired with this one.
   Future<List<Device>> devices();
+
+  /// Ends the window `session`, which is shown here or shared from here, and tells the other
+  /// device. `Event.windowEnded` follows. Returns whether there was such a window.
+  bool endWindow({required PlatformInt64 session});
 
   /// Events from now on, as a stream that ends when the app stops. The call returns once
   /// the subscription is made, so `await` it before reading `devices` or `inbox`: nothing
@@ -113,6 +123,15 @@ abstract class Baton implements RustOpaqueInterface {
   /// Sends text, such as what was on the clipboard, to a paired device.
   Future<void> sendText({required String id, required String text});
 
+  /// Lets the person pick a window of this device, and offers it to the paired device `id`.
+  /// The call returns when the person at the other device has answered, which can take as
+  /// long as a person takes to decide. `control` lets the other device control the window,
+  /// if `windowAbilities().canControl` says that this device can grant it. Throws
+  /// `ErrorKind.notPaired`, `ErrorKind.unreachable`, `ErrorKind.declined` if the device does
+  /// not show windows, and `ErrorKind.other` if this device does not share windows or a
+  /// window is shared or shown already.
+  Future<WindowShared> shareWindow({required String id, required bool control});
+
   /// Opens the device's folder, starts the network and begins keeping what arrives.
   ///
   /// `data_dir` is a folder that belongs to the app alone. `lan_discovery` switches finding
@@ -145,6 +164,11 @@ abstract class Baton implements RustOpaqueInterface {
 
   /// Forgets a paired device. It can no longer reach this one until it is paired again.
   Future<void> unpair({required String id});
+
+  /// What this device does with windows: whether it shows the windows of other devices,
+  /// shares its own, and lets the person grant control of the ones it shares. Offer only what
+  /// is possible.
+  WindowAbilities windowAbilities();
 }
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<FileSend>>

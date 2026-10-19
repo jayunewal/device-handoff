@@ -13,7 +13,8 @@ use crate::api::{
     model::{
         Device, Event, FileProgress, FilesSent, Me, Network, Offer, OfferOutcome, PairingRequest,
         Platform, PreviewName, Reach, Received, ReceivedItem, Receiving, Route, SendStage,
-        TransferEnd, TransferRequest, TransferResult,
+        TransferEnd, TransferRequest, TransferResult, WindowAbilities, WindowEnd, WindowRequest,
+        WindowRole, WindowSession, WindowShared,
     },
 };
 
@@ -204,6 +205,21 @@ impl From<app::PreviewName> for PreviewName {
     }
 }
 
+impl From<app::WindowAbilities> for WindowAbilities {
+    fn from(abilities: app::WindowAbilities) -> Self {
+        let app::WindowAbilities {
+            can_show,
+            can_share,
+            can_control,
+        } = abilities;
+        Self {
+            can_show,
+            can_share,
+            can_control,
+        }
+    }
+}
+
 impl From<app::TransferRequest> for TransferRequest {
     fn from(request: app::TransferRequest) -> Self {
         let app::TransferRequest {
@@ -229,11 +245,45 @@ impl From<app::TransferRequest> for TransferRequest {
     }
 }
 
+impl From<app::WindowRequest> for WindowRequest {
+    fn from(request: app::WindowRequest) -> Self {
+        let app::WindowRequest {
+            id,
+            device_id,
+            device_name,
+            title,
+            app,
+            width,
+            height,
+            control,
+        } = request;
+        Self {
+            id: signed(id),
+            device_id,
+            device_name,
+            title,
+            app,
+            width,
+            height,
+            control,
+        }
+    }
+}
+
 impl From<app::TransferResult> for TransferResult {
     fn from(result: app::TransferResult) -> Self {
         match result {
             app::TransferResult::Received { failed } => Self::Received { failed },
             app::TransferResult::Dropped => Self::Dropped,
+        }
+    }
+}
+
+impl From<app::WindowRole> for WindowRole {
+    fn from(role: app::WindowRole) -> Self {
+        match role {
+            app::WindowRole::Viewing => Self::Viewing,
+            app::WindowRole::Sharing => Self::Sharing,
         }
     }
 }
@@ -266,12 +316,52 @@ impl From<app::TransferEnd> for TransferEnd {
     }
 }
 
+impl From<app::WindowSession> for WindowSession {
+    fn from(session: app::WindowSession) -> Self {
+        let app::WindowSession {
+            id,
+            role,
+            device_id,
+            device_name,
+            title,
+            app,
+            width,
+            height,
+            control,
+            screen,
+        } = session;
+        Self {
+            id: signed(id),
+            role: role.into(),
+            device_id,
+            device_name,
+            title,
+            app,
+            width,
+            height,
+            control,
+            screen,
+        }
+    }
+}
+
 impl From<app::Receiving> for Receiving {
     fn from(receiving: app::Receiving) -> Self {
         match receiving {
             app::Receiving::Off => Self::Off,
             app::Receiving::On => Self::On,
             app::Receiving::Unusable(message) => Self::Unusable { message },
+        }
+    }
+}
+
+impl From<app::WindowEnd> for WindowEnd {
+    fn from(end: app::WindowEnd) -> Self {
+        match end {
+            app::WindowEnd::ThisDevice => Self::ThisDevice,
+            app::WindowEnd::OtherDevice => Self::OtherDevice,
+            app::WindowEnd::Lost => Self::Lost,
+            app::WindowEnd::Failed(message) => Self::Failed { message },
         }
     }
 }
@@ -325,6 +415,18 @@ impl From<app::FilesSent> for FilesSent {
     }
 }
 
+impl From<app::WindowShared> for WindowShared {
+    fn from(shared: app::WindowShared) -> Self {
+        match shared {
+            app::WindowShared::NothingChosen => Self::NothingChosen,
+            app::WindowShared::Started(session) => Self::Started {
+                session: session.into(),
+            },
+            app::WindowShared::Declined(message) => Self::Declined { message },
+        }
+    }
+}
+
 impl From<app::Event> for Event {
     fn from(event: app::Event) -> Self {
         match event {
@@ -346,6 +448,20 @@ impl From<app::Event> for Event {
                 Self::TransferRequestEnded { id: signed(id) }
             }
             app::Event::TransferEnded(end) => Self::TransferEnded { end: end.into() },
+            app::Event::WindowRequested(request) => Self::WindowRequested {
+                request: request.into(),
+            },
+            app::Event::WindowRequestEnded { id, failure } => Self::WindowRequestEnded {
+                id: signed(id),
+                failure,
+            },
+            app::Event::WindowStarted(session) => Self::WindowStarted {
+                session: session.into(),
+            },
+            app::Event::WindowEnded { id, end } => Self::WindowEnded {
+                id: signed(id),
+                end: end.into(),
+            },
             app::Event::Resync => Self::Resync,
         }
     }
@@ -390,6 +506,162 @@ mod tests {
         assert_eq!(signed(0), 0);
         assert_eq!(signed(1_700_000_000), 1_700_000_000);
         assert_eq!(signed(u64::MAX), i64::MAX);
+    }
+
+    fn session() -> app::WindowSession {
+        app::WindowSession {
+            id: 4,
+            role: app::WindowRole::Viewing,
+            device_id: "ab".repeat(32),
+            device_name: "Studio Mac".to_owned(),
+            title: Some("Salary 2027.xlsx".to_owned()),
+            app: Some("Numbers".to_owned()),
+            width: 1440,
+            height: 900,
+            control: true,
+            screen: Some(7),
+        }
+    }
+
+    #[test]
+    fn a_window_session_keeps_everything_it_says() {
+        let converted = WindowSession::from(session());
+        assert_eq!(converted.id, 4);
+        assert_eq!(converted.role, WindowRole::Viewing);
+        assert_eq!(converted.device_id, "ab".repeat(32));
+        assert_eq!(converted.device_name, "Studio Mac");
+        assert_eq!(converted.title.as_deref(), Some("Salary 2027.xlsx"));
+        assert_eq!(converted.app.as_deref(), Some("Numbers"));
+        assert_eq!((converted.width, converted.height), (1440, 900));
+        assert!(converted.control);
+        assert_eq!(converted.screen, Some(7));
+        let sharing = WindowSession::from(app::WindowSession {
+            role: app::WindowRole::Sharing,
+            screen: None,
+            ..session()
+        });
+        assert_eq!((sharing.role, sharing.screen), (WindowRole::Sharing, None));
+    }
+
+    #[test]
+    fn a_window_request_keeps_everything_it_says() {
+        let converted = WindowRequest::from(app::WindowRequest {
+            id: 9,
+            device_id: "cd".repeat(32),
+            device_name: "Kitchen iPad".to_owned(),
+            title: None,
+            app: Some("Preview".to_owned()),
+            width: 800,
+            height: 600,
+            control: false,
+        });
+        assert_eq!(converted.id, 9);
+        assert_eq!(converted.device_id, "cd".repeat(32));
+        assert_eq!(converted.device_name, "Kitchen iPad");
+        assert_eq!(converted.title, None);
+        assert_eq!(converted.app.as_deref(), Some("Preview"));
+        assert_eq!((converted.width, converted.height), (800, 600));
+        assert!(!converted.control);
+    }
+
+    #[test]
+    fn the_window_events_keep_their_numbers_and_their_sentences() {
+        let started = Event::from(app::Event::WindowStarted(session()));
+        assert!(matches!(started, Event::WindowStarted { session } if session.id == 4));
+        let refused = Event::from(app::Event::WindowRequestEnded {
+            id: 3,
+            failure: Some("The decoder is busy.".to_owned()),
+        });
+        assert!(matches!(
+            refused,
+            Event::WindowRequestEnded { id: 3, failure: Some(why) } if why == "The decoder is busy."
+        ));
+        let withdrawn = Event::from(app::Event::WindowRequestEnded {
+            id: 3,
+            failure: None,
+        });
+        assert!(matches!(
+            withdrawn,
+            Event::WindowRequestEnded {
+                id: 3,
+                failure: None
+            }
+        ));
+        for (end, expected) in [
+            (app::WindowEnd::ThisDevice, WindowEnd::ThisDevice),
+            (app::WindowEnd::OtherDevice, WindowEnd::OtherDevice),
+            (app::WindowEnd::Lost, WindowEnd::Lost),
+            (
+                app::WindowEnd::Failed("It broke.".to_owned()),
+                WindowEnd::Failed {
+                    message: "It broke.".to_owned(),
+                },
+            ),
+        ] {
+            let event = Event::from(app::Event::WindowEnded { id: 4, end });
+            assert_eq!(
+                event,
+                Event::WindowEnded {
+                    id: 4,
+                    end: expected
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn what_came_of_offering_a_window_keeps_its_session_and_its_sentence() {
+        assert_eq!(
+            WindowShared::from(app::WindowShared::NothingChosen),
+            WindowShared::NothingChosen
+        );
+        assert!(matches!(
+            WindowShared::from(app::WindowShared::Started(session())),
+            WindowShared::Started { session } if session.id == 4
+        ));
+        assert_eq!(
+            WindowShared::from(app::WindowShared::Declined("No.".to_owned())),
+            WindowShared::Declined {
+                message: "No.".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn what_a_device_can_do_with_windows_is_carried_over() {
+        let converted = WindowAbilities::from(app::WindowAbilities {
+            can_show: true,
+            can_share: false,
+            can_control: true,
+        });
+        assert_eq!(
+            (
+                converted.can_show,
+                converted.can_share,
+                converted.can_control
+            ),
+            (true, false, true)
+        );
+    }
+
+    #[test]
+    fn what_a_window_is_called_is_not_printed_on_the_rust_side() {
+        let shown = format!(
+            "{:?} {:?}",
+            WindowSession::from(session()),
+            WindowRequest::from(app::WindowRequest {
+                id: 1,
+                device_id: "ab".repeat(32),
+                device_name: "Studio Mac".to_owned(),
+                title: Some("Salary 2027.xlsx".to_owned()),
+                app: Some("Numbers".to_owned()),
+                width: 1,
+                height: 1,
+                control: false,
+            })
+        );
+        assert!(!shown.contains("Salary"), "{shown}");
+        assert!(!shown.contains("Numbers"), "{shown}");
     }
 
     #[test]

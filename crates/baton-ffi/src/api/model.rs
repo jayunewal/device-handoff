@@ -326,6 +326,123 @@ pub enum Receiving {
     },
 }
 
+/// What this device does with windows, so that a screen offers only what is possible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowAbilities {
+    /// This device shows the windows that paired devices offer.
+    pub can_show: bool,
+    /// This device shares its windows with paired devices.
+    pub can_share: bool,
+    /// The person can let another device control a window that this one shares.
+    pub can_control: bool,
+}
+
+/// A window that a paired device offers to show on this one, for the person to answer.
+///
+/// Show what the window is and which device offers it, and whether that device lets this one
+/// control the window. The title and the name of the application were written by the other
+/// device: they are labels, and nothing else. Answer with `Baton.answerWindow`.
+#[derive(Clone, PartialEq, Eq)]
+pub struct WindowRequest {
+    /// Names this request when answering it with `Baton.answerWindow`.
+    pub id: i64,
+    /// The id of the device that offers the window.
+    pub device_id: String,
+    /// The name this device shows for it.
+    pub device_name: String,
+    /// The title of the window, or `null` if it has none.
+    pub title: Option<String>,
+    /// The name of the application the window belongs to, or `null`.
+    pub app: Option<String>,
+    /// The width of the window in pixels.
+    pub width: u32,
+    /// The height of the window in pixels.
+    pub height: u32,
+    /// Whether the person at the other device lets this one control the window.
+    pub control: bool,
+}
+
+// What a window is called can name a document, a person or a page, and values like this one end
+// up in logs, so only sizes are printed.
+impl std::fmt::Debug for WindowRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowRequest")
+            .field("id", &self.id)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("control", &self.control)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Which end of a window this device is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowRole {
+    /// The window is on another device, and this one shows it.
+    Viewing,
+    /// The window is on this device, and another one shows it.
+    Sharing,
+}
+
+/// A window that is shown on this device or shared from it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct WindowSession {
+    /// Names this session when ending it with `Baton.endWindow`, and in `Event.windowEnded`.
+    /// Counts up from 1 while Baton runs and is not reused.
+    pub id: i64,
+    /// Which end this device is.
+    pub role: WindowRole,
+    /// The id of the other device.
+    pub device_id: String,
+    /// The name this device shows for it.
+    pub device_name: String,
+    /// The title of the window, or `null`.
+    pub title: Option<String>,
+    /// The name of the application the window belongs to, or `null`.
+    pub app: Option<String>,
+    /// The width of the window in pixels, as it was offered. The picture may differ from it, and
+    /// change while the session runs.
+    pub width: u32,
+    /// The height of the window in pixels, as it was offered.
+    pub height: u32,
+    /// Whether the viewer may control the window.
+    pub control: bool,
+    /// What to draw the picture with when the window is shown on this device: the number of
+    /// the screen, which on Flutter is the id of a `Texture`. `null` when the window is shared
+    /// from this device.
+    pub screen: Option<i64>,
+}
+
+// See `WindowRequest`.
+impl std::fmt::Debug for WindowSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowSession")
+            .field("id", &self.id)
+            .field("role", &self.role)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("control", &self.control)
+            .field("screen", &self.screen)
+            .finish_non_exhaustive()
+    }
+}
+
+/// How a window session ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WindowEnd {
+    /// This device ended it, or the device was unpaired, or Baton stopped.
+    ThisDevice,
+    /// The other device ended it.
+    OtherDevice,
+    /// The connection to the other device was lost, or the other device stopped answering.
+    Lost,
+    /// Something went wrong.
+    Failed {
+        /// One sentence that says what.
+        message: String,
+    },
+}
+
 /// What a transfer that is being sent is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SendStage {
@@ -374,6 +491,24 @@ pub struct FilesSent {
     pub left_out: u32,
 }
 
+/// What came of offering a window to a paired device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WindowShared {
+    /// The person gave up choosing a window, so nothing was offered.
+    NothingChosen,
+    /// The person at the other device said yes, and the window is shared. Its end comes as
+    /// `Event.windowEnded`.
+    Started {
+        /// The session.
+        session: WindowSession,
+    },
+    /// The other device did not take the window.
+    Declined {
+        /// One sentence that says why, in words that name the device.
+        message: String,
+    },
+}
+
 /// Something a screen may want to react to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
@@ -419,6 +554,37 @@ pub enum Event {
     TransferEnded {
         /// How it ended.
         end: TransferEnd,
+    },
+    /// A paired device offers a window to show on this one. Show the request and answer it with
+    /// `Baton.answerWindow`.
+    WindowRequested {
+        /// The request.
+        request: WindowRequest,
+    },
+    /// A window request no longer needs an answer: the other device withdrew it, the time ran
+    /// out, or the connection ended. Take the question off the screen. The person's own answer
+    /// is not announced with this event: a screen takes the question down when the person
+    /// answers, and draws the window when `Event.windowStarted` says so. A yes that comes as the
+    /// offer is withdrawn, or that cannot be carried out, ends with no event at all.
+    WindowRequestEnded {
+        /// The `WindowRequest.id` that ended.
+        id: i64,
+        /// One sentence to show when the person said yes and this device could not show the
+        /// window after all; `null` otherwise.
+        failure: Option<String>,
+    },
+    /// A window is shown on this device or shared from it. When it is shown here,
+    /// `WindowSession.screen` names the screen to draw it with.
+    WindowStarted {
+        /// The session.
+        session: WindowSession,
+    },
+    /// A window that was shown or shared is over.
+    WindowEnded {
+        /// The `WindowSession.id` that ended.
+        id: i64,
+        /// How.
+        end: WindowEnd,
     },
     /// Events were missed because they came faster than they were read. Read the devices and
     /// the inbox again.

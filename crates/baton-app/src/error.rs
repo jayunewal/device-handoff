@@ -213,6 +213,25 @@ impl Error {
         }
     }
 
+    /// A failure while offering a window to the paired device called `device`.
+    pub(crate) fn sharing(error: &Core, device: &str) -> Self {
+        match error {
+            Core::Busy => Self::new(
+                ErrorKind::Other,
+                "A window is being shared or shown already. End it first.",
+            ),
+            Core::Unsupported(_) => Self::new(
+                ErrorKind::Declined,
+                format!("{device} cannot show windows. It may need a newer version of Baton."),
+            ),
+            Core::BadItem(_) => Self::new(
+                ErrorKind::BadItem,
+                "That window cannot be shared: its title or size is beyond what Baton allows.",
+            ),
+            other => Self::reaching(other, device),
+        }
+    }
+
     /// The device `device` answered and did not take the `what` that was sent.
     pub(crate) fn declined(device: &str, what: &str, reason: DeclineReason) -> Self {
         let why = match reason {
@@ -453,6 +472,22 @@ mod tests {
             reason: "no".to_owned(),
         };
         assert!(!Error::reaching(&short, "Mac").message().contains('…'));
+    }
+
+    #[test]
+    fn a_window_that_cannot_be_offered_is_told_in_words_of_its_own() {
+        let busy = Error::sharing(&Core::Busy, "Kitchen iPad");
+        assert_eq!(busy.kind(), ErrorKind::Other);
+        assert!(busy.message().contains("End it first"), "{busy}");
+
+        let old = Error::sharing(&Core::Unsupported("window".to_owned()), "Kitchen iPad");
+        assert_eq!(old.kind(), ErrorKind::Declined);
+        assert!(old.message().contains("Kitchen iPad"), "{old}");
+        assert!(old.message().contains("newer version"), "{old}");
+
+        let bad = Error::sharing(&Core::BadItem("title".to_owned()), "Kitchen iPad");
+        assert_eq!(bad.kind(), ErrorKind::BadItem);
+        assert!(bad.message().contains("title or size"), "{bad}");
     }
 
     #[test]

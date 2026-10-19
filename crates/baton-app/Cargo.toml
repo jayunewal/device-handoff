@@ -14,6 +14,7 @@ workspace = true
 [dependencies]
 baton-core.workspace = true
 baton-proto.workspace = true
+baton-stream.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync"] }
 tokio-util.workspace = true
 tracing.workspace = true

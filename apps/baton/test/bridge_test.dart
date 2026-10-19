@@ -217,6 +217,50 @@ void main() {
     expect(await a.removeReceived(number: -1), isFalse);
   });
 
+  test('a build with no platform code takes no part in windows', () async {
+    final a = await _start(await _folder(name: 'Device A'));
+    final b = await _start(await _folder(name: 'Device B'));
+    for (final baton in [a, b]) {
+      final abilities = baton.windowAbilities();
+      expect(abilities.canShow, isFalse);
+      expect(abilities.canShare, isFalse);
+      expect(abilities.canControl, isFalse);
+    }
+
+    // Paired devices are told so when one tries: the call fails with a sentence, before the
+    // person is asked to pick anything.
+    final events = _Feed(await a.events());
+    addTearDown(events.close);
+    final offer = await a.offerPairing();
+    final join = _Feed(b.joinPairing(ticket: offer.ticket));
+    addTearDown(join.close);
+    final asked = await events.next<Event_PairingRequested>();
+    expect(a.answerPairing(request: asked.request.id, accept: true), isTrue);
+    await join.next<JoinProgress_Paired>();
+    await events.next<Event_OfferEnded>();
+    for (final control in [false, true]) {
+      await expectLater(
+        a.shareWindow(id: b.me().id, control: control),
+        throwsA(
+          isA<BatonError>()
+              .having((e) => e.kind, 'kind', ErrorKind.other)
+              .having((e) => e.message, 'message', contains('cannot')),
+        ),
+      );
+    }
+
+    // Nothing waits for an answer or runs, and a number that is no number is no window either.
+    expect(a.answerWindow(request: 1, accept: true), isFalse);
+    expect(a.answerWindow(request: -1, accept: true), isFalse);
+    expect(a.endWindow(session: 1), isFalse);
+    expect(a.endWindow(session: -1), isFalse);
+    // And a device that is not paired is not offered a window.
+    await expectLater(
+      a.shareWindow(id: '0' * 64, control: false),
+      throwsA(_batonError(ErrorKind.notPaired)),
+    );
+  });
+
   test('stopping ends the event stream and lets go of the folder', () async {
     final folder = await _folder(name: 'Device A');
     final first = await _start(folder);

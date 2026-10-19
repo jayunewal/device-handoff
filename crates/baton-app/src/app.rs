@@ -34,8 +34,10 @@ use crate::{
     files::Files,
     model::{
         Device, Me, Network, Offer, OfferOutcome, PairingRequest, Reach, Received, Receiving,
-        TransferRequest,
+        TransferRequest, WindowAbilities, WindowRequest, WindowShared,
     },
+    sessions::{Handler, Sessions},
+    windows::Windows,
 };
 
 /// How many events a slow reader can fall behind by before it is told to read everything
@@ -133,13 +135,15 @@ struct Open {
 /// was dropped while a question was showing would stay running, with its folder locked,
 /// until the question was over.
 ///
-/// Pairing requests and requests for files are numbered from the same count, but they wait in
-/// tables of their own, so an answer to one kind cannot reach the other.
+/// Pairing requests, requests for files and requests for windows are numbered from the same
+/// count, but they wait in tables of their own, so an answer to one kind cannot reach another.
 pub(crate) struct Questions {
     /// Pairing requests that are waiting for the person's answer.
     waiting: Mutex<HashMap<u64, oneshot::Sender<bool>>>,
     /// Requests for files that are waiting for the person's answer.
     transfers: Mutex<HashMap<u64, oneshot::Sender<bool>>>,
+    /// Requests to show a window that are waiting for the person's answer.
+    windows: Mutex<HashMap<u64, oneshot::Sender<bool>>>,
     next: AtomicU64,
     events: broadcast::Sender<Event>,
 }
@@ -162,6 +166,8 @@ struct Inner {
     questions: Arc<Questions>,
     /// Whether this device takes files, which was decided when it started.
     receiving: Receiving,
+    /// The windows that are shown here or shared from here.
+    sessions: Arc<Sessions>,
     /// Held while an offer is made, so that offers reach the node in the order they were
     /// asked for.
     offer_turn: tokio::sync::Mutex<()>,
@@ -184,6 +190,18 @@ impl App {
     /// or [`ErrorKind::WrongMachine`] if its files cannot be used, and
     /// [`ErrorKind::Network`] if the network could not be started.
     pub async fn start(options: Options) -> Result<Self> {
+        Self::start_with(options, Windows::none()).await
+    }
+
+    /// The same, with a platform that shows the windows of other devices, shares windows of this
+    /// device, or both ([`Windows`]). A device that is given neither takes no part in window
+    /// streaming, and says so to the devices it is paired with.
+    ///
+    /// # Errors
+    ///
+    /// As for [`start`](Self::start), and [`ErrorKind::Other`] if what the platform can show is
+    /// beyond what the protocol allows.
+    pub async fn start_with(options: Options, windows: Windows) -> Result<Self> {
         let starting = |e: Core| Error::starting(&e);
         let dir = DataDir::open(&options.data_dir).map_err(starting)?;
         let config = options.applied_to(Config::load(&dir.config_file()).map_err(starting)?);
@@ -203,15 +221,19 @@ impl App {
         let stopped = CancellationToken::new();
         // Made before the node, because the part of it that takes files puts its questions to the
         // person through it.
-        let questions = Arc::new(Questions {
-            waiting: Mutex::new(HashMap::new()),
-            transfers: Mutex::new(HashMap::new()),
-            next: AtomicU64::new(1),
-            events: events.clone(),
-        });
+        let questions = Questions::new(events.clone());
+        let Windows { viewer, sharer } = windows;
+        let sessions = Sessions::new(viewer, sharer, Arc::clone(&questions), events.clone());
+        sessions.check_limits()?;
 
         let mut builder = Node::builder(&identity, trust.clone(), config.clone())
             .handoff_handler(InboxHandler::new(inbox.clone()));
+        if sessions.abilities().can_show {
+            builder = builder.window_handler(Handler(Arc::clone(&sessions)));
+        }
+        if let Some(sharer) = sessions.sharer() {
+            builder = builder.share_windows(sharer.control());
+        }
         // The folder is opened once for the run: opening it again would remove what the transfers
         // that are going on hold. A folder that cannot be used leaves the app running, and
         // `receiving` says why it takes no files.
@@ -253,6 +275,7 @@ impl App {
                 released: CancellationToken::new(),
                 questions,
                 receiving,
+                sessions,
                 offer_turn: tokio::sync::Mutex::new(()),
                 offer: Mutex::new(None),
                 join: Mutex::new(None),
@@ -490,6 +513,68 @@ impl App {
             .map_err(|e| Error::reaching(&e, &name))
     }
 
+    /// What this device does with windows: whether it shows the windows of other devices, shares
+    /// its own, and lets the person grant control of the ones it shares. A screen offers only
+    /// what is possible.
+    pub fn window_abilities(&self) -> WindowAbilities {
+        self.inner.sessions.abilities()
+    }
+
+    /// Answers a [`WindowRequest`]. Returns `false` if it is not waiting any more, because it was
+    /// answered already or the other device gave up.
+    ///
+    /// `true` means that the answer was passed on. A yes starts the window if this device can
+    /// show it: [`Event::WindowStarted`] says so, and [`Event::WindowRequestEnded`] says why not.
+    pub fn answer_window(&self, request: u64, accept: bool) -> bool {
+        let waiting = locked(&self.inner.questions.windows).remove(&request);
+        waiting.is_some_and(|answer| answer.send(accept).is_ok())
+    }
+
+    /// Lets the person pick a window of this device, and offers it to the paired device `id`.
+    /// The call returns when the person at the other device has answered, which can take as
+    /// long as a person takes to decide. Dropping the future withdraws the offer.
+    ///
+    /// `control` lets the other device control the window, if this device can grant it
+    /// ([`window_abilities`](Self::window_abilities)).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::NotPaired`], [`ErrorKind::Unreachable`] if the device cannot be reached,
+    /// [`ErrorKind::Declined`] if it does not show windows, and [`ErrorKind::Other`] if this
+    /// device does not share windows or a window is being shared or shown already.
+    pub async fn share_window(&self, id: &str, control: bool) -> Result<WindowShared> {
+        let node = self.running()?;
+        let (peer, name) = self.paired(id)?;
+        let sessions = &self.inner.sessions;
+        let Some(sharer) = sessions.sharer() else {
+            return Err(Error::new(
+                ErrorKind::Other,
+                "This device cannot share windows.",
+            ));
+        };
+        if control && !sharer.control() {
+            return Err(Error::new(
+                ErrorKind::Other,
+                "This device cannot let another device control a window.",
+            ));
+        }
+        let picked = sharer
+            .pick()
+            .await
+            .map_err(|e| Error::new(ErrorKind::Other, e.message()))?;
+        let Some(picked) = picked else {
+            return Ok(WindowShared::NothingChosen);
+        };
+        self.running()?;
+        sessions.share(node, &peer, &name, picked, control).await
+    }
+
+    /// Ends the window `session`, which is shown here or shared from here, and tells the other
+    /// device. [`Event::WindowEnded`] follows. Returns whether there was such a window.
+    pub fn end_window(&self, session: u64) -> bool {
+        self.inner.sessions.end(session)
+    }
+
     /// Sends a web link to a paired device.
     ///
     /// # Errors
@@ -659,9 +744,12 @@ impl Inner {
         if let Some(open) = locked(&self.join).take() {
             open.cancel.cancel();
         }
-        // Questions that are open become a no.
+        // Questions that are open become a no. All three tables are cleared, so that a yes to a
+        // request for files or for a window that comes during the shutdown finds nothing and is
+        // refused, and the platform is not asked to open a screen for a window that cannot start.
         locked(&self.questions.waiting).clear();
         locked(&self.questions.transfers).clear();
+        locked(&self.questions.windows).clear();
         self.node.shutdown().await;
         // Released only now that nothing is using the folder.
         locked(&self.lock).take();
@@ -692,6 +780,16 @@ impl Inner {
 }
 
 impl Questions {
+    pub(crate) fn new(events: broadcast::Sender<Event>) -> Arc<Self> {
+        Arc::new(Self {
+            waiting: Mutex::new(HashMap::new()),
+            transfers: Mutex::new(HashMap::new()),
+            windows: Mutex::new(HashMap::new()),
+            next: AtomicU64::new(1),
+            events,
+        })
+    }
+
     /// Puts a pairing request to the person and waits for the answer. A request that stops
     /// mattering first, because the offer ended or the other device left, drops this
     /// future, and the screen is told to take the question away.
@@ -738,6 +836,27 @@ impl Questions {
         (id, answered.await.unwrap_or(false))
     }
 
+    /// Puts a window that another device offers to the person and waits for the answer, which
+    /// comes with the number of the question. A window that stops mattering first, because the
+    /// other device withdrew it, the time ran out or the connection ended, drops this future, and
+    /// the screen is told to take the question away.
+    pub(crate) async fn ask_window(
+        self: &Arc<Self>,
+        request: impl FnOnce(u64) -> WindowRequest,
+    ) -> (bool, u64) {
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let (answer, answered) = oneshot::channel();
+        locked(&self.windows).insert(id, answer);
+        let _unanswered = Unanswered {
+            questions: Arc::clone(self),
+            id,
+            kind: Asked::Window,
+        };
+        tracing::debug!(request = id, "window request shown");
+        self.emit(Event::WindowRequested(request(id)));
+        (answered.await.unwrap_or(false), id)
+    }
+
     /// Tells the screens something. Nobody listening is fine.
     pub(crate) fn emit(&self, event: Event) {
         let _ = self.events.send(event);
@@ -749,6 +868,7 @@ impl Questions {
 enum Asked {
     Pairing,
     Transfer,
+    Window,
 }
 
 /// Tells the screen that a question is no longer waiting, if nobody answered it.
@@ -768,6 +888,13 @@ impl Drop for Unanswered {
             Asked::Transfer => (
                 &self.questions.transfers,
                 Event::TransferRequestEnded { id: self.id },
+            ),
+            Asked::Window => (
+                &self.questions.windows,
+                Event::WindowRequestEnded {
+                    id: self.id,
+                    failure: None,
+                },
             ),
         };
         if locked(table).remove(&self.id).is_some() {
@@ -897,6 +1024,7 @@ mod tests {
         let questions = Arc::new(Questions {
             waiting: Mutex::new(HashMap::new()),
             transfers: Mutex::new(HashMap::new()),
+            windows: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
             events,
         });
