@@ -172,7 +172,7 @@ Baton opens only web addresses, the ones that start with `http://` or `https://`
 
 In this version a device receives only while Baton is running on it. On an iPhone or iPad that means open on the screen: a locked phone, or one that has Baton in the background, cannot be reached, and a send to it ends after a while with a message that says so. Receiving on a locked phone needs a push notification, which is not built yet.
 
-Until then, keep Baton open and the phone in your hand when you send to it, or lengthen **Auto-Lock** while you try Baton (**Settings**, **Display & Brightness**, **Auto-Lock**) and set it back afterwards. If a send to a phone keeps ending with **Could not reach**, check **Low Power Mode** first: it sets Auto-Lock to 30 seconds. Baton keeps the screen on only while two devices pair (see **Pair two devices**). At any other time Auto-Lock works as you set it, because a phone that never locks is the opposite of what Baton is for.
+Until then, keep Baton open and the phone in your hand when you send to it, or lengthen **Auto-Lock** while you try Baton (**Settings**, **Display & Brightness**, **Auto-Lock**) and set it back afterwards. If a send to a phone keeps ending with **Could not reach**, check **Low Power Mode** first: it sets Auto-Lock to 30 seconds. Baton keeps the screen on only while two devices pair (see **Pair two devices**) and while files go (see **Send files**). At any other time Auto-Lock works as you set it, because a phone that never locks is the opposite of what Baton is for.
 
 ## Send files
 

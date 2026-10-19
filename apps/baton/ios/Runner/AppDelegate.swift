@@ -65,11 +65,11 @@ private func documentsFolder() throws -> URL {
     for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
 }
 
-/// Keeps the screen on while the app asks for it, which it does only while two devices pair. A
-/// phone turns its screen off, and locks, after a while without a touch. Baton on a phone works
-/// only while it is on the screen, so a screen that went off in the middle of pairing would take
-/// the pairing with it. At any other time Baton leaves Auto-Lock as the person set it. The names
-/// of the channel and of its methods must be the ones in lib/src/awake.dart.
+/// Keeps the screen on while the app asks for it, which it does while two devices pair and while
+/// files go. A phone turns its screen off, and locks, after a while without a touch. Baton on a
+/// phone works only while it is on the screen, so a screen that went off in the middle of pairing
+/// or of a transfer would take it along. At any other time Baton leaves Auto-Lock as the person
+/// set it. The names of the channel and of its methods must be the ones in lib/src/awake.dart.
 private final class ScreenKeeper {
   /// Whether the app wants the screen kept on. It counts only while the app is on the screen.
   private var wanted = false
