@@ -47,7 +47,7 @@ final class MacSharer: NSObject, SharerPlatform, SCContentSharingPickerObserver 
         picker.add(self)
         observing = true
       }
-      let configuration = SCContentSharingPickerConfiguration()
+      var configuration = SCContentSharingPickerConfiguration()
       configuration.allowedPickerModes = .singleWindow
       configuration.allowsChangingSelectedContent = false
       picker.defaultConfiguration = configuration
