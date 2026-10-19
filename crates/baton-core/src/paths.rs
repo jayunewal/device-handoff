@@ -18,7 +18,8 @@ use crate::{
 /// Environment variable that overrides where Baton keeps its state.
 pub const HOME_ENV: &str = "BATON_HOME";
 
-/// The directory holding one device's identity, trust store, settings and inbox.
+/// The directory holding one device's identity, trust store, settings, inbox and the list of transfers
+/// that other devices may still hold for it.
 ///
 /// Everything in it belongs to a single device identity, so only one process at a time may
 /// run a node with a directory, or change which devices are paired: it takes
@@ -87,6 +88,12 @@ impl DataDir {
         self.root.join("inbox.json")
     }
 
+    /// The file that remembers the transfers of files that other devices may still hold for this
+    /// one, from one run of the program to the next. See [`Holds`](crate::transfer::send::Holds).
+    pub fn holds_file(&self) -> PathBuf {
+        self.root.join("holds.json")
+    }
+
     /// Takes exclusive ownership of the directory for as long as the returned guard lives.
     ///
     /// Fails with [`Error::Locked`] if another process holds it. The operating
@@ -128,6 +135,7 @@ mod tests {
         assert!(root.is_dir());
         assert_eq!(dir.root(), root);
         assert_eq!(dir.trust_file(), root.join("devices.json"));
+        assert_eq!(dir.holds_file(), root.join("holds.json"));
     }
 
     #[cfg(unix)]

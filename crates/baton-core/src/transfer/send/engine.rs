@@ -10,6 +10,10 @@
 //! gives all its transfers the token that it stops by, so that a program that is closing does not
 //! leave them running, and a transfer that is cancelled does not stop the others.
 //!
+//! A transfer that has a [`Ledger`] is written down before its first offer and when it ends, so that
+//! a receiver that is left holding it can be told to let go, also by a run of the program that
+//! starts later (see [`holds`](super::holds)).
+//!
 //! The task makes attempts ([`Job::attempt`]) one after another until one of them is the end of the
 //! transfer. An attempt that fails in a way another may not is followed by a pause and another
 //! attempt, and every attempt sends everything again, on a connection of its own (section 8,
@@ -35,6 +39,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     attempt::{Job, Over},
+    holds::Ledger,
     lane::ListFrames,
     outcome::{Error, Outcome, Why},
     policy::Policy,
@@ -88,7 +93,9 @@ impl Drop for Sending {
 }
 
 /// Starts sending `selection` to the receiver at the other end of `wire`, as the transfer `id`. The
-/// transfer is given up when `stop` is cancelled, as it is when [`Sending::cancel`] is called.
+/// transfer is given up when `stop` is cancelled, as it is when [`Sending::cancel`] is called. A
+/// `ledger` is told that the receiver may hold the transfer before the offer is made, and how the
+/// transfer ended.
 ///
 /// # Errors
 ///
@@ -100,6 +107,7 @@ pub(crate) fn start(
     policy: Policy,
     id: TransferId,
     stop: &CancellationToken,
+    ledger: Option<Ledger>,
 ) -> Result<Sending, Error> {
     let list = ListFrames::new(selection.entries())
         .map(Arc::new)
@@ -118,7 +126,13 @@ pub(crate) fn start(
         Arc::new(tracker),
     );
     let task = tokio::spawn(async move {
+        if let Some(ledger) = &ledger {
+            ledger.begin(id).await;
+        }
         let outcome = run(&job).await;
+        if let Some(ledger) = &ledger {
+            ledger.ended(id, &outcome, job.offered()).await;
+        }
         job.tracker.stage(Stage::Over);
         outcome
     });
