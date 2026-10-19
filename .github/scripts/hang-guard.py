@@ -19,9 +19,9 @@ times in all (two unless told otherwise). Only that hang starts it again: a comm
 whatever its status, is not run twice, so a test that fails is still a failure.
 
 With --silences, the end of each start also lists the stretches of that many seconds or more in
-which the command printed nothing, with the line on each side. A build of an app says nothing
-for minutes, and the log of a long step is too long to read from its top, so this is where the
-time that a start took shows.
+which the command printed nothing, with the line on each side, and says how long the wait for the
+--finished line took. A build of an app says nothing for minutes, and the log of a long step is
+too long to read from its top, so this is where the time that a start took shows.
 
 The status is the one of the command, or 124 (as `timeout` has it) when every attempt hung.
 """
@@ -93,7 +93,7 @@ def run_once(command, waiting, finished, seconds, grace, silences=None):
         start_new_session=True,
     )
     began = time.monotonic()
-    seen = {"waiting_since": None, "finished": False}
+    seen = {"waiting_since": None, "finished_at": None}
     # The stretches without output: when each began and ended (in seconds after the start), and
     # the lines on both sides of it.
     quiet = []
@@ -110,8 +110,8 @@ def run_once(command, waiting, finished, seconds, grace, silences=None):
             last["at"], last["line"] = now, text
             if seen["waiting_since"] is None and waiting in text:
                 seen["waiting_since"] = now
-            if finished in text:
-                seen["finished"] = True
+            if seen["finished_at"] is None and finished in text:
+                seen["finished_at"] = now
 
     reader = threading.Thread(target=pass_on, daemon=True)
     reader.start()
@@ -119,7 +119,7 @@ def run_once(command, waiting, finished, seconds, grace, silences=None):
     while process.poll() is None:
         time.sleep(POLL)
         since = seen["waiting_since"]
-        if since is not None and not seen["finished"] and time.monotonic() - since > seconds:
+        if since is not None and seen["finished_at"] is None and time.monotonic() - since > seconds:
             hung = True
             stop(process, grace)
             break
@@ -130,6 +130,9 @@ def run_once(command, waiting, finished, seconds, grace, silences=None):
         if ended - last["at"] >= silences:
             quiet.append((last["at"] - began, ended - began, last["line"], None))
         say_silences(quiet, silences)
+        if seen["waiting_since"] is not None and seen["finished_at"] is not None:
+            delay = seen["finished_at"] - seen["waiting_since"]
+            print(f'"{finished}" came {delay:.1f} seconds after "{waiting}".', flush=True)
     return hung, process.returncode
 
 

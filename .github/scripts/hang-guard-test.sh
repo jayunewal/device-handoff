@@ -175,6 +175,10 @@ case "$out" in
   *"the line before it: last before the quiet"*"the line after it:  first after the quiet"*) ;;
   *) check "a silence: the report" "$out" "a report with the line on each side of the quiet" ;;
 esac
+case "$out" in
+  *'"got it" came '*' seconds after "waiting for it"'*) ;;
+  *) check "a silence: the length of the wait" "$out" "a line that says how long the wait took" ;;
+esac
 out=$(guard --silences 5 -- bash "$work/quiet.sh")
 case "$out" in
   *"No stretch of 5 seconds or more"*) ;;

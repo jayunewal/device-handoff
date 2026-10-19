@@ -450,13 +450,19 @@ jobs:
             --finished 'VM Service URL on device' \
             --seconds 120 \
             --silences 10 \
-            --cleanup 'xcrun simctl terminate "$SIMULATOR_UDID" io.github.jayunewal.baton; bash "$GITHUB_WORKSPACE/.github/scripts/simulator-report.sh"' \
+            --cleanup 'xcrun simctl terminate "$SIMULATOR_UDID" io.github.jayunewal.baton; { date -u +%T; bash "$GITHUB_WORKSPACE/.github/scripts/simulator-report.sh"; date -u +%T; } 2>&1 | tee -a "$RUNNER_TEMP/hang-report.txt"' \
             -- flutter test integration_test -d "$SIMULATOR_UDID" -v
       - name: Show what the simulator logged about the app
         # An app that closes as it opens leaves the test waiting for a window that never comes.
         # The script says why it may have. The guard around the test runs it too.
         if: failure()
         run: bash .github/scripts/simulator-report.sh
+      - name: Show again what the simulator logged after a hang
+        # The guard prints that report where the hang was, which is far above the end of a log
+        # this long, and the end is the part that can be read first.
+        if: always()
+        run: |
+          if [ -s "$RUNNER_TEMP/hang-report.txt" ]; then cat "$RUNNER_TEMP/hang-report.txt"; fi
       - name: Say how much of the Rust build came from the cache
         if: always()
         run: bash .github/scripts/cargokit-cache-report.sh
