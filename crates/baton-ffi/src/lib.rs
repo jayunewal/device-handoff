@@ -9,6 +9,12 @@
 //! Nothing here decides anything. A call goes straight to `baton_app`, and what comes back is
 //! copied into the values Dart receives, so this crate cannot let a device do more than the
 //! app layer does.
+//!
+//! The platform code of the app (Swift, on an iPhone and on a Mac) also calls three functions of
+//! this library by name: `baton_stream_abi_version`, `baton_stream_register_viewer` and
+//! `baton_stream_link_decode_failed`. They are written in `baton-stream-abi`, and the library
+//! carries them, in its shared form as well as its static one, because
+//! [`Baton::start`](api::baton::Baton::start) uses that crate.
 
 pub mod api;
 mod convert;

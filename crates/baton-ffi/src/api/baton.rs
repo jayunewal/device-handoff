@@ -57,7 +57,10 @@ impl Baton {
         options.lan_discovery = lan_discovery;
         options.port_mapping = port_mapping;
         options.receive_dir = receive_dir.map(PathBuf::from);
-        let app = App::start(options).await?;
+        // The device shows the windows that other devices share if the platform code of the app
+        // registered a viewer for them before this call, and takes none otherwise.
+        let windows = baton_stream_abi::registered_windows();
+        let app = App::start_with(options, windows).await?;
         Ok(Self { app })
     }
 
