@@ -588,9 +588,16 @@ impl Source {
             // its place only when it reads that, and an offer made straight after would meet it
             // taken. A `Stop` is answered when the place is free, and the next offer waits for
             // that. Any other end is the viewer's or the connection's doing, or the viewer is not
-            // answering anyway.
+            // answering anyway. The platform ends a session from a thread of its own, so the
+            // runtime that sends the `Stop` is the one the session keeps.
             if how == End::Local {
-                registry.stop_later(self.peer, &self.connection, self.session, StopReason::Ended);
+                registry.stop_later(
+                    &self.runtime,
+                    self.peer,
+                    &self.connection,
+                    self.session,
+                    StopReason::Ended,
+                );
             }
         }
         lock(&self.core).events.ended();

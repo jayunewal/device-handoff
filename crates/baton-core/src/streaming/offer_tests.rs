@@ -298,6 +298,24 @@ async fn an_offer_made_straight_after_one_was_given_up_is_taken() {
 }
 
 #[tokio::test]
+async fn an_offer_made_straight_after_one_was_given_up_by_another_thread_is_taken() {
+    let rig = Rig::new(Plan::Wait).await;
+    let mut first = Box::pin(rig.share(window()));
+    asked_about(&rig, first.as_mut()).await;
+    // The call is dropped by a thread that is not in the runtime, as it is when an application
+    // polls it from one place and gives up from another.
+    std::thread::scope(|scope| {
+        scope.spawn(move || drop(first)).join().unwrap();
+    });
+    rig.app.plan(Plan::Accept);
+    let (outcome, _) = rig.share(window()).await;
+    assert!(
+        matches!(outcome, Ok(ShareOutcome::Started(_))),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
 async fn an_offer_made_straight_after_a_session_ended_is_taken() {
     let rig = Rig::new(Plan::Accept).await;
     let (handle, _) = rig.started().await;
@@ -315,6 +333,32 @@ async fn an_offer_made_straight_after_the_handle_was_dropped_is_taken() {
     let rig = Rig::new(Plan::Accept).await;
     let (handle, _) = rig.started().await;
     drop(handle);
+    let (outcome, _) = rig.share(window()).await;
+    assert!(
+        matches!(outcome, Ok(ShareOutcome::Started(_))),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_offer_made_straight_after_the_platform_ended_the_session_is_taken() {
+    let rig = Rig::new(Plan::Accept).await;
+    let (handle, _) = rig.started().await;
+    // The platform calls the handle from a thread of its own, which is not in the runtime.
+    std::thread::spawn(move || handle.end()).join().unwrap();
+    let (outcome, _) = rig.share(window()).await;
+    assert!(
+        matches!(outcome, Ok(ShareOutcome::Started(_))),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_offer_made_straight_after_the_platform_dropped_the_handle_is_taken() {
+    let rig = Rig::new(Plan::Accept).await;
+    let (handle, _) = rig.started().await;
+    // The platform lets go of the handle from a thread of its own too.
+    std::thread::spawn(move || drop(handle)).join().unwrap();
     let (outcome, _) = rig.share(window()).await;
     assert!(
         matches!(outcome, Ok(ShareOutcome::Started(_))),
@@ -547,6 +591,28 @@ async fn an_offer_does_not_wait_for_a_stop_longer_than_it_is_given() {
     .expect("the offer waited for longer than it was given");
     let waited = began.elapsed();
     assert!(waited >= Duration::from_millis(200), "{waited:?}");
+}
+
+#[tokio::test]
+async fn an_offer_is_made_only_once_the_stop_before_it_is_answered() {
+    let rig = Rig::new(Plan::Wait).await;
+    let streaming = rig.source.node.streaming();
+    // A `Stop` that went to the viewer a moment ago, and is not answered yet.
+    let answered = CancellationToken::new();
+    lock(&streaming.table)
+        .stops
+        .push((rig.viewer.id, answered.clone()));
+    let mut offer = Box::pin(rig.share(window()));
+    tokio::select! {
+        (outcome, _) = &mut offer => panic!("the offer ended: {outcome:?}"),
+        () = tokio::time::sleep(QUIET) => {}
+    }
+    assert!(
+        rig.app.asked().is_empty(),
+        "the offer went out before the Stop was answered"
+    );
+    answered.cancel();
+    asked_about(&rig, offer.as_mut()).await;
 }
 
 #[tokio::test]

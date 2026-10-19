@@ -321,6 +321,7 @@ pub(crate) async fn ask(
     let session = offer.session;
     let mut withdraw = Withdraw {
         streaming: Arc::clone(streaming),
+        runtime: tokio::runtime::Handle::current(),
         peer,
         connection: connection.clone(),
         session,
@@ -345,6 +346,8 @@ pub(crate) async fn ask(
 /// Withdraws an offer that has not been answered, when it is dropped.
 struct Withdraw {
     streaming: Arc<Streaming>,
+    /// Sends the `Stop`: whichever thread drops the call, it need not be in the runtime.
+    runtime: tokio::runtime::Handle,
     peer: DeviceId,
     connection: Connection,
     session: SessionId,
@@ -354,8 +357,13 @@ struct Withdraw {
 impl Drop for Withdraw {
     fn drop(&mut self) {
         if self.armed {
-            self.streaming
-                .stop_later(self.peer, &self.connection, self.session, StopReason::Ended);
+            self.streaming.stop_later(
+                &self.runtime,
+                self.peer,
+                &self.connection,
+                self.session,
+                StopReason::Ended,
+            );
         }
     }
 }
@@ -374,17 +382,18 @@ impl Streaming {
     /// Tells `peer` that the offer or the session `session` is over, from a place that cannot
     /// wait for the answer, such as a drop. The next offer to the same device waits for it
     /// ([`settled`](Self::settled)).
+    ///
+    /// The `Stop` is sent by a task of `runtime`. It is given and not looked for, since a drop
+    /// runs on whichever thread lets go: the platform ends a session from threads of its own,
+    /// which are not in the runtime, and from there no runtime would be found.
     pub(crate) fn stop_later(
         self: &Arc<Self>,
+        runtime: &tokio::runtime::Handle,
         peer: DeviceId,
         connection: &Connection,
         session: SessionId,
         reason: StopReason,
     ) {
-        // Dropped outside the runtime, there is nothing to send the `Stop` with.
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
         let answered = CancellationToken::new();
         {
             let mut table = lock(&self.table);
