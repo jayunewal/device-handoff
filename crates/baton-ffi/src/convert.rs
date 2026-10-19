@@ -450,14 +450,27 @@ mod tests {
     }
 
     #[test]
-    fn how_a_transfer_ended_and_how_far_it_got_are_copied_as_they_are() {
+    fn how_a_transfer_ended_is_copied_as_it_is() {
         let end = app::TransferEnd {
             request: 3,
             device_id: "cd".repeat(32),
             device_name: "Mac".to_owned(),
             files: 2,
             bytes: 99,
-            preview: Vec::new(),
+            preview: vec![
+                app::PreviewName {
+                    name: "Holiday".to_owned(),
+                    folder: true,
+                    files: 1,
+                    bytes: 90,
+                },
+                app::PreviewName {
+                    name: "notes.txt".to_owned(),
+                    folder: false,
+                    files: 0,
+                    bytes: 9,
+                },
+            ],
             saved: vec![
                 std::path::PathBuf::from("/Users/someone/Downloads/Holiday"),
                 std::path::PathBuf::from("/Users/someone/Downloads/notes 2.txt"),
@@ -470,6 +483,24 @@ mod tests {
             (3, 2, 99)
         );
         assert_eq!(converted.result, TransferResult::Received { failed: 1 });
+        // What was offered is copied as the request showed it, in the same order.
+        assert_eq!(
+            converted.preview,
+            [
+                PreviewName {
+                    name: "Holiday".to_owned(),
+                    folder: true,
+                    files: 1,
+                    bytes: 90,
+                },
+                PreviewName {
+                    name: "notes.txt".to_owned(),
+                    folder: false,
+                    files: 0,
+                    bytes: 9,
+                },
+            ]
+        );
         // The places come in the order they were given, as the text of each full path.
         assert_eq!(
             converted.saved,
@@ -478,15 +509,22 @@ mod tests {
                 "/Users/someone/Downloads/notes 2.txt"
             ]
         );
-        // They are shown to the person and are not for a log.
+        // They and the names offered are shown to the person and are not for a log.
         let logged = format!("{converted:?}");
         assert!(!logged.contains("someone"), "{logged}");
+        assert!(
+            !logged.contains("Holiday") && !logged.contains("notes"),
+            "{logged}"
+        );
         assert!(logged.contains("saved: 2"), "{logged}");
         assert_eq!(
             TransferResult::from(app::TransferResult::Dropped),
             TransferResult::Dropped
         );
+    }
 
+    #[test]
+    fn how_far_a_send_got_and_whether_files_are_taken_are_copied_as_they_are() {
         for (stage, copy) in [
             (app::SendStage::Connecting, SendStage::Connecting),
             (app::SendStage::Asking, SendStage::Asking),
