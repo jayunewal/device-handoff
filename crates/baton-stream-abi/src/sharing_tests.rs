@@ -36,16 +36,17 @@ use tokio::task::JoinHandle;
 use crate::{
     Error, Registry,
     abi::{
-        BEGIN_DELTA, BEGIN_KEY, BEGIN_NOT_NOW, BatonBytes, BatonPicked, BatonPicture, CODEC_H264,
-        FRAME_KEY, FRAME_RECOVERY, FRAME_REFERENCED, PAUSE_HIDDEN, PAUSE_LOCKED, SENT, SENT_OVER,
-        SENT_STALE, SENT_TOO_LARGE, SOURCE_CONFIG, SOURCE_PAUSE, SOURCE_RESUME, size_of_u32,
+        BEGIN_DELTA, BEGIN_KEY, BEGIN_NOT_NOW, BatonBytes, BatonFormat, BatonPicked, BatonPicture,
+        CODEC_H264, FRAME_KEY, FRAME_RECOVERY, FRAME_REFERENCED, PAUSE_HIDDEN, PAUSE_LOCKED,
+        PAUSE_OTHER, SENT, SENT_OVER, SENT_STALE, SENT_TOO_LARGE, SOURCE_CONFIG, SOURCE_PAUSE,
+        SOURCE_RESUME, size_of_u32,
     },
     fake::{Call, Decoded, Fake, Watchdog},
     fake_sharer::{
         self, FakeSharer, Pic, PickPlan, PreparePlan, SharerCall, StartPlan, begin, cancel, clock,
-        end, new_epoch, pause, recovery_pending, resume, sent,
+        end, new_epoch, new_epoch_raw, pause, recovery_pending, resume, sent,
     },
-    fixture::{HEIGHT, PPS, SPS, WIDTH, pictures},
+    fixture::{HEIGHT, PPS, SPS, WIDTH, pictures, sps},
     session_tests::{Dev, QUIET, WAIT, avcc, next_matching, pair, units_of, until, window_ended},
 };
 
@@ -311,6 +312,13 @@ impl Rig {
         (kind, outcome, number)
     }
 
+    /// As `send`, with a key frame that has a sequence parameter set for a picture of `size`.
+    async fn send_sized(&self, link: u64, at: u64, size: (u32, u32)) -> (u32, u32, u64) {
+        let kind = self.wanted(link).await;
+        let (outcome, number) = sent(&self.registry, link, &pic_sized(kind, at, size)).unwrap();
+        (kind, outcome, number)
+    }
+
     /// The calls of the viewing platform about a screen that are not a question about how the
     /// decoder is doing, which the session asks as it likes.
     fn screen_calls(&self, screen: u64) -> Vec<Call> {
@@ -428,6 +436,35 @@ fn pic(kind: u32, at: u64) -> Pic {
             sample: avcc(&pictures[1]),
             sets: Vec::new(),
         }
+    }
+}
+
+/// The sequence parameter set (a unit, without a start code) of a picture of this size: whole
+/// blocks of 16 pixels, with the rest cropped off, as an encoder writes it. Both sides are even.
+fn sps_of(width: u32, height: u32) -> Vec<u8> {
+    let (across, down) = (width.div_ceil(16), height.div_ceil(16));
+    sps(
+        (across, down),
+        ((across * 16 - width) / 2, (down * 16 - height) / 2),
+    )
+}
+
+/// A key frame of the encoder with these sequence parameter sets in place of its own, and its
+/// picture parameter set after them.
+fn key_with(sequence: Vec<Vec<u8>>, at: u64) -> Pic {
+    let key = pic(BEGIN_KEY, at);
+    let mut sets = sequence;
+    sets.extend(units_of(&pictures()[0], PPS));
+    Pic { sets, ..key }
+}
+
+/// What `pic` makes, with the sequence parameter set of a picture of `size` in a key frame: the
+/// slices are the encoder's, and the library does not look at them.
+fn pic_sized(kind: u32, at: u64, (width, height): (u32, u32)) -> Pic {
+    if kind == BEGIN_KEY {
+        key_with(vec![sps_of(width, height)], at)
+    } else {
+        pic(kind, at)
     }
 }
 
@@ -681,6 +718,9 @@ async fn pausing_stops_the_pictures_and_tells_the_other_device_why() {
     assert_eq!(pause(&rig.registry, link, PAUSE_HIDDEN), Ok(()));
     assert_eq!(begin(&rig.registry, link), Ok(BEGIN_NOT_NOW));
     assert_eq!(resume(&rig.registry, link), Ok(()));
+    assert_eq!(pause(&rig.registry, link, PAUSE_OTHER), Ok(()));
+    assert_eq!(begin(&rig.registry, link), Ok(BEGIN_NOT_NOW));
+    assert_eq!(resume(&rig.registry, link), Ok(()));
 
     // A reason that is not known is refused, and the pictures go on as before.
     assert_eq!(pause(&rig.registry, link, 99), Err(Error::Argument));
@@ -700,13 +740,15 @@ async fn pausing_stops_the_pictures_and_tells_the_other_device_why() {
             })
             .collect()
     };
-    until("the other platform to be told", || heard(&rig).len() == 4).await;
+    until("the other platform to be told", || heard(&rig).len() == 6).await;
     assert_eq!(
         heard(&rig),
         [
             (SOURCE_PAUSE, PAUSE_LOCKED),
             (SOURCE_RESUME, 0),
             (SOURCE_PAUSE, PAUSE_HIDDEN),
+            (SOURCE_RESUME, 0),
+            (SOURCE_PAUSE, PAUSE_OTHER),
             (SOURCE_RESUME, 0),
         ]
     );
@@ -732,7 +774,10 @@ async fn a_new_size_starts_a_new_epoch_and_a_picture_of_the_old_size_is_stale() 
     );
     // The next picture is a key frame of the new epoch.
     assert!(recovery_pending(&rig.registry, link).unwrap());
-    assert_eq!(rig.send(link, 2).await, (BEGIN_KEY, SENT, 1));
+    assert_eq!(
+        rig.send_sized(link, 2, (32, 24)).await,
+        (BEGIN_KEY, SENT, 1)
+    );
 
     until("the other platform to be told the new size", || {
         rig.configs(1).len() == 2
@@ -969,6 +1014,201 @@ async fn a_picture_that_cannot_go_on_the_wire_is_refused_and_the_frame_is_asked_
         "a picture that was refused was sent"
     );
 
+    assert!(rig.viewing.app.end_window(1));
+    rig.nothing_is_left().await;
+}
+
+#[tokio::test]
+async fn a_key_frame_that_describes_a_larger_picture_than_the_one_announced_is_refused() {
+    let mut rig = Rig::new().await;
+    let link = rig.share(false).await.link;
+    // The picture that was announced is the encoder's: 64 by 48 pixels. The other device refuses
+    // a key frame that describes more than it takes, and nothing here would say why.
+    let too_large = [
+        ("wider", vec![sps_of(80, 48)]),
+        ("higher", vec![sps_of(64, 64)]),
+        ("a window at its own size", vec![sps_of(2880, 1800)]),
+        // A set can crop a large picture down to the right size, and a decoder allocates for the
+        // large one.
+        (
+            "a large picture cropped to the size",
+            vec![sps((8, 6), (32, 24))],
+        ),
+        (
+            "a set that fits and one that does not",
+            vec![sps_of(64, 48), sps_of(80, 48)],
+        ),
+        (
+            "a set that does not fit and one that does",
+            vec![sps_of(80, 48), sps_of(64, 48)],
+        ),
+    ];
+    for (what, sequence) in too_large {
+        // Each refusal gives the frame up, and no key frame went out yet: this is asked for again.
+        assert_eq!(rig.wanted(link).await, BEGIN_KEY, "{what}");
+        assert_eq!(
+            sent(&rig.registry, link, &key_with(sequence, 0)),
+            Err(Error::Argument),
+            "{what}"
+        );
+    }
+
+    // Nothing went out, and a key frame of the size that was announced is the first of the session.
+    assert_eq!(rig.wanted(link).await, BEGIN_KEY);
+    assert_eq!(
+        sent(&rig.registry, link, &key_with(vec![sps_of(64, 48)], 0)),
+        Ok((SENT, 0))
+    );
+    // The others are the first key frames of epochs of the same size.
+    let fits = [
+        ("a smaller picture", vec![sps_of(64, 40)]),
+        ("two sets that fit", vec![sps_of(64, 48), sps_of(32, 32)]),
+    ];
+    for (number, (what, sequence)) in (1..).zip(fits) {
+        assert_eq!(
+            new_epoch(&rig.registry, link, (CODEC_H264, 64, 48, 30)),
+            Ok(())
+        );
+        assert_eq!(rig.wanted(link).await, BEGIN_KEY, "{what}");
+        assert_eq!(
+            sent(&rig.registry, link, &key_with(sequence, number)),
+            Ok((SENT, number)),
+            "{what}"
+        );
+    }
+
+    // The sets of a frame that is not a key frame are not sent, and are not looked at.
+    assert_eq!(rig.wanted(link).await, BEGIN_DELTA);
+    let delta = Pic {
+        sets: key_with(vec![sps_of(80, 48)], 0).sets,
+        ..pic(BEGIN_DELTA, 3)
+    };
+    assert_eq!(sent(&rig.registry, link, &delta), Ok((SENT, 3)));
+    assert!(rig.sharing.app.end_window(1));
+    rig.nothing_is_left().await;
+}
+
+#[tokio::test]
+async fn a_new_epoch_changes_the_size_that_a_key_frame_is_held_to() {
+    let mut rig = Rig::new().await;
+    let link = rig.share(false).await.link;
+    assert_eq!(
+        rig.send_sized(link, 0, (64, 48)).await,
+        (BEGIN_KEY, SENT, 0)
+    );
+
+    // Smaller: a key frame of the old size describes more than the other device was told.
+    assert_eq!(
+        new_epoch(&rig.registry, link, (CODEC_H264, 32, 24, 15)),
+        Ok(())
+    );
+    assert_eq!(rig.wanted(link).await, BEGIN_KEY);
+    assert_eq!(
+        sent(&rig.registry, link, &pic_sized(BEGIN_KEY, 1, (64, 48))),
+        Err(Error::Argument)
+    );
+    assert_eq!(
+        rig.send_sized(link, 1, (32, 24)).await,
+        (BEGIN_KEY, SENT, 1)
+    );
+
+    // Larger: one that was too large before is not now, and the new size is the limit.
+    assert_eq!(
+        new_epoch(&rig.registry, link, (CODEC_H264, 128, 96, 15)),
+        Ok(())
+    );
+    assert_eq!(rig.wanted(link).await, BEGIN_KEY);
+    assert_eq!(
+        sent(&rig.registry, link, &pic_sized(BEGIN_KEY, 2, (160, 96))),
+        Err(Error::Argument)
+    );
+
+    // A format that is refused changes nothing, the size that pictures are held to included. The
+    // library refuses what the protocol does not allow, and the session refuses what the protocol
+    // allows and the other device does not take.
+    let takes = Fake::default_limits();
+    for (what, format) in [
+        ("an edge beyond the protocol", (CODEC_H264, 3841, 24, 15)),
+        ("no rate", (CODEC_H264, 16, 12, 0)),
+        ("a codec that is not known", (2, 16, 12, 15)),
+        (
+            "a width beyond what the other device takes",
+            (CODEC_H264, takes.max_width + 1, 24, 15),
+        ),
+        (
+            "a height beyond what the other device takes",
+            (CODEC_H264, 16, takes.max_height + 1, 15),
+        ),
+        (
+            "a rate beyond what the other device takes",
+            (CODEC_H264, 16, 12, takes.max_fps + 1),
+        ),
+    ] {
+        assert_eq!(
+            new_epoch(&rig.registry, link, format),
+            Err(Error::Argument),
+            "{what}"
+        );
+    }
+    assert_eq!(rig.wanted(link).await, BEGIN_KEY);
+    assert_eq!(
+        sent(&rig.registry, link, &pic_sized(BEGIN_KEY, 2, (160, 96))),
+        Err(Error::Argument)
+    );
+    assert_eq!(
+        rig.send_sized(link, 2, (128, 96)).await,
+        (BEGIN_KEY, SENT, 2)
+    );
+    assert!(rig.sharing.app.end_window(1));
+    rig.nothing_is_left().await;
+}
+
+#[tokio::test]
+async fn a_format_that_is_not_whole_is_refused_and_starts_no_epoch() {
+    let mut rig = Rig::new().await;
+    let link = rig.share(false).await.link;
+    assert_eq!(rig.send(link, 0).await, (BEGIN_KEY, SENT, 0));
+    until("the other platform to be told the pictures", || {
+        rig.configs(1).len() == 1
+    })
+    .await;
+
+    let whole = size_of_u32::<BatonFormat>();
+    let format = |size: u32| BatonFormat {
+        size,
+        codec: CODEC_H264,
+        width: 32,
+        height: 24,
+        fps: 15,
+        reserved: 0,
+    };
+    for (what, bad) in [
+        ("no format", None),
+        ("a struct with no size", Some(format(0))),
+        ("a struct that is too short", Some(format(whole - 1))),
+    ] {
+        // SAFETY: the struct is whole, and lives through the call.
+        let result = unsafe { new_epoch_raw(&rig.registry, link, bad.as_ref()) };
+        assert_eq!(result, Err(Error::Argument), "{what}");
+    }
+    // No epoch began: the other device heard nothing, and the next picture is a delta.
+    tokio::time::sleep(QUIET).await;
+    assert_eq!(
+        rig.configs(1).len(),
+        1,
+        "a format that was refused was told"
+    );
+    assert_eq!(rig.send(link, 1).await, (BEGIN_DELTA, SENT, 1));
+
+    // A struct that says it is longer than this version knows is read as far as this version
+    // knows it, and no further.
+    // SAFETY: the struct is whole, and lives through the call.
+    let result = unsafe { new_epoch_raw(&rig.registry, link, Some(&format(whole + 8))) };
+    assert_eq!(result, Ok(()));
+    until("the other platform to be told the new size", || {
+        rig.configs(1).len() == 2
+    })
+    .await;
     assert!(rig.viewing.app.end_window(1));
     rig.nothing_is_left().await;
 }
@@ -1216,6 +1456,10 @@ async fn a_picture_that_the_platform_cannot_make_within_what_the_other_device_ta
     let takes = Fake::default_limits();
     let plans = [
         ("a platform that cannot choose", PreparePlan::Fail(-1)),
+        (
+            "a platform that chooses and answers with a positive number",
+            PreparePlan::Answers(1),
+        ),
         ("no codec", PreparePlan::Format(0, 64, 48, 30)),
         (
             "a codec that is not known",
@@ -1269,6 +1513,15 @@ async fn a_capture_that_cannot_begin_ends_the_session_and_the_person_is_told_wha
     let said = "Screen recording is switched off for Baton. Switch it on in System Settings.";
     let cases = [
         ("a sentence", start_fails(said.as_bytes(), 76), said),
+        (
+            "a start that answers with a positive number",
+            StartPlan::Fail {
+                code: 1,
+                text: said.as_bytes().to_vec(),
+                claimed_len: 76,
+            },
+            said,
+        ),
         (
             "a sentence that is claimed to be longer than there was room for",
             start_fails(said.as_bytes(), 100_000),

@@ -245,6 +245,8 @@ pub(crate) struct AbiPicked {
     app: String,
     width: u32,
     height: u32,
+    /// The size of the picture that `prepare` chose, once it has.
+    prepared: Option<(u32, u32)>,
 }
 
 impl AbiPicked {
@@ -256,6 +258,7 @@ impl AbiPicked {
             app: given.app,
             width: given.width,
             height: given.height,
+            prepared: None,
         }
     }
 }
@@ -302,9 +305,11 @@ impl PickedWindow for AbiPicked {
         let chosen = self.window.prepare(&what_it_takes(takes))?;
         // The session checks the same, but a picture beyond what the other device takes is not
         // one that the platform is to be given the chance to make.
-        format_of(&chosen)
+        let format = format_of(&chosen)
             .ok()
-            .filter(|format| takes.allows(format))
+            .filter(|format| takes.allows(format))?;
+        self.prepared = Some((format.width, format.height));
+        Some(format)
     }
 
     /// Starts the capture. The window is given a link first, so that the platform's threads can
@@ -315,7 +320,10 @@ impl PickedWindow for AbiPicked {
     /// of a call into the library.
     fn start(self: Box<Self>, handle: Arc<SourceHandle>, failure: SharingFailure) {
         let Self {
-            mut window, shared, ..
+            mut window,
+            shared,
+            prepared,
+            ..
         } = *self;
         let mut over = Box::pin(handle.on_end());
         // A session that is over before it starts does not get a capture that is stopped at once.
@@ -330,7 +338,10 @@ impl PickedWindow for AbiPicked {
             failure.fail(NOT_STARTED);
             return;
         };
-        let link = Arc::new(SourceLink::new(handle, failure.clone()));
+        // A window that was not prepared has no picture that a set could be held to, and gets no
+        // key frame through. The app prepares every window that it starts.
+        let size = prepared.unwrap_or_default();
+        let link = Arc::new(SourceLink::new(handle, failure.clone(), size));
         let number = shared.links.add_source(Arc::clone(&link));
         if let Err(why) = window.start(number) {
             shared.links.remove(number);
@@ -446,14 +457,19 @@ pub(crate) struct SourceLink {
     failure: SharingFailure,
     /// The kind of the frame that `begin` announced and that nothing has answered yet.
     announced: Mutex<Option<FrameKind>>,
+    /// The width and height of the picture that the other device was told to expect: the one that
+    /// `prepare` chose, and then the one of each `new_epoch`. The sequence parameter sets of a key
+    /// frame are held to it.
+    size: Mutex<(u32, u32)>,
 }
 
 impl SourceLink {
-    fn new(handle: Arc<SourceHandle>, failure: SharingFailure) -> Self {
+    fn new(handle: Arc<SourceHandle>, failure: SharingFailure, size: (u32, u32)) -> Self {
         Self {
             handle,
             failure,
             announced: Mutex::new(None),
+            size: Mutex::new(size),
         }
     }
 
@@ -493,22 +509,33 @@ impl SourceLink {
     ///
     /// [`Error::Argument`] if no picture was announced, or this one cannot go on the wire: a
     /// length that reaches beyond its end, a unit that could be taken for more than one, parameter
-    /// sets that are not, or a key frame that lacks a sequence or a picture parameter set or holds
-    /// no slice of an IDR picture. Nothing was sent, and the caller gives up on the frame that
-    /// `begin` announced with [`cancel`](Self::cancel).
+    /// sets that are not, a key frame that lacks a sequence or a picture parameter set or holds no
+    /// slice of an IDR picture, or one whose sequence parameter set describes a picture larger
+    /// than the one the other device was told to expect. Nothing was sent, and the caller gives up
+    /// on the frame that `begin` announced with [`cancel`](Self::cancel).
     pub(crate) fn sent(&self, picture: &Made<'_>) -> Result<Outcome, Error> {
         let Some(announced) = lock(&self.announced).take() else {
             return Err(Error::Argument);
         };
         let mut bytes = Vec::with_capacity(picture.sample.len().saturating_add(64));
-        let converted = h264::avcc_to_annex_b(
+        let Ok(summary) = h264::avcc_to_annex_b(
             picture.sample,
             picture.length_size,
             &picture.sets,
             &mut bytes,
-        );
+        ) else {
+            return Err(Error::Argument);
+        };
         // A key frame that holds no IDR picture is one that no viewer could start from.
-        if !converted.is_ok_and(|summary| announced != FrameKind::Key || summary.idr) {
+        if announced == FrameKind::Key && !summary.idr {
+            return Err(Error::Argument);
+        }
+        // The sets go out with a picture that holds an IDR slice, and a decoder allocates by them.
+        // The other device refuses a key frame whose set describes more than it takes, and
+        // nothing on this one would say why: an encoder that codes at the size of the window and
+        // not at the size that was announced, or one that was made before the last `new_epoch`,
+        // would show nothing there and no failure here.
+        if summary.idr && !self.fit(&picture.sets) {
             return Err(Error::Argument);
         }
         let sent = self.handle.sent(Picture {
@@ -530,6 +557,16 @@ impl SourceLink {
         })
     }
 
+    /// Whether every sequence parameter set among `sets` describes pictures no larger than the
+    /// ones that the other device was told to expect. The picture parameter sets say nothing of
+    /// the size.
+    fn fit(&self, sets: &[&[u8]]) -> bool {
+        let (width, height) = *lock(&self.size);
+        sets.iter()
+            .filter(|set| set.first().is_some_and(|byte| byte & 0x1f == h264::NAL_SPS))
+            .all(|set| h264::picture_fits(set, width, height))
+    }
+
     /// A picture of more than [`MAX_PICTURE_BYTES`](baton_proto::limits::MAX_PICTURE_BYTES) is not
     /// read. The frame that `begin` announced is given up on, and the platform is told that it
     /// was too large.
@@ -545,7 +582,10 @@ impl SourceLink {
     /// [`Error::Argument`] if the format is beyond what the protocol allows or the viewer takes.
     pub(crate) fn new_epoch(&self, chosen: &Chosen) -> Result<(), Error> {
         let format = format_of(chosen)?;
-        self.handle.new_epoch(format).map_err(|_| Error::Argument)
+        let mut size = lock(&self.size);
+        self.handle.new_epoch(format).map_err(|_| Error::Argument)?;
+        *size = (format.width, format.height);
+        Ok(())
     }
 
     /// Stops the pictures for a while, for a `PAUSE_` reason.

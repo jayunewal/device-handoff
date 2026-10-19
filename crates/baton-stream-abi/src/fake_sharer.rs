@@ -81,8 +81,11 @@ pub(crate) enum PreparePlan {
     /// Chooses this, whatever the other device takes: the codec, the width, the height and the
     /// rate.
     Format(u32, u32, u32, u32),
-    /// Fails with this code.
+    /// Fails with this code, having written nothing.
     Fail(i32),
+    /// Chooses as `Within` does, and answers with this code: a number other than `OK` is a
+    /// failure whatever was written.
+    Answers(i32),
 }
 
 /// What `start` does.
@@ -628,15 +631,17 @@ unsafe extern "C" fn prepare(
         progress.prepared = true;
     }
     let plan = fake.state().prepare;
-    let chosen = match plan {
-        PreparePlan::Within => (
-            CODEC_H264,
-            takes.max_width.min(crate::fixture::WIDTH),
-            takes.max_height.min(crate::fixture::HEIGHT),
-            takes.max_fps.min(30),
-        ),
-        PreparePlan::Format(codec, width, height, fps) => (codec, width, height, fps),
+    let within = (
+        CODEC_H264,
+        takes.max_width.min(crate::fixture::WIDTH),
+        takes.max_height.min(crate::fixture::HEIGHT),
+        takes.max_fps.min(30),
+    );
+    let (chosen, code) = match plan {
+        PreparePlan::Within => (within, OK),
+        PreparePlan::Format(codec, width, height, fps) => ((codec, width, height, fps), OK),
         PreparePlan::Fail(code) => return code,
+        PreparePlan::Answers(code) => (within, code),
     };
     // SAFETY: not null, and the struct is the platform's to write.
     unsafe {
@@ -649,7 +654,7 @@ unsafe extern "C" fn prepare(
             reserved: 0,
         });
     }
-    OK
+    code
 }
 
 unsafe extern "C" fn start(picked: *mut c_void, link: u64, message: *mut BatonMessage) -> i32 {
@@ -864,6 +869,22 @@ pub(crate) fn new_epoch(
     };
     // SAFETY: a struct of the interface that is whole.
     unsafe { registry.source_new_epoch(link, &raw const format) }
+}
+
+/// The size of the picture changed, with the struct as given: `None` is a null pointer.
+///
+/// # Safety
+///
+/// `format` is a struct that lives through the call and is at least as long as its size says,
+/// or `None`.
+pub(crate) unsafe fn new_epoch_raw(
+    registry: &Registry,
+    link: u64,
+    format: Option<&BatonFormat>,
+) -> Result<(), Error> {
+    let pointer = format.map_or(ptr::null(), ptr::from_ref);
+    // SAFETY: null, or a struct of the interface that lives through the call, as promised.
+    unsafe { registry.source_new_epoch(link, pointer) }
 }
 
 pub(crate) fn pause(registry: &Registry, link: u64, reason: u32) -> Result<(), Error> {
