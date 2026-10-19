@@ -355,6 +355,54 @@ class FakeSession implements Session {
     return count;
   }
 
+  /// What `receiving` gives.
+  Receiving taking = const Receiving.on_();
+
+  @override
+  Receiving receiving() => taking;
+
+  /// What `receiveFolder` gives.
+  @override
+  String? receiveFolder = '/Users/test/Downloads';
+
+  /// What `answerTransfer` was asked, in order.
+  final List<({int request, bool accept})> transferAnswers = [];
+
+  /// What `answerTransfer` says: whether the request was still waiting.
+  bool transferWaiting = true;
+
+  @override
+  bool answerTransfer(int request, {required bool accept}) {
+    transferAnswers.add((request: request, accept: accept));
+    return transferWaiting;
+  }
+
+  /// What `sendFiles` was given and accepted, in order.
+  final List<({String id, List<String> paths})> filesSent = [];
+
+  /// What `sendFiles` throws, if it should fail.
+  Object? sendFilesFailure;
+
+  /// Makes `sendFiles` wait until [releaseSendFiles], as a start that takes a while does.
+  void holdSendFiles() => _sendFilesReady = Completer<void>();
+
+  /// Lets the held `sendFiles` answer.
+  void releaseSendFiles() => _sendFilesReady?.complete();
+
+  Completer<void>? _sendFilesReady;
+
+  /// The transfer that the latest `sendFiles` started.
+  late FakeFileTransfer transfer;
+
+  @override
+  Future<FileTransfer> sendFiles(String id, List<String> paths) async {
+    await _sendFilesReady?.future;
+    final failure = sendFilesFailure;
+    if (failure != null) throw failure;
+    filesSent.add((id: id, paths: [...paths]));
+    return transfer = FakeFileTransfer();
+  }
+
   // The rule that the library keeps, closely enough for a screen to be tried against it: only
   // http and https, written out as the library writes them.
   @override
@@ -375,6 +423,73 @@ class FakeSession implements Session {
     stopped = true;
     await _joining?.close();
     await _events.close();
+  }
+}
+
+/// A transfer of files that a test moves on by hand.
+class FakeFileTransfer implements FileTransfer {
+  FakeFileTransfer() {
+    // A transfer that is given up before anyone waits for its end has no one to hear the error.
+    _outcome.future.ignore();
+  }
+
+  FileProgress _progress = const FileProgress(
+    stage: SendStage.connecting,
+    attempt: 1,
+    files: 1,
+    bytes: 1000,
+    sent: 0,
+  );
+
+  final Completer<FilesSent> _outcome = Completer<FilesSent>();
+
+  /// Whether `cancel` was called.
+  bool cancelled = false;
+
+  @override
+  FileProgress progress() => _progress;
+
+  @override
+  void cancel() {
+    cancelled = true;
+    fail(
+      const BatonError(
+        kind: ErrorKind.cancelled,
+        message: 'You stopped sending.',
+      ),
+    );
+  }
+
+  @override
+  Future<FilesSent> outcome() => _outcome.future;
+
+  /// Moves the transfer on, as Baton would.
+  void advance({
+    SendStage? stage,
+    int? files,
+    int? bytes,
+    int? sent,
+    int? attempt,
+  }) {
+    _progress = FileProgress(
+      stage: stage ?? _progress.stage,
+      attempt: attempt ?? _progress.attempt,
+      files: files ?? _progress.files,
+      bytes: bytes ?? _progress.bytes.toInt(),
+      sent: sent ?? _progress.sent.toInt(),
+    );
+  }
+
+  /// Ends the transfer with [sent].
+  void finish(FilesSent sent) {
+    advance(stage: SendStage.over);
+    if (!_outcome.isCompleted) _outcome.complete(sent);
+  }
+
+  /// Ends the transfer with [error].
+  void fail(BatonError error) {
+    advance(stage: SendStage.over);
+    if (!_outcome.isCompleted) _outcome.completeError(error);
   }
 }
 
@@ -408,4 +523,47 @@ Received sampleReceived(
   fromName: from,
   receivedAt: at,
   item: item,
+);
+
+/// A request for files that a test can show.
+TransferRequest sampleTransfer({
+  int id = 3,
+  String from = 'Anna’s iPhone',
+  int files = 2,
+  int folders = 0,
+  int bytes = 3200000,
+  List<PreviewName>? preview,
+}) => TransferRequest(
+  id: id,
+  deviceId: 'b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0',
+  deviceName: from,
+  items: preview?.length ?? 2,
+  files: files,
+  folders: folders,
+  bytes: bytes,
+  preview:
+      preview ??
+      const [
+        PreviewName(
+          name: 'holiday.jpg',
+          folder: false,
+          files: 0,
+          bytes: 2000000,
+        ),
+        PreviewName(name: 'notes.txt', folder: false, files: 0, bytes: 1200000),
+      ],
+);
+
+/// How a transfer that [request] asked for ended.
+TransferEnd sampleTransferEnd(
+  TransferRequest request, {
+  TransferResult result = const TransferResult.received(failed: 0),
+}) => TransferEnd(
+  request: request.id,
+  deviceId: request.deviceId,
+  deviceName: request.deviceName,
+  files: request.files,
+  bytes: request.bytes,
+  preview: request.preview,
+  result: result,
 );

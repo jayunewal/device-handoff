@@ -9,14 +9,17 @@
 // The Dart side hands over owned values, and the generated glue cannot pass references.
 #![allow(clippy::needless_pass_by_value)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use baton_app::{App, Options};
 use flutter_rust_bridge::{frb, spawn};
 
 use super::{
     error::BatonError,
-    model::{Device, Event, JoinProgress, Me, Network, Offer, Reach, Received},
+    model::{
+        Device, Event, FileProgress, FilesSent, JoinProgress, Me, Network, Offer, Reach, Received,
+        Receiving,
+    },
 };
 use crate::convert::signed;
 use crate::frb_generated::StreamSink;
@@ -39,14 +42,21 @@ impl Baton {
     /// leaves the settings file in charge. An iPhone or iPad passes `false` for both,
     /// because iOS only lets an app use the multicast messages that they start with when
     /// Apple has approved it for that.
+    ///
+    /// `receive_dir` is the folder that files sent by other devices are put in, which has to
+    /// exist and be one the app may write to. `None` leaves this device taking no files. If
+    /// Baton cannot use the folder it still starts, and `receiving` says why it takes no
+    /// files.
     pub async fn start(
         data_dir: String,
         lan_discovery: Option<bool>,
         port_mapping: Option<bool>,
+        receive_dir: Option<String>,
     ) -> Result<Baton, BatonError> {
         let mut options = Options::new(data_dir);
         options.lan_discovery = lan_discovery;
         options.port_mapping = port_mapping;
+        options.receive_dir = receive_dir.map(PathBuf::from);
         let app = App::start(options).await?;
         Ok(Self { app })
     }
@@ -174,6 +184,31 @@ impl Baton {
         Ok(self.app.send_text(&id, &text).await?)
     }
 
+    /// Starts sending files and folders, given by their paths, to a paired device, and
+    /// returns at once with the transfer that is going. The person at the other end is asked
+    /// whether to take them. Look at `FileSend.progress` now and then to show how far the
+    /// transfer has got, and wait for `FileSend.outcome` for the end.
+    pub async fn send_files(&self, id: String, paths: Vec<String>) -> Result<FileSend, BatonError> {
+        let paths = paths.into_iter().map(PathBuf::from).collect();
+        Ok(FileSend {
+            send: self.app.send_files(&id, paths).await?,
+        })
+    }
+
+    /// Whether this device takes files from other devices, and if not, why. It is decided
+    /// when Baton starts, from the `receive_dir` it was given.
+    #[frb(sync)]
+    pub fn receiving(&self) -> Receiving {
+        self.app.receiving().into()
+    }
+
+    /// Answers a `TransferRequest`. Returns `false` if it is not waiting any more, because it
+    /// was answered already, the other device gave up, or the person's two minutes ran out.
+    #[frb(sync)]
+    pub fn answer_transfer(&self, request: i64, accept: bool) -> bool {
+        u64::try_from(request).is_ok_and(|request| self.app.answer_transfer(request, accept))
+    }
+
     /// What other devices have sent, newest first.
     pub fn inbox(&self) -> Result<Vec<Received>, BatonError> {
         Ok(self.app.inbox()?.into_iter().map(Received::from).collect())
@@ -190,6 +225,36 @@ impl Baton {
     /// Removes everything from the inbox. Returns how many items it held.
     pub fn clear_inbox(&self) -> Result<i64, BatonError> {
         Ok(signed(self.app.clear_inbox()?))
+    }
+}
+
+/// A transfer of files to another device that is going. Letting go of it before it has
+/// ended gives the transfer up.
+#[frb(opaque)]
+#[derive(Debug)]
+pub struct FileSend {
+    send: baton_app::FileSend,
+}
+
+impl FileSend {
+    /// How far the transfer has got. This is cheap, and the latest is always there.
+    #[frb(sync)]
+    pub fn progress(&self) -> FileProgress {
+        self.send.progress().into()
+    }
+
+    /// Gives the transfer up, and tells the other device if it can. `outcome` then throws
+    /// `ErrorKind.cancelled`. It does nothing once the transfer is over.
+    #[frb(sync)]
+    pub fn cancel(&self) {
+        self.send.cancel();
+    }
+
+    /// Waits for the end of the transfer. It throws `ErrorKind.declined` if the other device
+    /// did not take the files, `ErrorKind.unreachable` if Baton gave up reaching it,
+    /// `ErrorKind.cancelled` if `cancel` was called, and the message says what happened.
+    pub async fn outcome(&self) -> Result<FilesSent, BatonError> {
+        Ok(self.send.outcome().await?.into())
     }
 }
 

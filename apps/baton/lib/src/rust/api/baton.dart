@@ -9,7 +9,7 @@ import 'model.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `fmt`, `fmt`
 
 /// The address to open for a received link, if it is a web address, one that starts with
 /// `http` or `https`; `null` otherwise. A received link is opened only if this returns an
@@ -39,6 +39,10 @@ abstract class Baton implements RustOpaqueInterface {
   /// Answers a `PairingRequest`. Returns `false` if it is not waiting any more, because it
   /// was answered already or the offer ended.
   bool answerPairing({required PlatformInt64 request, required bool accept});
+
+  /// Answers a `TransferRequest`. Returns `false` if it is not waiting any more, because it
+  /// was answered already, the other device gave up, or the person's two minutes ran out.
+  bool answerTransfer({required PlatformInt64 request, required bool accept});
 
   /// Gives up on a `join_pairing` that is still waiting.
   void cancelJoin();
@@ -86,8 +90,18 @@ abstract class Baton implements RustOpaqueInterface {
   /// Checks that a paired device answers, and how its traffic gets here.
   Future<Reach> ping({required String id});
 
+  /// Whether this device takes files from other devices, and if not, why. It is decided
+  /// when Baton starts, from the `receive_dir` it was given.
+  Receiving receiving();
+
   /// Removes one item from the inbox. Returns whether there was such an item.
   Future<bool> removeReceived({required PlatformInt64 number});
+
+  /// Starts sending files and folders, given by their paths, to a paired device, and
+  /// returns at once with the transfer that is going. The person at the other end is asked
+  /// whether to take them. Look at `FileSend.progress` now and then to show how far the
+  /// transfer has got, and wait for `FileSend.outcome` for the end.
+  Future<FileSend> sendFiles({required String id, required List<String> paths});
 
   /// Sends a web link to a paired device.
   Future<void> sendLink({
@@ -107,14 +121,21 @@ abstract class Baton implements RustOpaqueInterface {
   /// leaves the settings file in charge. An iPhone or iPad passes `false` for both,
   /// because iOS only lets an app use the multicast messages that they start with when
   /// Apple has approved it for that.
+  ///
+  /// `receive_dir` is the folder that files sent by other devices are put in, which has to
+  /// exist and be one the app may write to. `None` leaves this device taking no files. If
+  /// Baton cannot use the folder it still starts, and `receiving` says why it takes no
+  /// files.
   static Future<Baton> start({
     required String dataDir,
     bool? lanDiscovery,
     bool? portMapping,
+    String? receiveDir,
   }) => RustLib.instance.api.crateApiBatonBatonStart(
     dataDir: dataDir,
     lanDiscovery: lanDiscovery,
     portMapping: portMapping,
+    receiveDir: receiveDir,
   );
 
   /// Stops the network, telling the devices that are connected, and lets go of the
@@ -124,4 +145,19 @@ abstract class Baton implements RustOpaqueInterface {
 
   /// Forgets a paired device. It can no longer reach this one until it is paired again.
   Future<void> unpair({required String id});
+}
+
+// Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<FileSend>>
+abstract class FileSend implements RustOpaqueInterface {
+  /// Gives the transfer up, and tells the other device if it can. `outcome` then throws
+  /// `ErrorKind.cancelled`. It does nothing once the transfer is over.
+  void cancel();
+
+  /// Waits for the end of the transfer. It throws `ErrorKind.declined` if the other device
+  /// did not take the files, `ErrorKind.unreachable` if Baton gave up reaching it,
+  /// `ErrorKind.cancelled` if `cancel` was called, and the message says what happened.
+  Future<FilesSent> outcome();
+
+  /// How far the transfer has got. This is cheap, and the latest is always there.
+  FileProgress progress();
 }

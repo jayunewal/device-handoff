@@ -16,10 +16,12 @@ import 'support_folder.dart';
 /// Baton as the Rust library runs it.
 class RustBackend implements Backend {
   /// [dataDir] is the folder that belongs to Baton alone. Without one, the folder for this
-  /// system is used, made inside [supportFolder]. [library] says where to find the Rust library;
-  /// without it, it is the one that is built into the app.
+  /// system is used, made inside [supportFolder]. [receiveDir] is the folder that the files other
+  /// devices send are put in; without one, [supportFolder] says which. [library] says where to
+  /// find the Rust library; without it, it is the one that is built into the app.
   RustBackend({
     this._dataDir,
+    this._receiveDir,
     ExternalLibrary Function()? library,
     this._supportFolder = const SupportFolder(),
   }) : _library = library ?? _builtIn;
@@ -30,6 +32,7 @@ class RustBackend implements Backend {
   static const folderName = 'baton-app';
 
   final String? _dataDir;
+  final String? _receiveDir;
   final SupportFolder _supportFolder;
   final ExternalLibrary Function() _library;
 
@@ -97,12 +100,27 @@ class RustBackend implements Backend {
     // has approved the app for it. So it finds the other device through the relay, and then
     // moves to a direct path.
     final phone = io.Platform.isIOS;
+    final (receiveDir, receiveProblem) = await _receiveFolder();
     final baton = await api.Baton.start(
       dataDir: await _folder(),
       lanDiscovery: phone ? false : null,
       portMapping: phone ? false : null,
+      receiveDir: receiveDir,
     );
-    return _RustSession(baton);
+    return _RustSession(baton, receiveDir, receiveProblem);
+  }
+
+  /// Where the files that other devices send are put, or a sentence that says why there is no
+  /// such place. Not finding it does not stop Baton: pairing and sending do not need it, and the
+  /// session tells the screens that this device takes no files, and why.
+  Future<(String?, String?)> _receiveFolder() async {
+    try {
+      return (_receiveDir ?? await _supportFolder.receiveFolder(), null);
+    } on StateError catch (e) {
+      return (null, e.message);
+    } on UnsupportedError catch (e) {
+      return (null, e.message ?? 'Baton does not run on this system yet.');
+    }
   }
 
   @override
@@ -117,9 +135,11 @@ class RustBackend implements Backend {
 }
 
 class _RustSession implements Session {
-  _RustSession(this._baton);
+  _RustSession(this._baton, this._receiveFolder, this._receiveProblem);
 
   final api.Baton _baton;
+  final String? _receiveFolder;
+  final String? _receiveProblem;
 
   @override
   Me get me => _baton.me();
@@ -154,6 +174,25 @@ class _RustSession implements Session {
   void cancelJoin() => _baton.cancelJoin();
 
   @override
+  Receiving receiving() {
+    final problem = _receiveProblem;
+    if (problem != null) return Receiving.unusable(message: problem);
+    return _baton.receiving();
+  }
+
+  @override
+  String? get receiveFolder =>
+      receiving() is Receiving_On ? _receiveFolder : null;
+
+  @override
+  bool answerTransfer(int request, {required bool accept}) =>
+      _baton.answerTransfer(request: request, accept: accept);
+
+  @override
+  Future<FileTransfer> sendFiles(String id, List<String> paths) async =>
+      _RustFileTransfer(await _baton.sendFiles(id: id, paths: paths));
+
+  @override
   Future<void> sendLink(String id, String url, {String? title}) =>
       _baton.sendLink(id: id, url: url, title: title);
 
@@ -182,4 +221,19 @@ class _RustSession implements Session {
 
   @override
   Future<void> stop() => _baton.stop();
+}
+
+class _RustFileTransfer implements FileTransfer {
+  _RustFileTransfer(this._send);
+
+  final api.FileSend _send;
+
+  @override
+  FileProgress progress() => _send.progress();
+
+  @override
+  void cancel() => _send.cancel();
+
+  @override
+  Future<FilesSent> outcome() => _send.outcome();
 }
