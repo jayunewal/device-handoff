@@ -9,6 +9,7 @@
 import CoreMedia
 import CoreVideo
 import Foundation
+import IOSurface
 import VideoToolbox
 
 /// The two planes of a picture, row by row without the padding at the end of each row.
@@ -294,6 +295,27 @@ func testVideoToolboxPicturesReachTheScreenThroughTheWholeChain() {
   screen.ended()
   check(pictures.all.last.map { $0 == nil } ?? false, "the screen still shows a picture after the end")
   screen.released()
+}
+
+func testAPictureWithNothingInItIsOneThatFlutterDraws() {
+  // A texture that has no picture is given this one: Flutter on an iPhone goes on drawing the
+  // last picture of a texture that answers with none.
+  guard let blank = makeBlankPicture() else { return check(false, "no blank picture was made") }
+  check(
+    CVPixelBufferGetPixelFormatType(blank) == kCVPixelFormatType_32BGRA,
+    "the format that the decoder makes, which Flutter draws as it is")
+  check(CVPixelBufferGetWidth(blank) > 0 && CVPixelBufferGetHeight(blank) > 0)
+  check(
+    CVPixelBufferGetIOSurface(blank) != nil,
+    "Flutter draws a picture with Metal, from memory that the GPU shares")
+  guard CVPixelBufferLockBaseAddress(blank, .readOnly) == kCVReturnSuccess,
+    let base = CVPixelBufferGetBaseAddress(blank)
+  else { return check(false, "the picture cannot be read") }
+  defer { CVPixelBufferUnlockBaseAddress(blank, .readOnly) }
+  let bytes = UnsafeBufferPointer(
+    start: base.assumingMemoryBound(to: UInt8.self),
+    count: CVPixelBufferGetBytesPerRow(blank) * CVPixelBufferGetHeight(blank))
+  check(bytes.allSatisfy { $0 == 0 }, "a picture with nothing in it has nothing in it")
 }
 
 /// The pictures that a screen was asked to show, from any thread.

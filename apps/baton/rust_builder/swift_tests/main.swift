@@ -143,6 +143,61 @@ var tests: [(String, () -> Void)] = [
     "parameter sets are copies split at the sequence sets",
     testParameterSetsAreCopiesSplitAtTheSequenceSets
   ),
+  (
+    "a failure that comes while a frame is prepared for is not undone",
+    testAFailureThatComesWhileAFrameIsPreparedForIsNotUndone
+  ),
+  (
+    "a screen that ends while a frame is prepared for decodes nothing",
+    testAScreenThatEndsWhileAFrameIsPreparedForDecodesNothing
+  ),
+  (
+    "a picture that was held is not shown after the end",
+    testAPictureThatWasHeldIsNotShownAfterTheEnd
+  ),
+  ("only the key flag makes a key frame", testOnlyTheKeyFlagMakesAKeyFrame),
+  (
+    "the state can be read while pictures come out",
+    testTheStateCanBeReadWhilePicturesComeOut
+  ),
+  (
+    "places are made when asked, and only the missing ones",
+    testPlacesAreMadeWhenAskedAndOnlyTheMissingOnesAre
+  ),
+  (
+    "a place that cannot be made stops the filling and is tried again",
+    testAPlaceThatCannotBeMadeStopsTheFillingAndIsTriedAgain
+  ),
+  ("a place is used by one window at a time", testAPlaceIsUsedByOneWindowAtATime),
+  ("no place is taken before any is made", testNoPlaceIsTakenBeforeAnyIsMade),
+  ("a count below one wants nothing", testACountBelowOneWantsNothing),
+  (
+    "fills at the same time make each place once",
+    testFillsAtTheSameTimeMakeEachPlaceOnce
+  ),
+  (
+    "a place can be taken while the others are still being made",
+    testAPlaceCanBeTakenWhileTheOthersAreStillBeingMade
+  ),
+  (
+    "places are taken and given from many threads without losing one",
+    testPlacesAreTakenAndGivenFromManyThreadsWithoutLosingOne
+  ),
+  ("an attempt that works is not repeated", testAnAttemptThatWorksIsNotRepeated),
+  (
+    "an attempt that does not work is repeated after each delay and then given up",
+    testAnAttemptThatDoesNotWorkIsRepeatedAfterEachDelayAndThenGivenUp
+  ),
+  ("trying stops as soon as an attempt works", testTryingStopsAsSoonAsAnAttemptWorks),
+  ("no delays means one attempt", testNoDelaysMeansOneAttempt),
+  (
+    "places are made once the engine runs, as on a Mac",
+    testPlacesAreMadeOnceTheEngineRunsAsTheMacDoes
+  ),
+  (
+    "places that never come are given up on, and made when a window asks",
+    testPlacesThatNeverComeAreGivenUpOnAndAskedForAgainWhenAWindowComes
+  ),
 ]
 
 #if canImport(VideoToolbox)
@@ -168,6 +223,10 @@ var tests: [(String, () -> Void)] = [
     (
       "VideoToolbox pictures reach the screen through the whole chain",
       testVideoToolboxPicturesReachTheScreenThroughTheWholeChain
+    ),
+    (
+      "a picture with nothing in it is one that Flutter draws",
+      testAPictureWithNothingInItIsOneThatFlutterDraws
     ),
   ]
 #endif

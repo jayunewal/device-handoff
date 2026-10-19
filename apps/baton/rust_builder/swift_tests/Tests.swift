@@ -48,6 +48,18 @@ final class Arena {
     return BatonBytes(ptr: view.baseAddress?.assumingMemoryBound(to: UInt8.self), len: view.count)
   }
 
+  /// A struct that is only `size` bytes long, as one from an older Rust side would be, with its
+  /// size field set. A read of more than that is a read past the end of the allocation, which the
+  /// address sanitizer reports.
+  func shortStruct<T>(_ type: T.Type, size: Int) -> UnsafeMutablePointer<T> {
+    let block = UnsafeMutableRawBufferPointer.allocate(
+      byteCount: size, alignment: MemoryLayout<T>.alignment)
+    blocks.append(block)
+    block.initializeMemory(as: UInt8.self, repeating: 0)
+    block.storeBytes(of: UInt32(size), toByteOffset: 0, as: UInt32.self)
+    return block.baseAddress!.assumingMemoryBound(to: T.self)
+  }
+
   /// A frame of the interface, the way the Rust side builds it.
   func frame(
     flags: UInt32 = 0, number: UInt64 = 0, sample: [UInt8] = [0, 0, 0, 1, 0x65],
@@ -376,6 +388,14 @@ func testASentenceThatDoesNotFitIsCutBetweenTwoCharacters() {
     check(result.sentence.utf8.count <= room, "room \(room): \(result.sentence)")
     check("Ça ne marche pas: étonnant".hasPrefix(result.sentence), "room \(room): \(result.sentence)")
     check(!result.sentence.contains("\u{FFFD}"), "room \(room): a character was cut in two")
+    // As much as fits: the character that follows the cut would not have.
+    let rest = "Ça ne marche pas: étonnant".unicodeScalars.dropFirst(
+      result.sentence.unicodeScalars.count)
+    if let next = rest.first {
+      check(
+        result.sentence.utf8.count + String(next).utf8.count > room,
+        "room \(room): \(result.sentence) leaves room for \(next)")
+    }
   }
   let whole = open(table, window(Arena()), room: 256)
   check(whole.sentence == "Ça ne marche pas: étonnant", whole.sentence)
@@ -512,8 +532,8 @@ func testAFrameThatIsNotWellFormedNeverReachesTheScreen() {
     sets: Array(repeating: [0x67], count: FrameInput.mostSets + 1), sequenceSets: 1)
   check(decode(context, tooMany) == refused, "more sets than a frame may have")
 
-  let short = arena.frame()
-  short.pointee.size = 40
+  let short = arena.shortStruct(BatonFrame.self, size: 40)
+  short.pointee.number = 9
   check(decode(context, short) == refused, "a struct that is shorter than this version knows")
 
   check(decode(context, nil) == refused, "no struct")
@@ -539,11 +559,14 @@ func testWhatTheSourceSaysReachesTheScreen() {
   let notice = message(
     UInt32(BATON_SOURCE_NOTICE), reason: UInt32(BATON_DROPPED_TOO_FAST), count: 5)
   let unknown = message(99)
-  var short = message(UInt32(BATON_SOURCE_RESUME))
-  short.size = 12
-  for var each in [config, pause, resume, notice, unknown, short] {
+  for var each in [config, pause, resume, notice, unknown] {
     source(context, &each)
   }
+  // Only 12 bytes are there, a kind and no more, which is a kind that is known.
+  let arena = Arena()
+  let short = arena.shortStruct(BatonSourceMessage.self, size: 12)
+  short.pointee.kind = UInt32(BATON_SOURCE_RESUME)
+  source(context, short)
   source(context, nil)
   source(nil, &config)
   check(
@@ -687,6 +710,8 @@ final class FakeDecoder: PictureDecoder {
 
   var prepared: [ParameterSets] = []
   var prepareWorks = true
+  /// Called while the decoder prepares, as the decoder's own threads may call back meanwhile.
+  var onPrepare: (() -> Void)?
   var takes = true
   var samples: [[UInt8]] = []
   private let lock = NSLock()
@@ -695,6 +720,7 @@ final class FakeDecoder: PictureDecoder {
 
   func prepare(_ sets: ParameterSets) -> Bool {
     prepared.append(sets)
+    onPrepare?()
     return prepareWorks
   }
 
@@ -1127,4 +1153,86 @@ func testParameterSetsAreCopiesSplitAtTheSequenceSets() {
   check(sets?.picture == [Data([0x68, 3])])
   check(sets?.all.count == 3)
   check(input(arena, number: 1).parameterSets == nil, "a frame with no sets has none")
+}
+
+func testAFailureThatComesWhileAFrameIsPreparedForIsNotUndone() {
+  let rig = Rig()
+  check(rig.screen.decode(rig.key(0)))
+  // The next frame is not a key frame, and comes with parameter sets of another size. While the
+  // decoder is made ready for them, the first frame fails on a thread of its own.
+  rig.decoder.onPrepare = { rig.decoder.finish(0, .failure(.dropped)) }
+  let sets = [[0x67, 0x4d, 0x00, 0x28], rig.pps]
+  let dependent = input(rig.arena, number: 1, sets: sets, sequenceSets: 1)
+  check(!rig.screen.decode(dependent), "a frame after a failure is not decoded until a key frame")
+  check(rig.decoder.samples.count == 1, "\(rig.decoder.samples.count) frames reached the decoder")
+  check(eventually { rig.failures == 1 }, "the failure was reported once: \(rig.failures)")
+  rig.decoder.onPrepare = nil
+  check(!rig.screen.decode(rig.delta(2)), "and neither is the one after it")
+  check(rig.screen.decode(rig.key(3)), "a key frame starts again")
+  check(rig.decoder.samples.count == 2)
+}
+
+func testAScreenThatEndsWhileAFrameIsPreparedForDecodesNothing() {
+  let rig = Rig()
+  check(rig.screen.decode(rig.key(0)))
+  rig.decoder.onPrepare = { rig.screen.ended() }
+  let sets = [[0x67, 0x4d, 0x00, 0x28], rig.pps]
+  let late = input(rig.arena, number: 1, key: true, sets: sets, sequenceSets: 1)
+  check(!rig.screen.decode(late), "a frame is not decoded by a screen that ended")
+  check(rig.decoder.samples.count == 1, "\(rig.decoder.samples.count) frames reached the decoder")
+}
+
+func testAPictureThatWasHeldIsNotShownAfterTheEnd() {
+  let rig = Rig()
+  check(rig.screen.decode(rig.key(0)))
+  rig.decoder.finish(0)
+  check(rig.shown.isEmpty, "nobody has asked for the picture yet: \(rig.shown)")
+  rig.screen.ended()
+  rig.screen.show(0)
+  check(rig.shown == [nil], "only the picture that is taken away: \(rig.shown)")
+}
+
+func testOnlyTheKeyFlagMakesAKeyFrame() {
+  let arena = Arena()
+  func frame(_ flags: UInt32) -> FrameInput {
+    FrameInput(
+      flags: flags, number: 0, dependsOn: 0, captureTime: 0, chain: 0, epoch: 0,
+      sample: arena.bytes([0, 0, 0, 1, 0x65]), sets: [], sequenceSets: 0)
+  }
+  let key = UInt32(BATON_FRAME_KEY)
+  let referenced = UInt32(BATON_FRAME_REFERENCED)
+  let recovery = UInt32(BATON_FRAME_RECOVERY)
+  check(!frame(0).isKey)
+  check(!frame(referenced).isKey, "a frame that others depend on is not a key frame")
+  check(!frame(recovery).isKey, "a frame that heals a loss is not a key frame")
+  check(!frame(referenced | recovery).isKey)
+  check(frame(key).isKey)
+  check(frame(key | referenced).isKey)
+  check(frame(key | recovery | referenced).isKey)
+}
+
+func testTheStateCanBeReadWhilePicturesComeOut() {
+  // The decoder answers on a thread of its own while the Rust side asks how it is doing. The
+  // times are read under the lock that the answers are written under, which the thread sanitizer
+  // shows if they are not.
+  let rig = Rig()
+  let frames: UInt64 = 200
+  check(rig.screen.decode(rig.key(0)))
+  for number in 1..<frames { check(rig.screen.decode(rig.delta(number))) }
+  let group = DispatchGroup()
+  group.enter()
+  Thread.detachNewThread {
+    for number in 0..<frames {
+      rig.decoder.finish(number)
+      usleep(50)
+    }
+    group.leave()
+  }
+  var reads = 0
+  while group.wait(timeout: .now()) != .success {
+    _ = rig.screen.state()
+    reads += 1
+  }
+  check(reads > 0, "the state was read while the pictures came out")
+  check(rig.screen.state().decodeMicros > 0, "the pictures took time to come out")
 }

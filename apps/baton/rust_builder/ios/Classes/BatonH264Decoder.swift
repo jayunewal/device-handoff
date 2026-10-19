@@ -204,4 +204,28 @@ final class H264Decoder: PictureDecoder {
   }
 }
 
+/// A picture with nothing in it, which a texture draws in place of a window that is over. It is
+/// small, since Flutter stretches a picture to the room it has, and transparent. It is made as the
+/// pictures of a window are (see `makeSession`), from memory that the GPU shares, so that Flutter
+/// draws it the same way.
+func makeBlankPicture() -> CVPixelBuffer? {
+  let attributes: [String: Any] = [
+    kCVPixelBufferMetalCompatibilityKey as String: true,
+    kCVPixelBufferIOSurfacePropertiesKey as String: [String: Any](),
+  ]
+  var made: CVPixelBuffer?
+  guard
+    CVPixelBufferCreate(
+      kCFAllocatorDefault, 16, 16, kCVPixelFormatType_32BGRA, attributes as CFDictionary, &made)
+      == kCVReturnSuccess,
+    let picture = made
+  else { return nil }
+  CVPixelBufferLockBaseAddress(picture, [])
+  defer { CVPixelBufferUnlockBaseAddress(picture, []) }
+  if let base = CVPixelBufferGetBaseAddress(picture) {
+    memset(base, 0, CVPixelBufferGetBytesPerRow(picture) * CVPixelBufferGetHeight(picture))
+  }
+  return picture
+}
+
 #endif

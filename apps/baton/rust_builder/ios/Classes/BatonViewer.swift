@@ -112,8 +112,10 @@ struct FrameInput {
   /// Reads a frame of the interface. nil if the struct is shorter than this version of the
   /// interface knows it, or a pointer or a count is wrong.
   init?(reading frame: UnsafePointer<BatonFrame>) {
+    // The size is read alone first: a struct that is shorter than this version of the interface
+    // knows it is not copied, since the copy would read past its end.
+    guard frame.pointee.size >= UInt32(MemoryLayout<BatonFrame>.size) else { return nil }
     let c = frame.pointee
-    guard c.size >= UInt32(MemoryLayout<BatonFrame>.size) else { return nil }
     guard let sample = UnsafeRawBufferPointer(reading: c.sample) else { return nil }
     // 0 <= sequence_sets <= set_count also keeps set_count from being below zero.
     guard c.set_count <= FrameInput.mostSets, c.sequence_sets >= 0,
@@ -183,8 +185,9 @@ enum SourceInput: Equatable {
   /// Reads a message of the interface. nil if the struct is shorter than this version of the
   /// interface knows it, or the kind is one it does not know.
   init?(reading message: UnsafePointer<BatonSourceMessage>) {
+    // The size first and alone, as for a frame.
+    guard message.pointee.size >= UInt32(MemoryLayout<BatonSourceMessage>.size) else { return nil }
     let c = message.pointee
-    guard c.size >= UInt32(MemoryLayout<BatonSourceMessage>.size) else { return nil }
     switch c.kind {
     case BATON_SOURCE_CONFIG:
       self = .config(epoch: c.epoch, width: c.width, height: c.height, fps: c.fps)
@@ -535,9 +538,15 @@ final class WindowScreen<Decoder: PictureDecoder>: ViewerScreen {
     }
     if current == nil { return false }
 
-    // A frame that gets here is a key frame, or comes when nothing is wrong.
     lock.lock()
+    // What the decoder is prepared for, whether or not this frame is decoded.
     sets = current
+    // A decoder may have failed on an earlier frame while this one was prepared for, or the
+    // screen may have ended: after a failure only a key frame goes on, and the end takes all.
+    if over || (waitingForKey && !frame.isKey) {
+      lock.unlock()
+      return false
+    }
     waitingForKey = false
     lock.unlock()
 
@@ -612,4 +621,109 @@ final class WindowScreen<Decoder: PictureDecoder>: ViewerScreen {
     ended()
     onRelease()
   }
+}
+
+// MARK: - Where windows are drawn
+
+/// What `ScreenPlaces` has made.
+struct PlacesStatus: Equatable {
+  var made: Int
+  var wanted: Int
+  /// How many times `fill` was called.
+  var tries: Int
+}
+
+/// The places that windows are drawn on, a fixed number of them, each used by one window at a
+/// time. On a device a place is a texture of Flutter. Flutter takes a texture only on the platform
+/// thread, and the Rust side asks for a screen from a thread of its own and does not wait, so the
+/// places are made ahead of the first window, on the platform thread, and a window takes one for as
+/// long as it is shown.
+///
+/// A place cannot always be made when the app starts: Flutter on a Mac takes a texture only once
+/// its engine runs, and that is after the plugins are registered. `fill` makes the places that are
+/// missing and says whether they all are there, so that it can be called again (`keepTrying`).
+final class ScreenPlaces<Place: AnyObject> {
+  /// Held while places are made, so that `make` is never called twice at the same time.
+  private let filling = NSLock()
+  /// Held for a moment, never while `make` runs, so that a window does not wait for Flutter.
+  private let lock = NSLock()
+  private let wanted: Int
+  private let make: () -> Place?
+  private var places: [Place] = []
+  private var taken = Set<ObjectIdentifier>()
+  private var tries = 0
+
+  /// `make` makes a place, or answers nil if the system would not give one. It is called by
+  /// `fill` only, and so on the thread that calls that.
+  init(count: Int, make: @escaping () -> Place?) {
+    wanted = max(count, 0)
+    self.make = make
+  }
+
+  /// Makes the places that are missing, and stops at the first that cannot be made. true if all
+  /// of them are there. Call it on the thread that `make` needs. A place can be taken as soon as
+  /// it is made.
+  @discardableResult
+  func fill() -> Bool {
+    filling.lock()
+    defer { filling.unlock() }
+    lock.lock()
+    tries += 1
+    var missing = wanted - places.count
+    lock.unlock()
+    while missing > 0 {
+      guard let place = make() else { break }
+      lock.lock()
+      places.append(place)
+      lock.unlock()
+      missing -= 1
+    }
+    lock.lock()
+    defer { lock.unlock() }
+    return places.count >= wanted
+  }
+
+  /// A place that no window uses, or nil if there is none: every one is in use, or none was made.
+  func take() -> Place? {
+    lock.lock()
+    defer { lock.unlock() }
+    guard let free = places.first(where: { !taken.contains(ObjectIdentifier($0)) }) else {
+      return nil
+    }
+    taken.insert(ObjectIdentifier(free))
+    return free
+  }
+
+  /// Gives the place back. A place that is not in use, or is not one of these, changes nothing.
+  func give(_ place: Place) {
+    lock.lock()
+    taken.remove(ObjectIdentifier(place))
+    lock.unlock()
+  }
+
+  var status: PlacesStatus {
+    lock.lock()
+    defer { lock.unlock() }
+    return PlacesStatus(made: places.count, wanted: wanted, tries: tries)
+  }
+}
+
+/// Does `attempt` and, as long as it says that it is not done, does it again after each of
+/// `delays`, in turn. `giveUp` is called when the last attempt was not done either. `later` runs a
+/// piece of work after a time, on the thread that `attempt` needs.
+func keepTrying(
+  after delays: [TimeInterval],
+  later: @escaping (TimeInterval, @escaping () -> Void) -> Void,
+  attempt: @escaping () -> Bool,
+  giveUp: @escaping () -> Void
+) {
+  func step(_ next: Int) {
+    if attempt() { return }
+    guard next < delays.count else {
+      giveUp()
+      return
+    }
+    later(delays[next]) { step(next + 1) }
+  }
+  step(0)
 }
