@@ -583,6 +583,30 @@ const sampleWindowRequest = WindowRequest(
   control: false,
 );
 
+/// A window that is shown on this device, or shared from it, for a test to show. A window that
+/// is shown has a screen to draw it with, and one that is shared has none.
+WindowSession sampleWindowSession({
+  int id = 1,
+  WindowRole role = WindowRole.viewing,
+  String device = 'Anna’s Mac',
+  String? title = 'Budget.numbers',
+  String? app = 'Numbers',
+  int width = 1440,
+  int height = 900,
+  int? screen,
+}) => WindowSession(
+  id: id,
+  role: role,
+  deviceId: 'b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0',
+  deviceName: device,
+  title: title,
+  app: app,
+  width: width,
+  height: height,
+  control: false,
+  screen: screen ?? (role == WindowRole.viewing ? 7 : null),
+);
+
 /// An item in the inbox that a test can show.
 Received sampleReceived(
   int number, {
