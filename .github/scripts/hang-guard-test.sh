@@ -156,6 +156,45 @@ left=$(pgrep -f 'sleep 7[12]' | tr '\n' ' ' || true)
 check "a hung tree: processes left" "$left" ""
 pkill -f 'sleep 7[12]' 2> /dev/null || true
 
+# With --silences, the end of a start lists the stretches without output, with the line on each
+# side of them. Without it there is no list.
+rm -f "$STARTS"
+cat > "$work/quiet.sh" <<'EOF'
+echo x >> "$STARTS"
+echo "last before the quiet"
+sleep 1.3
+echo "first after the quiet"
+echo "waiting for it"
+echo "got it"
+EOF
+status=0
+out=$(guard --silences 1 -- bash "$work/quiet.sh") || status=$?
+check "a silence: status" "$status" 0
+check "a silence: starts" "$(lines "$STARTS")" 1
+case "$out" in
+  *"the line before it: last before the quiet"*"the line after it:  first after the quiet"*) ;;
+  *) check "a silence: the report" "$out" "a report with the line on each side of the quiet" ;;
+esac
+out=$(guard --silences 5 -- bash "$work/quiet.sh")
+case "$out" in
+  *"No stretch of 5 seconds or more"*) ;;
+  *) check "no silence: the report" "$out" "a line that says there was none" ;;
+esac
+out=$(guard -- bash "$work/quiet.sh")
+case "$out" in
+  *"without output"*) check "silences not asked for: the output" "$out" "no report" ;;
+esac
+
+# A start that hangs leaves its wait as the last stretch without output.
+rm -f "$STARTS"
+status=0
+out=$(guard --attempts 1 --silences 0.3 -- bash "$work/stuck.sh") || status=$?
+check "a hung start with silences: status" "$status" 124
+case "$out" in
+  *"the line before it: waiting for it"*"the line after it:  (the end)"*) ;;
+  *) check "a hung start with silences: the report" "$out" "a report that ends with the wait" ;;
+esac
+
 if [ "$failed" != 0 ]; then
   exit 1
 fi

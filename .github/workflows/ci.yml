@@ -399,11 +399,14 @@ jobs:
           # printed the first of the two lines below and, 2.6 seconds later, the second. A second
           # start nearly always finds the app. Before it starts again, the app is stopped and the
           # report below is printed, so that a run that passed on the second start still says
-          # what went wrong in the first.
+          # what went wrong in the first. The end of each start also lists where it said nothing
+          # for 10 seconds or more, which is where the build and the other long waits show: the
+          # log is too long to read from its top.
           python3 "$GITHUB_WORKSPACE/.github/scripts/hang-guard.py" \
             --waiting 'Waiting for VM Service port to be available' \
             --finished 'VM Service URL on device' \
             --seconds 120 \
+            --silences 10 \
             --cleanup 'xcrun simctl terminate "$SIMULATOR_UDID" io.github.jayunewal.baton; bash "$GITHUB_WORKSPACE/.github/scripts/simulator-report.sh"' \
             -- flutter test integration_test -d "$SIMULATOR_UDID" -v
       - name: Show what the simulator logged about the app

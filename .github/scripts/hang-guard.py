@@ -10,13 +10,18 @@ else does, until the 25 minutes of the step are over and someone starts the whol
 of the same command is nearly always enough.
 
     hang-guard.py --waiting LINE --finished LINE --seconds N [--attempts N] [--grace N]
-                  [--cleanup SHELL-COMMAND] -- COMMAND [ARGUMENT...]
+                  [--cleanup SHELL-COMMAND] [--silences N] -- COMMAND [ARGUMENT...]
 
 The output of the command is passed on as it comes. When a line with --waiting in it has been
 printed, and no line with --finished in it follows within --seconds, everything that the command
 started is stopped, the --cleanup command runs, and the command starts again, up to --attempts
 times in all (two unless told otherwise). Only that hang starts it again: a command that ends,
 whatever its status, is not run twice, so a test that fails is still a failure.
+
+With --silences, the end of each start also lists the stretches of that many seconds or more in
+which the command printed nothing, with the line on each side. A build of an app says nothing
+for minutes, and the log of a long step is too long to read from its top, so this is where the
+time that a start took shows.
 
 The status is the one of the command, or 124 (as `timeout` has it) when every attempt hung.
 """
@@ -32,6 +37,8 @@ import time
 HUNG = 124
 # How often the output is looked at while the command runs.
 POLL = 0.2
+# How many stretches without output the report of --silences lists.
+MOST_SILENCES = 12
 # How long the --cleanup command may take. The iPhone job prints what the simulator logged, which
 # takes some time.
 CLEANUP_SECONDS = 180
@@ -55,7 +62,28 @@ def stop(process, grace):
     process.wait()
 
 
-def run_once(command, waiting, finished, seconds, grace):
+def shorten(line, missing):
+    """A line of output for the report: one line, and not too long. None is the start or the end."""
+    if line is None:
+        return missing
+    line = line.strip()
+    return line if len(line) <= 120 else line[:117] + "..."
+
+
+def say_silences(quiet, minimum):
+    """Lists the longest stretches in which the command printed nothing."""
+    if not quiet:
+        print(f"No stretch of {minimum:g} seconds or more without output in this start.", flush=True)
+        return
+    print(f"Stretches of {minimum:g} seconds or more without output in this start, longest first:", flush=True)
+    longest = sorted(quiet, key=lambda stretch: stretch[1] - stretch[0], reverse=True)
+    for began, ended, before, after in longest[:MOST_SILENCES]:
+        print(f"  {ended - began:7.1f} s, from {began:7.1f} s to {ended:7.1f} s after the start", flush=True)
+        print(f"      the line before it: {shorten(before, '(the start)')}", flush=True)
+        print(f"      the line after it:  {shorten(after, '(the end)')}", flush=True)
+
+
+def run_once(command, waiting, finished, seconds, grace, silences=None):
     """Runs the command once, and says whether it hung, with the status it ended with."""
     process = subprocess.Popen(
         command,
@@ -64,15 +92,24 @@ def run_once(command, waiting, finished, seconds, grace):
         # A process group of its own, so that one signal reaches the whole tree.
         start_new_session=True,
     )
+    began = time.monotonic()
     seen = {"waiting_since": None, "finished": False}
+    # The stretches without output: when each began and ended (in seconds after the start), and
+    # the lines on both sides of it.
+    quiet = []
+    last = {"at": began, "line": None}
 
     def pass_on():
         for line in iter(process.stdout.readline, b""):
+            now = time.monotonic()
             sys.stdout.buffer.write(line)
             sys.stdout.buffer.flush()
             text = line.decode("utf-8", errors="replace")
+            if silences is not None and now - last["at"] >= silences:
+                quiet.append((last["at"] - began, now - began, last["line"], text))
+            last["at"], last["line"] = now, text
             if seen["waiting_since"] is None and waiting in text:
-                seen["waiting_since"] = time.monotonic()
+                seen["waiting_since"] = now
             if finished in text:
                 seen["finished"] = True
 
@@ -88,6 +125,11 @@ def run_once(command, waiting, finished, seconds, grace):
             break
     # A process that got away with the pipe must not keep this one waiting for the end of it.
     reader.join(timeout=10)
+    if silences is not None:
+        ended = time.monotonic()
+        if ended - last["at"] >= silences:
+            quiet.append((last["at"] - began, ended - began, last["line"], None))
+        say_silences(quiet, silences)
     return hung, process.returncode
 
 
@@ -102,13 +144,18 @@ def main():
     parser.add_argument("--attempts", type=int, default=2, help="how many times the command may start")
     parser.add_argument("--grace", type=float, default=10, help="seconds between the two signals that stop it")
     parser.add_argument("--cleanup", help="a shell command to run after a hang, before the next attempt")
+    parser.add_argument(
+        "--silences",
+        type=float,
+        help="list the stretches of this many seconds or more without output at the end of each start",
+    )
     args = parser.parse_args(sys.argv[1:split])
     command = sys.argv[split + 1 :]
     if not command:
         parser.error("there is no command after --")
 
     for attempt in range(1, args.attempts + 1):
-        hung, status = run_once(command, args.waiting, args.finished, args.seconds, args.grace)
+        hung, status = run_once(command, args.waiting, args.finished, args.seconds, args.grace, args.silences)
         if not hung:
             return status
         print(
