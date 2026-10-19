@@ -6,6 +6,19 @@ import 'package:flutter/foundation.dart';
 
 import 'awake.dart';
 import 'backend.dart';
+import 'file_shower.dart';
+
+/// What came of taking the person to the files that arrived.
+enum ShowResult {
+  /// The system was asked to show them.
+  shown,
+
+  /// They are not there any more: the person moved or deleted them.
+  gone,
+
+  /// The system could not be asked.
+  failed,
+}
 
 /// What the screens show of the files that other devices send: the requests for the person to
 /// answer, the transfers they said yes to that are on their way, and how the last few ended.
@@ -15,10 +28,14 @@ import 'backend.dart';
 /// received has got, so there is no step to renew the hold with: the screen stays on for
 /// [awakeLimit] after the request and after the yes, and then goes back to locking as the person
 /// set it. [screen] does that; tests give it one of their own.
+///
+/// A transfer that has ended can take the person to the files that arrived, which [shower] does;
+/// tests give it one of their own.
 class TransfersController extends ChangeNotifier {
   TransfersController(
     this._session, {
     ScreenKeeper screen = const PlatformScreenKeeper(),
+    this._shower = const SystemFileShower(),
   }) : _awake = AwakeHold(screen);
 
   /// How many ended transfers are kept to be shown.
@@ -26,6 +43,7 @@ class TransfersController extends ChangeNotifier {
 
   final Session _session;
   final AwakeHold _awake;
+  final FileShower _shower;
   final StreamController<TransferRequest> _asked = StreamController.broadcast();
   StreamSubscription<Event>? _events;
   bool _disposed = false;
@@ -111,6 +129,22 @@ class TransfersController extends ChangeNotifier {
   /// Puts away what is shown of a transfer that has ended.
   void dismiss(TransferEnd end) {
     if (_ended.remove(end)) notifyListeners();
+  }
+
+  /// Whether there is anything of the transfer [end] to take the person to: something arrived.
+  bool canShow(TransferEnd end) => end.saved.isNotEmpty;
+
+  /// Takes the person to what arrived with [end]. The files are shown, not opened.
+  Future<ShowResult> show(TransferEnd end) async {
+    if (!canShow(end)) return ShowResult.gone;
+    try {
+      return await _shower.show(end.saved) ? ShowResult.shown : ShowResult.gone;
+    } on Object catch (e) {
+      // The names of the files are the person's, and an error can carry them, so only what went
+      // wrong is written down.
+      debugPrint('Baton: showing files: ${e.runtimeType}');
+      return ShowResult.failed;
+    }
   }
 
   /// The screen can turn off again when nothing is waiting or on its way.

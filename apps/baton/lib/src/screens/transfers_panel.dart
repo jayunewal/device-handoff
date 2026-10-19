@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
@@ -39,6 +41,10 @@ class TransfersPanel extends StatelessWidget {
             _EndedCard(
               end: end,
               where: where,
+              showLabel: describeShowFiles(platform ?? defaultTargetPlatform),
+              onShow: controller.canShow(end)
+                  ? () => unawaited(_show(context, end, where))
+                  : null,
               onDismiss: () => controller.dismiss(end),
             ),
         ];
@@ -64,6 +70,32 @@ class TransfersPanel extends StatelessWidget {
   String? _where(String? folder) => folder == null
       ? null
       : describeReceiveFolder(folder, platform ?? defaultTargetPlatform);
+
+  /// Takes the person to what arrived with [end], and says so when that did not work: the files
+  /// are the person's, so they can have been moved or deleted since.
+  Future<void> _show(
+    BuildContext context,
+    TransferEnd end,
+    String? where,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final one = end.saved.length == 1;
+    final problem = switch (await controller.show(end)) {
+      ShowResult.shown => null,
+      ShowResult.gone =>
+        one
+            ? 'Baton cannot find it any more. It may have been moved or deleted.'
+            : 'Baton cannot find them any more. They may have been moved or deleted.',
+      ShowResult.failed =>
+        'Baton could not show ${one ? 'it' : 'them'}. '
+            '${one ? 'It is' : 'They are'} in ${where ?? 'the folder for received files'}.',
+    };
+    if (problem != null) {
+      messenger
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(problem)));
+    }
+  }
 }
 
 /// A device asks to send files. The person has two minutes to say yes or no.
@@ -226,11 +258,19 @@ class _EndedCard extends StatelessWidget {
   const _EndedCard({
     required this.end,
     required this.where,
+    required this.showLabel,
+    required this.onShow,
     required this.onDismiss,
   });
 
   final TransferEnd end;
   final String? where;
+
+  /// What the button that takes the person to the files says.
+  final String showLabel;
+
+  /// Takes the person to the files that arrived, or `null` when none did.
+  final VoidCallback? onShow;
   final VoidCallback onDismiss;
 
   @override
@@ -263,19 +303,36 @@ class _EndedCard extends StatelessWidget {
       ),
     };
     return Card(
-      child: ListTile(
-        leading: Icon(
-          ok ? Icons.check_circle_outline : Icons.error_outline,
-          color: ok ? scheme.primary : scheme.error,
-        ),
-        title: Text(title),
-        subtitle: Text(detail),
-        isThreeLine: true,
-        trailing: IconButton(
-          icon: const Icon(Icons.close),
-          tooltip: 'Dismiss',
-          onPressed: onDismiss,
-        ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            leading: Icon(
+              ok ? Icons.check_circle_outline : Icons.error_outline,
+              color: ok ? scheme.primary : scheme.error,
+            ),
+            title: Text(title),
+            subtitle: Text(detail),
+            isThreeLine: true,
+            trailing: IconButton(
+              icon: const Icon(Icons.close),
+              tooltip: 'Dismiss',
+              onPressed: onDismiss,
+            ),
+          ),
+          if (onShow != null)
+            Padding(
+              padding: const EdgeInsets.only(right: 16, bottom: 8),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: onShow,
+                  icon: const Icon(Icons.folder_open_outlined),
+                  label: Text(showLabel),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }

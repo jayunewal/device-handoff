@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../backend.dart';
 import '../file_chooser.dart';
+import '../file_shower.dart';
 import '../inbox_controller.dart';
 import '../links.dart';
 import '../scanner.dart';
@@ -23,6 +24,7 @@ class HomeScreen extends StatefulWidget {
     this.scanner = cameraScanner,
     this.openLink = openInBrowser,
     this.chooser = const SystemFileChooser(),
+    this.shower = const SystemFileShower(),
     super.key,
   });
 
@@ -40,6 +42,9 @@ class HomeScreen extends StatefulWidget {
   /// Lets the person choose files and folders to send. Tests give it one of their own.
   final FileChooser chooser;
 
+  /// Takes the person to the files that arrived. Tests give it one of their own.
+  final FileShower shower;
+
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
@@ -50,6 +55,7 @@ class _HomeScreenState extends State<HomeScreen> {
   late final InboxController _inbox = InboxController(widget.session);
   late final TransfersController _transfers = TransfersController(
     widget.session,
+    shower: widget.shower,
   );
   StreamSubscription<Received>? _arrivals;
   StreamSubscription<TransferRequest>? _requests;

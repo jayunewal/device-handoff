@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'fake_backend.dart';
 import 'fake_screen.dart';
+import 'fake_shower.dart';
 
 /// Shows the panel at the bottom of a screen of [size], as the home screen does, and returns the
 /// session behind it and the controller.
@@ -16,6 +17,7 @@ Future<(FakeSession, TransfersController)> _show(
   TargetPlatform platform = TargetPlatform.macOS,
   Size size = const Size(900, 1600),
   FakeSession? session,
+  FakeShower? shower,
 }) async {
   final shown =
       session ??
@@ -27,7 +29,11 @@ Future<(FakeSession, TransfersController)> _show(
           fingerprint: 'wxyz-abcd-efgh-ijkl-mnop',
         ),
       );
-  final controller = TransfersController(shown, screen: FakeScreen());
+  final controller = TransfersController(
+    shown,
+    screen: FakeScreen(),
+    shower: shower ?? FakeShower(),
+  );
   await controller.start();
   tester.view
     ..physicalSize = size
@@ -378,6 +384,216 @@ void main() {
       ),
       findsOneWidget,
     );
+  });
+
+  group('the way to the files that arrived', () {
+    /// Ends a transfer of two files, as Baton does, and shows it.
+    Future<void> arrived(
+      WidgetTester tester,
+      FakeSession session, {
+      TransferResult result = const TransferResult.received(failed: 0),
+      List<String>? saved,
+    }) async {
+      session.emit(
+        Event.transferEnded(
+          end: sampleTransferEnd(
+            sampleTransfer(),
+            result: result,
+            saved: saved,
+          ),
+        ),
+      );
+      await tester.pump();
+    }
+
+    /// Presses the button, and lets what it asks for come back and show.
+    Future<void> press(WidgetTester tester, String label) async {
+      await tester.tap(find.text(label));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('a Mac shows them in Finder, and the card stays', (
+      tester,
+    ) async {
+      final shower = FakeShower();
+      final (session, _) = await _show(tester, shower: shower);
+      await arrived(tester, session);
+
+      expect(find.text('Show in Finder'), findsOneWidget);
+      expect(shower.asked, isEmpty, reason: 'nothing is shown unasked');
+
+      await press(tester, 'Show in Finder');
+
+      expect(shower.asked, [
+        [
+          '/Users/test/Downloads/holiday.jpg',
+          '/Users/test/Downloads/notes.txt',
+        ],
+      ]);
+      expect(find.byType(SnackBar), findsNothing);
+      expect(
+        find.text('Received 2 files from Anna’s iPhone'),
+        findsOneWidget,
+        reason: 'the person may want to look again',
+      );
+    });
+
+    testWidgets('an iPhone shows them in the Files app', (tester) async {
+      final shower = FakeShower();
+      final (session, _) = await _show(
+        tester,
+        platform: TargetPlatform.iOS,
+        shower: shower,
+      );
+      session.receiveFolder =
+          '/var/mobile/Containers/Data/Application/ID/Documents';
+      await arrived(
+        tester,
+        session,
+        saved: ['/var/mobile/Containers/Data/Application/ID/Documents/a.jpg'],
+      );
+
+      expect(find.text('Show in Finder'), findsNothing);
+      await press(tester, 'Show in Files');
+
+      expect(shower.asked, [
+        ['/var/mobile/Containers/Data/Application/ID/Documents/a.jpg'],
+      ]);
+    });
+
+    testWidgets('a transfer that kept nothing has no button', (tester) async {
+      final (session, _) = await _show(tester);
+
+      await arrived(tester, session, result: const TransferResult.dropped());
+      expect(find.text('Show in Finder'), findsNothing);
+      expect(find.byTooltip('Dismiss'), findsOneWidget);
+
+      await arrived(
+        tester,
+        session,
+        result: const TransferResult.received(failed: 2),
+      );
+      expect(
+        find.text('Nothing from Anna’s iPhone could be saved'),
+        findsOneWidget,
+      );
+      expect(find.text('Show in Finder'), findsNothing);
+    });
+
+    testWidgets(
+      'files that could not all be saved are shown with the ones that were',
+      (tester) async {
+        final shower = FakeShower();
+        final (session, _) = await _show(tester, shower: shower);
+        await arrived(
+          tester,
+          session,
+          result: const TransferResult.received(failed: 1),
+          saved: ['/Users/test/Downloads/notes.txt'],
+        );
+
+        await press(tester, 'Show in Finder');
+
+        expect(shower.asked, [
+          ['/Users/test/Downloads/notes.txt'],
+        ]);
+      },
+    );
+
+    testWidgets('each transfer that ended has a button for its own files', (
+      tester,
+    ) async {
+      final shower = FakeShower();
+      final (session, _) = await _show(tester, shower: shower);
+      session
+        ..emit(
+          Event.transferEnded(
+            end: sampleTransferEnd(
+              sampleTransfer(id: 1),
+              saved: ['/Users/test/Downloads/one.txt'],
+            ),
+          ),
+        )
+        ..emit(
+          Event.transferEnded(
+            end: sampleTransferEnd(
+              sampleTransfer(id: 2),
+              saved: ['/Users/test/Downloads/two.txt'],
+            ),
+          ),
+        );
+      await tester.pump();
+      expect(find.text('Show in Finder'), findsNWidgets(2));
+
+      // The newest is first.
+      await tester.tap(find.text('Show in Finder').first);
+      await tester.pump();
+      await tester.tap(find.text('Show in Finder').last);
+      await tester.pump();
+
+      expect(shower.asked, [
+        ['/Users/test/Downloads/two.txt'],
+        ['/Users/test/Downloads/one.txt'],
+      ]);
+    });
+
+    testWidgets('files that are gone are said to be', (tester) async {
+      final shower = FakeShower()..there = false;
+      final (session, _) = await _show(tester, shower: shower);
+      await arrived(tester, session);
+
+      await press(tester, 'Show in Finder');
+
+      expect(
+        find.text(
+          'Baton cannot find them any more. They may have been moved or deleted.',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Received 2 files from Anna’s iPhone'),
+        findsOneWidget,
+        reason: 'the card stays',
+      );
+    });
+
+    testWidgets('a single item that is gone is spoken of as one', (
+      tester,
+    ) async {
+      final shower = FakeShower()..there = false;
+      final (session, _) = await _show(tester, shower: shower);
+      await arrived(
+        tester,
+        session,
+        saved: ['/Users/test/Downloads/holiday.jpg'],
+      );
+
+      await press(tester, 'Show in Finder');
+
+      expect(
+        find.text(
+          'Baton cannot find it any more. It may have been moved or deleted.',
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('a system that cannot be asked says where the files are', (
+      tester,
+    ) async {
+      final shower = FakeShower()..failure = StateError('no');
+      final (session, _) = await _show(tester, shower: shower);
+      await arrived(tester, session);
+
+      await press(tester, 'Show in Finder');
+
+      expect(
+        find.text(
+          'Baton could not show them. They are in your Downloads folder.',
+        ),
+        findsOneWidget,
+      );
+    });
   });
 
   testWidgets('a transfer that was given up says that nothing was kept', (
