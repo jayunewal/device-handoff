@@ -718,3 +718,208 @@ async fn a_window_goes_through_from_the_offer_to_the_pictures_and_the_reports() 
     );
     assert!(heard.count("ended") >= 1);
 }
+
+#[test]
+fn a_viewer_cannot_say_it_takes_what_the_protocol_does_not_allow() {
+    let make = |width, height, fps, codecs| {
+        Viewing::new(Recording(Log::default()), width, height, fps, codecs)
+    };
+    assert!(make(3840, 3840, 120, vec![Codec::H264]).is_ok());
+    for (what, made) in [
+        (
+            "a codec that is not known",
+            make(1440, 900, 60, vec![Codec::Other]),
+        ),
+        (
+            "one among others",
+            make(1440, 900, 60, vec![Codec::H264, Codec::Other]),
+        ),
+        ("no codec", make(1440, 900, 60, vec![])),
+        ("nine codecs", make(1440, 900, 60, vec![Codec::H264; 9])),
+        ("no width", make(0, 900, 60, vec![Codec::H264])),
+        ("too wide", make(3841, 900, 60, vec![Codec::H264])),
+        ("too high", make(1440, 3841, 60, vec![Codec::H264])),
+        ("no rate", make(1440, 900, 0, vec![Codec::H264])),
+        ("too fast", make(1440, 900, 121, vec![Codec::H264])),
+    ] {
+        assert!(matches!(made, Err(Error::Config(_))), "{what}");
+    }
+}
+
+#[tokio::test]
+async fn an_offer_is_checked_in_the_order_of_the_protocol() {
+    let rig = Rig::new(Plan::Refuse).await;
+    let connection = rig.connection().await;
+    assert_eq!(rig.offer(1).await, declined(1, DeclineReason::Refused));
+
+    rig.app.plan(Plan::Wait);
+    let waiting = tokio::spawn({
+        let connection = connection.clone();
+        async move { ask(&connection, StreamRequest::Offer(offer(2))).await }
+    });
+    rig.until("the person to be asked", |rig| rig.app.asked().len() == 2)
+        .await;
+    // An id that was seen is invalid before another offer that waits is looked at.
+    assert_eq!(
+        ask(&connection, StreamRequest::Offer(offer(1))).await,
+        declined(1, DeclineReason::Invalid)
+    );
+    // A kind that this version does not know is unsupported before the id is looked at.
+    assert_eq!(
+        ask(
+            &connection,
+            StreamRequest::Offer(Offer {
+                source: SourceKind::Other,
+                ..offer(1)
+            })
+        )
+        .await,
+        declined(1, DeclineReason::Unsupported)
+    );
+    // An offer that was turned away because another waits was seen all the same.
+    assert_eq!(
+        ask(&connection, StreamRequest::Offer(offer(3))).await,
+        declined(3, DeclineReason::RateLimited)
+    );
+    assert_eq!(ask(&connection, stop(2)).await, stopped(2));
+    assert_eq!(waiting.await.unwrap(), declined(2, DeclineReason::Refused));
+    rig.app.plan(Plan::Accept);
+    assert_eq!(
+        ask(&connection, StreamRequest::Offer(offer(3))).await,
+        declined(3, DeclineReason::Invalid)
+    );
+    assert_eq!(rig.app.asked().len(), 2);
+}
+
+#[tokio::test]
+async fn a_stop_from_another_device_neither_ends_a_session_nor_withdraws_an_offer() {
+    let rig = Rig::new(Plan::Accept).await;
+    let other = TestNode::start().await;
+    other.pair_with(&rig.viewer);
+    let theirs = other
+        .node
+        .pooled_session(&rig.viewer.id)
+        .await
+        .unwrap()
+        .connection;
+
+    assert!(matches!(rig.offer(1).await, StreamReply::Accepted(_)));
+    let handle = rig.app.handle(0);
+    // The other device names the session of the source. It is answered, and nothing changes.
+    assert_eq!(ask(&theirs, stop(1)).await, stopped(1));
+    tokio::time::sleep(QUIET).await;
+    assert!(!rig.app.log.has(&Told::Ended));
+    assert!(rig.streaming().viewing(&session(1)).is_some());
+    handle.end();
+    rig.until("the session to be forgotten", |rig| {
+        rig.streaming().is_empty()
+    })
+    .await;
+
+    rig.app.plan(Plan::Wait);
+    let connection = rig.connection().await;
+    let waiting =
+        tokio::spawn(async move { ask(&connection, StreamRequest::Offer(offer(2))).await });
+    rig.until("the person to be asked", |rig| rig.app.asked().len() == 2)
+        .await;
+    assert_eq!(ask(&theirs, stop(2)).await, stopped(2));
+    tokio::time::sleep(QUIET).await;
+    assert!(!waiting.is_finished());
+    assert_eq!(rig.app.taken_back(), 0);
+    // The source withdraws it itself.
+    assert_eq!(rig.ask(stop(2)).await, stopped(2));
+    assert_eq!(waiting.await.unwrap(), declined(2, DeclineReason::Refused));
+}
+
+#[tokio::test]
+async fn unpairing_in_the_trust_list_ends_the_session_as_this_device_ending_it() {
+    let rig = Rig::new(Plan::Accept).await;
+    assert!(matches!(rig.offer(1).await, StreamReply::Accepted(_)));
+    let handle = rig.app.handle(0);
+    rig.viewer.trust.remove(&rig.source.id).unwrap();
+    assert_eq!(
+        tokio::time::timeout(PATIENCE, handle.ended())
+            .await
+            .expect("the session did not end"),
+        End::Local
+    );
+}
+
+/// An application whose person says yes when the test says so.
+struct Nod {
+    yes: tokio::sync::Notify,
+    asked: AtomicUsize,
+    handles: Mutex<Vec<ViewHandle>>,
+}
+
+impl WindowHandler for Nod {
+    fn offered<'a>(
+        &'a self,
+        _from: &'a PairedDevice,
+        _offer: &'a WindowOffer,
+    ) -> BoxFuture<'a, WindowVerdict> {
+        self.asked.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            self.yes.notified().await;
+            let viewing = Viewing::new(
+                Recording(Log::default()),
+                2796,
+                1290,
+                120,
+                vec![Codec::H264],
+            );
+            WindowVerdict::Accept(viewing.unwrap().within(quick()))
+        })
+    }
+
+    fn started(&self, _from: &PairedDevice, handle: ViewHandle) {
+        lock(&self.handles).push(handle);
+    }
+}
+
+#[tokio::test]
+async fn a_stop_that_lands_with_the_yes_withdraws_the_offer() {
+    let app = Arc::new(Nod {
+        yes: tokio::sync::Notify::new(),
+        asked: AtomicUsize::new(0),
+        handles: Mutex::default(),
+    });
+    let viewer = TestNode::with(|builder| builder.window_handler(Arc::clone(&app))).await;
+    let source = TestNode::start().await;
+    source.pair_with(&viewer);
+    let connection = source
+        .node
+        .pooled_session(&viewer.id)
+        .await
+        .unwrap()
+        .connection;
+    let paired = viewer.trust.get(&source.id).unwrap();
+    let streaming = viewer.node.streaming();
+
+    // In each round the yes and the Stop are both there when the offer is next looked at. Which
+    // one it sees first is chance, so a round that gets it wrong shows up about every other time.
+    for byte in 1..=24 {
+        let offered = tokio::spawn({
+            let connection = connection.clone();
+            async move { ask(&connection, StreamRequest::Offer(offer(byte))).await }
+        });
+        let deadline = Instant::now() + PATIENCE;
+        while app.asked.load(Ordering::SeqCst) < usize::from(byte) {
+            assert!(Instant::now() < deadline, "the person was not asked");
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        // Nothing else runs between the yes and the Stop: a test's runtime has one thread. The
+        // Stop is answered here as the session would answer it.
+        app.yes.notify_waiters();
+        let link = crate::transfer::incoming::Link::mint();
+        let stopping = streaming.answer(&paired, &connection, link, stop(byte));
+        assert_eq!(stopping.await, stopped(byte));
+        assert_eq!(
+            offered.await.unwrap(),
+            declined(byte, DeclineReason::Refused),
+            "round {byte}"
+        );
+        assert!(streaming.is_empty());
+        assert!(lock(&app.handles).is_empty());
+    }
+}

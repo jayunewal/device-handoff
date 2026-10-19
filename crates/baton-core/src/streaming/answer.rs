@@ -93,9 +93,9 @@ impl fmt::Debug for WindowOffer {
 /// What a viewer says when it takes a window: the largest picture it can show, the codecs it can
 /// decode, and the decoder and screen that it shows the picture with.
 pub struct Viewing {
-    decoder: Box<dyn Decoder>,
-    takes: Takes,
-    params: ViewParams,
+    pub(super) decoder: Box<dyn Decoder>,
+    pub(super) takes: Takes,
+    pub(super) params: ViewParams,
 }
 
 impl Viewing {
@@ -418,14 +418,18 @@ impl Streaming {
                 let Response::Stream(reply) = viewing.accepted(session) else {
                     return declined(DeclineReason::Refused);
                 };
-                let started = self.view(
-                    paired,
-                    connection.clone(),
-                    session,
-                    viewing.decoder,
-                    viewing.takes,
-                    viewing.params,
-                );
+                // A `Stop` that came together with the yes withdrew the offer, and the source was
+                // told `Stopped`, so the answer to the offer is `Refused` (section 9). That is
+                // looked at in the hold of the table lock that makes the session, and a `Stop`
+                // takes the lock to withdraw an offer and to find a session, so one of the two
+                // always sees the other.
+                let started = {
+                    let mut table = lock(&self.table);
+                    if claim.withdrawn.is_cancelled() {
+                        return declined(DeclineReason::Refused);
+                    }
+                    self.view_in(&mut table, paired, connection.clone(), session, viewing)
+                };
                 // The window is shown now, and that keeps other offers out from here on.
                 drop(claim);
                 match started {

@@ -191,18 +191,9 @@ impl Streaming {
         })
     }
 
-    /// Starts the viewer's side of a session that the person accepted: `peer` is the source, and
-    /// `connection` is the connection that it offered the window on.
-    ///
-    /// The decoder is given the pictures in the order in which they are to be decoded, and the
-    /// messages of the source. `takes` is what the viewer said it can take: a source that
-    /// describes a picture beyond it breaks a rule. The session ends, and the decoder is told,
-    /// when the source ends it, when it breaks a rule, when the connection ends, when the
-    /// returned handle is dropped and when the source does not open its control stream in time.
-    ///
-    /// # Errors
-    ///
-    /// The id is in use. A source picks it at random, so this is a source that repeats one.
+    /// The same as [`view_in`](Self::view_in), with the parts one by one and the lock of the table
+    /// taken here, for the tests of the viewer.
+    #[cfg(test)]
     pub(crate) fn view(
         self: &Arc<Self>,
         peer: &PairedDevice,
@@ -213,15 +204,54 @@ impl Streaming {
         params: ViewParams,
     ) -> Result<ViewHandle> {
         let mut table = lock(&self.table);
+        self.view_in(
+            &mut table,
+            peer,
+            connection,
+            session,
+            Viewing {
+                decoder: Box::new(decoder),
+                takes,
+                params,
+            },
+        )
+    }
+
+    /// Starts the viewer's side of a session that the person accepted: `peer` is the source, and
+    /// `connection` is the connection that it offered the window on. The caller holds the lock of
+    /// the table, so that it can look at something else in the same hold of it.
+    ///
+    /// The decoder is given the pictures in the order in which they are to be decoded, and the
+    /// messages of the source. `takes` is what the viewer said it can take: a source that
+    /// describes a picture beyond it breaks a rule. The session ends, and the decoder is told,
+    /// when the source ends it, when it breaks a rule, when the connection ends, when the
+    /// returned handle is dropped and when the source does not open its control stream in time.
+    ///
+    /// # Errors
+    ///
+    /// The id is in use. A source picks it at random, so this is a source that repeats one.
+    fn view_in(
+        self: &Arc<Self>,
+        table: &mut Table,
+        peer: &PairedDevice,
+        connection: Connection,
+        session: SessionId,
+        viewing: Viewing,
+    ) -> Result<ViewHandle> {
         if table.sessions.contains_key(&session) {
             return Err(Error::protocol("the session id is in use"));
         }
+        let Viewing {
+            decoder,
+            takes,
+            params,
+        } = viewing;
         let (view, handle) = View::start(
             Arc::downgrade(self),
             session,
             peer.id,
             connection,
-            Box::new(decoder),
+            decoder,
             takes,
             params,
         );
