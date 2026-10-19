@@ -196,3 +196,11 @@ String describeReceiveFolder(String path, TargetPlatform platform) =>
         'your Downloads folder',
       _ => 'the folder $path',
     };
+
+/// What the button that takes the person to received files says: it names the app that shows
+/// them, where Baton knows which it is.
+String describeShowFiles(TargetPlatform platform) => switch (platform) {
+  TargetPlatform.iOS => 'Show in Files',
+  TargetPlatform.macOS => 'Show in Finder',
+  _ => 'Show files',
+};

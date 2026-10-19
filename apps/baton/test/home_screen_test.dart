@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'fake_backend.dart';
+import 'fake_shower.dart';
 
 // Five minutes after the items in these tests were sent.
 final _now = DateTime.fromMillisecondsSinceEpoch((1760529600 + 300) * 1000);
@@ -47,6 +48,7 @@ Future<FakeSession> _show(
   WidgetTester tester, [
   FakeSession? given,
   FileChooser chooser = const SystemFileChooser(),
+  FakeShower? shower,
 ]) async {
   final session = given ?? _session();
   tester.view
@@ -62,6 +64,7 @@ Future<FakeSession> _show(
         scanner: (context, onCode) => const Text('(camera)'),
         openLink: (address) async => true,
         chooser: chooser,
+        shower: shower ?? FakeShower(),
       ),
     ),
   );
@@ -279,6 +282,30 @@ void main() {
       Event.transferEnded(end: sampleTransferEnd(sampleTransfer(id: 4))),
     );
     await tester.pump();
+  });
+
+  testWidgets('the files that arrived can be shown from the home screen', (
+    tester,
+  ) async {
+    final shower = FakeShower();
+    final session = await _show(
+      tester,
+      null,
+      const SystemFileChooser(),
+      shower,
+    );
+    session.emit(
+      Event.transferEnded(end: sampleTransferEnd(sampleTransfer(id: 4))),
+    );
+    await tester.pumpAndSettle();
+    expect(shower.asked, isEmpty);
+
+    await tester.tap(find.byIcon(Icons.folder_open_outlined));
+    await tester.pump();
+
+    expect(shower.asked, [
+      ['/Users/test/Downloads/holiday.jpg', '/Users/test/Downloads/notes.txt'],
+    ]);
   });
 
   testWidgets('a request that comes over another screen is pointed out', (

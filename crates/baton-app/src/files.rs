@@ -14,6 +14,7 @@
 use std::{
     collections::HashMap,
     fmt,
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
@@ -55,6 +56,8 @@ struct Taken {
     files: u32,
     bytes: u64,
     preview: Vec<PreviewName>,
+    /// Where the items that arrived were put, once the transfer has said.
+    saved: Vec<PathBuf>,
 }
 
 impl Files {
@@ -109,10 +112,17 @@ impl TransferHandler for Files {
                     files: summary.files,
                     bytes: summary.bytes,
                     preview,
+                    saved: Vec::new(),
                 },
             );
             Verdict::Accept
         })
+    }
+
+    fn placed(&self, from: &PairedDevice, id: TransferId, items: &[PathBuf]) {
+        if let Some(taken) = locked(&self.taken).get_mut(&(from.id, id)) {
+            taken.saved = items.to_vec();
+        }
     }
 
     fn ended(&self, from: &PairedDevice, id: TransferId, ending: Ending) {
@@ -126,6 +136,7 @@ impl TransferHandler for Files {
             files: taken.files,
             bytes: taken.bytes,
             preview: taken.preview,
+            saved: taken.saved,
             result: result_of(ending),
         }));
     }

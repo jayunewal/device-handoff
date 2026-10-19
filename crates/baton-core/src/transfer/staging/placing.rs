@@ -189,6 +189,25 @@ impl Staging {
         Ok(placement)
     }
 
+    /// Where the top-level items that [`place`](Self::place) put in place are, in the order of the
+    /// list: the paths of the items that came out [`InPlace`](Outcome::InPlace), with the number
+    /// that a taken name got. Nothing, until `place` has been called, and the same each time it is
+    /// asked afterwards. It moves nothing and waits for no disk, so it can be asked anywhere.
+    ///
+    /// The paths have the names of the person's files and the folder that they keep them in. They
+    /// are for the screen that shows the person where the files are, and not for a log.
+    pub fn placed(&self) -> Vec<PathBuf> {
+        lock(&self.state)
+            .placed
+            .iter()
+            .flat_map(Placement::items)
+            .filter_map(|(_, outcome)| match outcome {
+                Outcome::InPlace(path) => Some(path.clone()),
+                Outcome::LeftOut | Outcome::Failed(_) => None,
+            })
+            .collect()
+    }
+
     /// Puts one item in place, and says what became of it. The files of the item that were checked
     /// and are not in place are added to `failed`.
     fn place_top(
@@ -702,6 +721,70 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(read(scratch.path().join("notes.txt")), b"abc");
         assert!(!scratch.path().join("notes 2.txt").exists());
+    }
+
+    #[test]
+    fn where_the_items_are_is_told_in_the_order_of_the_list_and_only_for_those_in_place() {
+        let (scratch, destination) = destination();
+        let root = scratch.path();
+        fs::write(root.join("notes.txt"), b"mine").unwrap();
+        let (staging, listing) = staged(
+            &destination,
+            1,
+            &[
+                folder("Holiday"),
+                file("Holiday/a.jpg", 1),
+                file("never.txt", 2),
+                file("notes.txt", 3),
+            ],
+        );
+        receive(&staging, at(&listing, "Holiday/a.jpg"), b"1");
+        receive(&staging, at(&listing, "notes.txt"), b"abc");
+        assert_eq!(
+            staging.placed(),
+            Vec::<PathBuf>::new(),
+            "nothing is in place before place()"
+        );
+
+        staging.place().unwrap();
+
+        // The number that the taken name got is in the path, and the file that never came, whose
+        // item was left out, is not listed.
+        let expected = vec![root.join("Holiday"), root.join("notes 2.txt")];
+        assert_eq!(staging.placed(), expected);
+        assert_eq!(staging.placed(), expected, "asking again changes nothing");
+        assert_eq!(read(root.join("notes 2.txt")), b"abc");
+        assert!(!root.join("never.txt").exists());
+    }
+
+    #[test]
+    fn an_item_that_could_not_be_moved_is_not_among_the_places() {
+        let (scratch, destination) = destination();
+        let (staging, listing) = staged(
+            &destination,
+            1,
+            &[folder("d"), file("d/x", 1), file("e.txt", 1)],
+        );
+        for path in ["d/x", "e.txt"] {
+            receive(&staging, at(&listing, path), b"1");
+        }
+        // As if somebody had taken the folder out of the staging folder.
+        fs::remove_dir_all(staging.dir.join("d")).unwrap();
+
+        staging.place().unwrap();
+
+        assert_eq!(staging.placed(), vec![scratch.path().join("e.txt")]);
+    }
+
+    #[test]
+    fn a_transfer_that_was_discarded_before_it_was_put_in_place_has_no_places() {
+        let (_scratch, destination) = destination();
+        let (staging, listing) = staged(&destination, 1, &[file("a", 1)]);
+        receive(&staging, at(&listing, "a"), b"1");
+        staging.discard().unwrap();
+
+        assert!(matches!(staging.place(), Err(StageError::Discarded)));
+        assert_eq!(staging.placed(), Vec::<PathBuf>::new());
     }
 
     #[test]

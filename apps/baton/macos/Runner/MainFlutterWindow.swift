@@ -12,8 +12,38 @@ class MainFlutterWindow: NSWindow {
 
     RegisterGeneratedPlugins(registry: flutterViewController)
     answerWhereReceivedFilesGo(messenger: flutterViewController.engine.binaryMessenger)
+    showReceivedFilesInFinder(messenger: flutterViewController.engine.binaryMessenger)
 
     super.awakeFromNib()
+  }
+}
+
+/// Takes the person to the files that other devices sent: Finder opens with them selected, in the
+/// folder that holds them. Finder shows them and does not open them. The names of the channel and
+/// of the question must be the ones in lib/src/file_shower.dart.
+private func showReceivedFilesInFinder(messenger: FlutterBinaryMessenger) {
+  let channel = FlutterMethodChannel(
+    name: "io.github.jayunewal.baton/files", binaryMessenger: messenger)
+  channel.setMethodCallHandler { call, result in
+    switch call.method {
+    case "show":
+      guard let paths = call.arguments as? [String] else {
+        result(FlutterError(code: "bad_paths", message: "The paths were not text.", details: nil))
+        return
+      }
+      // The person may have moved or deleted them since, and Finder would open the folder that
+      // held them with nothing selected, so the app is told instead.
+      let there = paths.filter { FileManager.default.fileExists(atPath: $0) }
+        .map { URL(fileURLWithPath: $0) }
+      if there.isEmpty {
+        result(false)
+        return
+      }
+      NSWorkspace.shared.activateFileViewerSelecting(there)
+      result(true)
+    default:
+      result(FlutterMethodNotImplemented)
+    }
   }
 }
 

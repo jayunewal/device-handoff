@@ -247,6 +247,7 @@ impl From<app::TransferEnd> for TransferEnd {
             files,
             bytes,
             preview,
+            saved,
             result,
         } = end;
         Self {
@@ -256,6 +257,10 @@ impl From<app::TransferEnd> for TransferEnd {
             files,
             bytes: signed(bytes),
             preview: preview.into_iter().map(PreviewName::from).collect(),
+            saved: saved
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect(),
             result: result.into(),
         }
     }
@@ -453,6 +458,10 @@ mod tests {
             files: 2,
             bytes: 99,
             preview: Vec::new(),
+            saved: vec![
+                std::path::PathBuf::from("/Users/someone/Downloads/Holiday"),
+                std::path::PathBuf::from("/Users/someone/Downloads/notes 2.txt"),
+            ],
             result: app::TransferResult::Received { failed: 1 },
         };
         let converted = TransferEnd::from(end);
@@ -461,6 +470,18 @@ mod tests {
             (3, 2, 99)
         );
         assert_eq!(converted.result, TransferResult::Received { failed: 1 });
+        // The places come in the order they were given, as the text of each full path.
+        assert_eq!(
+            converted.saved,
+            [
+                "/Users/someone/Downloads/Holiday",
+                "/Users/someone/Downloads/notes 2.txt"
+            ]
+        );
+        // They are shown to the person and are not for a log.
+        let logged = format!("{converted:?}");
+        assert!(!logged.contains("someone"), "{logged}");
+        assert!(logged.contains("saved: 2"), "{logged}");
         assert_eq!(
             TransferResult::from(app::TransferResult::Dropped),
             TransferResult::Dropped

@@ -323,5 +323,11 @@ void main() {
         'the folder /home/anna/Downloads',
       );
     });
+
+    test('the way to received files is named for the app that shows them', () {
+      expect(describeShowFiles(TargetPlatform.iOS), 'Show in Files');
+      expect(describeShowFiles(TargetPlatform.macOS), 'Show in Finder');
+      expect(describeShowFiles(TargetPlatform.linux), 'Show files');
+    });
   });
 }

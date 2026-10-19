@@ -64,6 +64,7 @@
 use std::{
     collections::HashMap,
     fmt,
+    path::PathBuf,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -171,6 +172,19 @@ pub trait TransferHandler: Send + Sync + 'static {
     /// taken back from the person then. It is also dropped if the answer comes after the time.
     fn offered<'a>(&'a self, from: &'a PairedDevice, offer: &'a Offer) -> BoxFuture<'a, Verdict>;
 
+    /// The items of a transfer that ended well are in place, and these are the paths they are at:
+    /// the items at the top of the list, in its order, with the number that a name got when it was
+    /// taken. An item that could not be put in place is not among them, so there are none when
+    /// nothing could be. It is called once, just before [`ended`](Self::ended), and only for a
+    /// transfer that ends as [`Ending::Done`].
+    ///
+    /// The paths are for the screen that shows the person where their files are. They have the
+    /// names of the files and the folder that the person keeps them in, so they are no part of
+    /// [`Ending`], whose `Debug` form is printed, and they are not for a log.
+    fn placed(&self, from: &PairedDevice, id: TransferId, items: &[PathBuf]) {
+        let _ = (from, id, items);
+    }
+
     /// A transfer that was accepted has ended. It is called once for each, with how it ended.
     fn ended(&self, from: &PairedDevice, id: TransferId, ending: Ending) {
         let _ = (from, id, ending);
@@ -189,6 +203,10 @@ impl<T: TransferHandler + ?Sized> TransferHandler for Arc<T> {
 
     fn offered<'a>(&'a self, from: &'a PairedDevice, offer: &'a Offer) -> BoxFuture<'a, Verdict> {
         (**self).offered(from, offer)
+    }
+
+    fn placed(&self, from: &PairedDevice, id: TransferId, items: &[PathBuf]) {
+        (**self).placed(from, id, items);
     }
 
     fn ended(&self, from: &PairedDevice, id: TransferId, ending: Ending) {
@@ -754,6 +772,13 @@ impl Incoming {
                 MEMORY
             };
             entry.forget_in(kept);
+            if matches!(ending, Ending::Done(_)) {
+                // Where the items went is told first, so that whoever hears the end knows it.
+                table
+                    .shared
+                    .handler
+                    .placed(&entry.from, entry.offer.id, &transfer.placed());
+            }
             table
                 .shared
                 .handler
@@ -983,6 +1008,10 @@ mod tests {
         }
     }
 
+    /// What the application heard of the places of a transfer: the device that sent it, its id,
+    /// the places, and how many endings the application had heard by then.
+    type Told = (DeviceId, TransferId, Vec<PathBuf>, usize);
+
     /// The application, played by the test.
     struct Fake {
         destination: Mutex<Option<Destination>>,
@@ -997,6 +1026,8 @@ mod tests {
         /// has looked at the table and before it takes a place there.
         closing: Mutex<Option<Incoming>>,
         ended: Mutex<Vec<(DeviceId, TransferId, Ending)>>,
+        /// Where the items of the transfers that ended well were told to be.
+        placed: Mutex<Vec<Told>>,
     }
 
     impl Fake {
@@ -1011,6 +1042,7 @@ mod tests {
                 breaks: AtomicBool::new(false),
                 closing: Mutex::new(None),
                 ended: Mutex::new(Vec::new()),
+                placed: Mutex::new(Vec::new()),
             }
         }
 
@@ -1057,6 +1089,12 @@ mod tests {
             lock(&self.ended).clone()
         }
 
+        /// Where the application was told that the items of the transfers that ended well are,
+        /// with how many endings it had heard when it was told.
+        fn places(&self) -> Vec<Told> {
+            lock(&self.placed).clone()
+        }
+
         async fn until_ended(&self, count: usize) {
             until("the transfers to end", || lock(&self.ended).len() >= count).await;
         }
@@ -1091,6 +1129,11 @@ mod tests {
                 question.answered = true;
                 verdict
             })
+        }
+
+        fn placed(&self, from: &PairedDevice, id: TransferId, items: &[PathBuf]) {
+            let heard = lock(&self.ended).len();
+            lock(&self.placed).push((from.id, id, items.to_vec(), heard));
         }
 
         fn ended(&self, from: &PairedDevice, id: TransferId, ending: Ending) {
@@ -1665,6 +1708,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_application_is_told_where_the_items_are_once_and_before_the_end() {
+        let rig = Rig::new();
+        rig.fake.says(Verdict::Accept);
+        let from = device(2);
+        drop(rig.received_whole(&from, 1).await);
+        assert_eq!(rig.fake.places(), [], "nothing is in place before Finish");
+
+        rig.table.finish(&from.id, &finish(1)).await.unwrap();
+        rig.table.finish(&from.id, &finish(1)).await.unwrap();
+        rig.fake.until_ended(1).await;
+        settle().await;
+
+        // The items at the top of the list, in its order, and the application had heard no end yet.
+        let root = rig.scratch.path();
+        assert_eq!(
+            rig.fake.places(),
+            [(from.id, id(1), vec![root.join("x"), root.join("zero")], 0)]
+        );
+        assert_eq!(rig.fake.endings().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_transfer_that_is_given_up_is_not_told_to_have_places() {
+        let rig = Rig::new();
+        rig.fake.says(Verdict::Accept);
+        let from = device(2);
+        drop(rig.received_whole(&from, 1).await);
+
+        // Given up before the items were put in place.
+        assert!(rig.table.cancel(&from.id, id(1)).await);
+
+        rig.fake.until_ended(1).await;
+        settle().await;
+        assert_eq!(rig.fake.endings(), [(from.id, id(1), Ending::Dropped)]);
+        assert_eq!(rig.fake.places(), []);
+        assert_eq!(rig.received("x"), None);
+    }
+
+    #[tokio::test]
     async fn a_cancel_after_the_end_leaves_what_is_in_place() {
         let rig = Rig::new();
         rig.fake.says(Verdict::Accept);
@@ -1678,6 +1760,7 @@ mod tests {
         assert_eq!(rig.received("x"), Some(bytes(1, 10)));
         rig.fake.until_ended(1).await;
         assert!(matches!(rig.fake.endings()[0].2, Ending::Done(_)));
+        assert_eq!(rig.fake.places().len(), 1);
     }
 
     #[tokio::test]

@@ -187,6 +187,9 @@ void main() {
         File('${received.path}/hello.txt').readAsStringSync(),
         'hello from B',
       );
+      // The end says where the file is, which is what takes the person to it.
+      final end = (await _next<Event_TransferEnded>(events)).end;
+      expect(end.saved, ['${received.path}/hello.txt']);
     });
 
     test(

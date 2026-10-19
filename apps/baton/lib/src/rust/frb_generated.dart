@@ -1637,8 +1637,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TransferEnd dco_decode_transfer_end(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
     return TransferEnd(
       request: dco_decode_i_64(arr[0]),
       deviceId: dco_decode_String(arr[1]),
@@ -1646,7 +1646,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       files: dco_decode_u_32(arr[3]),
       bytes: dco_decode_i_64(arr[4]),
       preview: dco_decode_list_preview_name(arr[5]),
-      result: dco_decode_transfer_result(arr[6]),
+      saved: dco_decode_list_String(arr[6]),
+      result: dco_decode_transfer_result(arr[7]),
     );
   }
 
@@ -2283,6 +2284,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_files = sse_decode_u_32(deserializer);
     var var_bytes = sse_decode_i_64(deserializer);
     var var_preview = sse_decode_list_preview_name(deserializer);
+    var var_saved = sse_decode_list_String(deserializer);
     var var_result = sse_decode_transfer_result(deserializer);
     return TransferEnd(
       request: var_request,
@@ -2291,6 +2293,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       files: var_files,
       bytes: var_bytes,
       preview: var_preview,
+      saved: var_saved,
       result: var_result,
     );
   }
@@ -2890,6 +2893,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_32(self.files, serializer);
     sse_encode_i_64(self.bytes, serializer);
     sse_encode_list_preview_name(self.preview, serializer);
+    sse_encode_list_String(self.saved, serializer);
     sse_encode_transfer_result(self.result, serializer);
   }
 
