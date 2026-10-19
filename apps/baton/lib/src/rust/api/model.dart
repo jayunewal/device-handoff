@@ -10,7 +10,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'model.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// A device that is paired with this one.
 class Device {
@@ -162,6 +162,23 @@ sealed class Event with _$Event {
     /// The height of the picture in pixels, at least 1.
     required int height,
   }) = Event_WindowPicture;
+
+  /// The other device did not do some of what the person did on a window that is shown here:
+  /// it dropped events, for the reason named, and `count` is how many. Say so in a sentence,
+  /// so that a tap that did nothing is not a mystery. The other device sends at most one a
+  /// second, naming the reason that cost the most events since the last. It comes after the
+  /// `Event.windowStarted` of the same window, and not for a window that is shared from this
+  /// device.
+  const factory Event.windowNotice({
+    /// The `WindowSession.id` whose events were dropped.
+    required PlatformInt64 id,
+
+    /// The rule that dropped the most of them.
+    required WindowNoticeReason reason,
+
+    /// How many events it dropped, at least 1.
+    required int count,
+  }) = Event_WindowNotice;
 
   /// A window that was shown or shared is over.
   const factory Event.windowEnded({
@@ -845,6 +862,18 @@ class WindowAbilities {
           canControl == other.canControl;
 }
 
+/// A button of a pointer on the picture of a window. A finger is the left one.
+enum WindowButton {
+  /// The primary button, or a touch.
+  left,
+
+  /// The secondary button.
+  right,
+
+  /// The middle button.
+  middle,
+}
+
 @freezed
 sealed class WindowEnd with _$WindowEnd {
   const WindowEnd._();
@@ -863,6 +892,169 @@ sealed class WindowEnd with _$WindowEnd {
     /// One sentence that says what.
     required String message,
   }) = WindowEnd_Failed;
+}
+
+@freezed
+sealed class WindowInput with _$WindowInput {
+  const WindowInput._();
+
+  /// A finger or a pointer.
+  const factory WindowInput.pointer({
+    /// Across the picture, from 0 to 1.
+    required double x,
+
+    /// Down the picture, from 0 to 1.
+    required double y,
+
+    /// The modifier keys that are down.
+    required WindowModifiers modifiers,
+
+    /// What it did.
+    required WindowPointer action,
+  }) = WindowInput_Pointer;
+
+  /// A key, or text that came with no key.
+  const factory WindowInput.key({
+    /// A USB HID usage of the keyboard page, or 0 for text with no key.
+    required int code,
+
+    /// Whether the key went down (true) or came up (false).
+    required bool down,
+
+    /// The modifier keys that are down after this event.
+    required WindowModifiers modifiers,
+
+    /// Whether the system repeats a key that is held.
+    required bool repeat,
+
+    /// The text that the key produced, or `null`. Long text is cut into pieces, and
+    /// characters that cannot be typed are left out.
+    String? text,
+  }) = WindowInput_Key;
+}
+
+/// The modifier keys that are down.
+class WindowModifiers {
+  /// Shift.
+  final bool shift;
+
+  /// Control.
+  final bool control;
+
+  /// Option, also called Alt.
+  final bool option;
+
+  /// Command, also called the Windows key or Meta.
+  final bool command;
+
+  /// Caps lock.
+  final bool capsLock;
+
+  const WindowModifiers({
+    required this.shift,
+    required this.control,
+    required this.option,
+    required this.command,
+    required this.capsLock,
+  });
+
+  static Future<WindowModifiers> default_() =>
+      RustLib.instance.api.crateApiModelWindowModifiersDefault();
+
+  @override
+  int get hashCode =>
+      shift.hashCode ^
+      control.hashCode ^
+      option.hashCode ^
+      command.hashCode ^
+      capsLock.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WindowModifiers &&
+          runtimeType == other.runtimeType &&
+          shift == other.shift &&
+          control == other.control &&
+          option == other.option &&
+          command == other.command &&
+          capsLock == other.capsLock;
+}
+
+/// Why the other device did not do some of what the person did on a window.
+enum WindowNoticeReason {
+  /// The person at the other device did not let this one control the window, or turned
+  /// control off.
+  controlOff,
+
+  /// The window is paused, for example because it was hidden.
+  paused,
+
+  /// The other device is locked, or its display is off.
+  locked,
+
+  /// The window is not on the screen of the other device.
+  notOnScreen,
+
+  /// Events came faster than the other device takes them.
+  tooFast,
+
+  /// The picture that the person touched is too old: the window has changed since.
+  outOfDate,
+
+  /// The window changed its size since the picture that the person touched.
+  resized,
+
+  /// The touch was outside the window.
+  outsideWindow,
+
+  /// Another window was in front of the window where it was touched.
+  covered,
+
+  /// The window does not have the keyboard.
+  noKeyboard,
+
+  /// A window of the same application is in front of the window, so a key might go to it.
+  appWindowInFront,
+
+  /// More keys are held down than a person has fingers.
+  tooManyKeys,
+
+  /// The release of a button or a key that was not pressed.
+  notPressed,
+
+  /// Something that this version does not know.
+  other,
+}
+
+@freezed
+sealed class WindowPointer with _$WindowPointer {
+  const WindowPointer._();
+
+  /// It moved, with a button down or not.
+  const factory WindowPointer.move() = WindowPointer_Move;
+
+  /// A button went down.
+  const factory WindowPointer.down({
+    /// Which.
+    required WindowButton button,
+  }) = WindowPointer_Down;
+
+  /// A button came up.
+  const factory WindowPointer.up({
+    /// Which.
+    required WindowButton button,
+  }) = WindowPointer_Up;
+
+  /// A scroll, in points: positive `dx` moves the content to the right and positive `dy`
+  /// down, as a finger that drags it does.
+  const factory WindowPointer.scroll({
+    /// Along the x axis.
+    required double dx,
+
+    /// Along the y axis.
+    required double dy,
+  }) = WindowPointer_Scroll;
 }
 
 /// A window that a paired device offers to show on this one, for the person to answer.

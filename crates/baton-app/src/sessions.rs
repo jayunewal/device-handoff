@@ -21,13 +21,16 @@ use baton_core::{
     util::BoxFuture,
 };
 use baton_proto::{DeviceId, message::DeclineReason};
-use baton_stream::{control::SourceMessage, header::FrameHeader};
+use baton_stream::{control::SourceMessage, gate::Notice, header::FrameHeader};
 use tokio::sync::broadcast;
 
 use crate::{
     Error, ErrorKind, Event, Result,
     app::{Questions, locked},
-    model::{WindowAbilities, WindowEnd, WindowRequest, WindowRole, WindowSession, WindowShared},
+    model::{
+        WindowAbilities, WindowEnd, WindowInput, WindowRequest, WindowRole, WindowSession,
+        WindowShared,
+    },
     windows::{PickedWindow, ScreenLink, SharingFailure, WindowSharer, WindowViewer},
 };
 
@@ -52,13 +55,15 @@ struct Accepted {
     pictures: Arc<Pictures>,
 }
 
-/// What the source of a window that is shown here says about the size of its picture, kept until
-/// the screens know the window.
+/// What the source of a window that is shown here says that the screens need: the size of its
+/// picture, kept until the screens know the window, and the events of the person that it dropped.
 ///
 /// The source says the size before its first picture, and the node tells the app that the
 /// session runs at about the same moment, on tasks of their own, so the size can come first. It
 /// waits here for the window and is told right after [`Event::WindowStarted`], so that a screen
-/// always hears of a window before it hears of its picture.
+/// always hears of a window before it hears of its picture. A notice answers what the person did
+/// on the window, which they can do only once they know it, so it is told when the window is
+/// known and dropped when it is not.
 struct Pictures {
     events: broadcast::Sender<Event>,
     state: Mutex<PictureState>,
@@ -103,10 +108,24 @@ impl Pictures {
         // Nobody listening is fine.
         let _ = self.events.send(Event::WindowPicture { id, width, height });
     }
+
+    /// The source did not do some of what the person did, for the reason in the notice.
+    fn noticed(&self, notice: Notice) {
+        let state = locked(&self.state);
+        // Under the lock, so that it cannot overtake the window or a size that `began` tells.
+        if let Some(id) = state.session {
+            // Nobody listening is fine.
+            let _ = self.events.send(Event::WindowNotice {
+                id,
+                reason: notice.reason.into(),
+                count: notice.count,
+            });
+        }
+    }
 }
 
-/// The decoder of the platform, with the app hearing what the source says about its picture. It
-/// passes everything on as it is.
+/// The decoder of the platform, with the app hearing what the source says about its picture and
+/// about the events it dropped. It passes everything on as it is.
 struct Watching {
     decoder: Box<dyn Decoder>,
     pictures: Arc<Pictures>,
@@ -126,8 +145,10 @@ impl Decoder for Watching {
     }
 
     fn source(&mut self, message: SourceMessage) {
-        if let SourceMessage::Config(config) = &message {
-            self.pictures.said(config.width, config.height);
+        match &message {
+            SourceMessage::Config(config) => self.pictures.said(config.width, config.height),
+            SourceMessage::Notice(notice) => self.pictures.noticed(*notice),
+            _ => {}
         }
         self.decoder.source(message);
     }
@@ -194,6 +215,29 @@ impl Sessions {
 
     pub(crate) fn sharer(&self) -> Option<&Arc<dyn WindowSharer>> {
         self.sharer.as_ref()
+    }
+
+    /// The window `id`, if it is shown here and runs.
+    fn viewing(&self, id: u64) -> Option<Arc<ViewHandle>> {
+        match locked(&self.live).get(&id) {
+            Some(Live::Viewing(handle)) => Some(Arc::clone(handle)),
+            _ => None,
+        }
+    }
+
+    /// Gives what the person did on the window `id`. Returns whether it was taken: a window that
+    /// is not shown here, one that the other device did not let this one control, and an event that
+    /// has no meaning (a touch outside the picture, a release of what is not down) take nothing.
+    pub(crate) fn input(&self, id: u64, input: WindowInput) -> bool {
+        self.viewing(id)
+            .is_some_and(|handle| handle.input(input.into()).is_ok())
+    }
+
+    /// Lets go of every button and key that is down on the window `id`, if it is shown here.
+    pub(crate) fn release_input(&self, id: u64) {
+        if let Some(handle) = self.viewing(id) {
+            handle.release_input();
+        }
     }
 
     /// Ends the session `id`, if it runs. Returns whether it did.
@@ -519,11 +563,13 @@ mod tests {
     use baton_proto::{id::SessionId, stream::Codec};
     use baton_stream::{
         control::{Config, Pause, PauseReason, Thermal},
+        gate::Reason,
         header::Flags,
     };
     use tokio::sync::broadcast::error::TryRecvError;
 
     use super::*;
+    use crate::model::{WindowButton, WindowModifiers, WindowNoticeReason, WindowPointer};
 
     fn picture(id: u64, width: u32, height: u32) -> Event {
         Event::WindowPicture { id, width, height }
@@ -585,6 +631,100 @@ mod tests {
             assert_eq!(heard.try_recv(), Ok(picture(3, expected.0, expected.1)));
         }
         assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    fn notice(reason: Reason, count: u32) -> Notice {
+        Notice { reason, count }
+    }
+
+    fn noticed(id: u64, reason: WindowNoticeReason, count: u32) -> Event {
+        Event::WindowNotice { id, reason, count }
+    }
+
+    #[test]
+    fn a_notice_that_comes_when_the_window_is_known_is_told_at_once() {
+        let (pictures, mut heard) = pictures();
+        pictures.began(3);
+        pictures.noticed(notice(Reason::Covered, 4));
+        assert_eq!(
+            heard.try_recv(),
+            Ok(noticed(3, WindowNoticeReason::Covered, 4))
+        );
+        assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn a_notice_that_comes_before_the_window_is_known_is_dropped_and_not_told_later() {
+        let (pictures, mut heard) = pictures();
+        pictures.noticed(notice(Reason::Locked, 2));
+        assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
+        pictures.began(3);
+        assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
+        pictures.noticed(notice(Reason::Locked, 1));
+        assert_eq!(
+            heard.try_recv(),
+            Ok(noticed(3, WindowNoticeReason::Locked, 1))
+        );
+    }
+
+    #[test]
+    fn a_notice_is_told_in_its_order_among_the_sizes_of_the_picture() {
+        let (pictures, mut heard) = pictures();
+        pictures.said(1280, 800);
+        pictures.began(3);
+        pictures.noticed(notice(Reason::WindowResized, 5));
+        pictures.said(800, 800);
+        assert_eq!(heard.try_recv(), Ok(picture(3, 1280, 800)));
+        assert_eq!(
+            heard.try_recv(),
+            Ok(noticed(3, WindowNoticeReason::Resized, 5))
+        );
+        assert_eq!(heard.try_recv(), Ok(picture(3, 800, 800)));
+        assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn every_reason_the_other_device_gives_has_a_reason_for_the_screens() {
+        use WindowNoticeReason as Shown;
+
+        for (reason, shown) in [
+            (Reason::ControlOff, Shown::ControlOff),
+            (Reason::Paused, Shown::Paused),
+            (Reason::Locked, Shown::Locked),
+            (Reason::NotOnScreen, Shown::NotOnScreen),
+            (Reason::TooFast, Shown::TooFast),
+            (Reason::FrameUnknown, Shown::OutOfDate),
+            (Reason::PictureOutOfDate, Shown::OutOfDate),
+            (Reason::WindowResized, Shown::Resized),
+            (Reason::OutsideWindow, Shown::OutsideWindow),
+            (Reason::Covered, Shown::Covered),
+            (Reason::NoKeyboard, Shown::NoKeyboard),
+            (Reason::AppWindowInFront, Shown::AppWindowInFront),
+            (Reason::TooManyHeld, Shown::TooManyKeys),
+            (Reason::NotPressed, Shown::NotPressed),
+            (Reason::Malformed, Shown::Other),
+            (Reason::Other, Shown::Other),
+        ] {
+            assert_eq!(Shown::from(reason), shown, "{reason:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn input_for_a_window_that_is_shared_from_here_or_unknown_is_not_taken() {
+        let (events, _) = broadcast::channel(8);
+        let sessions = Sessions::new(None, None, Questions::new(events.clone()), events);
+        locked(&sessions.live).insert(7, Live::Sharing(Weak::new()));
+        let touch = WindowInput::Pointer {
+            x: 0.5,
+            y: 0.5,
+            modifiers: WindowModifiers::default(),
+            action: WindowPointer::Down(WindowButton::Left),
+        };
+        assert!(!sessions.input(7, touch.clone()));
+        assert!(!sessions.input(8, touch));
+        // Nothing to let go of, and nothing goes wrong.
+        sessions.release_input(7);
+        sessions.release_input(8);
     }
 
     fn window(id: u64, role: WindowRole) -> WindowSession {
@@ -737,6 +877,20 @@ mod tests {
         assert!(written[0].starts_with("source Config("), "{written:?}");
         assert!(written[1].starts_with("source Pause("), "{written:?}");
         assert_eq!(written[2], "source Resume");
+    }
+
+    #[test]
+    fn a_notice_of_the_source_is_given_on_to_the_decoder_and_told_to_the_screens() {
+        let (mut decoder, written, mut heard) = watching();
+        decoder.source(SourceMessage::Notice(notice(Reason::NoKeyboard, 2)));
+        assert_eq!(
+            heard.try_recv(),
+            Ok(noticed(5, WindowNoticeReason::NoKeyboard, 2))
+        );
+        assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
+        let written = locked(&written);
+        assert_eq!(written.len(), 1);
+        assert!(written[0].starts_with("source Notice("), "{written:?}");
     }
 
     #[test]

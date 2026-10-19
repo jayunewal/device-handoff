@@ -254,6 +254,55 @@ void main() {
     expect(a.answerWindow(request: -1, accept: true), isFalse);
     expect(a.endWindow(session: 1), isFalse);
     expect(a.endWindow(session: -1), isFalse);
+    // Nor is anything touched where nothing runs, whichever way the number or the event is
+    // written: every kind of event goes over the bridge and comes back as "not taken".
+    const keys = WindowModifiers(
+      shift: true,
+      control: false,
+      option: true,
+      command: false,
+      capsLock: true,
+    );
+    const inputs = [
+      WindowInput.pointer(
+        x: 0.5,
+        y: 0.5,
+        modifiers: keys,
+        action: WindowPointer.move(),
+      ),
+      WindowInput.pointer(
+        x: 0.5,
+        y: 0.5,
+        modifiers: keys,
+        action: WindowPointer.down(button: WindowButton.right),
+      ),
+      WindowInput.pointer(
+        x: 0.5,
+        y: 0.5,
+        modifiers: keys,
+        action: WindowPointer.up(button: WindowButton.middle),
+      ),
+      WindowInput.pointer(
+        x: 0.5,
+        y: 0.5,
+        modifiers: keys,
+        action: WindowPointer.scroll(dx: 1, dy: -2),
+      ),
+      WindowInput.key(
+        code: 4,
+        down: true,
+        modifiers: keys,
+        repeat: false,
+        text: 'a',
+      ),
+      WindowInput.key(code: 4, down: false, modifiers: keys, repeat: true),
+    ];
+    for (final session in [1, -1]) {
+      for (final input in inputs) {
+        expect(a.windowInput(session: session, input: input), isFalse);
+      }
+      a.releaseWindowInput(session: session);
+    }
     // And a device that is not paired is not offered a window.
     await expectLater(
       a.shareWindow(id: '0' * 64, control: false),

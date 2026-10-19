@@ -16,6 +16,11 @@ use baton_core::{
     transfer::send::{Progress, Stage},
 };
 use baton_proto::Platform as ProtoPlatform;
+use baton_stream::{
+    gate::Reason,
+    input::{Button, Modifiers, PointerAction},
+    input_queue::Input,
+};
 
 /// The operating system a device runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -627,6 +632,248 @@ pub enum WindowEnd {
     Failed(String),
 }
 
+/// A button of a pointer on the picture of a window. A finger is the left one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowButton {
+    /// The primary button, or a touch.
+    Left,
+    /// The secondary button.
+    Right,
+    /// The middle button.
+    Middle,
+}
+
+/// What a pointer did on the picture of a window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WindowPointer {
+    /// It moved, with a button down or not.
+    Move,
+    /// A button went down.
+    Down(WindowButton),
+    /// A button came up.
+    Up(WindowButton),
+    /// A scroll, in points: positive `dx` moves the content to the right and positive `dy` down.
+    Scroll {
+        /// Along the x axis.
+        dx: f32,
+        /// Along the y axis.
+        dy: f32,
+    },
+}
+
+/// The modifier keys that are down.
+// Five keys of a keyboard, each of which is down or not on its own: a state that combined them
+// would only hide which one a screen means.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WindowModifiers {
+    /// Shift.
+    pub shift: bool,
+    /// Control.
+    pub control: bool,
+    /// Option, also called Alt.
+    pub option: bool,
+    /// Command, also called the Windows key or Meta.
+    pub command: bool,
+    /// Caps lock.
+    pub caps_lock: bool,
+}
+
+/// What the person did on the picture of a window that is shown here, for
+/// [`App::window_input`](crate::App::window_input).
+///
+/// A position is a fraction of the picture as it is drawn, from 0 to 1 across and from 0 to 1
+/// down from its top left corner. A key is a USB HID usage of the keyboard page (`a` is 4, which
+/// is what Flutter's `PhysicalKeyboardKey.usbHidUsage` ends in), and code 0 means text that came
+/// with no key, such as dictation or the keyboard on the screen: it must go down once, carry the
+/// text and not repeat.
+///
+/// Taking an event does not mean that the other device does it: it drops what does not belong to
+/// the window, such as a touch outside it, and says so with
+/// [`Event::WindowNotice`](crate::Event::WindowNotice).
+#[derive(Clone, PartialEq)]
+pub enum WindowInput {
+    /// A finger or a pointer.
+    Pointer {
+        /// Across the picture, from 0 to 1.
+        x: f32,
+        /// Down the picture, from 0 to 1.
+        y: f32,
+        /// The modifier keys that are down.
+        modifiers: WindowModifiers,
+        /// What it did.
+        action: WindowPointer,
+    },
+    /// A key, or text that came with no key.
+    Key {
+        /// A USB HID usage of the keyboard page, or 0 for text with no key.
+        code: u16,
+        /// Whether the key went down (true) or came up (false).
+        down: bool,
+        /// The modifier keys that are down after this event.
+        modifiers: WindowModifiers,
+        /// Whether the system repeats a key that is held.
+        repeat: bool,
+        /// The text that the key produced. Long text is cut into pieces, and characters that
+        /// cannot be typed are left out.
+        text: Option<String>,
+    },
+}
+
+// What was typed stays out of every log, so a key is only said to be down or up.
+impl fmt::Debug for WindowInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Pointer {
+                x,
+                y,
+                modifiers,
+                action,
+            } => f
+                .debug_struct("Pointer")
+                .field("x", x)
+                .field("y", y)
+                .field("modifiers", modifiers)
+                .field("action", action)
+                .finish(),
+            Self::Key {
+                down, repeat, text, ..
+            } => f
+                .debug_struct("Key")
+                .field("down", down)
+                .field("repeat", repeat)
+                .field("text_bytes", &text.as_ref().map(String::len))
+                .finish_non_exhaustive(),
+        }
+    }
+}
+
+impl From<WindowButton> for Button {
+    fn from(button: WindowButton) -> Self {
+        match button {
+            WindowButton::Left => Self::Left,
+            WindowButton::Right => Self::Right,
+            WindowButton::Middle => Self::Middle,
+        }
+    }
+}
+
+impl From<WindowPointer> for PointerAction {
+    fn from(action: WindowPointer) -> Self {
+        match action {
+            WindowPointer::Move => Self::Move,
+            WindowPointer::Down(button) => Self::Down(button.into()),
+            WindowPointer::Up(button) => Self::Up(button.into()),
+            WindowPointer::Scroll { dx, dy } => Self::Scroll { dx, dy },
+        }
+    }
+}
+
+impl From<WindowModifiers> for Modifiers {
+    fn from(keys: WindowModifiers) -> Self {
+        [
+            (keys.shift, Self::SHIFT),
+            (keys.control, Self::CONTROL),
+            (keys.option, Self::OPTION),
+            (keys.command, Self::COMMAND),
+            (keys.caps_lock, Self::CAPS_LOCK),
+        ]
+        .into_iter()
+        .filter(|(down, _)| *down)
+        .fold(Self::NONE, |all, (_, key)| all | key)
+    }
+}
+
+impl From<WindowInput> for Input {
+    fn from(input: WindowInput) -> Self {
+        match input {
+            WindowInput::Pointer {
+                x,
+                y,
+                modifiers,
+                action,
+            } => Self::Pointer {
+                x,
+                y,
+                modifiers: modifiers.into(),
+                action: action.into(),
+            },
+            WindowInput::Key {
+                code,
+                down,
+                modifiers,
+                repeat,
+                text,
+            } => Self::Key {
+                code,
+                down,
+                modifiers: modifiers.into(),
+                repeat,
+                text,
+            },
+        }
+    }
+}
+
+/// Why the other device did not do some of what the person did on a window.
+///
+/// A device drops what it must not do to a window: an event that comes when the window is not
+/// where the person thought it was, or when something else has the keyboard, or when it is
+/// locked. The sentences for a screen are in the order of how often the reasons come.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowNoticeReason {
+    /// The person at the other device did not let this one control the window, or turned control
+    /// off.
+    ControlOff,
+    /// The window is paused, for example because it was hidden.
+    Paused,
+    /// The other device is locked, or its display is off.
+    Locked,
+    /// The window is not on the screen of the other device.
+    NotOnScreen,
+    /// Events came faster than the other device takes them.
+    TooFast,
+    /// The picture that the person touched is too old: the window has changed since.
+    OutOfDate,
+    /// The window changed its size since the picture that the person touched.
+    Resized,
+    /// The touch was outside the window.
+    OutsideWindow,
+    /// Another window was in front of the window where it was touched.
+    Covered,
+    /// The window does not have the keyboard.
+    NoKeyboard,
+    /// A window of the same application is in front of the window, so a key might go to it.
+    AppWindowInFront,
+    /// More keys are held down than a person has fingers.
+    TooManyKeys,
+    /// The release of a button or a key that was not pressed.
+    NotPressed,
+    /// Something that this version does not know.
+    Other,
+}
+
+impl From<Reason> for WindowNoticeReason {
+    fn from(reason: Reason) -> Self {
+        match reason {
+            Reason::ControlOff => Self::ControlOff,
+            Reason::Paused => Self::Paused,
+            Reason::Locked => Self::Locked,
+            Reason::NotOnScreen => Self::NotOnScreen,
+            Reason::TooFast => Self::TooFast,
+            Reason::FrameUnknown | Reason::PictureOutOfDate => Self::OutOfDate,
+            Reason::WindowResized => Self::Resized,
+            Reason::OutsideWindow => Self::OutsideWindow,
+            Reason::Covered => Self::Covered,
+            Reason::NoKeyboard => Self::NoKeyboard,
+            Reason::AppWindowInFront => Self::AppWindowInFront,
+            Reason::TooManyHeld => Self::TooManyKeys,
+            Reason::NotPressed => Self::NotPressed,
+            Reason::Malformed | Reason::Other => Self::Other,
+        }
+    }
+}
+
 /// What came of offering a window to a paired device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WindowShared {
@@ -819,5 +1066,140 @@ mod tests {
             expires_at: 1,
         };
         assert!(!format!("{offer:?}").contains("SECRET"));
+    }
+
+    #[test]
+    fn each_modifier_key_is_its_own_bit_of_the_format() {
+        let none = WindowModifiers::default();
+        assert_eq!(Modifiers::from(none), Modifiers::NONE);
+        let one = |keys: WindowModifiers| Modifiers::from(keys);
+        assert_eq!(
+            one(WindowModifiers {
+                shift: true,
+                ..none
+            }),
+            Modifiers::SHIFT
+        );
+        assert_eq!(
+            one(WindowModifiers {
+                control: true,
+                ..none
+            }),
+            Modifiers::CONTROL
+        );
+        assert_eq!(
+            one(WindowModifiers {
+                option: true,
+                ..none
+            }),
+            Modifiers::OPTION
+        );
+        assert_eq!(
+            one(WindowModifiers {
+                command: true,
+                ..none
+            }),
+            Modifiers::COMMAND
+        );
+        assert_eq!(
+            one(WindowModifiers {
+                caps_lock: true,
+                ..none
+            }),
+            Modifiers::CAPS_LOCK
+        );
+        assert_eq!(
+            one(WindowModifiers {
+                shift: true,
+                command: true,
+                ..none
+            }),
+            Modifiers::SHIFT | Modifiers::COMMAND
+        );
+        let all = WindowModifiers {
+            shift: true,
+            control: true,
+            option: true,
+            command: true,
+            caps_lock: true,
+        };
+        assert_eq!(one(all).bits(), 0b1_1111);
+    }
+
+    #[test]
+    fn what_the_person_does_reaches_the_queue_as_it_was_given() {
+        let modifiers = WindowModifiers {
+            shift: true,
+            ..WindowModifiers::default()
+        };
+        for (action, wanted) in [
+            (WindowPointer::Move, PointerAction::Move),
+            (
+                WindowPointer::Down(WindowButton::Left),
+                PointerAction::Down(Button::Left),
+            ),
+            (
+                WindowPointer::Down(WindowButton::Right),
+                PointerAction::Down(Button::Right),
+            ),
+            (
+                WindowPointer::Up(WindowButton::Middle),
+                PointerAction::Up(Button::Middle),
+            ),
+            (
+                WindowPointer::Scroll { dx: 1.5, dy: -2.0 },
+                PointerAction::Scroll { dx: 1.5, dy: -2.0 },
+            ),
+        ] {
+            let input = WindowInput::Pointer {
+                x: 0.25,
+                y: 0.75,
+                modifiers,
+                action,
+            };
+            assert_eq!(
+                Input::from(input),
+                Input::Pointer {
+                    x: 0.25,
+                    y: 0.75,
+                    modifiers: Modifiers::SHIFT,
+                    action: wanted,
+                },
+                "{action:?}"
+            );
+        }
+        let key = WindowInput::Key {
+            code: 4,
+            down: true,
+            modifiers,
+            repeat: true,
+            text: Some("a".to_owned()),
+        };
+        assert_eq!(
+            Input::from(key),
+            Input::Key {
+                code: 4,
+                down: true,
+                modifiers: Modifiers::SHIFT,
+                repeat: true,
+                text: Some("a".to_owned()),
+            }
+        );
+    }
+
+    #[test]
+    fn what_was_typed_is_not_printed() {
+        let key = WindowInput::Key {
+            code: 4,
+            down: true,
+            modifiers: WindowModifiers::default(),
+            repeat: false,
+            text: Some("hunter2".to_owned()),
+        };
+        let shown = format!("{key:?}");
+        assert!(!shown.contains("hunter2"), "{shown}");
+        assert!(!shown.contains("code"), "{shown}");
+        // Only how long it was.
+        assert!(shown.contains("text_bytes: Some(7)"), "{shown}");
     }
 }

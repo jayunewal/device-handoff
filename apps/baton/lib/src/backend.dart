@@ -21,6 +21,7 @@ export 'rust/api/model.dart'
         Event_TransferRequestEnded,
         Event_TransferRequested,
         Event_WindowEnded,
+        Event_WindowNotice,
         Event_WindowPicture,
         Event_WindowRequestEnded,
         Event_WindowRequested,
@@ -61,11 +62,22 @@ export 'rust/api/model.dart'
         TransferResult_Dropped,
         TransferResult_Received,
         WindowAbilities,
+        WindowButton,
         WindowEnd,
         WindowEnd_Failed,
         WindowEnd_Lost,
         WindowEnd_OtherDevice,
         WindowEnd_ThisDevice,
+        WindowInput,
+        WindowInput_Key,
+        WindowInput_Pointer,
+        WindowModifiers,
+        WindowNoticeReason,
+        WindowPointer,
+        WindowPointer_Down,
+        WindowPointer_Move,
+        WindowPointer_Scroll,
+        WindowPointer_Up,
         WindowRequest,
         WindowRole,
         WindowSession,
@@ -196,6 +208,21 @@ abstract interface class Session {
   /// Ends the window [session], which is shown here or shared from here, and tells the other
   /// device. `Event_WindowEnded` follows. Returns whether there was such a window.
   bool endWindow(int session);
+
+  /// Gives what the person did on the picture of the window [session], which is shown here: a
+  /// touch, a click, a scroll, a key. It goes to the other device soon, in a batch with others,
+  /// and is done there only if the person at that device let this one control the window
+  /// (`WindowSession.control`). Returns whether the event was taken. It is not for a window that
+  /// is not shown here or may not be controlled, a position while no picture has been shown, a
+  /// position outside the picture while no button is down, the release of something that is not
+  /// down, and more than the format allows. None of that ends the window: drop the event and go
+  /// on. What the other device drops comes back as `Event_WindowNotice`.
+  bool windowInput(int session, WindowInput input);
+
+  /// Lets go of every button and key that is down on the window [session], for example when the
+  /// person leaves the screen with a finger on it. A window that is not shown here does
+  /// nothing.
+  void releaseWindowInput(int session);
 
   /// What other devices have sent, newest first.
   Future<List<Received>> inbox();

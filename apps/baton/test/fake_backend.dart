@@ -353,6 +353,24 @@ class FakeSession implements Session {
     return windowRuns;
   }
 
+  /// What `windowInput` was given, in order.
+  final List<({int session, WindowInput input})> windowInputs = [];
+
+  /// What `windowInput` says: whether the event was taken.
+  bool windowInputTaken = true;
+
+  @override
+  bool windowInput(int session, WindowInput input) {
+    windowInputs.add((session: session, input: input));
+    return windowInputTaken;
+  }
+
+  /// The windows whose input `releaseWindowInput` was asked to let go of, in order.
+  final List<int> windowInputsReleased = [];
+
+  @override
+  void releaseWindowInput(int session) => windowInputsReleased.add(session);
+
   /// What `inbox` gives, newest first.
   List<Received> received = [];
 
@@ -593,6 +611,7 @@ WindowSession sampleWindowSession({
   String? app = 'Numbers',
   int width = 1440,
   int height = 900,
+  bool control = false,
   int? screen,
 }) => WindowSession(
   id: id,
@@ -603,7 +622,7 @@ WindowSession sampleWindowSession({
   app: app,
   width: width,
   height: height,
-  control: false,
+  control: control,
   screen: screen ?? (role == WindowRole.viewing ? 7 : null),
 );
 

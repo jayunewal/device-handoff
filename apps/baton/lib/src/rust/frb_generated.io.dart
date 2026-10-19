@@ -118,6 +118,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WindowEnd dco_decode_box_autoadd_window_end(dynamic raw);
 
   @protected
+  WindowInput dco_decode_box_autoadd_window_input(dynamic raw);
+
+  @protected
+  WindowModifiers dco_decode_box_autoadd_window_modifiers(dynamic raw);
+
+  @protected
+  WindowPointer dco_decode_box_autoadd_window_pointer(dynamic raw);
+
+  @protected
   WindowRequest dco_decode_box_autoadd_window_request(dynamic raw);
 
   @protected
@@ -131,6 +140,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Event dco_decode_event(dynamic raw);
+
+  @protected
+  double dco_decode_f_32(dynamic raw);
 
   @protected
   FileProgress dco_decode_file_progress(dynamic raw);
@@ -220,6 +232,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   TransferResult dco_decode_transfer_result(dynamic raw);
 
   @protected
+  int dco_decode_u_16(dynamic raw);
+
+  @protected
   int dco_decode_u_32(dynamic raw);
 
   @protected
@@ -235,7 +250,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WindowAbilities dco_decode_window_abilities(dynamic raw);
 
   @protected
+  WindowButton dco_decode_window_button(dynamic raw);
+
+  @protected
   WindowEnd dco_decode_window_end(dynamic raw);
+
+  @protected
+  WindowInput dco_decode_window_input(dynamic raw);
+
+  @protected
+  WindowModifiers dco_decode_window_modifiers(dynamic raw);
+
+  @protected
+  WindowNoticeReason dco_decode_window_notice_reason(dynamic raw);
+
+  @protected
+  WindowPointer dco_decode_window_pointer(dynamic raw);
 
   @protected
   WindowRequest dco_decode_window_request(dynamic raw);
@@ -344,6 +374,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WindowEnd sse_decode_box_autoadd_window_end(SseDeserializer deserializer);
 
   @protected
+  WindowInput sse_decode_box_autoadd_window_input(SseDeserializer deserializer);
+
+  @protected
+  WindowModifiers sse_decode_box_autoadd_window_modifiers(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WindowPointer sse_decode_box_autoadd_window_pointer(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   WindowRequest sse_decode_box_autoadd_window_request(
     SseDeserializer deserializer,
   );
@@ -361,6 +404,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Event sse_decode_event(SseDeserializer deserializer);
+
+  @protected
+  double sse_decode_f_32(SseDeserializer deserializer);
 
   @protected
   FileProgress sse_decode_file_progress(SseDeserializer deserializer);
@@ -450,6 +496,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   TransferResult sse_decode_transfer_result(SseDeserializer deserializer);
 
   @protected
+  int sse_decode_u_16(SseDeserializer deserializer);
+
+  @protected
   int sse_decode_u_32(SseDeserializer deserializer);
 
   @protected
@@ -465,7 +514,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WindowAbilities sse_decode_window_abilities(SseDeserializer deserializer);
 
   @protected
+  WindowButton sse_decode_window_button(SseDeserializer deserializer);
+
+  @protected
   WindowEnd sse_decode_window_end(SseDeserializer deserializer);
+
+  @protected
+  WindowInput sse_decode_window_input(SseDeserializer deserializer);
+
+  @protected
+  WindowModifiers sse_decode_window_modifiers(SseDeserializer deserializer);
+
+  @protected
+  WindowNoticeReason sse_decode_window_notice_reason(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WindowPointer sse_decode_window_pointer(SseDeserializer deserializer);
 
   @protected
   WindowRequest sse_decode_window_request(SseDeserializer deserializer);
@@ -600,6 +666,24 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_window_input(
+    WindowInput self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_window_modifiers(
+    WindowModifiers self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_window_pointer(
+    WindowPointer self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_window_request(
     WindowRequest self,
     SseSerializer serializer,
@@ -619,6 +703,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_event(Event self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_f_32(double self, SseSerializer serializer);
 
   @protected
   void sse_encode_file_progress(FileProgress self, SseSerializer serializer);
@@ -726,6 +813,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_u_16(int self, SseSerializer serializer);
+
+  @protected
   void sse_encode_u_32(int self, SseSerializer serializer);
 
   @protected
@@ -744,7 +834,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_window_button(WindowButton self, SseSerializer serializer);
+
+  @protected
   void sse_encode_window_end(WindowEnd self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_window_input(WindowInput self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_window_modifiers(
+    WindowModifiers self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_window_notice_reason(
+    WindowNoticeReason self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_window_pointer(WindowPointer self, SseSerializer serializer);
 
   @protected
   void sse_encode_window_request(WindowRequest self, SseSerializer serializer);

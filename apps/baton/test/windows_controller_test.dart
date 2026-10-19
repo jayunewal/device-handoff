@@ -840,6 +840,244 @@ void main() {
     });
   });
 
+  group('what the person does on a window that runs', () {
+    const noKeys = WindowModifiers(
+      shift: false,
+      control: false,
+      option: false,
+      command: false,
+      capsLock: false,
+    );
+    const touch = WindowInput.pointer(
+      x: 0.25,
+      y: 0.5,
+      modifiers: noKeys,
+      action: WindowPointer.down(button: WindowButton.left),
+    );
+    const press = WindowInput.key(
+      code: 4,
+      down: true,
+      modifiers: noKeys,
+      repeat: false,
+      text: 'a',
+    );
+
+    test('is given to Baton with the number of the window', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(id: 5, control: true);
+      await _begin(session, window);
+
+      expect(controller.input(window, touch), isTrue);
+      expect(controller.input(window, press), isTrue);
+
+      expect(session.windowInputs, [
+        (session: 5, input: touch),
+        (session: 5, input: press),
+      ]);
+    });
+
+    test('is taken or not as Baton says', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(control: true);
+      await _begin(session, window);
+
+      session.windowInputTaken = false;
+      expect(controller.input(window, touch), isFalse);
+      session.windowInputTaken = true;
+      expect(controller.input(window, touch), isTrue);
+
+      // Not being taken is not the end of the window.
+      expect(controller.sessions, [window]);
+      expect(controller.notes, isEmpty);
+    });
+
+    test('goes to the window that it is for, and to no other', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final first = sampleWindowSession(id: 1, control: true);
+      final second = sampleWindowSession(id: 2, control: true);
+      await _begin(session, first);
+      await _begin(session, second);
+
+      controller.input(second, touch);
+      controller.input(first, press);
+
+      expect(session.windowInputs, [
+        (session: 2, input: touch),
+        (session: 1, input: press),
+      ]);
+    });
+
+    test('is let go of for the window that it is for, and no other', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final first = sampleWindowSession(id: 1, control: true);
+      final second = sampleWindowSession(id: 2, control: true);
+      await _begin(session, first);
+      await _begin(session, second);
+
+      controller.releaseInput(second);
+
+      expect(session.windowInputsReleased, [2]);
+      expect(session.windowInputs, isEmpty);
+    });
+
+    test('is not a change to what the screens show', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(control: true);
+      await _begin(session, window);
+      var told = 0;
+      controller.addListener(() => told++);
+
+      controller.input(window, touch);
+      controller.releaseInput(window);
+
+      expect(told, 0);
+    });
+  });
+
+  group('what the other device did not do', () {
+    Future<void> say(
+      FakeSession session,
+      int id,
+      WindowNoticeReason reason,
+      int count,
+    ) async {
+      session.emit(Event.windowNotice(id: id, reason: reason, count: count));
+      await pumpEventQueue();
+    }
+
+    test('is told for the window that it was done on', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(control: true);
+      await _begin(session, window);
+      final heard = <WindowDropped>[];
+      final listening = controller.dropped.listen(heard.add);
+      addTearDown(listening.cancel);
+      var told = 0;
+      controller.addListener(() => told++);
+
+      await say(session, 1, WindowNoticeReason.paused, 3);
+      await say(session, 1, WindowNoticeReason.locked, 1);
+
+      expect(heard, [
+        (session: window, reason: WindowNoticeReason.paused, count: 3),
+        (session: window, reason: WindowNoticeReason.locked, count: 1),
+      ]);
+      // It is for a sentence on the screen, not for the list of windows.
+      expect(controller.notes, isEmpty);
+      expect(controller.sessions, [window]);
+      expect(told, 0);
+    });
+
+    test('is heard by every screen that listens', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(control: true);
+      await _begin(session, window);
+      final first = <WindowDropped>[];
+      final second = <WindowDropped>[];
+      final listeningFirst = controller.dropped.listen(first.add);
+      final listeningSecond = controller.dropped.listen(second.add);
+      addTearDown(listeningFirst.cancel);
+      addTearDown(listeningSecond.cancel);
+
+      await say(session, 1, WindowNoticeReason.covered, 2);
+
+      final expected = (
+        session: window,
+        reason: WindowNoticeReason.covered,
+        count: 2,
+      );
+      expect(first, [expected]);
+      expect(second, [expected]);
+    });
+
+    test('is told for each window by itself', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final first = sampleWindowSession(id: 1, control: true);
+      final second = sampleWindowSession(id: 2, control: true);
+      await _begin(session, first);
+      await _begin(session, second);
+      final heard = <WindowDropped>[];
+      final listening = controller.dropped.listen(heard.add);
+      addTearDown(listening.cancel);
+
+      await say(session, 2, WindowNoticeReason.covered, 2);
+
+      expect(heard, [
+        (session: second, reason: WindowNoticeReason.covered, count: 2),
+      ]);
+    });
+
+    test('is not told for a window that is not running', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(control: true);
+      final heard = <WindowDropped>[];
+      final listening = controller.dropped.listen(heard.add);
+      addTearDown(listening.cancel);
+
+      // Before it began, which Baton does not do, and after it ended.
+      await say(session, 1, WindowNoticeReason.paused, 1);
+      await _begin(session, window);
+      await _end(session, 1, const WindowEnd.otherDevice());
+      await say(session, 1, WindowNoticeReason.paused, 1);
+
+      expect(heard, isEmpty);
+    });
+
+    test('is not told for a window that is shared from here', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(role: WindowRole.sharing);
+      await _begin(session, window);
+      final heard = <WindowDropped>[];
+      final listening = controller.dropped.listen(heard.add);
+      addTearDown(listening.cancel);
+
+      await say(session, 1, WindowNoticeReason.paused, 1);
+
+      expect(heard, isEmpty);
+    });
+
+    test('is not told when nothing was dropped', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(control: true);
+      await _begin(session, window);
+      final heard = <WindowDropped>[];
+      final listening = controller.dropped.listen(heard.add);
+      addTearDown(listening.cancel);
+
+      await say(session, 1, WindowNoticeReason.paused, 0);
+      await say(session, 1, WindowNoticeReason.paused, -4);
+
+      expect(heard, isEmpty);
+    });
+
+    test('is not heard after the controller was let go of', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(control: true);
+      await _begin(session, window);
+      final heard = <WindowDropped>[];
+      var closed = false;
+      controller.dropped.listen(heard.add, onDone: () => closed = true);
+
+      controller.dispose();
+      await say(session, 1, WindowNoticeReason.paused, 1);
+
+      expect(heard, isEmpty);
+      expect(closed, isTrue);
+    });
+  });
+
   group('sharing a window', () {
     test('asks Baton to share it with the device, and is offering until the device has answered', () async {
       final session = _session();
