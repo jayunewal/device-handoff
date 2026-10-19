@@ -296,18 +296,22 @@ jobs:
           for symbol in frb_get_rust_content_hash frb_pde_ffi_dispatcher_primary frb_init_frb_dart_api_dl; do
             nm -gU "$lib" | grep -q " _$symbol\$" || { echo "$symbol is missing from $lib" >&2; exit 1; }
           done
-      - name: Check that the app is sandboxed, and may use the network both ways and the camera
+      - name: Check that the app is sandboxed, and may use the network both ways, the camera and Downloads
         run: |
           set -eu
           app=apps/baton/build/macos/Build/Products/Release/Baton.app
           codesign -d --entitlements - "$app" > entitlements.txt 2>&1
-          for key in com.apple.security.app-sandbox com.apple.security.network.client com.apple.security.network.server com.apple.security.device.camera; do
+          for key in com.apple.security.app-sandbox com.apple.security.network.client com.apple.security.network.server com.apple.security.device.camera com.apple.security.files.downloads.read-write com.apple.security.files.user-selected.read-only; do
             grep -q "$key" entitlements.txt || { cat entitlements.txt; echo "$key is missing from the entitlements of $app" >&2; exit 1; }
           done
       - name: Start the app on this Mac
         timeout-minutes: 25
         working-directory: apps/baton
-        run: flutter test integration_test -d macos
+        run: |
+          # A person's Mac has a Downloads folder, and the app puts what other devices send there.
+          # The test checks that the app found that one and not the one inside its sandbox.
+          mkdir -p ~/Downloads
+          flutter test integration_test -d macos
       # The app is a download like the program that the Build jobs make: a run for a pull request
       # does not make it.
       - name: Package the app
