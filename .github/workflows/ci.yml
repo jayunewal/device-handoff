@@ -385,6 +385,8 @@ jobs:
             echo "flutter build --config-only took $(( $(date +%s) - start )) s"
             cd ios
             python3 "$GITHUB_WORKSPACE/.github/scripts/diag-xcodebuild.py" xcrun xcodebuild -configuration Release -workspace Runner.xcworkspace -scheme Runner BUILD_DIR="$PWD/../build/ios" -sdk iphoneos -destination generic/platform=iOS CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= EXPANDED_CODE_SIGN_IDENTITY= ONLY_ACTIVE_ARCH=NO FLUTTER_SUPPRESS_ANALYTICS=true COMPILER_INDEX_STORE_ENABLE=NO -showBuildTimingSummary
+            echo "== files of the Rust library for the device, with the second they were written"
+            ls -lT ../build/cargokit/aarch64-apple-ios/release ../build/cargokit/aarch64-apple-ios/release/deps 2>&1 | grep -E 'baton|:$' || true
           } >> "$RUNNER_TEMP/notes.txt" 2>&1
       - name: Build the app for an iPhone
         # Nothing signs it, so it cannot be installed from here. Whoever installs it builds it
@@ -425,6 +427,8 @@ jobs:
             echo "flutter build --config-only took $(( $(date +%s) - start )) s"
             cd ios
             python3 "$GITHUB_WORKSPACE/.github/scripts/diag-xcodebuild.py" xcrun xcodebuild -configuration Debug VERBOSE_SCRIPT_LOGGING=YES -workspace Runner.xcworkspace -scheme Runner BUILD_DIR="$PWD/../build/ios" -sdk iphonesimulator -destination "id=$SIMULATOR_UDID" ONLY_ACTIVE_ARCH=YES ARCHS=arm64 FLUTTER_SUPPRESS_ANALYTICS=true COMPILER_INDEX_STORE_ENABLE=NO -showBuildTimingSummary
+            echo "== files of the Rust library for the simulator, with the second they were written"
+            ls -lT ../build/cargokit/aarch64-apple-ios-sim/debug ../build/cargokit/aarch64-apple-ios-sim/debug/deps 2>&1 | grep -E 'baton|:$' || true
           } >> "$RUNNER_TEMP/notes.txt" 2>&1
       - name: Start the app in the simulator
         timeout-minutes: 25
@@ -472,7 +476,9 @@ jobs:
 
   diag-boot:
     name: Diag boot (${{ matrix.order }})
-    if: github.event_name == 'workflow_dispatch'
+    # After the iPhone job, so that the whole run holds one Mac for its first 25 minutes.
+    needs: app-iphone
+    if: always() && github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     timeout-minutes: 45
     strategy:
