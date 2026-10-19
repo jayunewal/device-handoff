@@ -285,6 +285,17 @@ jobs:
       - name: Fetch the app's packages
         working-directory: apps/baton
         run: flutter pub get --enforce-lockfile
+      - name: Test the Swift that shows windows
+        # BatonViewer.swift builds on any computer. The tests of the decoder need VideoToolbox,
+        # which this Mac has (apps/baton/rust_builder/swift_tests). The second and the third run
+        # look for a race between the threads of the Rust side, of the decoder and of the screen,
+        # and for a read or a write beyond what was passed. They do not look for leaks: the table
+        # that is registered stays for as long as the process lives, and every test registers one.
+        working-directory: apps/baton/rust_builder/swift_tests
+        run: |
+          ./run.sh
+          ./run.sh -sanitize=thread
+          ./run.sh -sanitize=address
       - name: Build the app
         working-directory: apps/baton
         run: flutter build macos --release

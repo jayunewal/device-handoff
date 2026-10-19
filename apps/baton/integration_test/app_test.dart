@@ -164,6 +164,26 @@ void main() {
         defaultTargetPlatform != TargetPlatform.macOS,
   );
 
+  testWidgets(
+    'shows windows with the viewer that the Swift code gave the library',
+    (tester) async {
+      // Flutter registers the plugin of the app (rust_builder/macos/Classes/BatonStreamPlugin.swift)
+      // before any Dart runs, and the plugin gives the library the viewer with which this device
+      // shows the windows of other devices. Nothing else here can try that chain: a plugin that was
+      // not registered, a texture that Flutter refused, or a table that the library did not take
+      // would all leave a device that says no to every window that another one offers.
+      final backend = RustBackend(dataDir: (await _folder()).path);
+      await backend.setDeviceName('Test device');
+      final session = await backend.start();
+      addTearDown(session.stop);
+
+      expect(session.windowAbilities().canShow, isTrue);
+    },
+    skip:
+        defaultTargetPlatform != TargetPlatform.iOS &&
+        defaultTargetPlatform != TargetPlatform.macOS,
+  );
+
   testWidgets('pairs with another Baton, by the code pasted in', (
     tester,
   ) async {

@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: Apache-2.0
+
+// The Swift that shows the windows of other devices is the same for an iPhone and for a Mac, and a
+// CocoaPods pod can only hold files from its own folder, so the files are in two places:
+// rust_builder/ios/Classes and rust_builder/macos/Classes. Nothing builds one from the other, and
+// the Mac jobs of CI only build the platform they are for, so a change that reached one folder
+// and not the other would show as two apps that do different things. These tests fail at once.
+
+import 'dart:io';
+
+import 'package:flutter_test/flutter_test.dart';
+
+/// A file as text with the same line breaks everywhere: a checkout on Windows may have CRLF.
+String _read(String path) =>
+    File(path).readAsStringSync().replaceAll('\r\n', '\n');
+
+const _files = [
+  'BatonH264Decoder.swift',
+  'BatonStreamPlugin.swift',
+  'BatonViewer.swift',
+  'baton_stream_abi.h',
+];
+
+List<String> _names(String system) =>
+    Directory('rust_builder/$system/Classes')
+        .listSync()
+        .whereType<File>()
+        .map((file) => file.uri.pathSegments.last)
+        .toList()
+      ..sort();
+
+void main() {
+  test('the iOS and the macOS plugin hold the same files, and no others', () {
+    for (final system in ['ios', 'macos']) {
+      expect(
+        _names(system),
+        _files,
+        reason: 'a file left here is built into the app, a missing one is not',
+      );
+    }
+    for (final file in _files) {
+      expect(
+        _read('rust_builder/ios/Classes/$file'),
+        _read('rust_builder/macos/Classes/$file'),
+        reason: '$file differs between ios/Classes and macos/Classes',
+      );
+    }
+  });
+
+  test('the header the Swift reads is the header of the crate', () {
+    // The crate's header is what the Rust side is held to by its own tests. A copy that falls
+    // behind it makes the Swift read the structs of another version.
+    expect(
+      _read('rust_builder/macos/Classes/baton_stream_abi.h'),
+      _read('../../crates/baton-stream-abi/include/baton_stream_abi.h'),
+    );
+  });
+
+  test('both pubspec entries name the class that Flutter registers', () {
+    final pubspec = _read('rust_builder/pubspec.yaml');
+    for (final system in ['ios', 'macos']) {
+      expect(
+        pubspec,
+        contains('$system:\n        pluginClass: BatonStreamPlugin\n'),
+        reason: 'Flutter registers the plugin of $system by this name',
+      );
+    }
+    final plugin = _read('rust_builder/macos/Classes/BatonStreamPlugin.swift');
+    expect(
+      plugin,
+      contains('@objc(BatonStreamPlugin)\npublic class BatonStreamPlugin'),
+      reason: 'the registrant that Flutter writes looks for this name',
+    );
+  });
+
+  test('only the plugin file knows Flutter', () {
+    // The other two build without Flutter on any computer with a Swift compiler, and
+    // rust_builder/swift_tests/run.sh does just that.
+    for (final file in ['BatonViewer.swift', 'BatonH264Decoder.swift']) {
+      final swift = _read('rust_builder/macos/Classes/$file');
+      expect(swift, isNot(contains('import Flutter')), reason: file);
+      expect(swift, isNot(contains('import FlutterMacOS')), reason: file);
+    }
+    final viewer = _read('rust_builder/macos/Classes/BatonViewer.swift');
+    final imports = RegExp(
+      r'^import (\w+)$',
+      multiLine: true,
+    ).allMatches(viewer).map((match) => match.group(1)).toList();
+    expect(imports, [
+      'Foundation',
+    ], reason: 'the file with the rules must build and be tested everywhere');
+  });
+
+  test('the pods build what is in Classes, and the tests are not there', () {
+    // The tests have a main of their own, and a second one in the framework would not link.
+    for (final system in ['ios', 'macos']) {
+      expect(
+        _read('rust_builder/$system/baton_ffi.podspec'),
+        contains("s.source_files     = 'Classes/**/*'"),
+        reason: system,
+      );
+    }
+    expect(File('rust_builder/swift_tests/run.sh').existsSync(), isTrue);
+  });
+}
