@@ -563,7 +563,7 @@ async fn an_outcome_that_was_lost_on_its_way_is_asked_for_and_nothing_is_sent_ag
 }
 
 #[tokio::test]
-async fn an_outcome_that_is_slow_to_come_is_waited_for_and_the_transfer_is_not_offered_again() {
+async fn an_outcome_that_is_slow_to_come_is_asked_for_again_when_the_receiver_stops_the_lanes() {
     let rig = Rig::new();
     let content = bytes(1, 2_500_000);
     rig.files.make("big", &content);
@@ -582,15 +582,92 @@ async fn an_outcome_that_is_slow_to_come_is_waited_for_and_the_transfer_is_not_o
         panic!("{outcome:?}");
     };
     assert!(sent.done.failed.is_empty(), "{:?}", sent.done);
+    // The outcome is that of the transfer that was sent the first time.
     assert_eq!((sent.files, sent.bytes), (1, 2_500_000));
     let log = rig.wire.log();
-    // The question was asked again on the second connection, and nothing was offered or sent.
+    // The sender did not hear the answer, so it offered the transfer. The receiver, which is done
+    // with it, accepted the offer and stopped the lane, and the outcome was asked for again.
     assert_eq!(log.connections(), 2);
-    assert_eq!(log.requests(Kind::Offer), 1);
+    assert_eq!(log.requests(Kind::Offer), 2);
     assert_eq!(log.requests(Kind::Finish), 3);
-    assert!(log.opened().iter().all(|(conn, _)| *conn == 1));
+    assert_eq!(lanes_on(&rig, 2), [0]);
     assert_eq!(rig.person.questions(), 1);
     assert_eq!(tree(&rig.received), expect(&[("big", Some(&content))]));
+}
+
+#[tokio::test]
+async fn a_finish_that_was_lost_before_the_receiver_had_the_files_is_not_waited_for() {
+    let rig = Rig::new();
+    let content = bytes(1, 300_000);
+    rig.files.make("a", &content);
+    let selection = rig.files.select(&["a"]);
+    // Everything that the first connection carries goes with it, and so does the `Finish`: the
+    // receiver took the offer and never got the list, and it waits for a list that is not coming.
+    rig.wire.on_put(|put| {
+        if put.conn == 1 {
+            Fault::Vanish
+        } else {
+            Fault::Pass
+        }
+    });
+    rig.wire.on_call(|call| {
+        if call.conn == 1 && call.kind == Kind::Finish {
+            Fate::Lose
+        } else {
+            Fate::Pass
+        }
+    });
+    let policy = Policy {
+        probe_wait: Duration::from_millis(200),
+        ..steady()
+    };
+
+    let outcome = ended(rig.start(&selection, policy, rig.id())).await;
+
+    let Outcome::Done(sent) = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert!(sent.done.failed.is_empty(), "{:?}", sent.done);
+    let log = rig.wire.log();
+    // The question about the outcome got no answer, and the transfer was offered and sent again.
+    assert_eq!(log.connections(), 2);
+    assert_eq!(log.requests(Kind::Offer), 2);
+    assert_eq!(log.requests(Kind::Finish), 3);
+    assert_eq!(lanes_on(&rig, 2), [0]);
+    assert_eq!(rig.person.questions(), 1);
+    assert_eq!(tree(&rig.received), expect(&[("a", Some(&content))]));
+}
+
+#[tokio::test]
+async fn a_connection_that_goes_with_the_finish_is_followed_by_an_attempt_that_delivers() {
+    let rig = Rig::new();
+    let content = bytes(1, 1000);
+    rig.files.make("a", &content);
+    let selection = rig.files.select(&["a"]);
+    // The connection goes as `Finish` is sent, and the lanes with it. Whether the receiver has the
+    // list of the attempt by then is up to the scheduler: if it does not, its `Finish` waits for an
+    // attempt that has one, and only an offer moves the transfer on. If it does, the question about
+    // the outcome is answered. The transfer arrives either way.
+    rig.wire.on_call(|call| {
+        if call.conn == 1 && call.kind == Kind::Finish && call.nth == 0 {
+            Fate::Lose
+        } else {
+            Fate::Pass
+        }
+    });
+    let policy = Policy {
+        probe_wait: Duration::from_millis(200),
+        ..steady()
+    };
+
+    let outcome = ended(rig.start(&selection, policy, rig.id())).await;
+
+    let Outcome::Done(sent) = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert!(sent.done.failed.is_empty(), "{:?}", sent.done);
+    assert_eq!(rig.person.questions(), 1);
+    assert_eq!(tree(&rig.received), expect(&[("a", Some(&content))]));
 }
 
 #[tokio::test]

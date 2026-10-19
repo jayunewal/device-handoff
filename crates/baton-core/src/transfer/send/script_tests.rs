@@ -847,6 +847,7 @@ fn told_apart() -> Policy {
     Policy {
         offer_wait: Duration::from_millis(410),
         finish_wait: Duration::from_millis(420),
+        probe_wait: Duration::from_millis(210),
         cancel_wait: Duration::from_millis(230),
         ..Policy::quick()
     }
@@ -871,8 +872,8 @@ async fn every_request_is_given_the_wait_that_is_meant_for_it() {
         [
             (Kind::Offer, policy.offer_wait),
             (Kind::Finish, policy.finish_wait),
-            // The question about the outcome is a `Finish`, and it is waited for like one.
-            (Kind::Finish, policy.finish_wait),
+            // The question about the outcome is not waited for as long as a `Finish` is.
+            (Kind::Finish, policy.probe_wait),
         ]
     );
 }
@@ -936,15 +937,167 @@ async fn a_receiver_that_does_not_know_the_transfer_is_not_asked_about_it_again(
 }
 
 #[tokio::test]
-async fn a_probe_that_gets_no_answer_is_made_again_and_the_transfer_is_not_offered() {
+async fn a_receiver_that_says_nothing_to_the_probe_is_offered_the_transfer() {
     let (_folder, selection) = sample(&[10, 20, 30]);
     let me = id(1);
-    // On the second connection the receiver is slow: it is still putting the files in place.
+    // On the second connection the receiver does not answer the question about the outcome, as when
+    // it waits for files that went with the first, and takes the transfer when it is offered.
     let script = answering_finish(me, move |conn, nth| match (conn, nth) {
         (1, _) => Step::Lost,
-        (2, 0 | 1) => Step::Silent,
+        (2, 0) => Step::Silent,
         _ => done(me, Vec::new()),
     });
+    let policy = Policy::quick();
+
+    let outcome = ended(start(&script, &selection, policy.clone(), me)).await;
+
+    let Outcome::Done(sent) = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!((sent.files, sent.bytes), (3, 60));
+    let log = script.log();
+    assert_eq!(log.connections(), 2);
+    // The offer and everything again on the second connection, and the `Finish` that ends it.
+    assert_eq!(log.requests(Kind::Offer), 2);
+    assert_eq!(lanes_on(&log, 2), [0, 1, 2]);
+    assert_eq!(log.requests(Kind::Finish), 3);
+    // The question was asked once, for as long as the probe is waited for.
+    assert_eq!(
+        script.deadlines(),
+        [
+            (Kind::Offer, policy.offer_wait),
+            (Kind::Finish, policy.finish_wait),
+            (Kind::Finish, policy.probe_wait),
+            (Kind::Offer, policy.offer_wait),
+            (Kind::Finish, policy.finish_wait),
+        ]
+    );
+}
+
+/// A receiver that did not answer the question about the outcome of a lost `Finish`, takes the offer,
+/// and stops lane 0 of the second connection with `code`. What it says to the `Finish` that the
+/// sender makes again is what `again` says, given the number of the request.
+fn stopping_lanes_after_a_silent_probe(
+    id: TransferId,
+    code: u32,
+    again: impl Fn(usize) -> Step + Send + Sync + 'static,
+) -> Arc<Script> {
+    Arc::new(
+        Script::new(move |call| match (call.conn, call.kind, call.nth) {
+            (1, Kind::Finish, _) => Step::Lost,
+            (2, Kind::Finish, 0) => Step::Silent,
+            (_, Kind::Finish, nth) => again(nth),
+            _ => normal(id, call),
+        })
+        .lanes(move |conn, lane| {
+            if conn == 2 && lane == 0 {
+                Take::StopAfter { after: 0, code }
+            } else {
+                Take::All
+            }
+        }),
+    )
+}
+
+#[tokio::test]
+async fn lanes_stopped_with_499_after_a_silent_probe_are_followed_by_the_question_about_the_outcome()
+ {
+    let (_folder, selection) = sample(&[10, 20, 30]);
+    let me = id(1);
+    // A receiver that is done with the transfer accepts the offer, and stops the lanes with 499.
+    let script = stopping_lanes_after_a_silent_probe(me, close_code::CANCELLED, move |_| {
+        done(me, Vec::new())
+    });
+    let policy = Policy::quick();
+
+    let outcome = ended(start(&script, &selection, policy.clone(), me)).await;
+
+    let Outcome::Done(sent) = outcome else {
+        panic!("{outcome:?}");
+    };
+    // The outcome is that of the transfer that was sent, and not of the attempt that was stopped.
+    assert_eq!((sent.files, sent.bytes), (3, 60));
+    let log = script.log();
+    assert_eq!(log.connections(), 2);
+    assert_eq!(log.requests(Kind::Offer), 2);
+    assert_eq!(log.requests(Kind::Finish), 3);
+    // The question is the one that was lost, word for word, three times.
+    let lost = Finish {
+        id: me,
+        files: 3,
+        bytes: 60,
+    };
+    assert_eq!(finishes_of(&script), [lost, lost, lost]);
+    // It is waited for as a `Finish` is.
+    assert_eq!(
+        script.deadlines().last(),
+        Some(&(Kind::Finish, policy.finish_wait))
+    );
+}
+
+#[tokio::test]
+async fn lanes_stopped_with_499_after_a_silent_probe_are_the_end_if_the_receiver_has_no_such_transfer()
+ {
+    let (_folder, selection) = sample(&[10, 20, 30]);
+    let me = id(1);
+    for gave_it_up in [
+        error(ErrorCode::NotFound),
+        declined(me, DeclineReason::Refused),
+    ] {
+        let script = stopping_lanes_after_a_silent_probe(me, close_code::CANCELLED, {
+            let gave_it_up = gave_it_up.clone();
+            move |_| gave_it_up.clone()
+        });
+
+        let outcome = ended(start(&script, &selection, Policy::quick(), me)).await;
+
+        assert_eq!(outcome, Outcome::Stopped(close_code::CANCELLED));
+        let log = script.log();
+        assert_eq!(log.connections(), 2);
+        assert_eq!(log.requests(Kind::Finish), 3);
+    }
+}
+
+#[tokio::test]
+async fn an_outcome_that_is_asked_for_after_a_stop_and_never_comes_is_not_known() {
+    let (_folder, selection) = sample(&[10, 20, 30]);
+    let me = id(1);
+    let policy = Policy::quick();
+    let script = stopping_lanes_after_a_silent_probe(me, close_code::CANCELLED, |_| Step::Silent);
+
+    let outcome = ended(start(&script, &selection, policy.clone(), me)).await;
+
+    assert_eq!(outcome, Outcome::Failed(Error::NoOutcome));
+    // The lost `Finish`, the probe, and as many as any `Finish` is made.
+    assert_eq!(
+        script.log().requests(Kind::Finish),
+        2 + usize::try_from(policy.finish_tries).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn an_outcome_that_is_asked_for_after_a_stop_is_asked_for_again_on_the_next_connection() {
+    let (_folder, selection) = sample(&[10, 20, 30]);
+    let me = id(1);
+    // The connection goes while the sender waits for the outcome, and the next connection has it.
+    let script = Arc::new(
+        Script::new(move |call| match (call.conn, call.kind, call.nth) {
+            (2, Kind::Finish, 0) => Step::Silent,
+            (1 | 2, Kind::Finish, _) => Step::Lost,
+            (_, Kind::Finish, _) => done(me, Vec::new()),
+            _ => normal(me, call),
+        })
+        .lanes(|conn, lane| {
+            if conn == 2 && lane == 0 {
+                Take::StopAfter {
+                    after: 0,
+                    code: close_code::CANCELLED,
+                }
+            } else {
+                Take::All
+            }
+        }),
+    );
 
     let outcome = ended(start(&script, &selection, Policy::quick(), me)).await;
 
@@ -953,35 +1106,58 @@ async fn a_probe_that_gets_no_answer_is_made_again_and_the_transfer_is_not_offer
     };
     assert_eq!((sent.files, sent.bytes), (3, 60));
     let log = script.log();
-    assert_eq!(log.connections(), 2);
-    assert_eq!(log.requests(Kind::Offer), 1);
-    // The `Finish` that was lost, and the probe three times on the second connection.
-    assert_eq!(log.requests(Kind::Finish), 4);
-    assert!(log.opened().iter().all(|(conn, _)| *conn == 1));
+    assert_eq!(log.connections(), 3);
+    // The transfer was offered once more, on the second connection, and not on the third.
+    assert_eq!(log.requests(Kind::Offer), 2);
 }
 
 #[tokio::test]
-async fn a_probe_that_is_never_answered_ends_the_transfer_with_no_outcome() {
-    let (_folder, selection) = sample(&[10]);
+async fn lanes_stopped_with_other_codes_after_a_silent_probe_are_the_end() {
+    let (_folder, selection) = sample(&[10, 20, 30]);
     let me = id(1);
-    let policy = Policy::quick();
-    let script = answering_finish(me, move |conn, _| match conn {
-        1 => Step::Lost,
-        _ => Step::Silent,
-    });
+    for code in [
+        close_code::NOT_PAIRED,
+        close_code::PROTOCOL_VIOLATION,
+        close_code::TOO_LARGE,
+    ] {
+        let script = stopping_lanes_after_a_silent_probe(me, code, move |_| done(me, Vec::new()));
 
-    let outcome = ended(start(&script, &selection, policy.clone(), me)).await;
+        let outcome = ended(start(&script, &selection, Policy::quick(), me)).await;
 
-    // The receiver is asked as often as for any `Finish`, and the sender does not know if the files
-    // are in place.
-    assert_eq!(outcome, Outcome::Failed(Error::NoOutcome));
-    let log = script.log();
-    assert_eq!(log.connections(), 2);
-    assert_eq!(log.requests(Kind::Offer), 1);
-    assert_eq!(
-        log.requests(Kind::Finish),
-        1 + usize::try_from(policy.finish_tries).unwrap()
+        // Only 499 may be the receiver being done. The outcome is not asked for again.
+        assert_eq!(outcome, Outcome::Stopped(code));
+        assert_eq!(script.log().requests(Kind::Finish), 2);
+    }
+}
+
+#[tokio::test]
+async fn lanes_stopped_with_499_after_a_probe_that_found_no_transfer_are_the_end() {
+    let (_folder, selection) = sample(&[10, 20, 30]);
+    let me = id(1);
+    // The receiver said that it has no such transfer, and then gave up the one it was offered.
+    let script = Arc::new(
+        Script::new(move |call| match (call.conn, call.kind) {
+            (1, Kind::Finish) => Step::Lost,
+            (_, Kind::Finish) => error(ErrorCode::NotFound),
+            _ => normal(me, call),
+        })
+        .lanes(|conn, lane| {
+            if conn == 2 && lane == 0 {
+                Take::StopAfter {
+                    after: 0,
+                    code: close_code::CANCELLED,
+                }
+            } else {
+                Take::All
+            }
+        }),
     );
+
+    let outcome = ended(start(&script, &selection, Policy::quick(), me)).await;
+
+    assert_eq!(outcome, Outcome::Stopped(close_code::CANCELLED));
+    // The lost `Finish` and the probe. The outcome is asked for no more, because it is known.
+    assert_eq!(script.log().requests(Kind::Finish), 2);
 }
 
 #[tokio::test]

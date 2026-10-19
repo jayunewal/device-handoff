@@ -627,6 +627,9 @@ pub(super) enum Fault {
     Cut,
     /// The write waits until the gate is open, and is asked about again.
     Wait(Gate),
+    /// The write is taken and goes nowhere, as when the connection goes before the bytes arrive. The
+    /// lane is not ended for the receiver either: it waits for what never comes.
+    Vanish,
 }
 
 /// What a fault does to a request.
@@ -745,6 +748,7 @@ impl Wire for Direct {
                 dead: CancellationToken::new(),
                 bytes: AtomicU64::new(0),
                 calls: Mutex::new(HashMap::new()),
+                kept: Mutex::new(Vec::new()),
             }))) as Box<dyn Link>)
         })
     }
@@ -761,6 +765,9 @@ struct Conn {
     /// What all the lanes of the connection have taken.
     bytes: AtomicU64,
     calls: Mutex<HashMap<Kind, usize>>,
+    /// The pipes of lanes whose bytes vanished, which are not closed until the connection is let go
+    /// of.
+    kept: Mutex<Vec<DuplexStream>>,
 }
 
 impl Conn {
@@ -902,6 +909,7 @@ impl Link for DirectLink {
                 lane,
                 count: 0,
                 closed: false,
+                vanished: false,
             }) as Box<dyn LaneOut>)
         })
     }
@@ -938,6 +946,8 @@ struct DirectLane {
     lane: Arc<LaneState>,
     count: u64,
     closed: bool,
+    /// Whether a write vanished.
+    vanished: bool,
 }
 
 impl DirectLane {
@@ -975,6 +985,10 @@ impl LaneOut for DirectLane {
                         return Err(LaneError::Lost);
                     }
                     Fault::Wait(gate) => gate.passed().await,
+                    Fault::Vanish => {
+                        self.vanished = true;
+                        return Ok(bytes.len());
+                    }
                 }
             }
             let Some(tx) = self.tx.as_mut() else {
@@ -1008,8 +1022,12 @@ impl LaneOut for DirectLane {
         if self.conn.dead.is_cancelled() {
             return Err(LaneError::Lost);
         }
-        // Closing the pipe is the end of the stream: what was written is still read.
-        self.tx = None;
+        // Closing the pipe is the end of the stream: what was written is still read. A lane whose
+        // bytes vanished has no end to show, and its pipe stays open.
+        match self.tx.take() {
+            Some(tx) if self.vanished => lock(&self.conn.kept).push(tx),
+            _ => {}
+        }
         self.close(Closed::Finished);
         Ok(())
     }
@@ -1260,6 +1278,7 @@ pub(super) fn steady() -> Policy {
     Policy {
         offer_wait: Duration::from_secs(20),
         finish_wait: Duration::from_secs(20),
+        probe_wait: Duration::from_secs(10),
         cancel_wait: Duration::from_secs(5),
         stall: Duration::from_secs(20),
         patience: Duration::from_secs(60),

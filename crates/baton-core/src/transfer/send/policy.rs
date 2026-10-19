@@ -24,10 +24,16 @@ pub(crate) struct Policy {
     /// (section 8, Finish).
     pub(crate) finish_wait: Duration,
     /// How many times to send `Finish` on a connection before the outcome is given up on. The
-    /// receiver answers a repeat with the same outcome. The same wait and number of tries are those
-    /// of asking for the outcome of a `Finish` whose answer was never heard, on the connection of the
-    /// next attempt and before anything is offered.
+    /// receiver answers a repeat with the same outcome.
     pub(crate) finish_tries: u32,
+    /// The longest to wait for the outcome of a `Finish` whose answer was never heard, which is
+    /// asked for again on a new connection before anything is offered. A receiver that has the
+    /// outcome, or does not know the transfer, answers at once. One that is putting the files in
+    /// place answers when it is done, and one that waits for files that went with the old connection
+    /// does not answer at all, so the wait is short, and the transfer is offered to a receiver that
+    /// has not answered. If that receiver was only slow, it stops the lanes, and the outcome is asked
+    /// for again with the wait and the tries of `Finish`.
+    pub(crate) probe_wait: Duration,
     /// The longest `Cancel` is waited for.
     pub(crate) cancel_wait: Duration,
     /// How long a lane may take no byte, or fail to open, before the attempt is ended (section 8,
@@ -54,6 +60,7 @@ impl Default for Policy {
             offer_tries: 3,
             finish_wait: Duration::from_mins(2),
             finish_tries: 10,
+            probe_wait: Duration::from_secs(10),
             cancel_wait: Duration::from_secs(10),
             stall: Duration::from_secs(30),
             lanes: 4,
@@ -85,6 +92,7 @@ impl Policy {
             offer_tries: 3,
             finish_wait: Duration::from_millis(400),
             finish_tries: 4,
+            probe_wait: Duration::from_millis(200),
             cancel_wait: Duration::from_millis(200),
             stall: Duration::from_millis(300),
             lanes: 4,
