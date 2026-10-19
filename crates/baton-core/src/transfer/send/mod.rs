@@ -17,6 +17,8 @@
 //! - `quic` is the wire over a node's connections. It is what connects the engine to the network:
 //!   [`Node::send_files`](crate::Node::send_files) walks nothing and offers nothing itself, it starts
 //!   the engine over this wire.
+//! - `holds` remembers the transfers that a receiver may still hold, across runs of the program,
+//!   and `release` tells the receivers to let go of the ones that were left behind.
 //!
 //! The engine is tested against the real table of incoming transfers, in memory, and against a wire
 //! that a test scripts, so that every fault that section 8 tells the sender about happens when the
@@ -33,12 +35,14 @@
 mod attempt;
 mod book;
 mod engine;
+mod holds;
 mod lane;
 mod outcome;
 mod policy;
 mod produce;
 mod progress;
 mod quic;
+mod release;
 pub mod selection;
 mod source;
 mod wire;
@@ -53,11 +57,14 @@ mod script_tests;
 mod testing;
 
 pub use engine::Sending;
+pub use holds::Holds;
 pub use outcome::{Error, Outcome, Sent, Why};
 pub use progress::{Progress, Stage};
 pub use selection::Selection;
 
 pub(crate) use engine::start;
+pub(crate) use holds::Ledger;
 pub(crate) use policy::Policy;
 pub(crate) use quic::NodeWire;
+pub(crate) use release::{Pace, run as release_holds};
 pub(crate) use wire::Wire;

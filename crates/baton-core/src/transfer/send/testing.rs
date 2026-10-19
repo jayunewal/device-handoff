@@ -1051,6 +1051,8 @@ impl Drop for DirectLane {
 /// of its own, and keeps how each transfer ended.
 pub(super) struct Person {
     destination: Destination,
+    /// Whether the device has a folder to receive into at the moment.
+    taking: AtomicBool,
     verdict: Mutex<Verdict>,
     /// A gate that holds the answer back, when a test wants the person to take their time.
     deliberation: Mutex<Option<Gate>>,
@@ -1077,6 +1079,7 @@ impl Person {
     pub(super) fn new(destination: Destination) -> Self {
         Self {
             destination,
+            taking: AtomicBool::new(true),
             verdict: Mutex::new(Verdict::Accept),
             deliberation: Mutex::new(None),
             asked: AtomicUsize::new(0),
@@ -1088,6 +1091,12 @@ impl Person {
     /// What the person says from now on.
     pub(super) fn says(&self, verdict: Verdict) {
         *lock(&self.verdict) = verdict;
+    }
+
+    /// From now on the device has no folder to receive into: the hello of a connection no longer
+    /// says that it takes files, and what it holds of transfers from before is still its own.
+    pub(super) fn stops_taking_files(&self) {
+        self.taking.store(false, Ordering::SeqCst);
     }
 
     /// From now on the person answers when the gate is opened, and not before.
@@ -1115,7 +1124,11 @@ impl Person {
 
 impl TransferHandler for Person {
     fn destination(&self) -> Option<Destination> {
-        Some(self.destination.clone())
+        if self.taking.load(Ordering::SeqCst) {
+            Some(self.destination.clone())
+        } else {
+            None
+        }
     }
 
     fn offered<'a>(&'a self, _from: &'a PairedDevice, _offer: &'a Offer) -> BoxFuture<'a, Verdict> {
@@ -1241,6 +1254,7 @@ impl Rig {
             policy,
             id,
             &CancellationToken::new(),
+            None,
         )
         .unwrap()
     }

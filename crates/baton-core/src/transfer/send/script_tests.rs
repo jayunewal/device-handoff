@@ -14,7 +14,7 @@ use std::{
 };
 
 use baton_proto::{
-    close_code,
+    DeviceId, close_code,
     id::TransferId,
     message::{DeclineReason, ErrorCode},
     transfer::{FailReason, Failure, Finish, TransferRequest},
@@ -22,6 +22,7 @@ use baton_proto::{
 use tokio_util::sync::CancellationToken;
 
 use super::{
+    Holds, Ledger,
     engine::{self, Sending},
     lane::ListFrames,
     outcome::{Error, Outcome, Why},
@@ -34,7 +35,7 @@ use super::{
     },
     wire::Wire,
 };
-use crate::transfer::testing::bytes;
+use crate::{clock::SystemClock, transfer::testing::bytes, util::lock};
 
 /// A folder with files of these sizes, named `f0`, `f1` and so on, and the walk of all of them.
 fn sample(sizes: &[usize]) -> (Folder, Arc<Selection>) {
@@ -83,7 +84,7 @@ fn start_under(
     stop: &CancellationToken,
 ) -> Sending {
     let wire: Arc<dyn Wire> = Arc::clone(script) as Arc<dyn Wire>;
-    engine::start(wire, Arc::clone(selection), policy, id, stop).unwrap()
+    engine::start(wire, Arc::clone(selection), policy, id, stop, None).unwrap()
 }
 
 /// What a receiver that takes everything answers.
@@ -1658,4 +1659,183 @@ async fn progress_tells_the_stage_and_the_attempt_and_counts_again_in_each() {
         (now.stage, now.attempt, now.files, now.bytes, now.sent),
         (Stage::Over, 2, 2, 30, 30)
     );
+}
+
+// What is written down for the receiver.
+
+/// The device that the receiver of the transfers below is.
+fn peer() -> DeviceId {
+    DeviceId::from_bytes([7; 32])
+}
+
+/// Starts a transfer to [`peer`] that is written down in `holds`.
+fn start_remembered(
+    script: &Arc<Script>,
+    selection: &Arc<Selection>,
+    policy: Policy,
+    id: TransferId,
+    holds: &Holds,
+) -> Sending {
+    let wire: Arc<dyn Wire> = Arc::clone(script) as Arc<dyn Wire>;
+    let ledger = Ledger::new(holds.clone(), peer(), Arc::new(SystemClock));
+    engine::start(
+        wire,
+        Arc::clone(selection),
+        policy,
+        id,
+        &CancellationToken::new(),
+        Some(ledger),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_transfer_is_written_down_before_its_offer_is_made_and_struck_out_when_it_is_done() {
+    let (_folder, selection) = sample(&[10]);
+    let me = id(1);
+    let holds = Holds::memory();
+    // What the list says each time that the receiver is asked something.
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let script = Arc::new(Script::new({
+        let (holds, seen) = (holds.clone(), Arc::clone(&seen));
+        move |call| {
+            lock(&seen).push((call.kind, holds.all()));
+            normal(me, call)
+        }
+    }));
+
+    let outcome = ended(start_remembered(
+        &script,
+        &selection,
+        Policy::quick(),
+        me,
+        &holds,
+    ))
+    .await;
+
+    assert!(matches!(outcome, Outcome::Done(_)), "{outcome:?}");
+    // The receiver had it from the offer to the end, and is not held to anything after that.
+    let held = vec![(peer(), me, true)];
+    assert_eq!(
+        *lock(&seen),
+        [(Kind::Offer, held.clone()), (Kind::Finish, held)]
+    );
+    assert_eq!(holds.all(), []);
+}
+
+#[tokio::test]
+async fn a_transfer_stays_written_down_unless_the_receiver_is_known_to_hold_nothing_of_it() {
+    let (_folder, selection) = sample(&[10]);
+    let me = id(1);
+    let twice = Policy {
+        attempts: 2,
+        ..Policy::quick()
+    };
+    let cases = [
+        // (what the receiver does, whether it may be holding the transfer after)
+        ("takes everything", friendly(me), false),
+        (
+            "declines",
+            Script::new(move |_| declined(me, DeclineReason::Refused)),
+            false,
+        ),
+        (
+            "turns the sender away when it connects",
+            friendly(me).connects(|_| Connect::Refused(404)),
+            false,
+        ),
+        (
+            "turns the sender away at the offer",
+            Script::new(move |call| match call.kind {
+                Kind::Offer => Step::Refused(7),
+                _ => normal(me, call),
+            }),
+            false,
+        ),
+        (
+            "cannot be reached, and was never offered anything",
+            friendly(me).connects(|_| Connect::Lost),
+            false,
+        ),
+        (
+            "does not answer the offer, which it may have had",
+            Script::new(move |call| match call.kind {
+                Kind::Offer => Step::Silent,
+                _ => normal(me, call),
+            }),
+            true,
+        ),
+        (
+            "does not answer Finish",
+            Script::new(move |call| match call.kind {
+                Kind::Finish => Step::Silent,
+                _ => normal(me, call),
+            }),
+            true,
+        ),
+        (
+            "ends the connection while the files go",
+            friendly(me).lanes(|_, _| Take::StopAtEnd {
+                code: close_code::TIMEOUT,
+            }),
+            true,
+        ),
+    ];
+    for (what, script, may_hold) in cases {
+        let script = Arc::new(script);
+        let holds = Holds::memory();
+
+        let outcome = ended(start_remembered(
+            &script,
+            &selection,
+            twice.clone(),
+            me,
+            &holds,
+        ))
+        .await;
+
+        // What is left is left for a time when the receiver can be told, and it is not going.
+        let left = if may_hold {
+            vec![(peer(), me, false)]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(holds.all(), left, "the receiver {what}: {outcome:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_transfer_that_is_given_up_stays_written_down_unless_the_receiver_was_told() {
+    let (_folder, selection) = sample(&[10]);
+    let me = id(1);
+    // (what `Cancel` gets, whether the receiver was told)
+    for (reply, told) in [
+        (cancelled(me), true),
+        (declined(me, DeclineReason::Unsupported), true),
+        (cancelled(id(2)), false),
+        (error(ErrorCode::NotFound), false),
+        (Step::Silent, false),
+        (Step::Lost, false),
+    ] {
+        let script = Arc::new(Script::new(move |call| match call.kind {
+            Kind::Offer => Step::Never,
+            _ => reply.clone(),
+        }));
+        let holds = Holds::memory();
+        let sending = start_remembered(&script, &selection, Policy::quick(), me, &holds);
+        let log = script.log();
+        until("the offer", || log.requests(Kind::Offer) == 1).await;
+        assert_eq!(holds.all(), [(peer(), me, true)]);
+
+        sending.cancel();
+        let outcome = ended(sending).await;
+
+        assert_eq!(outcome, Outcome::Cancelled { told });
+        let left = if told {
+            Vec::new()
+        } else {
+            vec![(peer(), me, false)]
+        };
+        assert_eq!(holds.all(), left, "{outcome:?}");
+    }
 }

@@ -17,7 +17,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -26,7 +26,7 @@ use baton_proto::{DeviceId, close_code, id::TransferId, message::DeclineReason};
 use tempfile::TempDir;
 
 use super::{
-    Error, NodeWire, Outcome, Policy, Sending, Stage, Why, Wire,
+    Error, Holds, NodeWire, Outcome, Policy, Sending, Stage, Why, Wire,
     testing::{Folder, Gate, Person, ended, held, steady, tree, until, within},
     wire::{LaneError, LaneOut, Link, Reply, WireError},
 };
@@ -35,7 +35,7 @@ use crate::{
     testing::{QUIET, TestNode},
     transfer::{
         destination::STAGING_PREFIX,
-        incoming::{Ending, Verdict},
+        incoming::{Ending, GOING_PER_PEER, Verdict},
         testing::{bytes, destination},
     },
     util::BoxFuture,
@@ -55,11 +55,20 @@ struct Pair {
 
 impl Pair {
     async fn new() -> Self {
+        Self::of(TestNode::start().await).await
+    }
+
+    /// A pair whose sender keeps what other devices may be holding for it in a file, as the app does,
+    /// so that it can be [`restart`](Self::restart)ed.
+    async fn journaled() -> Self {
+        Self::of(TestNode::journaled(|builder| builder).await).await
+    }
+
+    async fn of(sender: TestNode) -> Self {
         let (folder, destination) = destination();
         let person = Arc::new(Person::new(destination));
         let receiver =
             TestNode::with(|builder| builder.transfer_handler(Arc::clone(&person))).await;
-        let sender = TestNode::start().await;
         sender.pair_with(&receiver);
         Self {
             sender,
@@ -86,7 +95,12 @@ impl Pair {
         let sending = self
             .sender
             .node
-            .send_over(Arc::new(wire.clone()), self.files.walk(names), steady())
+            .send_over(
+                &self.receiver.id,
+                Arc::new(wire.clone()),
+                self.files.walk(names),
+                steady(),
+            )
             .unwrap();
         (sending, wire)
     }
@@ -95,6 +109,44 @@ impl Pair {
     fn unconnected(&self) -> bool {
         self.sender.node.open_connections(&self.receiver.id) == 0
             && self.receiver.node.open_connections(&self.sender.id) == 0
+    }
+
+    /// The sender is closed and opened again, as the app is, and has the same folder.
+    async fn restart(self) -> Self {
+        Self {
+            sender: self.sender.restarted(|builder| builder).await,
+            ..self
+        }
+    }
+
+    /// Starts one transfer of a big file for each of `names`, stops the sender's node once every one
+    /// of them is in the middle of its files, and waits until they have ended. The receiver is left
+    /// holding what it was sent, as it is by a program that is closed on a transfer.
+    async fn leave_in_the_middle(&self, names: &[&str]) {
+        let mut going = Vec::new();
+        for (seed, name) in (20_u8..).zip(names) {
+            self.files.make(name, &bytes(seed, 4 << 20));
+            going.push(self.send_held(&[name], 1 << 20));
+        }
+        for (_, wire) in &going {
+            wire.reached().await;
+        }
+        // What the lanes wrote has not necessarily reached the receiver yet.
+        until("the receiver to hold what it was sent", || {
+            held(&self.received) >= names.len()
+        })
+        .await;
+        self.sender.node.shutdown().await;
+        for (sending, _) in going {
+            assert_eq!(ended(sending).await, Outcome::Cancelled { told: false });
+        }
+    }
+
+    /// How many transfers the file of the sender says that other devices may hold.
+    fn written_down(&self) -> usize {
+        let text = fs::read_to_string(self.sender.holds_file()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        json["holds"].as_array().unwrap().len()
     }
 }
 
@@ -131,6 +183,8 @@ struct HeldState {
     after: u64,
     written: AtomicU64,
     connections: AtomicUsize,
+    /// Whether the receiver cannot be connected to.
+    cut_off: AtomicBool,
     /// Opened by the first write that has to wait.
     reached: Gate,
     /// Opened by the test.
@@ -144,6 +198,7 @@ impl Held {
             after,
             written: AtomicU64::new(0),
             connections: AtomicUsize::new(0),
+            cut_off: AtomicBool::new(false),
             reached: Gate::new(),
             released: Gate::new(),
         }))
@@ -163,11 +218,20 @@ impl Held {
     fn connections(&self) -> usize {
         self.0.connections.load(Ordering::SeqCst)
     }
+
+    /// From now on this wire cannot connect to the receiver, as when the network is gone. The
+    /// node's own connections are not changed.
+    fn cut_off(&self) {
+        self.0.cut_off.store(true, Ordering::SeqCst);
+    }
 }
 
 impl Wire for Held {
     fn connect(&self) -> BoxFuture<'_, Result<Box<dyn Link>, WireError>> {
         Box::pin(async move {
+            if self.0.cut_off.load(Ordering::SeqCst) {
+                return Err(WireError::Lost);
+            }
             let link = self.0.inner.connect().await?;
             self.0.connections.fetch_add(1, Ordering::SeqCst);
             Ok(Box::new(HeldLink {
@@ -522,9 +586,159 @@ async fn stopping_the_node_gives_its_transfers_up_but_the_receiver_is_not_told()
     assert!(held(&pair.received) > 0);
 }
 
-mod taking_files {
-    use std::sync::atomic::AtomicBool;
+// What a node that starts again gives up.
 
+#[tokio::test]
+async fn a_node_that_starts_again_tells_the_receiver_to_let_go_of_what_it_left_there() {
+    let pair = Pair::journaled().await;
+    pair.leave_in_the_middle(&["big.bin"]).await;
+    // The receiver holds what it was sent, and the sender wrote that down.
+    assert!(held(&pair.received) > 0);
+    assert_eq!(pair.written_down(), 1);
+
+    let pair = pair.restart().await;
+
+    until("the receiver to drop the transfer", || {
+        pair.person.endings().len() == 1
+    })
+    .await;
+    assert_eq!(pair.person.endings()[0].1, Ending::Dropped);
+    until("the staging to go", || held(&pair.received) == 0).await;
+    assert!(tree(&pair.received).is_empty());
+    until("the file to be emptied", || pair.written_down() == 0).await;
+    until("the connection to be let go of", || pair.unconnected()).await;
+}
+
+#[tokio::test]
+async fn a_node_that_was_killed_in_the_middle_of_a_transfer_gives_it_up_when_it_starts_again() {
+    let pair = Pair::journaled().await;
+    pair.files.make("big.bin", &bytes(30, 4 << 20));
+    let (sending, wire) = pair.send_held(&["big.bin"], 1 << 20);
+    wire.reached().await;
+    until("the receiver to hold what it was sent", || {
+        held(&pair.received) > 0
+    })
+    .await;
+    // A program that is killed leaves the file as it is while the transfer goes.
+    let killed = fs::read(pair.sender.holds_file()).unwrap();
+    pair.sender.node.shutdown().await;
+    assert_eq!(ended(sending).await, Outcome::Cancelled { told: false });
+    fs::write(pair.sender.holds_file(), killed).unwrap();
+    assert_eq!(pair.written_down(), 1);
+
+    let pair = pair.restart().await;
+
+    until("the receiver to drop the transfer", || {
+        pair.person.endings().len() == 1
+    })
+    .await;
+    assert_eq!(pair.person.endings()[0].1, Ending::Dropped);
+    until("the staging to go", || held(&pair.received) == 0).await;
+    until("the file to be emptied", || pair.written_down() == 0).await;
+}
+
+#[tokio::test]
+async fn transfers_that_a_node_left_do_not_use_up_what_the_receiver_allows_the_next_run() {
+    let pair = Pair::journaled().await;
+    // As many as the receiver lets a device have going.
+    let names: Vec<String> = (0..GOING_PER_PEER).map(|n| format!("big{n}.bin")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    pair.leave_in_the_middle(&names).await;
+    let left = usize::from(GOING_PER_PEER);
+    assert_eq!(pair.written_down(), left);
+
+    let pair = pair.restart().await;
+    until("the receiver to drop what was left", || {
+        pair.person.endings().len() == left
+    })
+    .await;
+    pair.files.make("small.txt", b"hello");
+    let outcome = ended(pair.send(&["small.txt"])).await;
+
+    // A receiver that still held the two would have answered that this device has too many.
+    let Outcome::Done(sent) = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert!(sent.done.failed.is_empty(), "{:?}", sent.done);
+    assert_eq!(fs::read(pair.received.join("small.txt")).unwrap(), b"hello");
+}
+
+#[tokio::test]
+async fn a_receiver_that_takes_no_files_now_is_told_to_let_go_all_the_same() {
+    let pair = Pair::journaled().await;
+    pair.leave_in_the_middle(&["big.bin"]).await;
+    // The person turned receiving off in the meantime, so the hello of every new connection says
+    // that this device takes no files. What it took before is still its own.
+    pair.person.stops_taking_files();
+
+    let pair = pair.restart().await;
+
+    until("the receiver to drop the transfer", || {
+        pair.person.endings().len() == 1
+    })
+    .await;
+    assert_eq!(pair.person.endings()[0].1, Ending::Dropped);
+    until("the staging to go", || held(&pair.received) == 0).await;
+    until("the file to be emptied", || pair.written_down() == 0).await;
+}
+
+#[tokio::test]
+async fn a_device_that_was_unpaired_while_the_node_was_stopped_is_not_told_and_is_forgotten() {
+    let pair = Pair::journaled().await;
+    pair.leave_in_the_middle(&["big.bin"]).await;
+    // Unpaired from this end while the program is closed.
+    pair.sender.trust.remove(&pair.receiver.id).unwrap();
+
+    let pair = pair.restart().await;
+
+    until("the file to be emptied", || pair.written_down() == 0).await;
+    tokio::time::sleep(QUIET).await;
+    // It was not dialed, and it keeps what it holds until it lets go of it by itself.
+    assert_eq!(pair.person.endings(), Vec::new());
+    assert!(held(&pair.received) > 0);
+    assert_eq!(pair.receiver.node.open_connections(&pair.sender.id), 0);
+}
+
+#[tokio::test]
+async fn the_task_that_gives_transfers_back_ends_with_the_node() {
+    let holds = Holds::memory();
+    let sender = TestNode::with(|builder| builder.holds(holds.clone())).await;
+    // The node and the task that gives transfers back each have the list.
+    assert!(holds.sharers() > 1);
+
+    sender.node.shutdown().await;
+    drop(sender);
+
+    until("the task to let go of the list", || holds.sharers() == 1).await;
+}
+
+#[tokio::test]
+async fn a_transfer_given_up_while_the_receiver_cannot_be_reached_is_given_up_there_when_it_can_be()
+{
+    // The node keeps nothing in a file, and the receiver is told while it runs.
+    let pair = Pair::new().await;
+    pair.files.make("big.bin", &bytes(31, 4 << 20));
+    let (sending, wire) = pair.send_held(&["big.bin"], 1 << 20);
+    wire.reached().await;
+
+    // The transfer has no way to the receiver any more, and the person gives it up.
+    wire.cut_off();
+    assert_eq!(pair.sender.node.drop_connections(&pair.receiver.id), 1);
+    sending.cancel();
+    let outcome = ended(sending).await;
+
+    assert_eq!(outcome, Outcome::Cancelled { told: false });
+    // The receiver is reached on a connection of the node's own, as soon as the transfer is left.
+    until("the receiver to drop the transfer", || {
+        pair.person.endings().len() == 1
+    })
+    .await;
+    assert_eq!(pair.person.endings()[0].1, Ending::Dropped);
+    until("the staging to go", || held(&pair.received) == 0).await;
+    until("the connection to be let go of", || pair.unconnected()).await;
+}
+
+mod taking_files {
     use baton_proto::transfer::Offer;
 
     use super::*;
@@ -596,7 +810,12 @@ mod taking_files {
 
         let sending = sender
             .node
-            .send_over(Arc::new(wire), files.walk(&["a.txt"]), steady())
+            .send_over(
+                &receiver.id,
+                Arc::new(wire),
+                files.walk(&["a.txt"]),
+                steady(),
+            )
             .unwrap();
 
         assert_eq!(

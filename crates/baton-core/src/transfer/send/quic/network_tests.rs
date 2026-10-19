@@ -9,8 +9,8 @@ use std::{sync::Arc, time::Duration};
 
 use baton_proto::{
     close_code,
-    message::ErrorCode,
-    transfer::{TransferReply, TransferRequest},
+    message::{DeclineReason, ErrorCode},
+    transfer::{Cancel, Cancelled, Declined, TransferReply, TransferRequest},
 };
 use tempfile::TempDir;
 
@@ -19,6 +19,7 @@ use crate::{
     Tuning,
     testing::{QUIET, TestNode},
     transfer::{
+        incoming::Ending,
         send::testing::{Person, id, until, within},
         testing::{WAIT, destination, sample_finish, sample_offer},
     },
@@ -151,6 +152,65 @@ async fn a_request_that_the_receiver_gives_up_waiting_on_is_one_to_make_again() 
         .await;
 
     assert_eq!(finished, Err(WireError::TimedOut));
+}
+
+#[tokio::test]
+async fn a_device_that_takes_no_files_now_is_offered_none_but_is_told_to_let_go_of_what_it_holds() {
+    let nodes = Nodes::new().await;
+    // A transfer that the device took while it took files, and that it still holds.
+    let first = nodes.link().await;
+    let offered = first
+        .request(TransferRequest::Offer(sample_offer(id(1))), WAIT)
+        .await;
+    assert!(matches!(
+        offered,
+        Ok(Reply::Transfer(TransferReply::Accepted(_)))
+    ));
+    // The person turns receiving off. The hello of a new connection says that it takes no files.
+    nodes.person.stops_taking_files();
+    let link = nodes.link().await;
+
+    // An offer is not made, and the answer is the one that the device would give.
+    let offered = link
+        .request(TransferRequest::Offer(sample_offer(id(2))), WAIT)
+        .await;
+    assert_eq!(
+        offered,
+        Ok(Reply::Transfer(TransferReply::Declined(Declined {
+            id: id(2),
+            reason: DeclineReason::Unsupported,
+        })))
+    );
+    assert_eq!(nodes.person.questions(), 1);
+
+    // `Cancel` and `Finish` are made. The device gives up what it holds, and says so.
+    let cancelled = link
+        .request(TransferRequest::Cancel(Cancel { id: id(1) }), WAIT)
+        .await;
+    assert_eq!(
+        cancelled,
+        Ok(Reply::Transfer(TransferReply::Cancelled(Cancelled {
+            id: id(1)
+        })))
+    );
+    until("the person to hear that the transfer is dropped", || {
+        nodes.person.endings() == [(id(1), Ending::Dropped)]
+    })
+    .await;
+    // What it does not hold is declined as unsupported, as it is for a device that takes no part
+    // in transfers: there is nothing of it to give up.
+    let unsupported = Ok(Reply::Transfer(TransferReply::Declined(Declined {
+        id: id(3),
+        reason: DeclineReason::Unsupported,
+    })));
+    let cancel = link
+        .request(TransferRequest::Cancel(Cancel { id: id(3) }), WAIT)
+        .await;
+    assert_eq!(cancel, unsupported);
+    let finish = link
+        .request(TransferRequest::Finish(sample_finish(id(3))), WAIT)
+        .await;
+    assert_eq!(finish, unsupported);
 }
 
 // Lanes.
