@@ -218,6 +218,14 @@ class _RustSession implements Session {
   bool endWindow(int session) => _baton.endWindow(session: session);
 
   @override
+  bool windowInput(int session, WindowInput input) =>
+      _baton.windowInput(session: session, input: input);
+
+  @override
+  void releaseWindowInput(int session) =>
+      _baton.releaseWindowInput(session: session);
+
+  @override
   Future<List<Received>> inbox() => _baton.inbox();
 
   @override

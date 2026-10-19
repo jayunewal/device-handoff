@@ -18,7 +18,9 @@
 //! on the screen and hands the event to the queue of `baton_stream::input_queue`. That keeps the
 //! limits of the protocol (a batch, the rate, what a position may be) and decides what is sent. A
 //! task of the session takes a batch out of the queue as soon as the stream to the source has room
-//! for it, so that what waits behind a slow stream is joined and not piled up.
+//! for it, so that what waits behind a stream that is full is joined and not piled up. A path that
+//! is only slow does not fill the stream: its batches wait in the transport and arrive late, and
+//! the source drops what has gone out of date.
 //!
 //! A session ends when the source ends it, when it breaks a rule, when the connection ends, when
 //! the person ends it, when the source does not open its control stream in time, and when a message

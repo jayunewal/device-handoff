@@ -37,7 +37,7 @@ use crate::{
     files::Files,
     model::{
         Device, Me, Network, Offer, OfferOutcome, PairingRequest, Reach, Received, Receiving,
-        TransferRequest, WindowAbilities, WindowRequest, WindowShared,
+        TransferRequest, WindowAbilities, WindowInput, WindowRequest, WindowShared,
     },
     sessions::{Handler, Sessions},
     windows::Windows,
@@ -579,6 +579,34 @@ impl App {
     /// device. [`Event::WindowEnded`] follows. Returns whether there was such a window.
     pub fn end_window(&self, session: u64) -> bool {
         self.inner.sessions.end(session)
+    }
+
+    /// Gives what the person did on the picture of the window `session`, which is shown here: a
+    /// touch, a click, a scroll, a key. The event goes to the other device soon, in a batch with
+    /// others, and it is not done there unless the person at that device let this one control the
+    /// window (`WindowRequest::control`).
+    ///
+    /// Returns whether the event was taken. It is not for a window that is not shown here, a window
+    /// that this device may not control, a position while no picture has been shown, a position
+    /// outside the picture while no button is down, the release of something that is not down, and
+    /// more than the format allows. None of that ends the window, and the person has done nothing
+    /// wrong, so a screen drops the event and goes on.
+    ///
+    /// What the other device drops because the window is not where the person touched is told with
+    /// [`Event::WindowNotice`].
+    pub fn window_input(&self, session: u64, input: WindowInput) -> bool {
+        self.inner.sessions.input(session, input)
+    }
+
+    /// Lets go of every button and key that is down on the window `session`, for example when the
+    /// person leaves the screen with a finger on it. A window that is not shown here does
+    /// nothing.
+    ///
+    /// The other device lets go of them itself when the window ends and after ten seconds
+    /// without a word from this one, but a screen that is gone while the window goes on would
+    /// leave a button down for those ten seconds.
+    pub fn release_window_input(&self, session: u64) {
+        self.inner.sessions.release_input(session);
     }
 
     /// Sends a web link to a paired device.

@@ -6,8 +6,8 @@ use tokio::sync::broadcast::{self, error::RecvError};
 use tokio_util::sync::CancellationToken;
 
 use crate::model::{
-    OfferOutcome, PairingRequest, Received, TransferEnd, TransferRequest, WindowEnd, WindowRequest,
-    WindowSession,
+    OfferOutcome, PairingRequest, Received, TransferEnd, TransferRequest, WindowEnd,
+    WindowNoticeReason, WindowRequest, WindowSession,
 };
 
 /// Something a screen may want to react to.
@@ -80,6 +80,22 @@ pub enum Event {
         /// The height of the picture in pixels, at least 1.
         height: u32,
     },
+    /// The other device did not do some of what the person did on a window that is shown here:
+    /// it dropped events, for the reason named, and `count` is how many. Say so in a sentence, so
+    /// that a tap that did nothing is not a mystery.
+    ///
+    /// The other device sends at most one notice a second, naming the reason that cost the most
+    /// events since the last, so a person who keeps tapping on a locked screen hears of it once a
+    /// second. It always comes after the [`Event::WindowStarted`] of the same window, and is not
+    /// sent for a window that is shared from this device.
+    WindowNotice {
+        /// The [`WindowSession::id`] whose events were dropped.
+        id: u64,
+        /// The rule that dropped the most of them.
+        reason: WindowNoticeReason,
+        /// How many events it dropped, at least 1.
+        count: u32,
+    },
     /// A window that was shown or shared is over.
     WindowEnded {
         /// The [`WindowSession::id`] that ended.
@@ -96,7 +112,8 @@ pub enum Event {
     /// was taken shows no end. The events of windows are not recovered either: a screen that
     /// missed `WindowStarted` cannot end that window short of stopping the app, and a request to
     /// show a window that it missed runs out as a no. A missed `WindowPicture` leaves the
-    /// picture in the shape of the window that was offered until the next one comes.
+    /// picture in the shape of the window that was offered until the next one comes, and a
+    /// missed `WindowNotice` leaves the person without the reason, which the next one gives.
     Resync,
 }
 

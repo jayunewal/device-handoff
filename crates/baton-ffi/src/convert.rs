@@ -13,8 +13,9 @@ use crate::api::{
     model::{
         Device, Event, FileProgress, FilesSent, Me, Network, Offer, OfferOutcome, PairingRequest,
         Platform, PreviewName, Reach, Received, ReceivedItem, Receiving, Route, SendStage,
-        TransferEnd, TransferRequest, TransferResult, WindowAbilities, WindowEnd, WindowRequest,
-        WindowRole, WindowSession, WindowShared,
+        TransferEnd, TransferRequest, TransferResult, WindowAbilities, WindowButton, WindowEnd,
+        WindowInput, WindowModifiers, WindowNoticeReason, WindowPointer, WindowRequest, WindowRole,
+        WindowSession, WindowShared,
     },
 };
 
@@ -415,6 +416,98 @@ impl From<app::FilesSent> for FilesSent {
     }
 }
 
+impl From<WindowButton> for app::WindowButton {
+    fn from(button: WindowButton) -> Self {
+        match button {
+            WindowButton::Left => Self::Left,
+            WindowButton::Right => Self::Right,
+            WindowButton::Middle => Self::Middle,
+        }
+    }
+}
+
+impl From<WindowPointer> for app::WindowPointer {
+    fn from(action: WindowPointer) -> Self {
+        match action {
+            WindowPointer::Move => Self::Move,
+            WindowPointer::Down { button } => Self::Down(button.into()),
+            WindowPointer::Up { button } => Self::Up(button.into()),
+            WindowPointer::Scroll { dx, dy } => Self::Scroll { dx, dy },
+        }
+    }
+}
+
+impl From<WindowModifiers> for app::WindowModifiers {
+    fn from(keys: WindowModifiers) -> Self {
+        let WindowModifiers {
+            shift,
+            control,
+            option,
+            command,
+            caps_lock,
+        } = keys;
+        Self {
+            shift,
+            control,
+            option,
+            command,
+            caps_lock,
+        }
+    }
+}
+
+impl From<WindowInput> for app::WindowInput {
+    fn from(input: WindowInput) -> Self {
+        match input {
+            WindowInput::Pointer {
+                x,
+                y,
+                modifiers,
+                action,
+            } => Self::Pointer {
+                x,
+                y,
+                modifiers: modifiers.into(),
+                action: action.into(),
+            },
+            WindowInput::Key {
+                code,
+                down,
+                modifiers,
+                repeat,
+                text,
+            } => Self::Key {
+                code,
+                down,
+                modifiers: modifiers.into(),
+                repeat,
+                text,
+            },
+        }
+    }
+}
+
+impl From<app::WindowNoticeReason> for WindowNoticeReason {
+    fn from(reason: app::WindowNoticeReason) -> Self {
+        match reason {
+            app::WindowNoticeReason::ControlOff => Self::ControlOff,
+            app::WindowNoticeReason::Paused => Self::Paused,
+            app::WindowNoticeReason::Locked => Self::Locked,
+            app::WindowNoticeReason::NotOnScreen => Self::NotOnScreen,
+            app::WindowNoticeReason::TooFast => Self::TooFast,
+            app::WindowNoticeReason::OutOfDate => Self::OutOfDate,
+            app::WindowNoticeReason::Resized => Self::Resized,
+            app::WindowNoticeReason::OutsideWindow => Self::OutsideWindow,
+            app::WindowNoticeReason::Covered => Self::Covered,
+            app::WindowNoticeReason::NoKeyboard => Self::NoKeyboard,
+            app::WindowNoticeReason::AppWindowInFront => Self::AppWindowInFront,
+            app::WindowNoticeReason::TooManyKeys => Self::TooManyKeys,
+            app::WindowNoticeReason::NotPressed => Self::NotPressed,
+            app::WindowNoticeReason::Other => Self::Other,
+        }
+    }
+}
+
 impl From<app::WindowShared> for WindowShared {
     fn from(shared: app::WindowShared) -> Self {
         match shared {
@@ -462,6 +555,11 @@ impl From<app::Event> for Event {
                 id: signed(id),
                 width,
                 height,
+            },
+            app::Event::WindowNotice { id, reason, count } => Self::WindowNotice {
+                id: signed(id),
+                reason: reason.into(),
+                count,
             },
             app::Event::WindowEnded { id, end } => Self::WindowEnded {
                 id: signed(id),
@@ -680,6 +778,264 @@ mod tests {
         );
         assert!(!shown.contains("Salary"), "{shown}");
         assert!(!shown.contains("Numbers"), "{shown}");
+    }
+
+    fn keys_and_their_places() -> (WindowModifiers, app::WindowModifiers) {
+        (
+            WindowModifiers {
+                shift: true,
+                control: false,
+                option: true,
+                command: false,
+                caps_lock: true,
+            },
+            app::WindowModifiers {
+                shift: true,
+                control: false,
+                option: true,
+                command: false,
+                caps_lock: true,
+            },
+        )
+    }
+
+    #[test]
+    fn each_modifier_key_keeps_its_own_place() {
+        let none = WindowModifiers::default();
+        let nothing = app::WindowModifiers::default();
+        assert_eq!(app::WindowModifiers::from(none), nothing);
+        for (keys, wanted) in [
+            (
+                WindowModifiers {
+                    shift: true,
+                    ..none
+                },
+                app::WindowModifiers {
+                    shift: true,
+                    ..nothing
+                },
+            ),
+            (
+                WindowModifiers {
+                    control: true,
+                    ..none
+                },
+                app::WindowModifiers {
+                    control: true,
+                    ..nothing
+                },
+            ),
+            (
+                WindowModifiers {
+                    option: true,
+                    ..none
+                },
+                app::WindowModifiers {
+                    option: true,
+                    ..nothing
+                },
+            ),
+            (
+                WindowModifiers {
+                    command: true,
+                    ..none
+                },
+                app::WindowModifiers {
+                    command: true,
+                    ..nothing
+                },
+            ),
+            (
+                WindowModifiers {
+                    caps_lock: true,
+                    ..none
+                },
+                app::WindowModifiers {
+                    caps_lock: true,
+                    ..nothing
+                },
+            ),
+        ] {
+            assert_eq!(app::WindowModifiers::from(keys), wanted, "{keys:?}");
+        }
+    }
+
+    #[test]
+    fn what_the_person_does_with_a_pointer_reaches_the_app_as_it_was_given() {
+        let (keys, wanted) = keys_and_their_places();
+        for (action, expected) in [
+            (WindowPointer::Move, app::WindowPointer::Move),
+            (
+                WindowPointer::Down {
+                    button: WindowButton::Left,
+                },
+                app::WindowPointer::Down(app::WindowButton::Left),
+            ),
+            (
+                WindowPointer::Down {
+                    button: WindowButton::Right,
+                },
+                app::WindowPointer::Down(app::WindowButton::Right),
+            ),
+            (
+                WindowPointer::Up {
+                    button: WindowButton::Middle,
+                },
+                app::WindowPointer::Up(app::WindowButton::Middle),
+            ),
+            (
+                WindowPointer::Up {
+                    button: WindowButton::Left,
+                },
+                app::WindowPointer::Up(app::WindowButton::Left),
+            ),
+            (
+                WindowPointer::Scroll { dx: 1.5, dy: -2.0 },
+                app::WindowPointer::Scroll { dx: 1.5, dy: -2.0 },
+            ),
+        ] {
+            let converted = app::WindowInput::from(WindowInput::Pointer {
+                x: 0.25,
+                y: 0.75,
+                modifiers: keys,
+                action,
+            });
+            assert_eq!(
+                converted,
+                app::WindowInput::Pointer {
+                    x: 0.25,
+                    y: 0.75,
+                    modifiers: wanted,
+                    action: expected,
+                },
+                "{action:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn what_the_person_does_with_a_key_reaches_the_app_as_it_was_given() {
+        let (keys, wanted) = keys_and_their_places();
+        for (code, down, repeat, text) in [
+            (4, true, false, Some("a".to_owned())),
+            (4, false, true, None),
+            (0, true, false, Some("h\u{e9}llo".to_owned())),
+        ] {
+            let converted = app::WindowInput::from(WindowInput::Key {
+                code,
+                down,
+                modifiers: keys,
+                repeat,
+                text: text.clone(),
+            });
+            assert_eq!(
+                converted,
+                app::WindowInput::Key {
+                    code,
+                    down,
+                    modifiers: wanted,
+                    repeat,
+                    text,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn what_was_typed_is_not_printed_on_the_rust_side() {
+        let key = WindowInput::Key {
+            code: 4,
+            down: true,
+            modifiers: WindowModifiers::default(),
+            repeat: false,
+            text: Some("hunter2".to_owned()),
+        };
+        let shown = format!("{key:?}");
+        assert!(!shown.contains("hunter2"), "{shown}");
+        assert!(!shown.contains("code"), "{shown}");
+        // Only how long it was.
+        assert!(shown.contains("text_bytes: Some(7)"), "{shown}");
+    }
+
+    #[test]
+    fn every_reason_the_app_gives_for_dropped_events_is_carried_over() {
+        for (reason, expected) in [
+            (
+                app::WindowNoticeReason::ControlOff,
+                WindowNoticeReason::ControlOff,
+            ),
+            (app::WindowNoticeReason::Paused, WindowNoticeReason::Paused),
+            (app::WindowNoticeReason::Locked, WindowNoticeReason::Locked),
+            (
+                app::WindowNoticeReason::NotOnScreen,
+                WindowNoticeReason::NotOnScreen,
+            ),
+            (
+                app::WindowNoticeReason::TooFast,
+                WindowNoticeReason::TooFast,
+            ),
+            (
+                app::WindowNoticeReason::OutOfDate,
+                WindowNoticeReason::OutOfDate,
+            ),
+            (
+                app::WindowNoticeReason::Resized,
+                WindowNoticeReason::Resized,
+            ),
+            (
+                app::WindowNoticeReason::OutsideWindow,
+                WindowNoticeReason::OutsideWindow,
+            ),
+            (
+                app::WindowNoticeReason::Covered,
+                WindowNoticeReason::Covered,
+            ),
+            (
+                app::WindowNoticeReason::NoKeyboard,
+                WindowNoticeReason::NoKeyboard,
+            ),
+            (
+                app::WindowNoticeReason::AppWindowInFront,
+                WindowNoticeReason::AppWindowInFront,
+            ),
+            (
+                app::WindowNoticeReason::TooManyKeys,
+                WindowNoticeReason::TooManyKeys,
+            ),
+            (
+                app::WindowNoticeReason::NotPressed,
+                WindowNoticeReason::NotPressed,
+            ),
+            (app::WindowNoticeReason::Other, WindowNoticeReason::Other),
+        ] {
+            assert_eq!(WindowNoticeReason::from(reason), expected, "{reason:?}");
+        }
+    }
+
+    #[test]
+    fn a_notice_of_dropped_events_keeps_its_window_its_reason_and_its_count() {
+        let notice = Event::from(app::Event::WindowNotice {
+            id: 4,
+            reason: app::WindowNoticeReason::Covered,
+            count: 3,
+        });
+        assert_eq!(
+            notice,
+            Event::WindowNotice {
+                id: 4,
+                reason: WindowNoticeReason::Covered,
+                count: 3
+            }
+        );
+        // A number that Dart cannot hold stays a number it can.
+        assert!(matches!(
+            Event::from(app::Event::WindowNotice {
+                id: u64::MAX,
+                reason: app::WindowNoticeReason::Other,
+                count: 1,
+            }),
+            Event::WindowNotice { id: i64::MAX, .. }
+        ));
     }
 
     #[test]

@@ -104,6 +104,11 @@ abstract class Baton implements RustOpaqueInterface {
   /// when Baton starts, from the `receive_dir` it was given.
   Receiving receiving();
 
+  /// Lets go of every button and key that is down on the window `session`, for example when
+  /// the person leaves the screen with a finger on it. A window that is not shown here does
+  /// nothing.
+  void releaseWindowInput({required PlatformInt64 session});
+
   /// Removes one item from the inbox. Returns whether there was such an item.
   Future<bool> removeReceived({required PlatformInt64 number});
 
@@ -169,6 +174,20 @@ abstract class Baton implements RustOpaqueInterface {
   /// shares its own, and lets the person grant control of the ones it shares. Offer only what
   /// is possible.
   WindowAbilities windowAbilities();
+
+  /// Gives what the person did on the picture of the window `session`, which is shown here: a
+  /// touch, a click, a scroll, a key. The event goes to the other device soon, in a batch with
+  /// others, and is done there only if the person at that device let this one control the
+  /// window (`WindowSession.control`). Returns whether the event was taken. It is not for a
+  /// window that is not shown here or may not be controlled, a position while no picture has
+  /// been shown, a position outside the picture while no button is down, the release of
+  /// something that is not down, and more than the format allows. None of that ends the window:
+  /// a screen drops the event and goes on. What the other device drops comes back as
+  /// `Event.windowNotice`.
+  bool windowInput({
+    required PlatformInt64 session,
+    required WindowInput input,
+  });
 }
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<FileSend>>

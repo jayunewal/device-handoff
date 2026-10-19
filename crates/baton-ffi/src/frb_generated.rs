@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1590989335;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1266026895;
 
 // Section: executor
 
@@ -881,6 +881,55 @@ fn wire__crate__api__baton__Baton_receiving_impl(
         },
     )
 }
+fn wire__crate__api__baton__Baton_release_window_input_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Baton_release_window_input",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Baton>,
+            >>::sse_decode(&mut deserializer);
+            let api_session = <i64>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let mut api_that_guard = None;
+                let decode_indices_ =
+                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                            &api_that, 0, false,
+                        ),
+                    ]);
+                for i in decode_indices_ {
+                    match i {
+                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                        _ => unreachable!(),
+                    }
+                }
+                let api_that_guard = api_that_guard.unwrap();
+                let output_ok = Ok::<_, ()>({
+                    crate::api::baton::Baton::release_window_input(&*api_that_guard, api_session);
+                })?;
+                std::result::Result::Ok(output_ok)
+            })())
+        },
+    )
+}
 fn wire__crate__api__baton__Baton_remove_received_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1378,6 +1427,58 @@ fn wire__crate__api__baton__Baton_window_abilities_impl(
         },
     )
 }
+fn wire__crate__api__baton__Baton_window_input_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Baton_window_input",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Baton>,
+            >>::sse_decode(&mut deserializer);
+            let api_session = <i64>::sse_decode(&mut deserializer);
+            let api_input = <crate::api::model::WindowInput>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let mut api_that_guard = None;
+                let decode_indices_ =
+                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                            &api_that, 0, false,
+                        ),
+                    ]);
+                for i in decode_indices_ {
+                    match i {
+                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                        _ => unreachable!(),
+                    }
+                }
+                let api_that_guard = api_that_guard.unwrap();
+                let output_ok = Ok::<_, ()>(crate::api::baton::Baton::window_input(
+                    &*api_that_guard,
+                    api_session,
+                    api_input,
+                ))?;
+                std::result::Result::Ok(output_ok)
+            })())
+        },
+    )
+}
 fn wire__crate__api__baton__FileSend_cancel_impl(
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -1689,6 +1790,38 @@ fn wire__crate__api__baton__web_address_impl(
         },
     )
 }
+fn wire__crate__api__model__window_modifiers_default_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "window_modifiers_default",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, ()>((move || {
+                    let output_ok = Ok::<_, ()>(crate::api::model::WindowModifiers::default())?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
 
 // Section: related_funcs
 
@@ -1915,19 +2048,37 @@ impl SseDecode for crate::api::model::Event {
             }
             12 => {
                 let mut var_id = <i64>::sse_decode(deserializer);
+                let mut var_reason =
+                    <crate::api::model::WindowNoticeReason>::sse_decode(deserializer);
+                let mut var_count = <u32>::sse_decode(deserializer);
+                return crate::api::model::Event::WindowNotice {
+                    id: var_id,
+                    reason: var_reason,
+                    count: var_count,
+                };
+            }
+            13 => {
+                let mut var_id = <i64>::sse_decode(deserializer);
                 let mut var_end = <crate::api::model::WindowEnd>::sse_decode(deserializer);
                 return crate::api::model::Event::WindowEnded {
                     id: var_id,
                     end: var_end,
                 };
             }
-            13 => {
+            14 => {
                 return crate::api::model::Event::Resync;
             }
             _ => {
                 unimplemented!("");
             }
         }
+    }
+}
+
+impl SseDecode for f32 {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        deserializer.cursor.read_f32::<NativeEndian>().unwrap()
     }
 }
 
@@ -2400,6 +2551,13 @@ impl SseDecode for crate::api::model::TransferResult {
     }
 }
 
+impl SseDecode for u16 {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        deserializer.cursor.read_u16::<NativeEndian>().unwrap()
+    }
+}
+
 impl SseDecode for u32 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -2440,6 +2598,19 @@ impl SseDecode for crate::api::model::WindowAbilities {
     }
 }
 
+impl SseDecode for crate::api::model::WindowButton {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::model::WindowButton::Left,
+            1 => crate::api::model::WindowButton::Right,
+            2 => crate::api::model::WindowButton::Middle,
+            _ => unreachable!("Invalid variant for WindowButton: {}", inner),
+        };
+    }
+}
+
 impl SseDecode for crate::api::model::WindowEnd {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -2458,6 +2629,119 @@ impl SseDecode for crate::api::model::WindowEnd {
                 let mut var_message = <String>::sse_decode(deserializer);
                 return crate::api::model::WindowEnd::Failed {
                     message: var_message,
+                };
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
+impl SseDecode for crate::api::model::WindowInput {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                let mut var_x = <f32>::sse_decode(deserializer);
+                let mut var_y = <f32>::sse_decode(deserializer);
+                let mut var_modifiers =
+                    <crate::api::model::WindowModifiers>::sse_decode(deserializer);
+                let mut var_action = <crate::api::model::WindowPointer>::sse_decode(deserializer);
+                return crate::api::model::WindowInput::Pointer {
+                    x: var_x,
+                    y: var_y,
+                    modifiers: var_modifiers,
+                    action: var_action,
+                };
+            }
+            1 => {
+                let mut var_code = <u16>::sse_decode(deserializer);
+                let mut var_down = <bool>::sse_decode(deserializer);
+                let mut var_modifiers =
+                    <crate::api::model::WindowModifiers>::sse_decode(deserializer);
+                let mut var_repeat = <bool>::sse_decode(deserializer);
+                let mut var_text = <Option<String>>::sse_decode(deserializer);
+                return crate::api::model::WindowInput::Key {
+                    code: var_code,
+                    down: var_down,
+                    modifiers: var_modifiers,
+                    repeat: var_repeat,
+                    text: var_text,
+                };
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
+impl SseDecode for crate::api::model::WindowModifiers {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_shift = <bool>::sse_decode(deserializer);
+        let mut var_control = <bool>::sse_decode(deserializer);
+        let mut var_option = <bool>::sse_decode(deserializer);
+        let mut var_command = <bool>::sse_decode(deserializer);
+        let mut var_capsLock = <bool>::sse_decode(deserializer);
+        return crate::api::model::WindowModifiers {
+            shift: var_shift,
+            control: var_control,
+            option: var_option,
+            command: var_command,
+            caps_lock: var_capsLock,
+        };
+    }
+}
+
+impl SseDecode for crate::api::model::WindowNoticeReason {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::model::WindowNoticeReason::ControlOff,
+            1 => crate::api::model::WindowNoticeReason::Paused,
+            2 => crate::api::model::WindowNoticeReason::Locked,
+            3 => crate::api::model::WindowNoticeReason::NotOnScreen,
+            4 => crate::api::model::WindowNoticeReason::TooFast,
+            5 => crate::api::model::WindowNoticeReason::OutOfDate,
+            6 => crate::api::model::WindowNoticeReason::Resized,
+            7 => crate::api::model::WindowNoticeReason::OutsideWindow,
+            8 => crate::api::model::WindowNoticeReason::Covered,
+            9 => crate::api::model::WindowNoticeReason::NoKeyboard,
+            10 => crate::api::model::WindowNoticeReason::AppWindowInFront,
+            11 => crate::api::model::WindowNoticeReason::TooManyKeys,
+            12 => crate::api::model::WindowNoticeReason::NotPressed,
+            13 => crate::api::model::WindowNoticeReason::Other,
+            _ => unreachable!("Invalid variant for WindowNoticeReason: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::model::WindowPointer {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                return crate::api::model::WindowPointer::Move;
+            }
+            1 => {
+                let mut var_button = <crate::api::model::WindowButton>::sse_decode(deserializer);
+                return crate::api::model::WindowPointer::Down { button: var_button };
+            }
+            2 => {
+                let mut var_button = <crate::api::model::WindowButton>::sse_decode(deserializer);
+                return crate::api::model::WindowPointer::Up { button: var_button };
+            }
+            3 => {
+                let mut var_dx = <f32>::sse_decode(deserializer);
+                let mut var_dy = <f32>::sse_decode(deserializer);
+                return crate::api::model::WindowPointer::Scroll {
+                    dx: var_dx,
+                    dy: var_dy,
                 };
             }
             _ => {
@@ -2575,20 +2859,26 @@ fn pde_ffi_dispatcher_primary_impl(
         13 => wire__crate__api__baton__Baton_network_impl(port, ptr, rust_vec_len, data_len),
         14 => wire__crate__api__baton__Baton_offer_pairing_impl(port, ptr, rust_vec_len, data_len),
         15 => wire__crate__api__baton__Baton_ping_impl(port, ptr, rust_vec_len, data_len),
-        17 => {
+        18 => {
             wire__crate__api__baton__Baton_remove_received_impl(port, ptr, rust_vec_len, data_len)
         }
-        18 => wire__crate__api__baton__Baton_send_files_impl(port, ptr, rust_vec_len, data_len),
-        19 => wire__crate__api__baton__Baton_send_link_impl(port, ptr, rust_vec_len, data_len),
-        20 => wire__crate__api__baton__Baton_send_text_impl(port, ptr, rust_vec_len, data_len),
-        21 => wire__crate__api__baton__Baton_share_window_impl(port, ptr, rust_vec_len, data_len),
-        22 => wire__crate__api__baton__Baton_start_impl(port, ptr, rust_vec_len, data_len),
-        23 => wire__crate__api__baton__Baton_stop_impl(port, ptr, rust_vec_len, data_len),
-        24 => wire__crate__api__baton__Baton_unpair_impl(port, ptr, rust_vec_len, data_len),
-        27 => wire__crate__api__baton__FileSend_outcome_impl(port, ptr, rust_vec_len, data_len),
-        29 => wire__crate__api__baton__device_name_impl(port, ptr, rust_vec_len, data_len),
-        30 => wire__crate__api__startup__init_app_impl(port, ptr, rust_vec_len, data_len),
-        32 => wire__crate__api__baton__set_device_name_impl(port, ptr, rust_vec_len, data_len),
+        19 => wire__crate__api__baton__Baton_send_files_impl(port, ptr, rust_vec_len, data_len),
+        20 => wire__crate__api__baton__Baton_send_link_impl(port, ptr, rust_vec_len, data_len),
+        21 => wire__crate__api__baton__Baton_send_text_impl(port, ptr, rust_vec_len, data_len),
+        22 => wire__crate__api__baton__Baton_share_window_impl(port, ptr, rust_vec_len, data_len),
+        23 => wire__crate__api__baton__Baton_start_impl(port, ptr, rust_vec_len, data_len),
+        24 => wire__crate__api__baton__Baton_stop_impl(port, ptr, rust_vec_len, data_len),
+        25 => wire__crate__api__baton__Baton_unpair_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__crate__api__baton__FileSend_outcome_impl(port, ptr, rust_vec_len, data_len),
+        31 => wire__crate__api__baton__device_name_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__api__startup__init_app_impl(port, ptr, rust_vec_len, data_len),
+        34 => wire__crate__api__baton__set_device_name_impl(port, ptr, rust_vec_len, data_len),
+        36 => wire__crate__api__model__window_modifiers_default_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
         _ => unreachable!(),
     }
 }
@@ -2609,11 +2899,13 @@ fn pde_ffi_dispatcher_sync_impl(
         8 => wire__crate__api__baton__Baton_end_window_impl(ptr, rust_vec_len, data_len),
         12 => wire__crate__api__baton__Baton_me_impl(ptr, rust_vec_len, data_len),
         16 => wire__crate__api__baton__Baton_receiving_impl(ptr, rust_vec_len, data_len),
-        25 => wire__crate__api__baton__Baton_window_abilities_impl(ptr, rust_vec_len, data_len),
-        26 => wire__crate__api__baton__FileSend_cancel_impl(ptr, rust_vec_len, data_len),
-        28 => wire__crate__api__baton__FileSend_progress_impl(ptr, rust_vec_len, data_len),
-        31 => wire__crate__api__startup__recent_log_impl(ptr, rust_vec_len, data_len),
-        33 => wire__crate__api__baton__web_address_impl(ptr, rust_vec_len, data_len),
+        17 => wire__crate__api__baton__Baton_release_window_input_impl(ptr, rust_vec_len, data_len),
+        26 => wire__crate__api__baton__Baton_window_abilities_impl(ptr, rust_vec_len, data_len),
+        27 => wire__crate__api__baton__Baton_window_input_impl(ptr, rust_vec_len, data_len),
+        28 => wire__crate__api__baton__FileSend_cancel_impl(ptr, rust_vec_len, data_len),
+        30 => wire__crate__api__baton__FileSend_progress_impl(ptr, rust_vec_len, data_len),
+        33 => wire__crate__api__startup__recent_log_impl(ptr, rust_vec_len, data_len),
+        35 => wire__crate__api__baton__web_address_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -2763,13 +3055,20 @@ impl flutter_rust_bridge::IntoDart for crate::api::model::Event {
                 height.into_into_dart().into_dart(),
             ]
             .into_dart(),
-            crate::api::model::Event::WindowEnded { id, end } => [
+            crate::api::model::Event::WindowNotice { id, reason, count } => [
                 12.into_dart(),
+                id.into_into_dart().into_dart(),
+                reason.into_into_dart().into_dart(),
+                count.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
+            crate::api::model::Event::WindowEnded { id, end } => [
+                13.into_dart(),
                 id.into_into_dart().into_dart(),
                 end.into_into_dart().into_dart(),
             ]
             .into_dart(),
-            crate::api::model::Event::Resync => [13.into_dart()].into_dart(),
+            crate::api::model::Event::Resync => [14.into_dart()].into_dart(),
             _ => {
                 unimplemented!("");
             }
@@ -3241,6 +3540,28 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::model::WindowAbilities>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::model::WindowButton {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Left => 0.into_dart(),
+            Self::Right => 1.into_dart(),
+            Self::Middle => 2.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::model::WindowButton
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::model::WindowButton>
+    for crate::api::model::WindowButton
+{
+    fn into_into_dart(self) -> crate::api::model::WindowButton {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::model::WindowEnd {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
@@ -3261,6 +3582,146 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::model::WindowEnd>
     for crate::api::model::WindowEnd
 {
     fn into_into_dart(self) -> crate::api::model::WindowEnd {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::model::WindowInput {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::api::model::WindowInput::Pointer {
+                x,
+                y,
+                modifiers,
+                action,
+            } => [
+                0.into_dart(),
+                x.into_into_dart().into_dart(),
+                y.into_into_dart().into_dart(),
+                modifiers.into_into_dart().into_dart(),
+                action.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
+            crate::api::model::WindowInput::Key {
+                code,
+                down,
+                modifiers,
+                repeat,
+                text,
+            } => [
+                1.into_dart(),
+                code.into_into_dart().into_dart(),
+                down.into_into_dart().into_dart(),
+                modifiers.into_into_dart().into_dart(),
+                repeat.into_into_dart().into_dart(),
+                text.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::model::WindowInput
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::model::WindowInput>
+    for crate::api::model::WindowInput
+{
+    fn into_into_dart(self) -> crate::api::model::WindowInput {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::model::WindowModifiers {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.shift.into_into_dart().into_dart(),
+            self.control.into_into_dart().into_dart(),
+            self.option.into_into_dart().into_dart(),
+            self.command.into_into_dart().into_dart(),
+            self.caps_lock.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::model::WindowModifiers
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::model::WindowModifiers>
+    for crate::api::model::WindowModifiers
+{
+    fn into_into_dart(self) -> crate::api::model::WindowModifiers {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::model::WindowNoticeReason {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::ControlOff => 0.into_dart(),
+            Self::Paused => 1.into_dart(),
+            Self::Locked => 2.into_dart(),
+            Self::NotOnScreen => 3.into_dart(),
+            Self::TooFast => 4.into_dart(),
+            Self::OutOfDate => 5.into_dart(),
+            Self::Resized => 6.into_dart(),
+            Self::OutsideWindow => 7.into_dart(),
+            Self::Covered => 8.into_dart(),
+            Self::NoKeyboard => 9.into_dart(),
+            Self::AppWindowInFront => 10.into_dart(),
+            Self::TooManyKeys => 11.into_dart(),
+            Self::NotPressed => 12.into_dart(),
+            Self::Other => 13.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::model::WindowNoticeReason
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::model::WindowNoticeReason>
+    for crate::api::model::WindowNoticeReason
+{
+    fn into_into_dart(self) -> crate::api::model::WindowNoticeReason {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::model::WindowPointer {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::api::model::WindowPointer::Move => [0.into_dart()].into_dart(),
+            crate::api::model::WindowPointer::Down { button } => {
+                [1.into_dart(), button.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::model::WindowPointer::Up { button } => {
+                [2.into_dart(), button.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::model::WindowPointer::Scroll { dx, dy } => [
+                3.into_dart(),
+                dx.into_into_dart().into_dart(),
+                dy.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::model::WindowPointer
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::model::WindowPointer>
+    for crate::api::model::WindowPointer
+{
+    fn into_into_dart(self) -> crate::api::model::WindowPointer {
         self
     }
 }
@@ -3545,18 +4006,31 @@ impl SseEncode for crate::api::model::Event {
                 <u32>::sse_encode(width, serializer);
                 <u32>::sse_encode(height, serializer);
             }
-            crate::api::model::Event::WindowEnded { id, end } => {
+            crate::api::model::Event::WindowNotice { id, reason, count } => {
                 <i32>::sse_encode(12, serializer);
+                <i64>::sse_encode(id, serializer);
+                <crate::api::model::WindowNoticeReason>::sse_encode(reason, serializer);
+                <u32>::sse_encode(count, serializer);
+            }
+            crate::api::model::Event::WindowEnded { id, end } => {
+                <i32>::sse_encode(13, serializer);
                 <i64>::sse_encode(id, serializer);
                 <crate::api::model::WindowEnd>::sse_encode(end, serializer);
             }
             crate::api::model::Event::Resync => {
-                <i32>::sse_encode(13, serializer);
+                <i32>::sse_encode(14, serializer);
             }
             _ => {
                 unimplemented!("");
             }
         }
+    }
+}
+
+impl SseEncode for f32 {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        serializer.cursor.write_f32::<NativeEndian>(self).unwrap();
     }
 }
 
@@ -3943,6 +4417,13 @@ impl SseEncode for crate::api::model::TransferResult {
     }
 }
 
+impl SseEncode for u16 {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        serializer.cursor.write_u16::<NativeEndian>(self).unwrap();
+    }
+}
+
 impl SseEncode for u32 {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -3981,6 +4462,23 @@ impl SseEncode for crate::api::model::WindowAbilities {
     }
 }
 
+impl SseEncode for crate::api::model::WindowButton {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::model::WindowButton::Left => 0,
+                crate::api::model::WindowButton::Right => 1,
+                crate::api::model::WindowButton::Middle => 2,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
 impl SseEncode for crate::api::model::WindowEnd {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -3997,6 +4495,109 @@ impl SseEncode for crate::api::model::WindowEnd {
             crate::api::model::WindowEnd::Failed { message } => {
                 <i32>::sse_encode(3, serializer);
                 <String>::sse_encode(message, serializer);
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
+impl SseEncode for crate::api::model::WindowInput {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {
+            crate::api::model::WindowInput::Pointer {
+                x,
+                y,
+                modifiers,
+                action,
+            } => {
+                <i32>::sse_encode(0, serializer);
+                <f32>::sse_encode(x, serializer);
+                <f32>::sse_encode(y, serializer);
+                <crate::api::model::WindowModifiers>::sse_encode(modifiers, serializer);
+                <crate::api::model::WindowPointer>::sse_encode(action, serializer);
+            }
+            crate::api::model::WindowInput::Key {
+                code,
+                down,
+                modifiers,
+                repeat,
+                text,
+            } => {
+                <i32>::sse_encode(1, serializer);
+                <u16>::sse_encode(code, serializer);
+                <bool>::sse_encode(down, serializer);
+                <crate::api::model::WindowModifiers>::sse_encode(modifiers, serializer);
+                <bool>::sse_encode(repeat, serializer);
+                <Option<String>>::sse_encode(text, serializer);
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
+impl SseEncode for crate::api::model::WindowModifiers {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.shift, serializer);
+        <bool>::sse_encode(self.control, serializer);
+        <bool>::sse_encode(self.option, serializer);
+        <bool>::sse_encode(self.command, serializer);
+        <bool>::sse_encode(self.caps_lock, serializer);
+    }
+}
+
+impl SseEncode for crate::api::model::WindowNoticeReason {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::model::WindowNoticeReason::ControlOff => 0,
+                crate::api::model::WindowNoticeReason::Paused => 1,
+                crate::api::model::WindowNoticeReason::Locked => 2,
+                crate::api::model::WindowNoticeReason::NotOnScreen => 3,
+                crate::api::model::WindowNoticeReason::TooFast => 4,
+                crate::api::model::WindowNoticeReason::OutOfDate => 5,
+                crate::api::model::WindowNoticeReason::Resized => 6,
+                crate::api::model::WindowNoticeReason::OutsideWindow => 7,
+                crate::api::model::WindowNoticeReason::Covered => 8,
+                crate::api::model::WindowNoticeReason::NoKeyboard => 9,
+                crate::api::model::WindowNoticeReason::AppWindowInFront => 10,
+                crate::api::model::WindowNoticeReason::TooManyKeys => 11,
+                crate::api::model::WindowNoticeReason::NotPressed => 12,
+                crate::api::model::WindowNoticeReason::Other => 13,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::model::WindowPointer {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {
+            crate::api::model::WindowPointer::Move => {
+                <i32>::sse_encode(0, serializer);
+            }
+            crate::api::model::WindowPointer::Down { button } => {
+                <i32>::sse_encode(1, serializer);
+                <crate::api::model::WindowButton>::sse_encode(button, serializer);
+            }
+            crate::api::model::WindowPointer::Up { button } => {
+                <i32>::sse_encode(2, serializer);
+                <crate::api::model::WindowButton>::sse_encode(button, serializer);
+            }
+            crate::api::model::WindowPointer::Scroll { dx, dy } => {
+                <i32>::sse_encode(3, serializer);
+                <f32>::sse_encode(dx, serializer);
+                <f32>::sse_encode(dy, serializer);
             }
             _ => {
                 unimplemented!("");

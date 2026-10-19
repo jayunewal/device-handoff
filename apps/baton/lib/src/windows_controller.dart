@@ -47,6 +47,14 @@ final class WindowFailed extends WindowNote {
 /// How large the picture of a window is, in pixels.
 typedef PictureSize = ({int width, int height});
 
+/// What the other device did not do of what the person did on a window that is shown here: it
+/// dropped [count] events, and [reason] is the rule that dropped the most of them.
+typedef WindowDropped = ({
+  WindowSession session,
+  WindowNoticeReason reason,
+  int count,
+});
+
 /// What the screens show of the windows: the offers for the person to answer, the window that is
 /// being opened, the one this device is offering, the ones that run, and how the last ones ended.
 ///
@@ -73,6 +81,7 @@ class WindowsController extends ChangeNotifier {
   final Duration _openingLimit;
   final StreamController<WindowRequest> _asked = StreamController.broadcast();
   final StreamController<WindowSession> _started = StreamController.broadcast();
+  final StreamController<WindowDropped> _dropped = StreamController.broadcast();
   StreamSubscription<Event>? _events;
   Timer? _openingTimer;
   bool _disposed = false;
@@ -116,6 +125,11 @@ class WindowsController extends ChangeNotifier {
   /// Each window that another device shows on this one, as it begins, so that a screen can take
   /// the person to it.
   Stream<WindowSession> get started => _started.stream;
+
+  /// Each time the other device says that it did not do some of what the person did on a window
+  /// that is shown here, so that a screen can say why a tap did nothing. The other device says it
+  /// at most once a second for each window.
+  Stream<WindowDropped> get dropped => _dropped.stream;
 
   /// Starts listening for events.
   Future<void> start() async {
@@ -175,6 +189,13 @@ class WindowsController extends ChangeNotifier {
         if (_pictures[id.toInt()] == size) return;
         _pictures[id.toInt()] = size;
         notifyListeners();
+      case Event_WindowNotice(:final id, :final reason, :final count):
+        // Only a window that runs here is touched, and a count of nothing says nothing.
+        final index = _sessions.indexWhere(
+          (s) => s.id == id && s.role == WindowRole.viewing,
+        );
+        if (index < 0 || count <= 0) return;
+        _dropped.add((session: _sessions[index], reason: reason, count: count));
       case Event_WindowEnded(:final id, :final end):
         final index = _sessions.indexWhere((s) => s.id == id);
         if (index < 0) return;
@@ -247,6 +268,20 @@ class WindowsController extends ChangeNotifier {
     return running;
   }
 
+  /// Gives [session] what the person did on its picture: a touch, a click, a scroll, a key. It
+  /// goes to the other device soon, in a batch with others, and is done there only if the person
+  /// at that device let this one control the window (`WindowSession.control`). Returns whether
+  /// Baton took it. None of the reasons for no ends the window, so a screen drops the event and
+  /// goes on; what the other device drops comes back through [dropped]. The rules of what may be
+  /// sent are kept in Rust, once, and not repeated here.
+  bool input(WindowSession session, WindowInput input) =>
+      _session.windowInput(session.id.toInt(), input);
+
+  /// Lets go of every button and key that is down on [session], for example when the person
+  /// leaves the screen with a finger on it.
+  void releaseInput(WindowSession session) =>
+      _session.releaseWindowInput(session.id.toInt());
+
   /// How [session] ended, if it ended some other way than the person ending it and the person
   /// has not put it away.
   WindowOver? over(WindowSession session) {
@@ -302,6 +337,7 @@ class WindowsController extends ChangeNotifier {
     unawaited(_events?.cancel());
     unawaited(_asked.close());
     unawaited(_started.close());
+    unawaited(_dropped.close());
     super.dispose();
   }
 }

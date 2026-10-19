@@ -14,8 +14,9 @@ use std::{
 };
 
 use baton_app::{
-    App, ErrorKind, Event, Events, Options, WindowAbilities, WindowEnd, WindowRequest, WindowRole,
-    WindowSession, WindowShared, Windows,
+    App, ErrorKind, Event, Events, Options, WindowAbilities, WindowButton, WindowEnd, WindowInput,
+    WindowModifiers, WindowNoticeReason, WindowPointer, WindowRequest, WindowRole, WindowSession,
+    WindowShared, Windows,
     windows::{
         PickedWindow, PlatformError, Screen, ScreenLink, SharingFailure, ShowLimits, WindowSharer,
         WindowViewer,
@@ -30,7 +31,9 @@ use baton_core::{
 use baton_proto::stream::Codec;
 use baton_stream::{
     control::{Config, InputBatch, Report, SourceMessage, Thermal, Want},
+    gate::Reason,
     header::FrameHeader,
+    input::{Button, Event as InputEvent, Modifiers, PointerAction},
     sender::LtrToken,
 };
 use tempfile::TempDir;
@@ -215,6 +218,8 @@ struct Sharer {
     /// The means of the session that started to say that something went wrong, for the test to
     /// use at the time of its choosing.
     failure: Arc<Mutex<Option<SharingFailure>>>,
+    /// What the person at the other device did, as it reached the platform.
+    inputs: Arc<Mutex<Vec<InputEvent>>>,
 }
 
 impl Sharer {
@@ -232,7 +237,13 @@ impl Sharer {
             lets_go_at_once: AtomicBool::new(false),
             fails_at_once: Mutex::new(None),
             failure: Arc::new(Mutex::new(None)),
+            inputs: Arc::new(Mutex::new(Vec::new())),
         })
+    }
+
+    /// What the platform was given of what the person at the other device did, in order.
+    fn inputs(&self) -> Vec<InputEvent> {
+        self.inputs.lock().unwrap().clone()
     }
 }
 
@@ -273,6 +284,7 @@ impl WindowSharer for Sharer {
             lets_go_at_once: self.lets_go_at_once.load(Ordering::Relaxed),
             fails_at_once: self.fails_at_once.lock().unwrap().clone(),
             failure: Arc::clone(&self.failure),
+            inputs: Arc::clone(&self.inputs),
         };
         Box::pin(async move {
             if let Some(gate) = gate {
@@ -293,6 +305,7 @@ struct Picked {
     lets_go_at_once: bool,
     fails_at_once: Option<String>,
     failure: Arc<Mutex<Option<SharingFailure>>>,
+    inputs: Arc<Mutex<Vec<InputEvent>>>,
 }
 
 impl Drop for Picked {
@@ -315,7 +328,7 @@ impl PickedWindow for Picked {
     }
 
     fn events(&mut self) -> Box<dyn SourceEvents> {
-        Box::new(Hearing(Arc::clone(&self.heard)))
+        Box::new(Hearing(Arc::clone(&self.heard), Arc::clone(&self.inputs)))
     }
 
     fn prepare(&mut self, takes: &Takes) -> Option<Config> {
@@ -365,7 +378,7 @@ impl PickedWindow for Picked {
     }
 }
 
-struct Hearing(Arc<Heard>);
+struct Hearing(Arc<Heard>, Arc<Mutex<Vec<InputEvent>>>);
 
 impl SourceEvents for Hearing {
     fn report(&mut self, _report: Report) {
@@ -376,8 +389,9 @@ impl SourceEvents for Hearing {
         self.0.push("want");
     }
 
-    fn input(&mut self, _batch: InputBatch, _arrived: Duration) {
+    fn input(&mut self, batch: InputBatch, _arrived: Duration) {
         self.0.push("input");
+        self.1.lock().unwrap().extend(batch.events);
     }
 
     fn held(&mut self, _tokens: Vec<LtrToken>) {}
@@ -769,6 +783,280 @@ async fn a_window_that_is_shared_from_here_has_no_size_of_picture_to_tell() {
             .any(|event| matches!(event, Event::WindowPicture { .. })),
         "{heard:?}"
     );
+}
+
+/// The window that the viewing device shows, as the screens hear of it.
+async fn shown_window(events: &mut Events) -> WindowSession {
+    next_matching(events, |event| match event {
+        Event::WindowStarted(session) if session.role == WindowRole::Viewing => Some(session),
+        _ => None,
+    })
+    .await
+}
+
+fn touch(action: WindowPointer) -> WindowInput {
+    WindowInput::Pointer {
+        x: 0.25,
+        y: 0.75,
+        modifiers: WindowModifiers::default(),
+        action,
+    }
+}
+
+fn key(code: u16, down: bool) -> WindowInput {
+    WindowInput::Key {
+        code,
+        down,
+        modifiers: WindowModifiers::default(),
+        repeat: false,
+        text: None,
+    }
+}
+
+#[tokio::test]
+async fn what_the_person_does_on_a_window_reaches_the_platform_of_the_device_that_shares_it() {
+    let pair = Pair::new(true).await;
+    let mut viewing_events = pair.viewing.app.events();
+    let WindowShared::Started(_) = pair.offered_and_answered(true, true).await else {
+        panic!("the window was not shared");
+    };
+    let shown = shown_window(&mut viewing_events).await;
+    assert!(shown.control);
+    until("the pictures to be shown", || {
+        pair.viewer.heard.has("show 2")
+    })
+    .await;
+
+    // A touch is a position in the picture that is on the screen, a key is a key.
+    assert!(
+        pair.viewing
+            .app
+            .window_input(shown.id, touch(WindowPointer::Down(WindowButton::Left)))
+    );
+    assert!(
+        pair.viewing
+            .app
+            .window_input(shown.id, touch(WindowPointer::Up(WindowButton::Left)))
+    );
+    assert!(pair.viewing.app.window_input(shown.id, key(4, true)));
+    assert!(pair.viewing.app.window_input(shown.id, key(4, false)));
+    until("the platform of the source to hear all four", || {
+        pair.sharer.inputs().len() == 4
+    })
+    .await;
+    let pointer = |action| InputEvent::Pointer {
+        frame: 2,
+        x: 0.25,
+        y: 0.75,
+        modifiers: Modifiers::NONE,
+        action,
+    };
+    let key = |down| InputEvent::Key {
+        code: 4,
+        down,
+        modifiers: Modifiers::NONE,
+        repeat: false,
+        text: None,
+    };
+    assert_eq!(
+        pair.sharer.inputs(),
+        [
+            pointer(PointerAction::Down(Button::Left)),
+            pointer(PointerAction::Up(Button::Left)),
+            key(true),
+            key(false),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_window_that_the_other_device_did_not_let_this_one_control_takes_no_input() {
+    // The device that shares could grant control, and its person did not.
+    let pair = Pair::new(true).await;
+    let mut viewing_events = pair.viewing.app.events();
+    let WindowShared::Started(_) = pair.offered_and_answered(true, false).await else {
+        panic!("the window was not shared");
+    };
+    let shown = shown_window(&mut viewing_events).await;
+    assert!(!shown.control);
+    until("the pictures to be shown", || {
+        pair.viewer.heard.has("show 2")
+    })
+    .await;
+
+    assert!(
+        !pair
+            .viewing
+            .app
+            .window_input(shown.id, touch(WindowPointer::Move))
+    );
+    assert!(!pair.viewing.app.window_input(shown.id, key(4, true)));
+    // The release of what was never pressed is as nothing, and nothing is sent.
+    pair.viewing.app.release_window_input(shown.id);
+    tokio::time::sleep(QUIET).await;
+    assert_eq!(pair.sharer.inputs(), []);
+}
+
+#[tokio::test]
+async fn input_for_a_window_that_is_not_shown_here_is_not_taken() {
+    let pair = Pair::new(true).await;
+    let WindowShared::Started(shared) = pair.offered_and_answered(true, true).await else {
+        panic!("the window was not shared");
+    };
+    until("the pictures to be shown", || {
+        pair.viewer.heard.has("show 2")
+    })
+    .await;
+
+    // A window that this device shares is looked at by the other one, and a number that no window
+    // has is no window.
+    for session in [shared.id, shared.id + 100] {
+        assert!(
+            !pair
+                .sharing
+                .app
+                .window_input(session, touch(WindowPointer::Move))
+        );
+        pair.sharing.app.release_window_input(session);
+    }
+    tokio::time::sleep(QUIET).await;
+    assert_eq!(pair.sharer.inputs(), []);
+}
+
+#[tokio::test]
+async fn a_position_that_means_nothing_is_not_taken_and_the_window_goes_on() {
+    let pair = Pair::new(true).await;
+    let mut viewing_events = pair.viewing.app.events();
+    let WindowShared::Started(_) = pair.offered_and_answered(true, true).await else {
+        panic!("the window was not shared");
+    };
+    let shown = shown_window(&mut viewing_events).await;
+    until("the pictures to be shown", || {
+        pair.viewer.heard.has("show 2")
+    })
+    .await;
+
+    let outside = WindowInput::Pointer {
+        x: 1.5,
+        y: 0.5,
+        modifiers: WindowModifiers::default(),
+        action: WindowPointer::Move,
+    };
+    let not_a_number = WindowInput::Pointer {
+        x: f32::NAN,
+        y: 0.5,
+        modifiers: WindowModifiers::default(),
+        action: WindowPointer::Move,
+    };
+    assert!(!pair.viewing.app.window_input(shown.id, outside));
+    assert!(!pair.viewing.app.window_input(shown.id, not_a_number));
+    assert!(
+        !pair
+            .viewing
+            .app
+            .window_input(shown.id, touch(WindowPointer::Up(WindowButton::Right)))
+    );
+    assert!(!pair.viewing.app.window_input(shown.id, key(4, false)));
+    // What does mean something still goes through.
+    assert!(
+        pair.viewing
+            .app
+            .window_input(shown.id, touch(WindowPointer::Move))
+    );
+    until("the platform of the source to hear it", || {
+        pair.sharer.inputs().len() == 1
+    })
+    .await;
+    assert!(matches!(
+        pair.sharer.inputs()[..],
+        [InputEvent::Pointer {
+            action: PointerAction::Move,
+            ..
+        }]
+    ));
+}
+
+#[tokio::test]
+async fn what_is_down_is_lifted_when_the_screen_says_the_person_has_left() {
+    let pair = Pair::new(true).await;
+    let mut viewing_events = pair.viewing.app.events();
+    let WindowShared::Started(_) = pair.offered_and_answered(true, true).await else {
+        panic!("the window was not shared");
+    };
+    let shown = shown_window(&mut viewing_events).await;
+    until("the pictures to be shown", || {
+        pair.viewer.heard.has("show 2")
+    })
+    .await;
+
+    assert!(
+        pair.viewing
+            .app
+            .window_input(shown.id, touch(WindowPointer::Down(WindowButton::Left)))
+    );
+    assert!(pair.viewing.app.window_input(shown.id, key(4, true)));
+    until("the platform of the source to hear both", || {
+        pair.sharer.inputs().len() == 2
+    })
+    .await;
+
+    pair.viewing.app.release_window_input(shown.id);
+    until("the platform of the source to hear them lifted", || {
+        pair.sharer.inputs().len() == 4
+    })
+    .await;
+    let inputs = pair.sharer.inputs();
+    assert!(
+        matches!(
+            inputs[2],
+            InputEvent::Pointer {
+                frame: 2,
+                x: 0.25,
+                y: 0.75,
+                action: PointerAction::Up(Button::Left),
+                ..
+            }
+        ),
+        "{inputs:?}"
+    );
+    assert!(
+        matches!(
+            inputs[3],
+            InputEvent::Key {
+                code: 4,
+                down: false,
+                ..
+            }
+        ),
+        "{inputs:?}"
+    );
+}
+
+#[tokio::test]
+async fn what_the_other_device_dropped_is_told_to_the_screen_of_the_window() {
+    let pair = Pair::new(true).await;
+    let mut viewing_events = pair.viewing.app.events();
+    let WindowShared::Started(_) = pair.offered_and_answered(true, true).await else {
+        panic!("the window was not shared");
+    };
+    let shown = shown_window(&mut viewing_events).await;
+    until("the platform of the source to be started", || {
+        pair.sharer.handle.lock().unwrap().is_some()
+    })
+    .await;
+    let handle = pair.sharer.handle.lock().unwrap().clone().unwrap();
+
+    // Two events were dropped because a window was in front, one because the Mac is locked: the
+    // notice names the reason that dropped the most.
+    handle.dropped(Reason::Covered);
+    handle.dropped(Reason::Locked);
+    handle.dropped(Reason::Covered);
+    let notice = next_matching(&mut viewing_events, |event| match event {
+        Event::WindowNotice { id, reason, count } => Some((id, reason, count)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(notice, (shown.id, WindowNoticeReason::Covered, 2));
 }
 
 #[tokio::test]

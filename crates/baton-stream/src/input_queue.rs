@@ -25,8 +25,12 @@
 //!   let down, refuses the release of any other, and refuses a key when more are held than a
 //!   person has fingers ([`MAX_HELD_KEYS`]). [`Queue::release_all`] releases what is down, for a
 //!   screen that is closed or that the person has left.
-//! - Moves of a pointer that wait to be sent are joined into the latest one, so that a slow link
-//!   delivers where the pointer is and not where it has been.
+//! - Moves of a pointer that wait to be sent are joined into the latest one (with the same
+//!   modifiers), so that what is sent is where the pointer is and not where it has been. They wait
+//!   when the rate leaves no room, and when the stream to the source is full, which is when the
+//!   source has stopped reading. On a path that is only slow the stream takes the batches at once
+//!   and they wait in the transport, where they are not joined: they arrive late and together, and
+//!   the source drops what its rules call out of date.
 //! - Text is cut at the boundaries of characters into pieces of at most [`MAX_KEY_TEXT_UNITS`]
 //!   UTF-16 units, each an event with no key, and what cannot be typed (a control character other
 //!   than tab, line feed and carriage return) is left out.
@@ -373,23 +377,25 @@ impl Queue {
             return Err(InputError::TextOnly.into());
         }
         let text = typable(&text.unwrap_or_default());
-        let count = pieces(&text).count();
-        if count == 0 {
-            return Err(InputError::TextOnly.into());
-        }
-        // All of the text or none of it: half a paste is worse than none.
-        if !self.has_room(count) {
-            return Err(Refused::Full);
-        }
-        for piece in pieces(&text) {
-            self.pending.push_back(Event::Key {
+        let events: Vec<Event> = pieces(&text)
+            .map(|piece| Event::Key {
                 code: NO_KEY,
                 down: true,
                 modifiers,
                 repeat: false,
                 text: Some(piece.to_owned()),
-            });
+            })
+            .collect();
+        if events.is_empty() {
+            return Err(InputError::TextOnly.into());
         }
+        // The numbers of text with no key are held to the same rules as those of any event.
+        events.iter().try_for_each(Event::validate)?;
+        // All of the text or none of it: half a paste is worse than none.
+        if !self.has_room(events.len()) {
+            return Err(Refused::Full);
+        }
+        self.pending.extend(events);
         Ok(())
     }
 
@@ -1029,6 +1035,43 @@ mod tests {
     }
 
     #[test]
+    fn modifiers_that_do_not_exist_are_refused_for_text_as_for_a_key_or_a_pointer() {
+        // A byte with bits that no modifier has, as a peer or a bridge could read it.
+        let bad: Modifiers = ciborium::from_reader(&[0x18, 0xE0][..]).unwrap();
+        let mut queue = queue();
+        let refused = Err(Refused::Invalid(InputError::Modifiers));
+        let text = |text: &str| Input::Key {
+            code: NO_KEY,
+            down: true,
+            modifiers: bad,
+            repeat: false,
+            text: Some(text.to_owned()),
+        };
+        // One piece of text, and text that is cut into several.
+        assert_eq!(queue.push(None, text("hello")), refused);
+        assert_eq!(queue.push(None, text(&"a".repeat(45))), refused);
+        let key = Input::Key {
+            code: 4,
+            down: true,
+            modifiers: bad,
+            repeat: false,
+            text: None,
+        };
+        assert_eq!(queue.push(None, key), refused);
+        let touch = Input::Pointer {
+            x: 0.5,
+            y: 0.5,
+            modifiers: bad,
+            action: PointerAction::Move,
+        };
+        assert_eq!(queue.push(Some(1), touch), refused);
+        // Nothing of it was kept, and the queue goes on to take what is right.
+        assert!(queue.is_empty());
+        queue.push(None, typed("hello")).unwrap();
+        assert_eq!(queue.len(), 1);
+    }
+
+    #[test]
     fn a_scroll_beyond_the_limit_is_refused() {
         let mut queue = queue();
         let step = pointer(
@@ -1311,7 +1354,14 @@ mod tests {
     // What the queue gives is always sound, whatever it is given.
 
     fn modifiers() -> impl Strategy<Value = Modifiers> {
-        (0_u8..32).prop_map(|bits| Modifiers::from_bits(bits).unwrap())
+        // Mostly modifiers that exist, and now and then a byte with bits that none has, which
+        // `Modifiers` reads from the wire as it comes.
+        prop_oneof![
+            9 => (0_u8..32).prop_map(|bits| Modifiers::from_bits(bits).unwrap()),
+            1 => (32_u8..=255).prop_map(|bits| {
+                ciborium::from_reader::<Modifiers, _>(&[0x18, bits][..]).unwrap()
+            }),
+        ]
     }
 
     fn button() -> impl Strategy<Value = Button> {

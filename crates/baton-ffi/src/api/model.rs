@@ -444,6 +444,158 @@ pub enum WindowEnd {
     },
 }
 
+/// A button of a pointer on the picture of a window. A finger is the left one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowButton {
+    /// The primary button, or a touch.
+    Left,
+    /// The secondary button.
+    Right,
+    /// The middle button.
+    Middle,
+}
+
+/// What a pointer did on the picture of a window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WindowPointer {
+    /// It moved, with a button down or not.
+    Move,
+    /// A button went down.
+    Down {
+        /// Which.
+        button: WindowButton,
+    },
+    /// A button came up.
+    Up {
+        /// Which.
+        button: WindowButton,
+    },
+    /// A scroll, in points: positive `dx` moves the content to the right and positive `dy`
+    /// down, as a finger that drags it does.
+    Scroll {
+        /// Along the x axis.
+        dx: f32,
+        /// Along the y axis.
+        dy: f32,
+    },
+}
+
+/// The modifier keys that are down.
+// Five keys of a keyboard, each of which is down or not on its own.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WindowModifiers {
+    /// Shift.
+    pub shift: bool,
+    /// Control.
+    pub control: bool,
+    /// Option, also called Alt.
+    pub option: bool,
+    /// Command, also called the Windows key or Meta.
+    pub command: bool,
+    /// Caps lock.
+    pub caps_lock: bool,
+}
+
+/// What the person did on the picture of a window that is shown here, for
+/// `Baton.windowInput`.
+///
+/// A position is a fraction of the picture as it is drawn, from 0 to 1 across and from 0 to 1
+/// down from its top left corner. A key is a USB HID usage of the keyboard page (`a` is 4: the
+/// low 16 bits of Flutter's `PhysicalKeyboardKey.usbHidUsage`), and code 0 means text that came
+/// with no key, such as dictation or the keyboard on the screen: it must go down once, carry
+/// the text and not repeat.
+#[derive(Clone, PartialEq)]
+pub enum WindowInput {
+    /// A finger or a pointer.
+    Pointer {
+        /// Across the picture, from 0 to 1.
+        x: f32,
+        /// Down the picture, from 0 to 1.
+        y: f32,
+        /// The modifier keys that are down.
+        modifiers: WindowModifiers,
+        /// What it did.
+        action: WindowPointer,
+    },
+    /// A key, or text that came with no key.
+    Key {
+        /// A USB HID usage of the keyboard page, or 0 for text with no key.
+        code: u16,
+        /// Whether the key went down (true) or came up (false).
+        down: bool,
+        /// The modifier keys that are down after this event.
+        modifiers: WindowModifiers,
+        /// Whether the system repeats a key that is held.
+        repeat: bool,
+        /// The text that the key produced, or `null`. Long text is cut into pieces, and
+        /// characters that cannot be typed are left out.
+        text: Option<String>,
+    },
+}
+
+// What was typed stays out of every log, so a key is only said to be down or up.
+impl std::fmt::Debug for WindowInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pointer {
+                x,
+                y,
+                modifiers,
+                action,
+            } => f
+                .debug_struct("Pointer")
+                .field("x", x)
+                .field("y", y)
+                .field("modifiers", modifiers)
+                .field("action", action)
+                .finish(),
+            Self::Key {
+                down, repeat, text, ..
+            } => f
+                .debug_struct("Key")
+                .field("down", down)
+                .field("repeat", repeat)
+                .field("text_bytes", &text.as_ref().map(String::len))
+                .finish_non_exhaustive(),
+        }
+    }
+}
+
+/// Why the other device did not do some of what the person did on a window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowNoticeReason {
+    /// The person at the other device did not let this one control the window, or turned
+    /// control off.
+    ControlOff,
+    /// The window is paused, for example because it was hidden.
+    Paused,
+    /// The other device is locked, or its display is off.
+    Locked,
+    /// The window is not on the screen of the other device.
+    NotOnScreen,
+    /// Events came faster than the other device takes them.
+    TooFast,
+    /// The picture that the person touched is too old: the window has changed since.
+    OutOfDate,
+    /// The window changed its size since the picture that the person touched.
+    Resized,
+    /// The touch was outside the window.
+    OutsideWindow,
+    /// Another window was in front of the window where it was touched.
+    Covered,
+    /// The window does not have the keyboard.
+    NoKeyboard,
+    /// A window of the same application is in front of the window, so a key might go to it.
+    AppWindowInFront,
+    /// More keys are held down than a person has fingers.
+    TooManyKeys,
+    /// The release of a button or a key that was not pressed.
+    NotPressed,
+    /// Something that this version does not know.
+    Other,
+}
+
 /// What a transfer that is being sent is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SendStage {
@@ -592,6 +744,20 @@ pub enum Event {
         width: u32,
         /// The height of the picture in pixels, at least 1.
         height: u32,
+    },
+    /// The other device did not do some of what the person did on a window that is shown here:
+    /// it dropped events, for the reason named, and `count` is how many. Say so in a sentence,
+    /// so that a tap that did nothing is not a mystery. The other device sends at most one a
+    /// second, naming the reason that cost the most events since the last. It comes after the
+    /// `Event.windowStarted` of the same window, and not for a window that is shared from this
+    /// device.
+    WindowNotice {
+        /// The `WindowSession.id` whose events were dropped.
+        id: i64,
+        /// The rule that dropped the most of them.
+        reason: WindowNoticeReason,
+        /// How many events it dropped, at least 1.
+        count: u32,
     },
     /// A window that was shown or shared is over.
     WindowEnded {

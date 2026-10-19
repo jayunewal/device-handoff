@@ -18,7 +18,7 @@ use super::{
     error::BatonError,
     model::{
         Device, Event, FileProgress, FilesSent, JoinProgress, Me, Network, Offer, Reach, Received,
-        Receiving, WindowAbilities, WindowShared,
+        Receiving, WindowAbilities, WindowInput, WindowShared,
     },
 };
 use crate::convert::signed;
@@ -209,6 +209,30 @@ impl Baton {
     #[frb(sync)]
     pub fn end_window(&self, session: i64) -> bool {
         u64::try_from(session).is_ok_and(|session| self.app.end_window(session))
+    }
+
+    /// Gives what the person did on the picture of the window `session`, which is shown here: a
+    /// touch, a click, a scroll, a key. The event goes to the other device soon, in a batch with
+    /// others, and is done there only if the person at that device let this one control the
+    /// window (`WindowSession.control`). Returns whether the event was taken. It is not for a
+    /// window that is not shown here or may not be controlled, a position while no picture has
+    /// been shown, a position outside the picture while no button is down, the release of
+    /// something that is not down, and more than the format allows. None of that ends the window:
+    /// a screen drops the event and goes on. What the other device drops comes back as
+    /// `Event.windowNotice`.
+    #[frb(sync)]
+    pub fn window_input(&self, session: i64, input: WindowInput) -> bool {
+        u64::try_from(session).is_ok_and(|session| self.app.window_input(session, input.into()))
+    }
+
+    /// Lets go of every button and key that is down on the window `session`, for example when
+    /// the person leaves the screen with a finger on it. A window that is not shown here does
+    /// nothing.
+    #[frb(sync)]
+    pub fn release_window_input(&self, session: i64) {
+        if let Ok(session) = u64::try_from(session) {
+            self.app.release_window_input(session);
+        }
     }
 
     /// Sends a web link to a paired device.

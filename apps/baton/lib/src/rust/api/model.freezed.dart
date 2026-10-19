@@ -56,7 +56,7 @@ extension EventPatterns on Event {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( Event_Received value)?  received,TResult Function( Event_DevicesChanged value)?  devicesChanged,TResult Function( Event_PairingRequested value)?  pairingRequested,TResult Function( Event_PairingRequestEnded value)?  pairingRequestEnded,TResult Function( Event_OfferEnded value)?  offerEnded,TResult Function( Event_TransferRequested value)?  transferRequested,TResult Function( Event_TransferRequestEnded value)?  transferRequestEnded,TResult Function( Event_TransferEnded value)?  transferEnded,TResult Function( Event_WindowRequested value)?  windowRequested,TResult Function( Event_WindowRequestEnded value)?  windowRequestEnded,TResult Function( Event_WindowStarted value)?  windowStarted,TResult Function( Event_WindowPicture value)?  windowPicture,TResult Function( Event_WindowEnded value)?  windowEnded,TResult Function( Event_Resync value)?  resync,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( Event_Received value)?  received,TResult Function( Event_DevicesChanged value)?  devicesChanged,TResult Function( Event_PairingRequested value)?  pairingRequested,TResult Function( Event_PairingRequestEnded value)?  pairingRequestEnded,TResult Function( Event_OfferEnded value)?  offerEnded,TResult Function( Event_TransferRequested value)?  transferRequested,TResult Function( Event_TransferRequestEnded value)?  transferRequestEnded,TResult Function( Event_TransferEnded value)?  transferEnded,TResult Function( Event_WindowRequested value)?  windowRequested,TResult Function( Event_WindowRequestEnded value)?  windowRequestEnded,TResult Function( Event_WindowStarted value)?  windowStarted,TResult Function( Event_WindowPicture value)?  windowPicture,TResult Function( Event_WindowNotice value)?  windowNotice,TResult Function( Event_WindowEnded value)?  windowEnded,TResult Function( Event_Resync value)?  resync,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case Event_Received() when received != null:
@@ -71,7 +71,8 @@ return transferEnded(_that);case Event_WindowRequested() when windowRequested !=
 return windowRequested(_that);case Event_WindowRequestEnded() when windowRequestEnded != null:
 return windowRequestEnded(_that);case Event_WindowStarted() when windowStarted != null:
 return windowStarted(_that);case Event_WindowPicture() when windowPicture != null:
-return windowPicture(_that);case Event_WindowEnded() when windowEnded != null:
+return windowPicture(_that);case Event_WindowNotice() when windowNotice != null:
+return windowNotice(_that);case Event_WindowEnded() when windowEnded != null:
 return windowEnded(_that);case Event_Resync() when resync != null:
 return resync(_that);case _:
   return orElse();
@@ -91,7 +92,7 @@ return resync(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( Event_Received value)  received,required TResult Function( Event_DevicesChanged value)  devicesChanged,required TResult Function( Event_PairingRequested value)  pairingRequested,required TResult Function( Event_PairingRequestEnded value)  pairingRequestEnded,required TResult Function( Event_OfferEnded value)  offerEnded,required TResult Function( Event_TransferRequested value)  transferRequested,required TResult Function( Event_TransferRequestEnded value)  transferRequestEnded,required TResult Function( Event_TransferEnded value)  transferEnded,required TResult Function( Event_WindowRequested value)  windowRequested,required TResult Function( Event_WindowRequestEnded value)  windowRequestEnded,required TResult Function( Event_WindowStarted value)  windowStarted,required TResult Function( Event_WindowPicture value)  windowPicture,required TResult Function( Event_WindowEnded value)  windowEnded,required TResult Function( Event_Resync value)  resync,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( Event_Received value)  received,required TResult Function( Event_DevicesChanged value)  devicesChanged,required TResult Function( Event_PairingRequested value)  pairingRequested,required TResult Function( Event_PairingRequestEnded value)  pairingRequestEnded,required TResult Function( Event_OfferEnded value)  offerEnded,required TResult Function( Event_TransferRequested value)  transferRequested,required TResult Function( Event_TransferRequestEnded value)  transferRequestEnded,required TResult Function( Event_TransferEnded value)  transferEnded,required TResult Function( Event_WindowRequested value)  windowRequested,required TResult Function( Event_WindowRequestEnded value)  windowRequestEnded,required TResult Function( Event_WindowStarted value)  windowStarted,required TResult Function( Event_WindowPicture value)  windowPicture,required TResult Function( Event_WindowNotice value)  windowNotice,required TResult Function( Event_WindowEnded value)  windowEnded,required TResult Function( Event_Resync value)  resync,}){
 final _that = this;
 switch (_that) {
 case Event_Received():
@@ -106,7 +107,8 @@ return transferEnded(_that);case Event_WindowRequested():
 return windowRequested(_that);case Event_WindowRequestEnded():
 return windowRequestEnded(_that);case Event_WindowStarted():
 return windowStarted(_that);case Event_WindowPicture():
-return windowPicture(_that);case Event_WindowEnded():
+return windowPicture(_that);case Event_WindowNotice():
+return windowNotice(_that);case Event_WindowEnded():
 return windowEnded(_that);case Event_Resync():
 return resync(_that);}
 }
@@ -122,7 +124,7 @@ return resync(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( Event_Received value)?  received,TResult? Function( Event_DevicesChanged value)?  devicesChanged,TResult? Function( Event_PairingRequested value)?  pairingRequested,TResult? Function( Event_PairingRequestEnded value)?  pairingRequestEnded,TResult? Function( Event_OfferEnded value)?  offerEnded,TResult? Function( Event_TransferRequested value)?  transferRequested,TResult? Function( Event_TransferRequestEnded value)?  transferRequestEnded,TResult? Function( Event_TransferEnded value)?  transferEnded,TResult? Function( Event_WindowRequested value)?  windowRequested,TResult? Function( Event_WindowRequestEnded value)?  windowRequestEnded,TResult? Function( Event_WindowStarted value)?  windowStarted,TResult? Function( Event_WindowPicture value)?  windowPicture,TResult? Function( Event_WindowEnded value)?  windowEnded,TResult? Function( Event_Resync value)?  resync,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( Event_Received value)?  received,TResult? Function( Event_DevicesChanged value)?  devicesChanged,TResult? Function( Event_PairingRequested value)?  pairingRequested,TResult? Function( Event_PairingRequestEnded value)?  pairingRequestEnded,TResult? Function( Event_OfferEnded value)?  offerEnded,TResult? Function( Event_TransferRequested value)?  transferRequested,TResult? Function( Event_TransferRequestEnded value)?  transferRequestEnded,TResult? Function( Event_TransferEnded value)?  transferEnded,TResult? Function( Event_WindowRequested value)?  windowRequested,TResult? Function( Event_WindowRequestEnded value)?  windowRequestEnded,TResult? Function( Event_WindowStarted value)?  windowStarted,TResult? Function( Event_WindowPicture value)?  windowPicture,TResult? Function( Event_WindowNotice value)?  windowNotice,TResult? Function( Event_WindowEnded value)?  windowEnded,TResult? Function( Event_Resync value)?  resync,}){
 final _that = this;
 switch (_that) {
 case Event_Received() when received != null:
@@ -137,7 +139,8 @@ return transferEnded(_that);case Event_WindowRequested() when windowRequested !=
 return windowRequested(_that);case Event_WindowRequestEnded() when windowRequestEnded != null:
 return windowRequestEnded(_that);case Event_WindowStarted() when windowStarted != null:
 return windowStarted(_that);case Event_WindowPicture() when windowPicture != null:
-return windowPicture(_that);case Event_WindowEnded() when windowEnded != null:
+return windowPicture(_that);case Event_WindowNotice() when windowNotice != null:
+return windowNotice(_that);case Event_WindowEnded() when windowEnded != null:
 return windowEnded(_that);case Event_Resync() when resync != null:
 return resync(_that);case _:
   return null;
@@ -156,7 +159,7 @@ return resync(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( Received received)?  received,TResult Function()?  devicesChanged,TResult Function( PairingRequest request)?  pairingRequested,TResult Function( PlatformInt64 id)?  pairingRequestEnded,TResult Function( OfferOutcome outcome)?  offerEnded,TResult Function( TransferRequest request)?  transferRequested,TResult Function( PlatformInt64 id)?  transferRequestEnded,TResult Function( TransferEnd end)?  transferEnded,TResult Function( WindowRequest request)?  windowRequested,TResult Function( PlatformInt64 id,  String? failure)?  windowRequestEnded,TResult Function( WindowSession session)?  windowStarted,TResult Function( PlatformInt64 id,  int width,  int height)?  windowPicture,TResult Function( PlatformInt64 id,  WindowEnd end)?  windowEnded,TResult Function()?  resync,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( Received received)?  received,TResult Function()?  devicesChanged,TResult Function( PairingRequest request)?  pairingRequested,TResult Function( PlatformInt64 id)?  pairingRequestEnded,TResult Function( OfferOutcome outcome)?  offerEnded,TResult Function( TransferRequest request)?  transferRequested,TResult Function( PlatformInt64 id)?  transferRequestEnded,TResult Function( TransferEnd end)?  transferEnded,TResult Function( WindowRequest request)?  windowRequested,TResult Function( PlatformInt64 id,  String? failure)?  windowRequestEnded,TResult Function( WindowSession session)?  windowStarted,TResult Function( PlatformInt64 id,  int width,  int height)?  windowPicture,TResult Function( PlatformInt64 id,  WindowNoticeReason reason,  int count)?  windowNotice,TResult Function( PlatformInt64 id,  WindowEnd end)?  windowEnded,TResult Function()?  resync,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case Event_Received() when received != null:
 return received(_that.received);case Event_DevicesChanged() when devicesChanged != null:
@@ -170,7 +173,8 @@ return transferEnded(_that.end);case Event_WindowRequested() when windowRequeste
 return windowRequested(_that.request);case Event_WindowRequestEnded() when windowRequestEnded != null:
 return windowRequestEnded(_that.id,_that.failure);case Event_WindowStarted() when windowStarted != null:
 return windowStarted(_that.session);case Event_WindowPicture() when windowPicture != null:
-return windowPicture(_that.id,_that.width,_that.height);case Event_WindowEnded() when windowEnded != null:
+return windowPicture(_that.id,_that.width,_that.height);case Event_WindowNotice() when windowNotice != null:
+return windowNotice(_that.id,_that.reason,_that.count);case Event_WindowEnded() when windowEnded != null:
 return windowEnded(_that.id,_that.end);case Event_Resync() when resync != null:
 return resync();case _:
   return orElse();
@@ -190,7 +194,7 @@ return resync();case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( Received received)  received,required TResult Function()  devicesChanged,required TResult Function( PairingRequest request)  pairingRequested,required TResult Function( PlatformInt64 id)  pairingRequestEnded,required TResult Function( OfferOutcome outcome)  offerEnded,required TResult Function( TransferRequest request)  transferRequested,required TResult Function( PlatformInt64 id)  transferRequestEnded,required TResult Function( TransferEnd end)  transferEnded,required TResult Function( WindowRequest request)  windowRequested,required TResult Function( PlatformInt64 id,  String? failure)  windowRequestEnded,required TResult Function( WindowSession session)  windowStarted,required TResult Function( PlatformInt64 id,  int width,  int height)  windowPicture,required TResult Function( PlatformInt64 id,  WindowEnd end)  windowEnded,required TResult Function()  resync,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( Received received)  received,required TResult Function()  devicesChanged,required TResult Function( PairingRequest request)  pairingRequested,required TResult Function( PlatformInt64 id)  pairingRequestEnded,required TResult Function( OfferOutcome outcome)  offerEnded,required TResult Function( TransferRequest request)  transferRequested,required TResult Function( PlatformInt64 id)  transferRequestEnded,required TResult Function( TransferEnd end)  transferEnded,required TResult Function( WindowRequest request)  windowRequested,required TResult Function( PlatformInt64 id,  String? failure)  windowRequestEnded,required TResult Function( WindowSession session)  windowStarted,required TResult Function( PlatformInt64 id,  int width,  int height)  windowPicture,required TResult Function( PlatformInt64 id,  WindowNoticeReason reason,  int count)  windowNotice,required TResult Function( PlatformInt64 id,  WindowEnd end)  windowEnded,required TResult Function()  resync,}) {final _that = this;
 switch (_that) {
 case Event_Received():
 return received(_that.received);case Event_DevicesChanged():
@@ -204,7 +208,8 @@ return transferEnded(_that.end);case Event_WindowRequested():
 return windowRequested(_that.request);case Event_WindowRequestEnded():
 return windowRequestEnded(_that.id,_that.failure);case Event_WindowStarted():
 return windowStarted(_that.session);case Event_WindowPicture():
-return windowPicture(_that.id,_that.width,_that.height);case Event_WindowEnded():
+return windowPicture(_that.id,_that.width,_that.height);case Event_WindowNotice():
+return windowNotice(_that.id,_that.reason,_that.count);case Event_WindowEnded():
 return windowEnded(_that.id,_that.end);case Event_Resync():
 return resync();}
 }
@@ -220,7 +225,7 @@ return resync();}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( Received received)?  received,TResult? Function()?  devicesChanged,TResult? Function( PairingRequest request)?  pairingRequested,TResult? Function( PlatformInt64 id)?  pairingRequestEnded,TResult? Function( OfferOutcome outcome)?  offerEnded,TResult? Function( TransferRequest request)?  transferRequested,TResult? Function( PlatformInt64 id)?  transferRequestEnded,TResult? Function( TransferEnd end)?  transferEnded,TResult? Function( WindowRequest request)?  windowRequested,TResult? Function( PlatformInt64 id,  String? failure)?  windowRequestEnded,TResult? Function( WindowSession session)?  windowStarted,TResult? Function( PlatformInt64 id,  int width,  int height)?  windowPicture,TResult? Function( PlatformInt64 id,  WindowEnd end)?  windowEnded,TResult? Function()?  resync,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( Received received)?  received,TResult? Function()?  devicesChanged,TResult? Function( PairingRequest request)?  pairingRequested,TResult? Function( PlatformInt64 id)?  pairingRequestEnded,TResult? Function( OfferOutcome outcome)?  offerEnded,TResult? Function( TransferRequest request)?  transferRequested,TResult? Function( PlatformInt64 id)?  transferRequestEnded,TResult? Function( TransferEnd end)?  transferEnded,TResult? Function( WindowRequest request)?  windowRequested,TResult? Function( PlatformInt64 id,  String? failure)?  windowRequestEnded,TResult? Function( WindowSession session)?  windowStarted,TResult? Function( PlatformInt64 id,  int width,  int height)?  windowPicture,TResult? Function( PlatformInt64 id,  WindowNoticeReason reason,  int count)?  windowNotice,TResult? Function( PlatformInt64 id,  WindowEnd end)?  windowEnded,TResult? Function()?  resync,}) {final _that = this;
 switch (_that) {
 case Event_Received() when received != null:
 return received(_that.received);case Event_DevicesChanged() when devicesChanged != null:
@@ -234,7 +239,8 @@ return transferEnded(_that.end);case Event_WindowRequested() when windowRequeste
 return windowRequested(_that.request);case Event_WindowRequestEnded() when windowRequestEnded != null:
 return windowRequestEnded(_that.id,_that.failure);case Event_WindowStarted() when windowStarted != null:
 return windowStarted(_that.session);case Event_WindowPicture() when windowPicture != null:
-return windowPicture(_that.id,_that.width,_that.height);case Event_WindowEnded() when windowEnded != null:
+return windowPicture(_that.id,_that.width,_that.height);case Event_WindowNotice() when windowNotice != null:
+return windowNotice(_that.id,_that.reason,_that.count);case Event_WindowEnded() when windowEnded != null:
 return windowEnded(_that.id,_that.end);case Event_Resync() when resync != null:
 return resync();case _:
   return null;
@@ -1047,6 +1053,81 @@ class _$Event_WindowPictureCopyWithImpl<$Res>
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as PlatformInt64,width: null == width ? _self.width : width // ignore: cast_nullable_to_non_nullable
 as int,height: null == height ? _self.height : height // ignore: cast_nullable_to_non_nullable
+as int,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class Event_WindowNotice extends Event {
+  const Event_WindowNotice({required this.id, required this.reason, required this.count}): super._();
+  
+
+/// The `WindowSession.id` whose events were dropped.
+ final  PlatformInt64 id;
+/// The rule that dropped the most of them.
+ final  WindowNoticeReason reason;
+/// How many events it dropped, at least 1.
+ final  int count;
+
+/// Create a copy of Event
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$Event_WindowNoticeCopyWith<Event_WindowNotice> get copyWith => _$Event_WindowNoticeCopyWithImpl<Event_WindowNotice>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is Event_WindowNotice&&(identical(other.id, id) || other.id == id)&&(identical(other.reason, reason) || other.reason == reason)&&(identical(other.count, count) || other.count == count));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,id,reason,count);
+}
+
+@override
+String toString() {
+    return 'Event.windowNotice(id: $id, reason: $reason, count: $count)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $Event_WindowNoticeCopyWith<$Res> implements $EventCopyWith<$Res> {
+  factory $Event_WindowNoticeCopyWith(Event_WindowNotice value, $Res Function(Event_WindowNotice) _then) = _$Event_WindowNoticeCopyWithImpl;
+@useResult
+$Res call({
+ PlatformInt64 id, WindowNoticeReason reason, int count
+});
+
+
+
+
+}
+/// @nodoc
+class _$Event_WindowNoticeCopyWithImpl<$Res>
+    implements $Event_WindowNoticeCopyWith<$Res> {
+  _$Event_WindowNoticeCopyWithImpl(this._self, this._then);
+
+  final Event_WindowNotice _self;
+  final $Res Function(Event_WindowNotice) _then;
+
+/// Create a copy of Event
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? id = null,Object? reason = null,Object? count = null,}) {
+  return _then(Event_WindowNotice(
+id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
+as PlatformInt64,reason: null == reason ? _self.reason : reason // ignore: cast_nullable_to_non_nullable
+as WindowNoticeReason,count: null == count ? _self.count : count // ignore: cast_nullable_to_non_nullable
 as int,
   ));
 }
@@ -3182,6 +3263,786 @@ class _$WindowEnd_FailedCopyWithImpl<$Res>
   return _then(WindowEnd_Failed(
 message: null == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
 as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+mixin _$WindowInput {
+
+/// The modifier keys that are down.
+ WindowModifiers get modifiers;
+/// Create a copy of WindowInput
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$WindowInputCopyWith<WindowInput> get copyWith => _$WindowInputCopyWithImpl<WindowInput>(this as WindowInput, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as WindowInput;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is WindowInput&&(identical(other.modifiers, _this.modifiers) || other.modifiers == _this.modifiers));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as WindowInput;
+  return Object.hash(runtimeType,_this.modifiers);
+}
+
+@override
+String toString() {
+  final _this = this as WindowInput;
+  return 'WindowInput(modifiers: ${_this.modifiers})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $WindowInputCopyWith<$Res>  {
+  factory $WindowInputCopyWith(WindowInput value, $Res Function(WindowInput) _then) = _$WindowInputCopyWithImpl;
+@useResult
+$Res call({
+ WindowModifiers modifiers
+});
+
+
+
+
+}
+/// @nodoc
+class _$WindowInputCopyWithImpl<$Res>
+    implements $WindowInputCopyWith<$Res> {
+  _$WindowInputCopyWithImpl(this._self, this._then);
+
+  final WindowInput _self;
+  final $Res Function(WindowInput) _then;
+
+/// Create a copy of WindowInput
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? modifiers = null,}) {
+  return _then(_self.copyWith(
+modifiers: null == modifiers ? _self.modifiers : modifiers // ignore: cast_nullable_to_non_nullable
+as WindowModifiers,
+  ));
+}
+
+}
+
+
+/// Adds pattern-matching-related methods to [WindowInput].
+extension WindowInputPatterns on WindowInput {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( WindowInput_Pointer value)?  pointer,TResult Function( WindowInput_Key value)?  key,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case WindowInput_Pointer() when pointer != null:
+return pointer(_that);case WindowInput_Key() when key != null:
+return key(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( WindowInput_Pointer value)  pointer,required TResult Function( WindowInput_Key value)  key,}){
+final _that = this;
+switch (_that) {
+case WindowInput_Pointer():
+return pointer(_that);case WindowInput_Key():
+return key(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( WindowInput_Pointer value)?  pointer,TResult? Function( WindowInput_Key value)?  key,}){
+final _that = this;
+switch (_that) {
+case WindowInput_Pointer() when pointer != null:
+return pointer(_that);case WindowInput_Key() when key != null:
+return key(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( double x,  double y,  WindowModifiers modifiers,  WindowPointer action)?  pointer,TResult Function( int code,  bool down,  WindowModifiers modifiers,  bool repeat,  String? text)?  key,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case WindowInput_Pointer() when pointer != null:
+return pointer(_that.x,_that.y,_that.modifiers,_that.action);case WindowInput_Key() when key != null:
+return key(_that.code,_that.down,_that.modifiers,_that.repeat,_that.text);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( double x,  double y,  WindowModifiers modifiers,  WindowPointer action)  pointer,required TResult Function( int code,  bool down,  WindowModifiers modifiers,  bool repeat,  String? text)  key,}) {final _that = this;
+switch (_that) {
+case WindowInput_Pointer():
+return pointer(_that.x,_that.y,_that.modifiers,_that.action);case WindowInput_Key():
+return key(_that.code,_that.down,_that.modifiers,_that.repeat,_that.text);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( double x,  double y,  WindowModifiers modifiers,  WindowPointer action)?  pointer,TResult? Function( int code,  bool down,  WindowModifiers modifiers,  bool repeat,  String? text)?  key,}) {final _that = this;
+switch (_that) {
+case WindowInput_Pointer() when pointer != null:
+return pointer(_that.x,_that.y,_that.modifiers,_that.action);case WindowInput_Key() when key != null:
+return key(_that.code,_that.down,_that.modifiers,_that.repeat,_that.text);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class WindowInput_Pointer extends WindowInput {
+  const WindowInput_Pointer({required this.x, required this.y, required this.modifiers, required this.action}): super._();
+  
+
+/// Across the picture, from 0 to 1.
+ final  double x;
+/// Down the picture, from 0 to 1.
+ final  double y;
+/// The modifier keys that are down.
+@override final  WindowModifiers modifiers;
+/// What it did.
+ final  WindowPointer action;
+
+/// Create a copy of WindowInput
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$WindowInput_PointerCopyWith<WindowInput_Pointer> get copyWith => _$WindowInput_PointerCopyWithImpl<WindowInput_Pointer>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is WindowInput_Pointer&&(identical(other.x, x) || other.x == x)&&(identical(other.y, y) || other.y == y)&&(identical(other.modifiers, modifiers) || other.modifiers == modifiers)&&(identical(other.action, action) || other.action == action));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,x,y,modifiers,action);
+}
+
+@override
+String toString() {
+    return 'WindowInput.pointer(x: $x, y: $y, modifiers: $modifiers, action: $action)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $WindowInput_PointerCopyWith<$Res> implements $WindowInputCopyWith<$Res> {
+  factory $WindowInput_PointerCopyWith(WindowInput_Pointer value, $Res Function(WindowInput_Pointer) _then) = _$WindowInput_PointerCopyWithImpl;
+@override @useResult
+$Res call({
+ double x, double y, WindowModifiers modifiers, WindowPointer action
+});
+
+
+$WindowPointerCopyWith<$Res> get action;
+
+}
+/// @nodoc
+class _$WindowInput_PointerCopyWithImpl<$Res>
+    implements $WindowInput_PointerCopyWith<$Res> {
+  _$WindowInput_PointerCopyWithImpl(this._self, this._then);
+
+  final WindowInput_Pointer _self;
+  final $Res Function(WindowInput_Pointer) _then;
+
+/// Create a copy of WindowInput
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? x = null,Object? y = null,Object? modifiers = null,Object? action = null,}) {
+  return _then(WindowInput_Pointer(
+x: null == x ? _self.x : x // ignore: cast_nullable_to_non_nullable
+as double,y: null == y ? _self.y : y // ignore: cast_nullable_to_non_nullable
+as double,modifiers: null == modifiers ? _self.modifiers : modifiers // ignore: cast_nullable_to_non_nullable
+as WindowModifiers,action: null == action ? _self.action : action // ignore: cast_nullable_to_non_nullable
+as WindowPointer,
+  ));
+}
+
+/// Create a copy of WindowInput
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$WindowPointerCopyWith<$Res> get action {
+  
+  return $WindowPointerCopyWith<$Res>(_self.action, (value) {
+    return _then(_self.copyWith(action: value));
+  });
+}
+}
+
+/// @nodoc
+
+
+class WindowInput_Key extends WindowInput {
+  const WindowInput_Key({required this.code, required this.down, required this.modifiers, required this.repeat, this.text}): super._();
+  
+
+/// A USB HID usage of the keyboard page, or 0 for text with no key.
+ final  int code;
+/// Whether the key went down (true) or came up (false).
+ final  bool down;
+/// The modifier keys that are down after this event.
+@override final  WindowModifiers modifiers;
+/// Whether the system repeats a key that is held.
+ final  bool repeat;
+/// The text that the key produced, or `null`. Long text is cut into pieces, and
+/// characters that cannot be typed are left out.
+ final  String? text;
+
+/// Create a copy of WindowInput
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$WindowInput_KeyCopyWith<WindowInput_Key> get copyWith => _$WindowInput_KeyCopyWithImpl<WindowInput_Key>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is WindowInput_Key&&(identical(other.code, code) || other.code == code)&&(identical(other.down, down) || other.down == down)&&(identical(other.modifiers, modifiers) || other.modifiers == modifiers)&&(identical(other.repeat, repeat) || other.repeat == repeat)&&(identical(other.text, text) || other.text == text));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,code,down,modifiers,repeat,text);
+}
+
+@override
+String toString() {
+    return 'WindowInput.key(code: $code, down: $down, modifiers: $modifiers, repeat: $repeat, text: $text)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $WindowInput_KeyCopyWith<$Res> implements $WindowInputCopyWith<$Res> {
+  factory $WindowInput_KeyCopyWith(WindowInput_Key value, $Res Function(WindowInput_Key) _then) = _$WindowInput_KeyCopyWithImpl;
+@override @useResult
+$Res call({
+ int code, bool down, WindowModifiers modifiers, bool repeat, String? text
+});
+
+
+
+
+}
+/// @nodoc
+class _$WindowInput_KeyCopyWithImpl<$Res>
+    implements $WindowInput_KeyCopyWith<$Res> {
+  _$WindowInput_KeyCopyWithImpl(this._self, this._then);
+
+  final WindowInput_Key _self;
+  final $Res Function(WindowInput_Key) _then;
+
+/// Create a copy of WindowInput
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? code = null,Object? down = null,Object? modifiers = null,Object? repeat = null,Object? text = freezed,}) {
+  return _then(WindowInput_Key(
+code: null == code ? _self.code : code // ignore: cast_nullable_to_non_nullable
+as int,down: null == down ? _self.down : down // ignore: cast_nullable_to_non_nullable
+as bool,modifiers: null == modifiers ? _self.modifiers : modifiers // ignore: cast_nullable_to_non_nullable
+as WindowModifiers,repeat: null == repeat ? _self.repeat : repeat // ignore: cast_nullable_to_non_nullable
+as bool,text: freezed == text ? _self.text : text // ignore: cast_nullable_to_non_nullable
+as String?,
+  ));
+}
+
+
+}
+
+/// @nodoc
+mixin _$WindowPointer {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is WindowPointer);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'WindowPointer()';
+}
+
+
+}
+
+/// @nodoc
+class $WindowPointerCopyWith<$Res>  {
+$WindowPointerCopyWith(WindowPointer _, $Res Function(WindowPointer) __);
+}
+
+
+/// Adds pattern-matching-related methods to [WindowPointer].
+extension WindowPointerPatterns on WindowPointer {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( WindowPointer_Move value)?  move,TResult Function( WindowPointer_Down value)?  down,TResult Function( WindowPointer_Up value)?  up,TResult Function( WindowPointer_Scroll value)?  scroll,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case WindowPointer_Move() when move != null:
+return move(_that);case WindowPointer_Down() when down != null:
+return down(_that);case WindowPointer_Up() when up != null:
+return up(_that);case WindowPointer_Scroll() when scroll != null:
+return scroll(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( WindowPointer_Move value)  move,required TResult Function( WindowPointer_Down value)  down,required TResult Function( WindowPointer_Up value)  up,required TResult Function( WindowPointer_Scroll value)  scroll,}){
+final _that = this;
+switch (_that) {
+case WindowPointer_Move():
+return move(_that);case WindowPointer_Down():
+return down(_that);case WindowPointer_Up():
+return up(_that);case WindowPointer_Scroll():
+return scroll(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( WindowPointer_Move value)?  move,TResult? Function( WindowPointer_Down value)?  down,TResult? Function( WindowPointer_Up value)?  up,TResult? Function( WindowPointer_Scroll value)?  scroll,}){
+final _that = this;
+switch (_that) {
+case WindowPointer_Move() when move != null:
+return move(_that);case WindowPointer_Down() when down != null:
+return down(_that);case WindowPointer_Up() when up != null:
+return up(_that);case WindowPointer_Scroll() when scroll != null:
+return scroll(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  move,TResult Function( WindowButton button)?  down,TResult Function( WindowButton button)?  up,TResult Function( double dx,  double dy)?  scroll,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case WindowPointer_Move() when move != null:
+return move();case WindowPointer_Down() when down != null:
+return down(_that.button);case WindowPointer_Up() when up != null:
+return up(_that.button);case WindowPointer_Scroll() when scroll != null:
+return scroll(_that.dx,_that.dy);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  move,required TResult Function( WindowButton button)  down,required TResult Function( WindowButton button)  up,required TResult Function( double dx,  double dy)  scroll,}) {final _that = this;
+switch (_that) {
+case WindowPointer_Move():
+return move();case WindowPointer_Down():
+return down(_that.button);case WindowPointer_Up():
+return up(_that.button);case WindowPointer_Scroll():
+return scroll(_that.dx,_that.dy);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  move,TResult? Function( WindowButton button)?  down,TResult? Function( WindowButton button)?  up,TResult? Function( double dx,  double dy)?  scroll,}) {final _that = this;
+switch (_that) {
+case WindowPointer_Move() when move != null:
+return move();case WindowPointer_Down() when down != null:
+return down(_that.button);case WindowPointer_Up() when up != null:
+return up(_that.button);case WindowPointer_Scroll() when scroll != null:
+return scroll(_that.dx,_that.dy);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class WindowPointer_Move extends WindowPointer {
+  const WindowPointer_Move(): super._();
+  
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is WindowPointer_Move);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'WindowPointer.move()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class WindowPointer_Down extends WindowPointer {
+  const WindowPointer_Down({required this.button}): super._();
+  
+
+/// Which.
+ final  WindowButton button;
+
+/// Create a copy of WindowPointer
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$WindowPointer_DownCopyWith<WindowPointer_Down> get copyWith => _$WindowPointer_DownCopyWithImpl<WindowPointer_Down>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is WindowPointer_Down&&(identical(other.button, button) || other.button == button));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,button);
+}
+
+@override
+String toString() {
+    return 'WindowPointer.down(button: $button)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $WindowPointer_DownCopyWith<$Res> implements $WindowPointerCopyWith<$Res> {
+  factory $WindowPointer_DownCopyWith(WindowPointer_Down value, $Res Function(WindowPointer_Down) _then) = _$WindowPointer_DownCopyWithImpl;
+@useResult
+$Res call({
+ WindowButton button
+});
+
+
+
+
+}
+/// @nodoc
+class _$WindowPointer_DownCopyWithImpl<$Res>
+    implements $WindowPointer_DownCopyWith<$Res> {
+  _$WindowPointer_DownCopyWithImpl(this._self, this._then);
+
+  final WindowPointer_Down _self;
+  final $Res Function(WindowPointer_Down) _then;
+
+/// Create a copy of WindowPointer
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? button = null,}) {
+  return _then(WindowPointer_Down(
+button: null == button ? _self.button : button // ignore: cast_nullable_to_non_nullable
+as WindowButton,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class WindowPointer_Up extends WindowPointer {
+  const WindowPointer_Up({required this.button}): super._();
+  
+
+/// Which.
+ final  WindowButton button;
+
+/// Create a copy of WindowPointer
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$WindowPointer_UpCopyWith<WindowPointer_Up> get copyWith => _$WindowPointer_UpCopyWithImpl<WindowPointer_Up>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is WindowPointer_Up&&(identical(other.button, button) || other.button == button));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,button);
+}
+
+@override
+String toString() {
+    return 'WindowPointer.up(button: $button)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $WindowPointer_UpCopyWith<$Res> implements $WindowPointerCopyWith<$Res> {
+  factory $WindowPointer_UpCopyWith(WindowPointer_Up value, $Res Function(WindowPointer_Up) _then) = _$WindowPointer_UpCopyWithImpl;
+@useResult
+$Res call({
+ WindowButton button
+});
+
+
+
+
+}
+/// @nodoc
+class _$WindowPointer_UpCopyWithImpl<$Res>
+    implements $WindowPointer_UpCopyWith<$Res> {
+  _$WindowPointer_UpCopyWithImpl(this._self, this._then);
+
+  final WindowPointer_Up _self;
+  final $Res Function(WindowPointer_Up) _then;
+
+/// Create a copy of WindowPointer
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? button = null,}) {
+  return _then(WindowPointer_Up(
+button: null == button ? _self.button : button // ignore: cast_nullable_to_non_nullable
+as WindowButton,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class WindowPointer_Scroll extends WindowPointer {
+  const WindowPointer_Scroll({required this.dx, required this.dy}): super._();
+  
+
+/// Along the x axis.
+ final  double dx;
+/// Along the y axis.
+ final  double dy;
+
+/// Create a copy of WindowPointer
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$WindowPointer_ScrollCopyWith<WindowPointer_Scroll> get copyWith => _$WindowPointer_ScrollCopyWithImpl<WindowPointer_Scroll>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is WindowPointer_Scroll&&(identical(other.dx, dx) || other.dx == dx)&&(identical(other.dy, dy) || other.dy == dy));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,dx,dy);
+}
+
+@override
+String toString() {
+    return 'WindowPointer.scroll(dx: $dx, dy: $dy)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $WindowPointer_ScrollCopyWith<$Res> implements $WindowPointerCopyWith<$Res> {
+  factory $WindowPointer_ScrollCopyWith(WindowPointer_Scroll value, $Res Function(WindowPointer_Scroll) _then) = _$WindowPointer_ScrollCopyWithImpl;
+@useResult
+$Res call({
+ double dx, double dy
+});
+
+
+
+
+}
+/// @nodoc
+class _$WindowPointer_ScrollCopyWithImpl<$Res>
+    implements $WindowPointer_ScrollCopyWith<$Res> {
+  _$WindowPointer_ScrollCopyWithImpl(this._self, this._then);
+
+  final WindowPointer_Scroll _self;
+  final $Res Function(WindowPointer_Scroll) _then;
+
+/// Create a copy of WindowPointer
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? dx = null,Object? dy = null,}) {
+  return _then(WindowPointer_Scroll(
+dx: null == dx ? _self.dx : dx // ignore: cast_nullable_to_non_nullable
+as double,dy: null == dy ? _self.dy : dy // ignore: cast_nullable_to_non_nullable
+as double,
   ));
 }
 
