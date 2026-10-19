@@ -114,6 +114,14 @@ void main() {
       );
       await until(controller, () => controller.fraction == 0.25);
 
+      // Counts that run ahead of the total fill the bar to its end and no further.
+      session.transfer.advance(
+        stage: SendStage.sending,
+        bytes: 1000,
+        sent: 1200,
+      );
+      await until(controller, () => controller.fraction == 1.0);
+
       session.transfer.advance(stage: SendStage.waiting, sent: 0);
       await until(
         controller,

@@ -138,6 +138,22 @@ void main() {
     },
   );
 
+  test('the end of a request that is not waiting tells no one', () async {
+    final session = _session();
+    final controller = await _controller(session);
+    final request = sampleTransfer(id: 3);
+    await _ask(session, request);
+    var told = 0;
+    controller.addListener(() => told++);
+
+    // A request that was never heard of.
+    session.emit(const Event.transferRequestEnded(id: 9));
+    await pumpEventQueue();
+
+    expect(told, 0);
+    expect(controller.requests, [request]);
+  });
+
   test('two requests wait side by side, oldest first', () async {
     final session = _session();
     final controller = await _controller(session);
@@ -194,6 +210,11 @@ void main() {
     // Putting away what is gone already changes nothing.
     controller.dismiss(ended.last);
     expect(controller.ended, hasLength(TransfersController.keepEnded - 1));
+  });
+
+  test('the last five transfers that ended are kept', () {
+    // The architecture notes say five, and the test above counts with the constant.
+    expect(TransfersController.keepEnded, 5);
   });
 
   test('a transfer that was given up ends as that, and one that lost files says so', () async {
@@ -327,6 +348,34 @@ void main() {
         // The end of the transfer finds the screen let go already, and does not let go twice.
         session.emit(Event.transferEnded(end: sampleTransferEnd(request)));
         await tester.pump();
+        expect(screen.asked, ['keepOn', 'letTurnOff']);
+      },
+    );
+
+    testWidgets(
+      'is held for the limit again from the yes, and not only from the request',
+      (tester) async {
+        final session = _session();
+        final screen = FakeScreen();
+        final controller = TransfersController(session, screen: screen);
+        addTearDown(controller.dispose);
+        await controller.start();
+        final request = sampleTransfer();
+        session.emit(Event.transferRequested(request: request));
+        await tester.pump();
+
+        // The person takes their time and says yes just before the hold from the request runs out.
+        await tester.pump(awakeLimit - const Duration(seconds: 1));
+        controller.answer(request, accept: true);
+
+        await tester.pump(const Duration(seconds: 30));
+        expect(
+          screen.on,
+          isTrue,
+          reason: 'the limit from the request has passed',
+        );
+
+        await tester.pump(awakeLimit);
         expect(screen.asked, ['keepOn', 'letTurnOff']);
       },
     );

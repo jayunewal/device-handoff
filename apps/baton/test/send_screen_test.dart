@@ -521,6 +521,18 @@ void main() {
       expect(find.text('1.0 KB of 4.0 KB · 2 files'), findsOneWidget);
       expect(_bar(tester), 0.25);
 
+      // Files with nothing in them have no bytes to count, and the line of counts goes.
+      session.transfer.advance(
+        stage: SendStage.sending,
+        files: 2,
+        bytes: 0,
+        sent: 0,
+      );
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.text('Sending to Kitchen iPad…'), findsOneWidget);
+      expect(find.textContaining(' · 2 files'), findsNothing);
+      expect(_bar(tester), isNull);
+
       session.transfer.finish(_sent);
       await tester.pump();
 
@@ -763,6 +775,12 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
       await tester.tap(find.text('Stop'));
+      await tester.pump();
+      expect(
+        session.transfer.cancelled,
+        isTrue,
+        reason: 'the files stop at once, not when the screen has slid away',
+      );
       await tester.pumpAndSettle();
 
       expect(session.transfer.cancelled, isTrue);

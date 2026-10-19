@@ -117,6 +117,30 @@ void main() {
   );
 
   testWidgets(
+    'a screen reader reads out a request, and a transfer on its way, when they appear',
+    (tester) async {
+      final semantics = tester.ensureSemantics();
+      final (session, _) = await _show(tester);
+
+      await _ask(tester, session, sampleTransfer(id: 9));
+      expect(
+        tester.getSemantics(
+          find.text('Anna’s iPhone wants to send you 2 files'),
+        ),
+        isSemantics(isLiveRegion: true),
+      );
+
+      await tester.tap(find.text('Accept'));
+      await tester.pump();
+      expect(
+        tester.getSemantics(find.text('Receiving from Anna’s iPhone…')),
+        isSemantics(isLiveRegion: true),
+      );
+      semantics.dispose();
+    },
+  );
+
+  testWidgets(
     'on an iPhone the files go to the folder that the Files app shows',
     (tester) async {
       final (session, _) = await _show(tester, platform: TargetPlatform.iOS);
@@ -381,6 +405,9 @@ void main() {
       ),
       findsOneWidget,
     );
+    // Nothing arrived, so it does not look like something that went well.
+    expect(find.byIcon(Icons.error_outline), findsOneWidget);
+    expect(find.byIcon(Icons.check_circle_outline), findsNothing);
   });
 
   testWidgets('a device that cannot take files says why', (tester) async {

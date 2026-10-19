@@ -200,6 +200,8 @@ void main() {
       expect(fileSize(1060), '1.1 KB');
       expect(fileSize(9949), '9.9 KB');
       expect(fileSize(12345), '12 KB');
+      // Above ten a size is rounded once, to the whole unit, and not first to a tenth.
+      expect(fileSize(12460), '12 KB');
       expect(fileSize(999499), '999 KB');
       expect(fileSize(3200000), '3.2 MB');
       expect(fileSize(2000000000), '2.0 GB');
