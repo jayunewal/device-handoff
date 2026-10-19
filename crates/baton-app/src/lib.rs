@@ -12,6 +12,11 @@
 //! act on and a sentence it can show. A bridge to another language, such as the one the
 //! Flutter app uses, wraps this crate and adds nothing to what a device is allowed to do.
 //!
+//! Files go both ways. [`App::send_files`] starts a transfer and returns a [`FileSend`] to show
+//! and wait for. A device takes files only if the app gives it a folder for them
+//! ([`Options::receive_dir`]), and then each transfer is put to the person with
+//! [`Event::TransferRequested`] before a byte is kept.
+//!
 //! ```no_run
 //! use baton_app::{App, Event, Options};
 //!
@@ -48,15 +53,18 @@
 mod app;
 mod error;
 mod events;
+mod files;
 pub mod model;
 pub mod settings;
 
 pub use app::{App, Options};
 pub use error::{Error, ErrorKind};
 pub use events::{Event, Events};
+pub use files::FileSend;
 pub use model::{
-    Device, Me, Network, Offer, OfferOutcome, PairingRequest, Platform, Reach, Received,
-    ReceivedItem, Route, web_address,
+    Device, FileProgress, FilesSent, Me, Network, Offer, OfferOutcome, PairingRequest, Platform,
+    PreviewName, Reach, Received, ReceivedItem, Receiving, Route, SendStage, TransferEnd,
+    TransferRequest, TransferResult, web_address,
 };
 
 /// What the calls in this crate return.

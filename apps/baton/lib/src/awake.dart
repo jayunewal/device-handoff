@@ -8,10 +8,10 @@ import 'package:flutter/services.dart';
 /// Keeps the screen of this device on.
 ///
 /// A phone or a tablet turns its screen off, and locks, after a while without a touch, and Baton
-/// leaves that as the person set it. The one time it does not is while two devices pair: the
+/// leaves that as the person set it. It does not while two devices pair or while files go: the
 /// person is looking at the other device, and Baton on a phone works only while it is on the
-/// screen, so a screen that went off in the middle of pairing would take the pairing with it.
-/// Screens ask through an [AwakeHold], which keeps it to that.
+/// screen, so a screen that went off in the middle of pairing or of a transfer would take it
+/// along. Screens ask through an [AwakeHold], which keeps it to that.
 abstract class ScreenKeeper {
   const ScreenKeeper();
 

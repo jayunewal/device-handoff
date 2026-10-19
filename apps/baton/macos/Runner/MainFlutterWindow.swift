@@ -11,9 +11,66 @@ class MainFlutterWindow: NSWindow {
     self.setFrame(windowFrame, display: true)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
+    answerWhereReceivedFilesGo(messenger: flutterViewController.engine.binaryMessenger)
 
     super.awakeFromNib()
   }
+}
+
+/// Tells the app where the files that other devices send are put: the Downloads folder of the
+/// person. The names of the channel and of the question must be the ones in
+/// lib/src/support_folder.dart.
+private func answerWhereReceivedFilesGo(messenger: FlutterBinaryMessenger) {
+  let channel = FlutterMethodChannel(
+    name: "io.github.jayunewal.baton/folder", binaryMessenger: messenger)
+  channel.setMethodCallHandler { call, result in
+    switch call.method {
+    case "receiveFolder":
+      do {
+        let folder = try downloadsFolder().path
+        result(folder)
+      } catch {
+        result(FlutterError(code: "no_folder", message: "\(error)", details: nil))
+      }
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+}
+
+/// The Downloads folder that the person looks in. The app is sandboxed, so the home folder it is
+/// given is a folder of its own inside its container, and a Downloads folder made there is not
+/// one the person would find. The entitlement com.apple.security.files.downloads.read-write lets
+/// it use the real one, whose place is found from the user database. If that cannot be written
+/// to, for want of the entitlement, the folder the system gives the app is used instead, so that
+/// files still arrive.
+private func downloadsFolder() throws -> URL {
+  let files = FileManager.default
+  if let entry = getpwuid(getuid()), let home = entry.pointee.pw_dir {
+    let real = URL(fileURLWithPath: String(cString: home), isDirectory: true)
+      .appendingPathComponent("Downloads", isDirectory: true)
+    if canWrite(in: real) {
+      return real
+    }
+  }
+  return try files.url(
+    for: .downloadsDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+}
+
+/// Whether a file can be made in `folder`, which has to be there already.
+private func canWrite(in folder: URL) -> Bool {
+  var isFolder: ObjCBool = false
+  guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isFolder),
+    isFolder.boolValue
+  else {
+    return false
+  }
+  let probe = folder.appendingPathComponent(".baton-probe-\(UUID().uuidString)")
+  guard FileManager.default.createFile(atPath: probe.path, contents: Data()) else {
+    return false
+  }
+  try? FileManager.default.removeItem(at: probe)
+  return true
 }
 
 /// Where Baton keeps its files, inside Library/Application Support. It holds the key that makes

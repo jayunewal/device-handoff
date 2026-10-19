@@ -2,6 +2,7 @@
 
 import 'package:baton/src/backend.dart';
 import 'package:baton/src/format.dart';
+import 'package:flutter/foundation.dart' show TargetPlatform;
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -185,6 +186,141 @@ void main() {
       expect(
         visibleText('a\u0000b\u0007c\u001Bd\u007Fe\u0085f'),
         'a\uFFFDb\uFFFDc\uFFFDd\uFFFDe\uFFFDf',
+      );
+    });
+  });
+
+  group('sizes and counts of files', () {
+    test('a size is written the way the Mac and the iPhone write one', () {
+      expect(fileSize(0), '0 bytes');
+      expect(fileSize(1), '1 byte');
+      expect(fileSize(999), '999 bytes');
+      expect(fileSize(1000), '1.0 KB');
+      expect(fileSize(1049), '1.0 KB');
+      expect(fileSize(1060), '1.1 KB');
+      expect(fileSize(9949), '9.9 KB');
+      expect(fileSize(12345), '12 KB');
+      // Above ten a size is rounded once, to the whole unit, and not first to a tenth.
+      expect(fileSize(12460), '12 KB');
+      expect(fileSize(999499), '999 KB');
+      expect(fileSize(3200000), '3.2 MB');
+      expect(fileSize(2000000000), '2.0 GB');
+      expect(fileSize(31000000000), '31 GB');
+      expect(fileSize(4200000000000), '4.2 TB');
+    });
+
+    test('a size that rounds up to the next unit is written in it', () {
+      expect(fileSize(999500), '1.0 MB');
+      expect(fileSize(999999), '1.0 MB');
+      expect(fileSize(9960), '10 KB');
+      expect(fileSize(999500000), '1.0 GB');
+      // There is no unit after the terabyte.
+      expect(fileSize(1000000000000000), '1000 TB');
+    });
+
+    test(
+      'files, folders and items are counted in the singular and the plural',
+      () {
+        expect(fileCount(0), '0 files');
+        expect(fileCount(1), '1 file');
+        expect(fileCount(2), '2 files');
+        expect(folderCount(1), '1 folder');
+        expect(folderCount(3), '3 folders');
+        expect(itemCount(1), '1 item');
+        expect(itemCount(2), '2 items');
+      },
+    );
+
+    test('what a transfer holds is said in a few words', () {
+      expect(
+        describeContents(files: 1, folders: 0, bytes: 2000000),
+        '1 file, 2.0 MB',
+      );
+      expect(
+        describeContents(files: 12, folders: 2, bytes: 31000000000),
+        '12 files in 2 folders, 31 GB',
+      );
+      expect(
+        describeContents(files: 3, folders: 1, bytes: 0),
+        '3 files in 1 folder, 0 bytes',
+      );
+    });
+
+    test('every stage of a transfer that is sent has a sentence', () {
+      for (final stage in SendStage.values) {
+        expect(describeStage(stage, 'Kitchen iPad'), isNotEmpty);
+      }
+      expect(
+        describeStage(SendStage.asking, 'Kitchen iPad'),
+        'Waiting for Kitchen iPad to say yes…',
+      );
+      expect(
+        describeStage(SendStage.finishing, 'Kitchen iPad'),
+        'Kitchen iPad is putting the files in place…',
+      );
+    });
+
+    test(
+      'how a transfer that was sent ended is said with what was left out',
+      () {
+        FilesSent sent({int files = 3, int failed = 0, int leftOut = 0}) =>
+            FilesSent(
+              files: files,
+              bytes: 3200000,
+              failed: failed,
+              leftOut: leftOut,
+            );
+
+        expect(
+          describeSent(sent(files: 1), 'Kitchen iPad'),
+          'Sent 1 file (3.2 MB) to Kitchen iPad.',
+        );
+        expect(
+          describeSent(sent(), 'Kitchen iPad'),
+          'Sent 3 files (3.2 MB) to Kitchen iPad.',
+        );
+        expect(
+          describeSent(sent(failed: 1), 'Kitchen iPad'),
+          'Sent 2 of 3 files to Kitchen iPad. 1 file could not be saved there.',
+        );
+        expect(
+          describeSent(sent(failed: 3), 'Kitchen iPad'),
+          'Kitchen iPad could not keep the files.',
+        );
+        expect(
+          describeSent(sent(files: 1, failed: 1), 'Kitchen iPad'),
+          'Kitchen iPad could not keep the file.',
+        );
+        expect(
+          describeSent(sent(leftOut: 1), 'Kitchen iPad'),
+          'Sent 3 files (3.2 MB) to Kitchen iPad. 1 item in what you chose was '
+          'left out: links inside folders, files that could not be read and '
+          'files that are too large.',
+        );
+      },
+    );
+
+    test('where received files are is said for the system they are on', () {
+      expect(
+        describeReceiveFolder('/var/mobile/Documents', TargetPlatform.iOS),
+        'the Baton folder in the Files app',
+      );
+      expect(
+        describeReceiveFolder('/Users/anna/Downloads', TargetPlatform.macOS),
+        'your Downloads folder',
+      );
+      // The folder of the sandbox, which the person would not look in, is named in full.
+      expect(
+        describeReceiveFolder(
+          '/Users/anna/Library/Containers/io.github.jayunewal.baton/Data/Library/Foo',
+          TargetPlatform.macOS,
+        ),
+        'the folder '
+        '/Users/anna/Library/Containers/io.github.jayunewal.baton/Data/Library/Foo',
+      );
+      expect(
+        describeReceiveFolder('/home/anna/Downloads', TargetPlatform.linux),
+        'the folder /home/anna/Downloads',
       );
     });
   });

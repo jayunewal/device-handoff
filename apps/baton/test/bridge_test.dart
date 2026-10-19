@@ -296,6 +296,291 @@ void main() {
     },
   );
 
+  test(
+    'files are sent when the person says yes, and arrive as they were',
+    () async {
+      final received = await _tempDir('baton-bridge-received-');
+      final a = await _start(
+        await _folder(name: 'Device A'),
+        receiveDir: received,
+      );
+      final b = await _start(await _folder(name: 'Device B'));
+      expect(a.receiving(), isA<Receiving_On>());
+      expect(b.receiving(), isA<Receiving_Off>());
+      final events = _Feed(await a.events());
+      addTearDown(events.close);
+      await _pair(a, events, b);
+
+      final sending = await b.sendFiles(
+        id: a.me().id,
+        paths: await _sampleFiles(),
+      );
+
+      // The person is asked who wants to send what, and nothing is kept before they answer.
+      final request = (await events.next<Event_TransferRequested>()).request;
+      expect(request.deviceName, 'Device B');
+      expect(request.deviceId, b.me().id);
+      expect(
+        (request.items, request.files, request.folders, request.bytes),
+        (2, 3, 2, 100017),
+      );
+      expect(
+        request.preview.map(
+          (item) => (item.name, item.folder, item.files, item.bytes),
+        ),
+        [('docs', true, 2, 100005), ('hello.txt', false, 0, 12)],
+      );
+      expect(_tree(received), isEmpty, reason: 'nothing is kept before yes');
+
+      expect(a.answerTransfer(request: request.id, accept: true), isTrue);
+      expect(
+        a.answerTransfer(request: request.id, accept: true),
+        isFalse,
+        reason: 'an answer counts once',
+      );
+
+      final sent = await sending.outcome();
+      expect(
+        (sent.files, sent.bytes, sent.failed, sent.leftOut),
+        (3, 100017, 0, 0),
+      );
+      final end = (await events.next<Event_TransferEnded>()).end;
+      expect(end.request, request.id);
+      expect(
+        end.result,
+        isA<TransferResult_Received>().having(
+          (result) => result.failed,
+          'failed',
+          0,
+        ),
+      );
+      expect((end.deviceName, end.files, end.bytes), ('Device B', 3, 100017));
+      expect(_tree(received), _sampleTree());
+
+      // The sender's screen has what it needs to show a finished bar.
+      final progress = sending.progress();
+      expect(progress.stage, SendStage.over);
+      expect(
+        (progress.files, progress.bytes, progress.sent),
+        (3, 100017, 100017),
+      );
+    },
+  );
+
+  test(
+    'files the person declines are not kept, and the sender is told',
+    () async {
+      final received = await _tempDir('baton-bridge-received-');
+      final a = await _start(
+        await _folder(name: 'Device A'),
+        receiveDir: received,
+      );
+      final b = await _start(await _folder(name: 'Device B'));
+      final events = _Feed(await a.events());
+      addTearDown(events.close);
+      await _pair(a, events, b);
+
+      final sending = await b.sendFiles(
+        id: a.me().id,
+        paths: await _sampleFiles(),
+      );
+      final request = (await events.next<Event_TransferRequested>()).request;
+      expect(a.answerTransfer(request: request.id, accept: false), isTrue);
+
+      await expectLater(
+        sending.outcome(),
+        throwsA(
+          _batonError(ErrorKind.declined).having(
+            (error) => error.message,
+            'message',
+            contains('Device A did not take the files'),
+          ),
+        ),
+      );
+      expect(_tree(received), isEmpty, reason: 'a no keeps nothing');
+    },
+  );
+
+  test('a sender that gives up takes the question off the screen', () async {
+    final received = await _tempDir('baton-bridge-received-');
+    final a = await _start(
+      await _folder(name: 'Device A'),
+      receiveDir: received,
+    );
+    final b = await _start(await _folder(name: 'Device B'));
+    final events = _Feed(await a.events());
+    addTearDown(events.close);
+    await _pair(a, events, b);
+    final sending = await b.sendFiles(
+      id: a.me().id,
+      paths: await _sampleFiles(),
+    );
+    final request = (await events.next<Event_TransferRequested>()).request;
+
+    sending.cancel();
+
+    final taken = await events.next<Event_TransferRequestEnded>();
+    expect(taken.id, request.id);
+    expect(
+      a.answerTransfer(request: request.id, accept: true),
+      isFalse,
+      reason: 'a question that was taken back cannot be answered',
+    );
+    await expectLater(
+      sending.outcome(),
+      throwsA(_batonError(ErrorKind.cancelled)),
+    );
+    expect(_tree(received), isEmpty);
+  });
+
+  test('a send that is given up while it goes leaves no files', () async {
+    final received = await _tempDir('baton-bridge-received-');
+    final a = await _start(
+      await _folder(name: 'Device A'),
+      receiveDir: received,
+    );
+    final b = await _start(await _folder(name: 'Device B'));
+    final events = _Feed(await a.events());
+    addTearDown(events.close);
+    await _pair(a, events, b);
+    // Large enough that it cannot be over before the cancel is made. It is a hole in the file
+    // system, so it costs nothing to make.
+    final source = await _tempDir('baton-bridge-source-');
+    final big = await File('${source.path}/big.bin').open(mode: FileMode.write);
+    await big.truncate(64 << 20);
+    await big.close();
+    final sending = await b.sendFiles(
+      id: a.me().id,
+      paths: ['${source.path}/big.bin'],
+    );
+    final request = (await events.next<Event_TransferRequested>()).request;
+    expect(a.answerTransfer(request: request.id, accept: true), isTrue);
+
+    final limit = DateTime.now().add(_wait);
+    while (sending.progress().sent == 0) {
+      expect(
+        DateTime.now().isBefore(limit),
+        isTrue,
+        reason: 'no byte was sent',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 2));
+    }
+    expect(sending.progress().stage, SendStage.sending);
+    sending.cancel();
+
+    await expectLater(
+      sending.outcome(),
+      throwsA(_batonError(ErrorKind.cancelled)),
+    );
+    final end = (await events.next<Event_TransferEnded>()).end;
+    expect(end.request, request.id);
+    expect(end.result, isA<TransferResult_Dropped>());
+    expect(_tree(received), isEmpty, reason: 'half a file is never kept');
+  });
+
+  test('a device that takes no files says so to the sender', () async {
+    final a = await _start(await _folder(name: 'Device A'));
+    final b = await _start(await _folder(name: 'Device B'));
+    final events = _Feed(await a.events());
+    addTearDown(events.close);
+    await _pair(a, events, b);
+    expect(a.receiving(), isA<Receiving_Off>());
+
+    final sending = await b.sendFiles(
+      id: a.me().id,
+      paths: await _sampleFiles(),
+    );
+
+    await expectLater(
+      sending.outcome(),
+      throwsA(
+        _batonError(ErrorKind.declined).having(
+          (error) => error.message,
+          'message',
+          contains('Device A did not take the files'),
+        ),
+      ),
+    );
+  });
+
+  test(
+    'a folder that cannot be used leaves the device taking no files',
+    () async {
+      final nowhere = await _tempDir('baton-bridge-received-');
+      final a = await _start(
+        await _folder(name: 'Device A'),
+        receiveDir: Directory('${nowhere.path}/not-there'),
+      );
+      final b = await _start(await _folder(name: 'Device B'));
+      final events = _Feed(await a.events());
+      addTearDown(events.close);
+      await _pair(a, events, b);
+      expect(
+        a.receiving(),
+        isA<Receiving_Unusable>().having(
+          (receiving) => receiving.message,
+          'message',
+          'The folder for received files is not there.',
+        ),
+      );
+
+      final sending = await b.sendFiles(
+        id: a.me().id,
+        paths: await _sampleFiles(),
+      );
+
+      await expectLater(
+        sending.outcome(),
+        throwsA(_batonError(ErrorKind.declined)),
+      );
+      expect(
+        nowhere.listSync(),
+        isEmpty,
+        reason: 'no folder was made for the files',
+      );
+    },
+  );
+
+  test(
+    'files that cannot be sent are refused before anything is offered',
+    () async {
+      final received = await _tempDir('baton-bridge-received-');
+      final a = await _start(
+        await _folder(name: 'Device A'),
+        receiveDir: received,
+      );
+      final b = await _start(await _folder(name: 'Device B'));
+      final events = _Feed(await a.events());
+      addTearDown(events.close);
+      await _pair(a, events, b);
+      final paths = await _sampleFiles();
+
+      // A device that is not paired, nothing chosen, and something that is not there.
+      await expectLater(
+        b.sendFiles(id: '0' * 64, paths: paths),
+        throwsA(_batonError(ErrorKind.notPaired)),
+      );
+      await expectLater(
+        b.sendFiles(id: a.me().id, paths: const []),
+        throwsA(_batonError(ErrorKind.badItem)),
+      );
+      await expectLater(
+        b.sendFiles(id: a.me().id, paths: ['${received.path}/gone.txt']),
+        throwsA(_batonError(ErrorKind.badItem)),
+      );
+
+      // Nothing was offered: the next thing A hears of is not a question.
+      final sending = await b.sendFiles(id: a.me().id, paths: paths);
+      final request = (await events.next<Event_TransferRequested>()).request;
+      expect(
+        request.files,
+        3,
+        reason: 'the first question is the one that was sent',
+      );
+      sending.cancel();
+    },
+  );
+
   test('only web links are opened, and as they were checked', () {
     // What comes back is the address to open: written out in full, not as it was sent.
     for (final (sent, opened) in [
@@ -334,19 +619,72 @@ Future<Directory> _folder({required String? name}) async {
   return folder;
 }
 
-/// Starts Baton in [folder], and stops it when the test is over.
-Future<Baton> _start(Directory folder) async {
+/// Starts Baton in [folder], and stops it when the test is over. It puts the files that other
+/// devices send in [receiveDir], and takes none without one.
+Future<Baton> _start(Directory folder, {Directory? receiveDir}) async {
   final baton = await Baton.start(
     dataDir: folder.path,
     lanDiscovery: false,
     portMapping: false,
+    receiveDir: receiveDir?.path,
   );
   addTearDown(baton.stop);
   return baton;
 }
 
+/// An empty folder that is deleted when the test is over.
+Future<Directory> _tempDir(String prefix) async {
+  final folder = await Directory.systemTemp.createTemp(prefix);
+  addTearDown(() => folder.delete(recursive: true));
+  return folder;
+}
+
+/// Pairs [b] with [a], who makes the offer and hears of it on [aEvents].
+Future<void> _pair(Baton a, _Feed<Event> aEvents, Baton b) async {
+  final offer = await a.offerPairing();
+  final join = _Feed(b.joinPairing(ticket: offer.ticket));
+  addTearDown(join.close);
+  final asked = await aEvents.next<Event_PairingRequested>();
+  expect(a.answerPairing(request: asked.request.id, accept: true), isTrue);
+  await join.next<JoinProgress_Paired>();
+  await join.ended;
+}
+
+/// A file, and a folder with a file and a folder inside it, ready to be sent: 100 017 bytes in
+/// three files. The folder they are in is deleted when the test is over.
+Future<List<String>> _sampleFiles() async {
+  final source = await _tempDir('baton-bridge-source-');
+  final docs = Directory('${source.path}/docs/sub');
+  await docs.create(recursive: true);
+  await File('${source.path}/hello.txt').writeAsString('hello from B');
+  await File('${source.path}/docs/a.txt').writeAsString('first');
+  await File('${docs.path}/b.bin').writeAsBytes(List.filled(100000, 7));
+  return ['${source.path}/hello.txt', '${source.path}/docs'];
+}
+
+/// What [_sampleFiles] comes to in the folder that receives it.
+Map<String, List<int>?> _sampleTree() => {
+  'docs': null,
+  'docs/a.txt': 'first'.codeUnits,
+  'docs/sub': null,
+  'docs/sub/b.bin': List.filled(100000, 7),
+  'hello.txt': 'hello from B'.codeUnits,
+};
+
+/// What is in [root], by path: the bytes of a file, and `null` for a folder. The folders that
+/// Baton makes for the files that are on their way are left out.
+Map<String, List<int>?> _tree(Directory root) {
+  final found = <String, List<int>?>{};
+  for (final entry in root.listSync(recursive: true)) {
+    final path = entry.path.substring(root.path.length + 1);
+    if (path.startsWith('.baton-incoming-')) continue;
+    found[path] = entry is File ? entry.readAsBytesSync() : null;
+  }
+  return found;
+}
+
 /// A [BatonError] of [kind].
-Matcher _batonError(ErrorKind kind) =>
+TypeMatcher<BatonError> _batonError(ErrorKind kind) =>
     isA<BatonError>().having((error) => error.kind, 'kind', kind);
 
 /// What a stream has said so far, so that a test can ask for the next thing it cares about

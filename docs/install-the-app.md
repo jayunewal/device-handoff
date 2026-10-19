@@ -2,7 +2,7 @@
 
 Baton is pre-alpha and is not in the App Store. You build the app on your Mac, and put it on an iPhone or iPad with a cable. A free Apple ID is enough: you do not need to join the Apple Developer Program. The price of the free Apple ID is that an app you install this way stops opening after seven days, and you install it again with the same command ([Every seven days](#every-seven-days)).
 
-This version asks for a name for the device, shows the devices paired with it, pairs two devices (one shows a QR code and the other scans it, or has it pasted in; [Pair two devices](#pair-two-devices)), and sends links and text between them ([Send a link or some text](#send-a-link-or-some-text)). Files are not in the app yet, and neither is a Baton that receives while the app is closed; the [`baton` program](try-it.md) is the one that can send the clipboard and run in the background of a computer.
+This version asks for a name for the device, shows the devices paired with it, pairs two devices (one shows a QR code and the other scans it, or has it pasted in; [Pair two devices](#pair-two-devices)), sends links and text between them ([Send a link or some text](#send-a-link-or-some-text)), and sends files and folders ([Send files](#send-files)). A Baton that receives while the app is closed is not built; the [`baton` program](try-it.md) is the one that can send the clipboard and run in the background of a computer.
 
 Everything below is typed in Terminal, which is a zsh shell on a Mac. Each command block can be pasted whole.
 
@@ -172,7 +172,29 @@ Baton opens only web addresses, the ones that start with `http://` or `https://`
 
 In this version a device receives only while Baton is running on it. On an iPhone or iPad that means open on the screen: a locked phone, or one that has Baton in the background, cannot be reached, and a send to it ends after a while with a message that says so. Receiving on a locked phone needs a push notification, which is not built yet.
 
-Until then, keep Baton open and the phone in your hand when you send to it, or lengthen **Auto-Lock** while you try Baton (**Settings**, **Display & Brightness**, **Auto-Lock**) and set it back afterwards. If a send to a phone keeps ending with **Could not reach**, check **Low Power Mode** first: it sets Auto-Lock to 30 seconds. Baton keeps the screen on only while two devices pair (see **Pair two devices**). At any other time Auto-Lock works as you set it, because a phone that never locks is the opposite of what Baton is for.
+Until then, keep Baton open and the phone in your hand when you send to it, or lengthen **Auto-Lock** while you try Baton (**Settings**, **Display & Brightness**, **Auto-Lock**) and set it back afterwards. If a send to a phone keeps ending with **Could not reach**, check **Low Power Mode** first: it sets Auto-Lock to 30 seconds. Baton keeps the screen on only while two devices pair (see **Pair two devices**) and while files go (see **Send files**). At any other time Auto-Lock works as you set it, because a phone that never locks is the opposite of what Baton is for.
+
+## Send files
+
+You need two paired devices, with Baton open on both. They should be on the same Wi-Fi network, as for a link.
+
+1. On the device you send from, open the **Send to** screen of the other device, as for a link. Under **Files**, tap **Choose files** and pick them in the dialog that the system opens. On a Mac, **Choose a folder** sends a folder with everything in it. An iPhone or an iPad chooses files and not folders.
+2. The other device asks first. A card at the bottom of its screen says who wants to send what: how many files and how big, and the first names. Nothing is kept until the person at that device taps **Accept**, and they have two minutes. **Decline** keeps nothing, and the device you send from says that it was not taken. A phone that shows the card keeps its screen on for as long as it takes someone to answer, up to five minutes.
+3. While the files go, the device you send from shows a bar and what Baton is doing, with **Stop sending** to give up. It keeps the screen of a phone on until the transfer ends, and lets Auto-Lock work again after that. If you leave the screen while files go, Baton asks first, because leaving gives the transfer up.
+4. When the transfer is over, Baton says how many files arrived, and the device that took them shows a card with where they are. Files are put in place only when all of them have arrived and have been checked, so what you find is whole, and a name that is already taken is never replaced: `notes.txt` arrives as `notes 2.txt`.
+
+Where the files go:
+
+- **A Mac:** your **Downloads** folder. The first time, macOS may ask whether Baton may use it. Say yes.
+- **An iPhone or an iPad:** the **Baton** folder in the **Files** app, under **On My iPhone** or **On My iPad**.
+
+What to know in this version:
+
+- A phone takes files only while Baton is open on its screen, as for links. The device that sends to it needs it to say yes within two minutes.
+- The device that takes files shows no bar. It says that files are coming and keeps its screen on for up to five minutes without news, so a very large transfer to a phone can outlast that. Keep touching the phone if you send something big.
+- Links inside folders, files that cannot be read and files that are too large are left out. Baton says how many after it has sent the rest.
+- On an iPhone or an iPad the dialog copies what you choose into the app's temporary space before it is sent. The copy stays there until iOS clears it, so a very large file takes room for a second copy for some time after it has gone.
+- If Baton is closed on the device that sends while files go, nothing is kept of that transfer. The device that takes the files lists it until it gives up waiting, which can take up to an hour, and a device that has left two transfers like that is turned away until they give up or Baton is opened again on the device that takes the files. Stopping a transfer with **Stop sending** does not do this: it tells the other device at once.
 
 ## Every seven days
 

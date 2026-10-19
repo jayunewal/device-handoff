@@ -27,7 +27,7 @@ Done when: two machines on the same Wi-Fi pair with `baton`, a link sent from on
 
 Flutter apps for macOS, Windows, Android, iOS and iPadOS that wrap the core. QR pairing, a device list, sending and receiving links, clipboard and files. Tray icon and notifications on desktop. The apps register the `baton1:` URL scheme, which pairing tickets already start with, so scanning a ticket's QR code with the phone's own camera opens Baton on the pairing screen. The first apps are for iPhone, iPad and Mac, installed from Xcode with a free Apple ID. They are written against `baton-app` (see [architecture.md](architecture.md#the-app-layer)).
 
-**Order of work.** Pairing, sending links and text, and the inbox are in the apps. File and folder transfer between a Mac and an iPhone or iPad comes next, with its screens, then window streaming from a Mac to an iPhone or iPad with control from the phone (milestone 5). The Android app waits until both work.
+**Order of work.** Pairing, sending links and text, the inbox, and sending and taking files and folders between a Mac and an iPhone or iPad (the person at the other end is asked first) are in the apps. Window streaming from a Mac to an iPhone or iPad with control from the phone comes next (milestone 5). The Android app waits until both work.
 
 ## Milestone 3: tabs and sharing
 

@@ -27,6 +27,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   CrossPlatformFinalizerArg get rust_arc_decrement_strong_count_BatonPtr => wire
       ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBatonPtr;
 
+  CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_FileSendPtr => wire
+      ._rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSendPtr;
+
   @protected
   AnyhowException dco_decode_AnyhowException(dynamic raw);
 
@@ -37,14 +41,32 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  FileSend
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSend(
+    dynamic raw,
+  );
+
+  @protected
   Baton
   dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBaton(
     dynamic raw,
   );
 
   @protected
+  FileSend
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSend(
+    dynamic raw,
+  );
+
+  @protected
   Baton
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBaton(
+    dynamic raw,
+  );
+
+  @protected
+  FileSend
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSend(
     dynamic raw,
   );
 
@@ -87,6 +109,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Received dco_decode_box_autoadd_received(dynamic raw);
 
   @protected
+  TransferEnd dco_decode_box_autoadd_transfer_end(dynamic raw);
+
+  @protected
+  TransferRequest dco_decode_box_autoadd_transfer_request(dynamic raw);
+
+  @protected
   Device dco_decode_device(dynamic raw);
 
   @protected
@@ -94,6 +122,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Event dco_decode_event(dynamic raw);
+
+  @protected
+  FileProgress dco_decode_file_progress(dynamic raw);
+
+  @protected
+  FilesSent dco_decode_files_sent(dynamic raw);
 
   @protected
   int dco_decode_i_32(dynamic raw);
@@ -109,6 +143,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<Device> dco_decode_list_device(dynamic raw);
+
+  @protected
+  List<PreviewName> dco_decode_list_preview_name(dynamic raw);
 
   @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
@@ -144,6 +181,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Platform dco_decode_platform(dynamic raw);
 
   @protected
+  PreviewName dco_decode_preview_name(dynamic raw);
+
+  @protected
   Reach dco_decode_reach(dynamic raw);
 
   @protected
@@ -153,7 +193,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ReceivedItem dco_decode_received_item(dynamic raw);
 
   @protected
+  Receiving dco_decode_receiving(dynamic raw);
+
+  @protected
   Route dco_decode_route(dynamic raw);
+
+  @protected
+  SendStage dco_decode_send_stage(dynamic raw);
+
+  @protected
+  TransferEnd dco_decode_transfer_end(dynamic raw);
+
+  @protected
+  TransferRequest dco_decode_transfer_request(dynamic raw);
+
+  @protected
+  TransferResult dco_decode_transfer_result(dynamic raw);
 
   @protected
   int dco_decode_u_32(dynamic raw);
@@ -177,14 +232,32 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  FileSend
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSend(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   Baton
   sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBaton(
     SseDeserializer deserializer,
   );
 
   @protected
+  FileSend
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSend(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   Baton
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBaton(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  FileSend
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSend(
     SseDeserializer deserializer,
   );
 
@@ -233,6 +306,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Received sse_decode_box_autoadd_received(SseDeserializer deserializer);
 
   @protected
+  TransferEnd sse_decode_box_autoadd_transfer_end(SseDeserializer deserializer);
+
+  @protected
+  TransferRequest sse_decode_box_autoadd_transfer_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   Device sse_decode_device(SseDeserializer deserializer);
 
   @protected
@@ -240,6 +321,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   Event sse_decode_event(SseDeserializer deserializer);
+
+  @protected
+  FileProgress sse_decode_file_progress(SseDeserializer deserializer);
+
+  @protected
+  FilesSent sse_decode_files_sent(SseDeserializer deserializer);
 
   @protected
   int sse_decode_i_32(SseDeserializer deserializer);
@@ -255,6 +342,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<Device> sse_decode_list_device(SseDeserializer deserializer);
+
+  @protected
+  List<PreviewName> sse_decode_list_preview_name(SseDeserializer deserializer);
 
   @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
@@ -290,6 +380,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Platform sse_decode_platform(SseDeserializer deserializer);
 
   @protected
+  PreviewName sse_decode_preview_name(SseDeserializer deserializer);
+
+  @protected
   Reach sse_decode_reach(SseDeserializer deserializer);
 
   @protected
@@ -299,7 +392,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   ReceivedItem sse_decode_received_item(SseDeserializer deserializer);
 
   @protected
+  Receiving sse_decode_receiving(SseDeserializer deserializer);
+
+  @protected
   Route sse_decode_route(SseDeserializer deserializer);
+
+  @protected
+  SendStage sse_decode_send_stage(SseDeserializer deserializer);
+
+  @protected
+  TransferEnd sse_decode_transfer_end(SseDeserializer deserializer);
+
+  @protected
+  TransferRequest sse_decode_transfer_request(SseDeserializer deserializer);
+
+  @protected
+  TransferResult sse_decode_transfer_result(SseDeserializer deserializer);
 
   @protected
   int sse_decode_u_32(SseDeserializer deserializer);
@@ -328,6 +436,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSend(
+    FileSend self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBaton(
     Baton self,
     SseSerializer serializer,
@@ -335,8 +450,22 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSend(
+    FileSend self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBaton(
     Baton self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSend(
+    FileSend self,
     SseSerializer serializer,
   );
 
@@ -395,6 +524,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_box_autoadd_received(Received self, SseSerializer serializer);
 
   @protected
+  void sse_encode_box_autoadd_transfer_end(
+    TransferEnd self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_transfer_request(
+    TransferRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_device(Device self, SseSerializer serializer);
 
   @protected
@@ -402,6 +543,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_event(Event self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_file_progress(FileProgress self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_files_sent(FilesSent self, SseSerializer serializer);
 
   @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
@@ -417,6 +564,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_device(List<Device> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_preview_name(
+    List<PreviewName> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_prim_u_8_strict(
@@ -461,6 +614,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_platform(Platform self, SseSerializer serializer);
 
   @protected
+  void sse_encode_preview_name(PreviewName self, SseSerializer serializer);
+
+  @protected
   void sse_encode_reach(Reach self, SseSerializer serializer);
 
   @protected
@@ -470,7 +626,28 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_received_item(ReceivedItem self, SseSerializer serializer);
 
   @protected
+  void sse_encode_receiving(Receiving self, SseSerializer serializer);
+
+  @protected
   void sse_encode_route(Route self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_send_stage(SendStage self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_transfer_end(TransferEnd self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_transfer_request(
+    TransferRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_transfer_result(
+    TransferResult self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_u_32(int self, SseSerializer serializer);
@@ -531,5 +708,39 @@ class RustLibWire implements BaseWire {
       );
   late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBaton =
       _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBatonPtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSend(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSend(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSendPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_baton_rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSend',
+      );
+  late final _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSend =
+      _rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSendPtr
+          .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSend(
+    ffi.Pointer<ffi.Void> ptr,
+  ) {
+    return _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSend(
+      ptr,
+    );
+  }
+
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSendPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Pointer<ffi.Void>)>>(
+        'frbgen_baton_rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSend',
+      );
+  late final _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSend =
+      _rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerFileSendPtr
           .asFunction<void Function(ffi.Pointer<ffi.Void>)>();
 }

@@ -37,8 +37,10 @@ Future<Directory> deviceFolder() async {
 }
 
 /// The app's way of reaching the Rust library, for the library built for this computer.
-RustBackend backendIn(Directory folder) => RustBackend(
+/// [receiveDir] is the folder that the files other devices send are put in.
+RustBackend backendIn(Directory folder, {Directory? receiveDir}) => RustBackend(
   dataDir: folder.path,
+  receiveDir: receiveDir?.path,
   library: () => ExternalLibrary.open(libraryPath()),
 );
 

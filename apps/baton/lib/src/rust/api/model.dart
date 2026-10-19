@@ -10,7 +10,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'model.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// A device that is paired with this one.
 class Device {
@@ -98,9 +98,113 @@ sealed class Event with _$Event {
     required OfferOutcome outcome,
   }) = Event_OfferEnded;
 
+  /// A device wants to send files. Show what it offers, with who is asking, and answer
+  /// with `Baton.answerTransfer`: the person has two minutes, and no answer is a no.
+  const factory Event.transferRequested({
+    /// The request.
+    required TransferRequest request,
+  }) = Event_TransferRequested;
+
+  /// A request for files no longer needs an answer: the other device gave up, was
+  /// unpaired, or the time ran out. Take the question off the screen.
+  const factory Event.transferRequestEnded({
+    /// The `TransferRequest.id` that ended.
+    required PlatformInt64 id,
+  }) = Event_TransferRequestEnded;
+
+  /// A transfer that the person said yes to has ended. The files that arrived are in the
+  /// folder already.
+  const factory Event.transferEnded({
+    /// How it ended.
+    required TransferEnd end,
+  }) = Event_TransferEnded;
+
   /// Events were missed because they came faster than they were read. Read the devices and
   /// the inbox again.
   const factory Event.resync() = Event_Resync;
+}
+
+/// How far a transfer that is being sent has got.
+class FileProgress {
+  /// What the transfer is doing now.
+  final SendStage stage;
+
+  /// The attempt that is going, from 1.
+  final int attempt;
+
+  /// How many files the transfer holds.
+  final int files;
+
+  /// How many bytes they add up to.
+  final PlatformInt64 bytes;
+
+  /// How many bytes have gone out in this attempt. An attempt that is tried again starts
+  /// from 0, because it sends everything again.
+  final PlatformInt64 sent;
+
+  const FileProgress({
+    required this.stage,
+    required this.attempt,
+    required this.files,
+    required this.bytes,
+    required this.sent,
+  });
+
+  @override
+  int get hashCode =>
+      stage.hashCode ^
+      attempt.hashCode ^
+      files.hashCode ^
+      bytes.hashCode ^
+      sent.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is FileProgress &&
+          runtimeType == other.runtimeType &&
+          stage == other.stage &&
+          attempt == other.attempt &&
+          files == other.files &&
+          bytes == other.bytes &&
+          sent == other.sent;
+}
+
+/// A transfer that the other device answered for.
+class FilesSent {
+  /// How many files the transfer held.
+  final int files;
+
+  /// How many bytes they add up to.
+  final PlatformInt64 bytes;
+
+  /// How many of the files are not in place on the other device. The others are.
+  final int failed;
+
+  /// How many things in what was chosen were left out and not offered at all: links inside
+  /// a folder, files that could not be read, and the like.
+  final int leftOut;
+
+  const FilesSent({
+    required this.files,
+    required this.bytes,
+    required this.failed,
+    required this.leftOut,
+  });
+
+  @override
+  int get hashCode =>
+      files.hashCode ^ bytes.hashCode ^ failed.hashCode ^ leftOut.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is FilesSent &&
+          runtimeType == other.runtimeType &&
+          files == other.files &&
+          bytes == other.bytes &&
+          failed == other.failed &&
+          leftOut == other.leftOut;
 }
 
 @freezed
@@ -327,6 +431,42 @@ enum Platform {
   other,
 }
 
+/// One of the files and folders that were chosen to be sent.
+class PreviewName {
+  /// The name, cleaned to be safe to show.
+  final String name;
+
+  /// Whether it is a folder.
+  final bool folder;
+
+  /// For a folder, how many files are in it, in every folder inside it. 0 for a file.
+  final int files;
+
+  /// The size of the file, or of all the files in the folder added up.
+  final PlatformInt64 bytes;
+
+  const PreviewName({
+    required this.name,
+    required this.folder,
+    required this.files,
+    required this.bytes,
+  });
+
+  @override
+  int get hashCode =>
+      name.hashCode ^ folder.hashCode ^ files.hashCode ^ bytes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PreviewName &&
+          runtimeType == other.runtimeType &&
+          name == other.name &&
+          folder == other.folder &&
+          files == other.files &&
+          bytes == other.bytes;
+}
+
 /// The answer to a ping: the device is there, and this is how.
 class Reach {
   /// The round trip time, in milliseconds.
@@ -415,6 +555,23 @@ sealed class ReceivedItem with _$ReceivedItem {
   }) = ReceivedItem_Text;
 }
 
+@freezed
+sealed class Receiving with _$Receiving {
+  const Receiving._();
+
+  /// The app gave no folder for files, so this device takes none.
+  const factory Receiving.off() = Receiving_Off;
+
+  /// Files are taken, after the person says yes to each transfer.
+  const factory Receiving.on_() = Receiving_On;
+
+  /// The app gave a folder, and Baton cannot use it, so this device takes no files.
+  const factory Receiving.unusable({
+    /// One sentence that says why.
+    required String message,
+  }) = Receiving_Unusable;
+}
+
 /// How traffic to a device gets there.
 enum Route {
   /// Directly over the local network.
@@ -428,4 +585,168 @@ enum Route {
 
   /// Not known yet.
   unknown,
+}
+
+/// What a transfer that is being sent is doing.
+enum SendStage {
+  /// Making a connection to the other device.
+  connecting,
+
+  /// Waiting for the answer to the offer. A person may be deciding.
+  asking,
+
+  /// The files are going out.
+  sending,
+
+  /// Everything is sent, and the other device is putting it in place.
+  finishing,
+
+  /// The connection failed or the other device stalled, and Baton waits a moment before it
+  /// tries again.
+  waiting,
+
+  /// The transfer is over, whichever way it ended.
+  over,
+}
+
+/// How a transfer that this device took has ended.
+class TransferEnd {
+  /// The `TransferRequest.id` of the transfer.
+  final PlatformInt64 request;
+
+  /// The id of the device that sent it.
+  final String deviceId;
+
+  /// The name this device shows for it.
+  final String deviceName;
+
+  /// How many files the transfer held.
+  final int files;
+
+  /// How many bytes they add up to.
+  final PlatformInt64 bytes;
+
+  /// The first of the items that were offered, as the request showed them.
+  final List<PreviewName> preview;
+
+  /// How it ended.
+  final TransferResult result;
+
+  const TransferEnd({
+    required this.request,
+    required this.deviceId,
+    required this.deviceName,
+    required this.files,
+    required this.bytes,
+    required this.preview,
+    required this.result,
+  });
+
+  @override
+  int get hashCode =>
+      request.hashCode ^
+      deviceId.hashCode ^
+      deviceName.hashCode ^
+      files.hashCode ^
+      bytes.hashCode ^
+      preview.hashCode ^
+      result.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TransferEnd &&
+          runtimeType == other.runtimeType &&
+          request == other.request &&
+          deviceId == other.deviceId &&
+          deviceName == other.deviceName &&
+          files == other.files &&
+          bytes == other.bytes &&
+          preview == other.preview &&
+          result == other.result;
+}
+
+/// A device asking to send files, for the person to answer.
+///
+/// Show who is asking and what is offered, and answer with `Baton.answerTransfer`. The names
+/// were written by the other device. They are cleaned to be safe to show, and they say what
+/// the person is asked to take, not what the files will be called here: a name that is taken
+/// in the folder gets a number.
+class TransferRequest {
+  /// Names this request when answering it with `Baton.answerTransfer`.
+  final PlatformInt64 id;
+
+  /// The id of the device asking.
+  final String deviceId;
+
+  /// The name this device shows for it.
+  final String deviceName;
+
+  /// How many files and folders were chosen to be sent: the items that are not inside
+  /// another one.
+  final int items;
+
+  /// How many files there are in all, in every folder.
+  final int files;
+
+  /// How many folders there are in all, in every folder.
+  final int folders;
+
+  /// How many bytes the files add up to.
+  final PlatformInt64 bytes;
+
+  /// The first of the items, in order. It holds fewer than `items` when there are many.
+  final List<PreviewName> preview;
+
+  const TransferRequest({
+    required this.id,
+    required this.deviceId,
+    required this.deviceName,
+    required this.items,
+    required this.files,
+    required this.folders,
+    required this.bytes,
+    required this.preview,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      deviceId.hashCode ^
+      deviceName.hashCode ^
+      items.hashCode ^
+      files.hashCode ^
+      folders.hashCode ^
+      bytes.hashCode ^
+      preview.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TransferRequest &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          deviceId == other.deviceId &&
+          deviceName == other.deviceName &&
+          items == other.items &&
+          files == other.files &&
+          folders == other.folders &&
+          bytes == other.bytes &&
+          preview == other.preview;
+}
+
+@freezed
+sealed class TransferResult with _$TransferResult {
+  const TransferResult._();
+
+  /// The sender is done. Every file is in the folder except `failed` of them, and those are
+  /// not there at all, never half of one.
+  const factory TransferResult.received({
+    /// How many files did not arrive.
+    required int failed,
+  }) = TransferResult_Received;
+
+  /// The transfer was given up, and nothing of it is kept: the sender stopped, the device
+  /// was unpaired, or the sender did not come back.
+  const factory TransferResult.dropped() = TransferResult_Dropped;
 }
