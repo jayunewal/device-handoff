@@ -215,8 +215,20 @@ void main() {
         reason: 'the plugin says: $status',
       );
       expect(abilities.canShare, canShare, reason: 'the plugin says: $status');
-      // A window is looked at in this version, and not steered.
-      expect(abilities.canControl, isFalse);
+      // Whether a window can be steered depends on the Mac: macOS 15.2 or later, and the person
+      // has let Baton post input events. The Mac of a person has not until they do, and a machine
+      // that runs tests may have given its tools the right to drive the screen, so the test cannot
+      // say yes or no. The library and the plugin's answer to the question of the app have to
+      // agree, though, and a device that cannot share a window cannot steer one.
+      final access = await _controlAccess();
+      expect(
+        abilities.canControl,
+        access == 'allowed',
+        reason: 'the plugin says: $access',
+      );
+      if (!canShare) {
+        expect(access, 'unavailable');
+      }
     },
     skip:
         defaultTargetPlatform != TargetPlatform.iOS &&
@@ -503,6 +515,14 @@ int _macOsMajorVersion() {
 Future<Map<String, int>> _streamStatus() async {
   const channel = MethodChannel('io.github.jayunewal.baton/stream');
   return await channel.invokeMapMethod<String, int>('status') ?? {};
+}
+
+/// What the plugin answers to the question whether this device lets Baton steer the windows it
+/// shares: "allowed", "needed" (the person has not let it yet) or "unavailable"
+/// (BatonStreamPlugin.swift).
+Future<String?> _controlAccess() async {
+  const channel = MethodChannel('io.github.jayunewal.baton/stream');
+  return channel.invokeMethod<String>('controlAccess');
 }
 
 /// What there is to say about the app and its screen when a wait runs out, for the log: a
