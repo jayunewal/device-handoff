@@ -5,6 +5,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../backend.dart';
+import '../control_access.dart';
 import '../controller.dart';
 import '../file_chooser.dart';
 import '../format.dart';
@@ -22,6 +23,7 @@ class DevicesScreen extends StatefulWidget {
     this.scanner = cameraScanner,
     this.chooser = const SystemFileChooser(),
     this.onShareWindow,
+    this.controlAccess = const PlatformControlAccess(),
     super.key,
   });
 
@@ -36,9 +38,14 @@ class DevicesScreen extends StatefulWidget {
   /// Lets the person choose files and folders to send. Tests give it one of their own.
   final FileChooser chooser;
 
-  /// Starts sharing a window with a device, or `null` on a device that does not share windows,
-  /// which then offers no button for it.
-  final void Function(Device device)? onShareWindow;
+  /// Starts sharing a window with a device, to be looked at or, with [control], to be controlled
+  /// as well, or `null` on a device that does not share windows, which then offers no button for
+  /// it.
+  final void Function(Device device, {required bool control})? onShareWindow;
+
+  /// What the system says about letting another device control a window of this one. Tests give
+  /// it one of their own.
+  final ControlAccessKeeper controlAccess;
 
   @override
   State<DevicesScreen> createState() => _DevicesScreenState();
@@ -47,19 +54,72 @@ class DevicesScreen extends StatefulWidget {
 /// What the menu at the top of the screen offers.
 enum _ScreenAction { diagnostics }
 
-class _DevicesScreenState extends State<DevicesScreen> {
+class _DevicesScreenState extends State<DevicesScreen>
+    with WidgetsBindingObserver {
   late final DevicesController _controller = DevicesController(widget.session);
+
+  /// What the system says about controlling windows of this device. A device that shares no
+  /// window is not asked.
+  ControlAccess _access = ControlAccess.unavailable;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     unawaited(_controller.start());
+    unawaited(_askAccess());
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _controller.dispose();
     super.dispose();
+  }
+
+  /// The person may have said yes in the settings of the system, which they leave the app for.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) unawaited(_askAccess());
+  }
+
+  Future<void> _askAccess() async {
+    if (widget.onShareWindow == null) return;
+    final access = await widget.controlAccess.state();
+    if (mounted && access != _access) setState(() => _access = access);
+  }
+
+  /// Shares a window with [device]. A window to be controlled needs the consent of the system,
+  /// which is asked about now: it may have been given or taken back since the screen was shown.
+  Future<void> _share(Device device, {required bool control}) async {
+    final share = widget.onShareWindow;
+    if (share == null) return;
+    if (!control) {
+      share(device, control: false);
+      return;
+    }
+    final access = await widget.controlAccess.state();
+    if (!mounted) return;
+    switch (access) {
+      case ControlAccess.allowed:
+        share(device, control: true);
+      case ControlAccess.needed:
+        await widget.controlAccess.request();
+        if (!mounted) return;
+        _tell(
+          'To let ${visibleText(device.name)} control a window, allow Baton to '
+          'control this computer in System Settings, under Privacy & Security, '
+          'Accessibility. Then share the window again.',
+        );
+      case ControlAccess.unavailable:
+        _tell('Controlling a window needs macOS 15.2 or later.');
+    }
+  }
+
+  void _tell(String sentence) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(sentence)));
   }
 
   void _add() {
@@ -159,7 +219,8 @@ class _DevicesScreenState extends State<DevicesScreen> {
               controller: _controller,
               now: widget.now(),
               onSend: _send,
-              onShareWindow: widget.onShareWindow,
+              onShareWindow: widget.onShareWindow == null ? null : _share,
+              canControl: _access != ControlAccess.unavailable,
               onForget: _forget,
             ),
           ),
@@ -175,13 +236,18 @@ class _Devices extends StatelessWidget {
     required this.now,
     required this.onSend,
     required this.onShareWindow,
+    required this.canControl,
     required this.onForget,
   });
 
   final DevicesController controller;
   final DateTime now;
   final void Function(Device device) onSend;
-  final void Function(Device device)? onShareWindow;
+  final void Function(Device device, {required bool control})? onShareWindow;
+
+  /// Whether a window can be shared to be controlled, now or after the person has said yes to
+  /// the system.
+  final bool canControl;
   final void Function(Device device) onForget;
 
   @override
@@ -222,6 +288,7 @@ class _Devices extends StatelessWidget {
               now: now,
               onSend: onSend,
               onShareWindow: onShareWindow,
+              canControl: canControl,
               onForget: onForget,
             ),
         ],
@@ -337,13 +404,15 @@ class _DeviceTile extends StatelessWidget {
     required this.now,
     required this.onSend,
     required this.onShareWindow,
+    required this.canControl,
     required this.onForget,
   });
 
   final Device device;
   final DateTime now;
   final void Function(Device device) onSend;
-  final void Function(Device device)? onShareWindow;
+  final void Function(Device device, {required bool control})? onShareWindow;
+  final bool canControl;
   final void Function(Device device) onForget;
 
   @override
@@ -364,11 +433,25 @@ class _DeviceTile extends StatelessWidget {
               icon: const Icon(Icons.send_outlined),
               onPressed: () => onSend(device),
             ),
-            if (onShareWindow != null)
+            if (onShareWindow != null && canControl)
+              PopupMenuButton<bool>(
+                tooltip: 'Share a window or screen with ${device.name}',
+                icon: const Icon(Icons.screen_share_outlined),
+                onSelected: (control) =>
+                    onShareWindow!(device, control: control),
+                itemBuilder: (context) => const [
+                  PopupMenuItem(value: false, child: Text('Share to look at')),
+                  PopupMenuItem(
+                    value: true,
+                    child: Text('Share a window to look at and control'),
+                  ),
+                ],
+              )
+            else if (onShareWindow != null)
               IconButton(
                 tooltip: 'Share a window or screen with ${device.name}',
                 icon: const Icon(Icons.screen_share_outlined),
-                onPressed: () => onShareWindow!(device),
+                onPressed: () => onShareWindow!(device, control: false),
               ),
             PopupMenuButton<_DeviceAction>(
               tooltip: 'More about ${device.name}',

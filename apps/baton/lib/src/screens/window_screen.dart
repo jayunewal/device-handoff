@@ -6,16 +6,20 @@ import 'package:flutter/material.dart';
 
 import '../awake.dart';
 import '../backend.dart';
+import '../control_keyboard.dart';
 import '../format.dart';
+import '../window_control.dart';
 import '../windows_controller.dart';
 import 'windows_panel.dart';
 
 /// A window of another device, drawn live. The picture comes from the platform: the session gives
 /// the number of a texture, and the platform draws into it as the pictures arrive.
 ///
-/// The window is only looked at, and leaving the screen ends it, after asking: it would have to be
-/// shared again. A window that ends by itself leaves the screen in place and says how, so that the
-/// person is not left wondering what happened.
+/// The window is looked at, and zoomed with two fingers. If the other device let this one control
+/// it, the person can turn control on: their fingers and keys then act on the window, and the
+/// picture is not zoomed until they turn it off. Leaving the screen ends the window, after
+/// asking: it would have to be shared again. A window that ends by itself leaves the screen in
+/// place and says how, so that the person is not left wondering what happened.
 ///
 /// The screen of a phone stays on for as long as the window shows. Nobody touches it while a
 /// window is watched, so the hold is renewed every [renewEvery] and not left to run out.
@@ -45,6 +49,17 @@ class WindowScreen extends StatefulWidget {
 
 class _WindowScreenState extends State<WindowScreen> {
   late final AwakeHold _awake = AwakeHold(widget.screen);
+  late final WindowControl _control = WindowControl(
+    windows: widget.controller,
+    session: widget.session,
+    pictureSize: _pictureSize,
+  );
+  final FocusNode _keyboard = FocusNode(
+    debugLabel: 'The keyboard for the window',
+  );
+
+  /// Names the picture, to ask how large it is.
+  final GlobalKey _picture = GlobalKey();
   Timer? _renew;
 
   bool get _running =>
@@ -60,6 +75,8 @@ class _WindowScreenState extends State<WindowScreen> {
   @override
   void dispose() {
     widget.controller.removeListener(_changed);
+    _control.dispose();
+    _keyboard.dispose();
     _letGo();
     super.dispose();
   }
@@ -75,9 +92,35 @@ class _WindowScreenState extends State<WindowScreen> {
     _awake.release();
   }
 
-  /// The window ended, so the screen can turn off again.
+  /// The window ended, so the screen can turn off again, and nothing is controlled.
   void _changed() {
-    if (!_running) _letGo();
+    if (_running) return;
+    _setControl(false);
+    _letGo();
+  }
+
+  /// How large the picture is on the screen, or `null` before it is laid out.
+  Size? _pictureSize() {
+    final box = _picture.currentContext?.findRenderObject();
+    if (box is! RenderBox || !box.hasSize || box.size.isEmpty) return null;
+    return box.size;
+  }
+
+  void _setControl(bool on) {
+    if (on) {
+      _control.turnOn();
+    } else {
+      _keyboard.unfocus();
+      _control.turnOff();
+    }
+  }
+
+  void _toggleKeyboard() {
+    if (_keyboard.hasFocus) {
+      _keyboard.unfocus();
+    } else {
+      _keyboard.requestFocus();
+    }
   }
 
   /// Asks before the window is ended: the other device has to share it again to bring it back.
@@ -156,12 +199,70 @@ class _WindowScreenState extends State<WindowScreen> {
                   ),
                 ],
               ),
+              actions: [
+                if (running && session.control)
+                  ListenableBuilder(
+                    listenable: _control,
+                    builder: (context, _) => Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: FilterChip(
+                        avatar: const Icon(Icons.touch_app_outlined),
+                        label: const Text('Control'),
+                        showCheckmark: false,
+                        selected: _control.on,
+                        tooltip: _control.on
+                            ? 'Stop controlling the window'
+                            : 'Control the window from this device',
+                        onSelected: _setControl,
+                      ),
+                    ),
+                  ),
+              ],
             ),
             body: SafeArea(
               child: running
-                  ? _Picture(
-                      session: session,
-                      size: widget.controller.pictureOf(session),
+                  ? ListenableBuilder(
+                      listenable: Listenable.merge([_control, _keyboard]),
+                      builder: (context, _) => Column(
+                        children: [
+                          Expanded(
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                _Picture(
+                                  session: session,
+                                  size: widget.controller.pictureOf(session),
+                                  control: _control,
+                                  pictureKey: _picture,
+                                ),
+                                if (_control.on)
+                                  Positioned(
+                                    left: 0,
+                                    bottom: 0,
+                                    child: SoftKeyboardField(
+                                      focusNode: _keyboard,
+                                      onTyped: _control.type,
+                                    ),
+                                  ),
+                                if (_control.notice != null)
+                                  Positioned(
+                                    left: 16,
+                                    right: 16,
+                                    top: 8,
+                                    child: _Notice(text: _control.notice!),
+                                  ),
+                              ],
+                            ),
+                          ),
+                          if (_control.on)
+                            ControlKeys(
+                              chosen: _control.chosen,
+                              onKey: _control.tapKey,
+                              keyboardShown: _keyboard.hasFocus,
+                              onKeyboard: _toggleKeyboard,
+                            ),
+                        ],
+                      ),
                     )
                   : _Over(
                       session: session,
@@ -178,18 +279,30 @@ class _WindowScreenState extends State<WindowScreen> {
 }
 
 /// The picture of the window, as large as the screen allows with its shape kept, and zoomed
-/// with two fingers so that small writing can be read.
+/// with two fingers so that small writing can be read. While the window is controlled the fingers
+/// are the window's, and the picture stays as it is.
 ///
 /// The shape is that of the picture, which the source says and can change: it scales the window to
 /// what this device takes, and a window that is resized changes shape. The shape of the window as
 /// it was offered is used until the source has said.
 class _Picture extends StatelessWidget {
-  const _Picture({required this.session, required this.size});
+  const _Picture({
+    required this.session,
+    required this.size,
+    required this.control,
+    required this.pictureKey,
+  });
 
   final WindowSession session;
 
   /// How large the picture is, or `null` before the source has said.
   final PictureSize? size;
+
+  /// What the fingers do on the picture.
+  final WindowControl control;
+
+  /// Names the picture itself, to ask how large it is on the screen.
+  final GlobalKey pictureKey;
 
   @override
   Widget build(BuildContext context) {
@@ -206,20 +319,63 @@ class _Picture extends StatelessWidget {
     return InteractiveViewer(
       minScale: 1,
       maxScale: 6,
+      panEnabled: !control.on,
+      scaleEnabled: !control.on,
       child: SizedBox.expand(
         child: Center(
           child: AspectRatio(
             aspectRatio: width / height,
-            child: Semantics(
-              label: session.display
-                  ? 'The screen from ${visibleText(session.deviceName)}'
-                  : 'The window ${windowName(session.title, session.app)} from '
-                        '${visibleText(session.deviceName)}',
-              image: true,
-              child: Texture(
-                textureId: screen.toInt(),
-                filterQuality: FilterQuality.medium,
+            // The fingers are told to the controller whether it is on or not, and it takes them
+            // only while it is: the picture is the same in both, and is not made again when the
+            // person turns control on.
+            child: Listener(
+              key: pictureKey,
+              behavior: HitTestBehavior.opaque,
+              onPointerDown: control.pointerDown,
+              onPointerMove: control.pointerMove,
+              onPointerUp: control.pointerUp,
+              onPointerCancel: control.pointerCancel,
+              child: Semantics(
+                label: session.display
+                    ? 'The screen from ${visibleText(session.deviceName)}'
+                    : 'The window ${windowName(session.title, session.app)} '
+                          'from ${visibleText(session.deviceName)}',
+                image: true,
+                child: Texture(
+                  textureId: screen.toInt(),
+                  filterQuality: FilterQuality.medium,
+                ),
               ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// What the other device did not do of what the person did, over the top of the picture. It lets
+/// the touches through to the picture.
+class _Notice extends StatelessWidget {
+  const _Notice({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return IgnorePointer(
+      child: Semantics(
+        liveRegion: true,
+        child: Material(
+          color: scheme.inverseSurface,
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Text(
+              text,
+              textAlign: TextAlign.center,
+              style: TextStyle(color: scheme.onInverseSurface),
             ),
           ),
         ),

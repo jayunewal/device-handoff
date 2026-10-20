@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import 'package:baton/src/backend.dart';
+import 'package:baton/src/control_access.dart';
+import 'package:baton/src/format.dart';
 import 'package:baton/src/qr.dart';
 import 'package:baton/src/screens/devices_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'fake_backend.dart';
+import 'fake_control_access.dart';
 
 final _now = DateTime(2026, 10, 15, 12);
 
@@ -34,7 +37,8 @@ FakeSession _session({List<Device> devices = const []}) => FakeSession(
 
 Widget _screen(
   FakeSession session, {
-  void Function(Device device)? onShareWindow,
+  void Function(Device device, {required bool control})? onShareWindow,
+  ControlAccessKeeper? controlAccess,
 }) => MaterialApp(
   home: DevicesScreen(
     session: session,
@@ -42,15 +46,24 @@ Widget _screen(
     // No camera here: the pairing screens get a stand-in.
     scanner: (context, onCode) => const Text('(camera)'),
     onShareWindow: onShareWindow,
+    controlAccess:
+        controlAccess ?? FakeControlAccess(ControlAccess.unavailable),
   ),
 );
 
 Future<void> _show(
   WidgetTester tester,
   FakeSession session, {
-  void Function(Device device)? onShareWindow,
+  void Function(Device device, {required bool control})? onShareWindow,
+  ControlAccessKeeper? controlAccess,
 }) async {
-  await tester.pumpWidget(_screen(session, onShareWindow: onShareWindow));
+  await tester.pumpWidget(
+    _screen(
+      session,
+      onShareWindow: onShareWindow,
+      controlAccess: controlAccess,
+    ),
+  );
   await tester.pumpAndSettle();
 }
 
@@ -414,7 +427,7 @@ void main() {
   testWidgets('a button on a device shares a window with it, and only that', (
     tester,
   ) async {
-    final shared = <Device>[];
+    final shared = <(Device, bool)>[];
     await _show(
       tester,
       _session(
@@ -423,17 +436,249 @@ void main() {
           _device('Phone', Platform.android),
         ],
       ),
-      onShareWindow: shared.add,
+      onShareWindow: (device, {required control}) =>
+          shared.add((device, control)),
     );
 
     await tester.tap(find.byTooltip('Share a window or screen with Phone'));
     await tester.pumpAndSettle();
 
-    expect(shared.map((device) => device.name), ['Phone']);
+    expect(shared.map((share) => (share.$1.name, share.$2)), [
+      ('Phone', false),
+    ]);
     expect(
       find.text('Send to Phone'),
       findsNothing,
       reason: 'the button is not a tap on the device',
     );
+  });
+
+  group('a window that can be controlled', () {
+    final phone = _device('Phone', Platform.android);
+    final shared = <(String, bool)>[];
+
+    Future<FakeControlAccess> show(
+      WidgetTester tester,
+      ControlAccess access, {
+      List<Device>? devices,
+    }) async {
+      shared.clear();
+      final keeper = FakeControlAccess(access);
+      await _show(
+        tester,
+        _session(devices: devices ?? [phone]),
+        onShareWindow: (device, {required control}) =>
+            shared.add((device.name, control)),
+        controlAccess: keeper,
+      );
+      return keeper;
+    }
+
+    Future<void> choose(
+      WidgetTester tester,
+      String choice, {
+      String device = 'Phone',
+    }) async {
+      await tester.tap(find.byTooltip('Share a window or screen with $device'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(choice));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('is offered as a choice when the system lets it be', (
+      tester,
+    ) async {
+      await show(tester, ControlAccess.allowed);
+
+      await tester.tap(find.byTooltip('Share a window or screen with Phone'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Share to look at'), findsOneWidget);
+      expect(
+        find.text('Share a window to look at and control'),
+        findsOneWidget,
+      );
+      expect(shared, isEmpty, reason: 'the button only asks');
+    });
+
+    testWidgets('is shared with control when that is chosen', (tester) async {
+      await show(tester, ControlAccess.allowed);
+
+      await choose(tester, 'Share a window to look at and control');
+
+      expect(shared, [('Phone', true)]);
+    });
+
+    testWidgets('is shared to be looked at when that is chosen', (
+      tester,
+    ) async {
+      await show(tester, ControlAccess.allowed);
+
+      await choose(tester, 'Share to look at');
+
+      expect(shared, [('Phone', false)]);
+    });
+
+    testWidgets(
+      'asks the system, and does not share, when it has not said yes',
+      (tester) async {
+        final keeper = await show(tester, ControlAccess.needed);
+
+        await choose(tester, 'Share a window to look at and control');
+
+        expect(shared, isEmpty);
+        expect(keeper.requests, 1);
+        expect(
+          find.textContaining(
+            'To let Phone control a window, allow Baton to control this '
+            'computer in System Settings, under Privacy & Security, '
+            'Accessibility. Then share the window again.',
+          ),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets('can still be shared to be looked at when it has not', (
+      tester,
+    ) async {
+      final keeper = await show(tester, ControlAccess.needed);
+
+      await choose(tester, 'Share to look at');
+
+      expect(shared, [('Phone', false)]);
+      expect(keeper.requests, 0);
+    });
+
+    testWidgets(
+      'is asked about again when it is chosen, not when it was shown',
+      (tester) async {
+        final keeper = await show(tester, ControlAccess.allowed);
+        keeper.access = ControlAccess.needed;
+
+        await choose(tester, 'Share a window to look at and control');
+
+        expect(shared, isEmpty);
+        expect(keeper.requests, 1);
+      },
+    );
+
+    testWidgets('says that the system is too old when it is', (tester) async {
+      final keeper = await show(tester, ControlAccess.allowed);
+      keeper.access = ControlAccess.unavailable;
+
+      await choose(tester, 'Share a window to look at and control');
+
+      expect(shared, isEmpty);
+      expect(keeper.requests, 0);
+      expect(
+        find.text('Controlling a window needs macOS 15.2 or later.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('is not offered when the system cannot do it', (tester) async {
+      await show(tester, ControlAccess.unavailable);
+
+      await tester.tap(find.byTooltip('Share a window or screen with Phone'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Share to look at'), findsNothing);
+      expect(shared, [('Phone', false)]);
+    });
+
+    testWidgets('is offered once the person has said yes and comes back', (
+      tester,
+    ) async {
+      final keeper = await show(tester, ControlAccess.unavailable);
+      keeper.access = ControlAccess.allowed;
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Share a window or screen with Phone'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Share to look at'), findsOneWidget);
+    });
+
+    testWidgets('is not asked about again once the screen is gone', (
+      tester,
+    ) async {
+      final keeper = await show(tester, ControlAccess.allowed);
+      final asked = keeper.asked;
+      await tester.pumpWidget(const SizedBox());
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+
+      expect(asked, greaterThan(0));
+      expect(keeper.asked, asked);
+    });
+
+    testWidgets(
+      'names the device as fit to show when the system must be asked',
+      (tester) async {
+        const name = 'Pad\u202Eexe';
+        await show(
+          tester,
+          ControlAccess.needed,
+          devices: [_device(name, Platform.android)],
+        );
+
+        await choose(
+          tester,
+          'Share a window to look at and control',
+          device: name,
+        );
+
+        expect(
+          find.textContaining('To let ${visibleText(name)} control a window'),
+          findsOneWidget,
+        );
+        expect(visibleText(name), isNot(name));
+      },
+    );
+
+    testWidgets('says it for the device that was chosen last, and only that', (
+      tester,
+    ) async {
+      await show(
+        tester,
+        ControlAccess.needed,
+        devices: [phone, _device('Tablet', Platform.android)],
+      );
+
+      // The second device lies under the note about the first, so the order is the other way.
+      await choose(
+        tester,
+        'Share a window to look at and control',
+        device: 'Tablet',
+      );
+      await choose(tester, 'Share a window to look at and control');
+
+      expect(
+        find.textContaining('To let Phone control a window'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('To let Tablet control a window'),
+        findsNothing,
+      );
+    });
+
+    testWidgets('is not asked about on a device that shares no window', (
+      tester,
+    ) async {
+      final keeper = FakeControlAccess();
+      await _show(tester, _session(devices: [phone]), controlAccess: keeper);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+
+      expect(keeper.asked, 0);
+      expect(
+        find.byTooltip('Share a window or screen with Phone'),
+        findsNothing,
+      );
+    });
   });
 }

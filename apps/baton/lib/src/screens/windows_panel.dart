@@ -36,7 +36,11 @@ class WindowsPanel extends StatelessWidget {
               onAnswer: (accept) => controller.answer(request, accept: accept),
             ),
           if (opening != null) _OpeningCard(request: opening),
-          if (offering != null) _OfferingCard(device: offering),
+          if (offering != null)
+            _OfferingCard(
+              device: offering,
+              control: controller.offeringControl,
+            ),
           for (final session in controller.sessions)
             _SessionCard(
               session: session,
@@ -120,7 +124,11 @@ class _RequestCard extends StatelessWidget {
             ],
             const SizedBox(height: 4),
             Text(
-              'You will see it live on this screen. You can only look at it.',
+              request.control
+                  ? 'You will see it live on this screen, and you can control '
+                        'it: what you touch and type here is done there.'
+                  : 'You will see it live on this screen. You can only look at '
+                        'it.',
               style: theme.textTheme.bodySmall,
             ),
             const SizedBox(height: 8),
@@ -177,11 +185,13 @@ class _OpeningCard extends StatelessWidget {
 }
 
 /// This device is offering a window or a screen to [device]: the person chooses it, and the device
-/// is asked.
+/// is asked. A window offered with [control] can be controlled, and a screen cannot: it is only
+/// looked at.
 class _OfferingCard extends StatelessWidget {
-  const _OfferingCard({required this.device});
+  const _OfferingCard({required this.device, required this.control});
 
   final Device device;
+  final bool control;
 
   @override
   Widget build(BuildContext context) {
@@ -196,19 +206,26 @@ class _OfferingCard extends StatelessWidget {
             Semantics(
               liveRegion: true,
               child: Text(
-                'Sharing a window or screen with $name',
+                control
+                    ? 'Sharing a window with $name, to look at and control'
+                    : 'Sharing a window or screen with $name',
                 style: theme.textTheme.titleSmall,
               ),
             ),
             const SizedBox(height: 4),
             Text(
-              'Choose a window or a screen. $name is then asked whether to show '
-              'it.',
+              control
+                  ? 'Choose a window. A screen can only be looked at. $name is '
+                        'then asked whether to show it.'
+                  : 'Choose a window or a screen. $name is then asked whether '
+                        'to show it.',
               style: theme.textTheme.bodySmall,
             ),
             const SizedBox(height: 12),
-            const LinearProgressIndicator(
-              semanticsLabel: 'Sharing a window or screen',
+            LinearProgressIndicator(
+              semanticsLabel: control
+                  ? 'Sharing a window to look at and control'
+                  : 'Sharing a window or screen',
             ),
           ],
         ),
@@ -255,6 +272,13 @@ class _SessionCard extends StatelessWidget {
                 style: theme.textTheme.titleSmall,
               ),
             ),
+            if (session.control) ...[
+              const SizedBox(height: 4),
+              Text(
+                viewing ? 'You can control it.' : '$device can control it.',
+                style: theme.textTheme.bodySmall,
+              ),
+            ],
             const SizedBox(height: 8),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,

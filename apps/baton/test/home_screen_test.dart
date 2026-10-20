@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import 'package:baton/src/backend.dart';
+import 'package:baton/src/control_access.dart';
 import 'package:baton/src/file_chooser.dart';
 import 'package:baton/src/screens/home_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'fake_backend.dart';
+import 'fake_control_access.dart';
 import 'fake_screen.dart';
 import 'fake_shower.dart';
 
@@ -54,6 +56,7 @@ Future<FakeSession> _show(
   FileChooser chooser = const SystemFileChooser(),
   FakeShower? shower,
   FakeScreen? screen,
+  ControlAccessKeeper? controlAccess,
 ]) async {
   final session = given ?? _session();
   tester.view
@@ -71,6 +74,8 @@ Future<FakeSession> _show(
         chooser: chooser,
         shower: shower ?? FakeShower(),
         screen: screen ?? FakeScreen(),
+        controlAccess:
+            controlAccess ?? FakeControlAccess(ControlAccess.unavailable),
       ),
     ),
   );
@@ -430,6 +435,29 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(session.windowsShared, [(id: _kitchenIpad.id, control: false)]);
+  });
+
+  testWidgets('a window can be shared to be controlled, from the row', (
+    tester,
+  ) async {
+    final session = _session()..abilities = _windowAbilities;
+    await _show(
+      tester,
+      session,
+      const SystemFileChooser(),
+      null,
+      null,
+      FakeControlAccess(),
+    );
+
+    await tester.tap(
+      find.byTooltip('Share a window or screen with Kitchen iPad'),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Share a window to look at and control'));
+    await tester.pumpAndSettle();
+
+    expect(session.windowsShared, [(id: _kitchenIpad.id, control: true)]);
   });
 
   testWidgets(
