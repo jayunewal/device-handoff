@@ -12,7 +12,8 @@
 
 use std::{
     collections::HashSet,
-    mem, ptr,
+    mem::{self, offset_of},
+    ptr,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -22,7 +23,8 @@ use std::{
 };
 
 use baton_app::{
-    Event, Events, WindowEnd, WindowRequest, WindowRole, WindowSession, WindowShared, Windows,
+    Event, Events, WindowButton, WindowEnd, WindowInput, WindowModifiers, WindowNoticeReason,
+    WindowPointer, WindowRequest, WindowRole, WindowSession, WindowShared, Windows,
     windows::{PickedWindow, PlatformError, ScreenLink, SharingFailure, WindowSharer},
 };
 use baton_core::{
@@ -30,23 +32,28 @@ use baton_core::{
     util::BoxFuture,
 };
 use baton_proto::limits::MAX_PICTURE_BYTES;
-use baton_stream::control::Config as Format;
+use baton_stream::{
+    control::Config as Format,
+    input::{NO_KEY, PointerAction},
+};
 use tokio::task::JoinHandle;
 
 use crate::{
     Error, Registry,
     abi::{
-        BEGIN_DELTA, BEGIN_KEY, BEGIN_NOT_NOW, BatonBytes, BatonFormat, BatonPicked, BatonPicture,
-        CODEC_H264, FRAME_KEY, FRAME_RECOVERY, FRAME_REFERENCED, PAUSE_HIDDEN, PAUSE_LOCKED,
-        PAUSE_OTHER, PICKED_WINDOW, SENT, SENT_OVER, SENT_STALE, SENT_TOO_LARGE, SOURCE_CONFIG,
-        SOURCE_PAUSE, SOURCE_RESUME, size_of_u32,
+        BEGIN_DELTA, BEGIN_KEY, BEGIN_NOT_NOW, BatonBytes, BatonFormat, BatonGeometry, BatonPicked,
+        BatonPicture, BatonRect, CODEC_H264, FRAME_KEY, FRAME_RECOVERY, FRAME_REFERENCED,
+        PAUSE_HIDDEN, PAUSE_LOCKED, PAUSE_OTHER, PICKED_WINDOW, SENT, SENT_OVER, SENT_STALE,
+        SENT_TOO_LARGE, SOURCE_CONFIG, SOURCE_PAUSE, SOURCE_RESUME, size_of_u32,
     },
     fake::{Call, Decoded, Fake, Watchdog},
     fake_sharer::{
-        self, FakeSharer, Pic, PickPlan, PreparePlan, SharerCall, StartPlan, begin, cancel, clock,
-        end, new_epoch, new_epoch_raw, pause, recovery_pending, resume, sent,
+        self, Around, FakeSharer, Pic, PickPlan, PreparePlan, SharerCall, StartPlan, begin, cancel,
+        changed, clock, end, key_post, left_down, left_up, new_epoch, new_epoch_raw, pause,
+        pointer_post, recovery_pending, resume, sent, sent_sized, sent_with,
     },
     fixture::{HEIGHT, PPS, SPS, WIDTH, pictures, sps},
+    input::Timing,
     session_tests::{Dev, QUIET, WAIT, avcc, next_matching, pair, units_of, until, window_ended},
 };
 
@@ -167,9 +174,20 @@ impl Rig {
         setup: impl FnOnce(&Arc<FakeSharer>, &Arc<Fake>),
         starting: Option<Starting>,
     ) -> Self {
+        Self::built(setup, starting, Timing::default()).await
+    }
+
+    /// The same, with the threads that serve the windows keeping time as `timing` says.
+    async fn built(
+        setup: impl FnOnce(&Arc<FakeSharer>, &Arc<Fake>),
+        starting: Option<Starting>,
+        timing: Timing,
+    ) -> Self {
         let (platform, viewer) = (FakeSharer::new(), Fake::new());
         setup(&platform, &viewer);
-        let (registry, viewing_registry) = (Arc::new(Registry::new()), Arc::new(Registry::new()));
+        let mut sharing_registry = Registry::new();
+        sharing_registry.input_timing = timing;
+        let (registry, viewing_registry) = (Arc::new(sharing_registry), Arc::new(Registry::new()));
         platform.register_in(&registry).unwrap();
         viewer.register_in(&viewing_registry).unwrap();
         let windows = match starting {
@@ -583,7 +601,13 @@ async fn a_whole_display_is_offered_and_shown_as_a_display_and_the_platform_is_s
 async fn a_window_cannot_be_offered_with_control_by_a_platform_that_cannot_grant_it() {
     let mut rig = Rig::new().await;
     let to = rig.viewing.id();
-    let Err(refused) = rig.sharing.app.share_window(&to, true).await else {
+    // A refusal is at once. An offer that goes on waits for the person to choose a window.
+    let Ok(Err(refused)) = tokio::time::timeout(
+        Duration::from_secs(5),
+        rig.sharing.app.share_window(&to, true),
+    )
+    .await
+    else {
         panic!("a window was offered with control that the platform cannot grant");
     };
     assert!(
@@ -1296,6 +1320,7 @@ async fn pictures_at_the_edge_of_what_the_protocol_allows_are_handled_with_care(
         },
         sets: ptr::null(),
         set_count: 0,
+        geometry: BatonGeometry::default(),
     };
     let (mut outcome, mut number) = (u32::MAX, u64::MAX);
     // SAFETY: the sample is described but is not read, as the header says of a length this large.
@@ -1377,14 +1402,20 @@ async fn pointers_that_are_not_there_are_refused_and_nothing_is_written_through_
         sample: BatonBytes::of(&sample),
         sets: sets.as_ptr(),
         set_count: sets.len(),
+        geometry: BatonGeometry::default(),
     };
     let whole = size_of_u32::<BatonPicture>();
+    // The struct as it was before input was carried ends where the geometry begins.
+    let before_input = u32::try_from(offset_of!(BatonPicture, geometry)).unwrap();
     let (before_outcome, before_number) = (0xaaaa_aaaa_u32, 0xbbbb_bbbb_bbbb_bbbb_u64);
     let (mut outcome, mut number) = (before_outcome, before_number);
     let wrong: Vec<(&str, Option<BatonPicture>)> = vec![
         ("no picture", None),
         ("a struct with no size", Some(picture(0, 4))),
-        ("a struct that is too short", Some(picture(whole - 1, 4))),
+        (
+            "a struct that is too short",
+            Some(picture(before_input - 1, 4)),
+        ),
         ("a length of three bytes", Some(picture(whole, 3))),
     ];
     for (what, bad) in wrong {
@@ -1474,6 +1505,7 @@ impl Rig {
 fn every_call(registry: &Registry, link: u64) -> Vec<(&'static str, Result<(), Error>)> {
     vec![
         ("clock", clock(registry, link).map(drop)),
+        ("changed", changed(registry, link, 0)),
         ("begin", begin(registry, link).map(drop)),
         ("cancel", cancel(registry, link)),
         (
@@ -2061,9 +2093,18 @@ async fn the_platform_cannot_call_back_while_the_library_is_calling_it() {
     })
     .await;
 
-    // A window that is shared, and ended: Prepare, Start, Ended and Release as well.
-    let shown = rig.share(true).await;
-    assert_eq!(rig.send(shown.link, 0).await, (BEGIN_KEY, SENT, 0));
+    // A window that is shared with control, touched and ended: Prepare, Start, Ended and Release
+    // as well, and the two calls that put what the person does to the window.
+    let shown = rig.shown_with_control().await;
+    assert!(
+        rig.viewing
+            .app
+            .window_input(shown.viewing.id, touch(0.5, 0.5, WindowPointer::Move))
+    );
+    until("the window to be asked and told", || {
+        rig.platform.posts(shown.window).len() == 1
+    })
+    .await;
     assert!(rig.sharing.app.end_window(shown.sharing.id));
     assert_eq!(rig.sharing_end().await, WindowEnd::ThisDevice);
     rig.nothing_is_left().await;
@@ -2073,9 +2114,9 @@ async fn the_platform_cannot_call_back_while_the_library_is_calling_it() {
         .iter()
         .map(|(call, ..)| mem::discriminant(call))
         .collect();
-    assert_eq!(kinds.len(), 7, "every kind of call of the library");
+    assert_eq!(kinds.len(), 9, "every kind of call of the library");
     // Every function was tried inside every call, and none was let in.
-    assert!(answers.len() >= 7 * 11, "{} answers", answers.len());
+    assert!(answers.len() >= 9 * 12, "{} answers", answers.len());
     for (call, name, answer) in answers.iter() {
         assert_eq!(*answer, Err(Error::Reentrant), "{name} inside {call:?}");
     }
@@ -2085,6 +2126,8 @@ async fn the_platform_cannot_call_back_while_the_library_is_calling_it() {
         [
             asked_to_prepare(),
             SharerCall::Start { link: shown.link },
+            SharerCall::Surroundings,
+            SharerCall::Post(pointer_post(300.0, 200.0, PointerAction::Move)),
             SharerCall::Ended,
             SharerCall::Release
         ]
@@ -2288,4 +2331,570 @@ async fn a_device_that_goes_away_ends_the_session_and_the_platform_is_told() {
     );
     rig.nothing_is_left().await;
     assert_eq!(rig.platform.calls(1).len(), 4);
+}
+
+// What the person at the other device does to a window that is shared with control.
+
+/// How the window is laid out in the pictures of the encoder: 400 by 300 points, whose content
+/// fills the picture.
+fn window_layout() -> BatonGeometry {
+    BatonGeometry {
+        window_width: 400.0,
+        window_height: 300.0,
+        picture_width: WIDTH,
+        picture_height: HEIGHT,
+        content: BatonRect {
+            x: 0.0,
+            y: 0.0,
+            width: f64::from(WIDTH),
+            height: f64::from(HEIGHT),
+        },
+    }
+}
+
+/// A finger or a pointer at this place on the picture, as the app is given it.
+fn touch(x: f32, y: f32, action: WindowPointer) -> WindowInput {
+    WindowInput::Pointer {
+        x,
+        y,
+        modifiers: WindowModifiers::default(),
+        action,
+    }
+}
+
+/// A key, or text with no key, as the app is given it.
+fn typed(code: u16, down: bool, text: Option<&str>) -> WindowInput {
+    WindowInput::Key {
+        code,
+        down,
+        modifiers: WindowModifiers::default(),
+        repeat: false,
+        text: text.map(str::to_owned),
+    }
+}
+
+impl Rig {
+    /// Starts both devices, with a platform that can let the other device control a window.
+    async fn controlled() -> Self {
+        Self::with(|platform, _| platform.set_control(true)).await
+    }
+
+    /// As `controlled`, with the threads that serve the windows keeping time as `timing` says.
+    async fn timed(timing: Timing) -> Self {
+        Self::built(|platform, _| platform.set_control(true), None, timing).await
+    }
+
+    /// As `send`, with the layout of the window in the picture.
+    async fn send_laid_out(&self, link: u64, at: u64, layout: BatonGeometry) -> (u32, u32, u64) {
+        let kind = self.wanted(link).await;
+        let (outcome, number) = sent_with(&self.registry, link, &pic(kind, at), layout).unwrap();
+        (kind, outcome, number)
+    }
+
+    /// Shares a window with control, hands over its key frame with the layout of `window_layout`,
+    /// and waits until the other device shows it. From here on the person can touch it.
+    async fn shown_with_control(&mut self) -> Shown {
+        let shown = self.share(true).await;
+        assert_eq!(
+            self.send_laid_out(shown.link, 0, window_layout()).await,
+            (BEGIN_KEY, SENT, 0)
+        );
+        self.until_shown(0).await;
+        shown
+    }
+
+    /// Waits until the showing platform is told to show this frame of the window shared last.
+    async fn until_shown(&self, number: u64) {
+        until("the picture to be shown", || {
+            self.screen_calls(self.viewer.screens_made() as u64)
+                .contains(&Call::Show(number))
+        })
+        .await;
+    }
+
+    /// Waits for the news that the other device did not do some of what the person did, and gives
+    /// the window, the reason and how many events.
+    async fn notice(&mut self) -> (u64, WindowNoticeReason, u32) {
+        next_matching(&mut self.viewing_events, |event| match event {
+            Event::WindowNotice { id, reason, count } => Some((id, reason, count)),
+            _ => None,
+        })
+        .await
+    }
+}
+
+#[tokio::test]
+async fn what_the_person_does_on_the_picture_is_done_to_the_window_where_they_did_it() {
+    let mut rig = Rig::controlled().await;
+    let shown = rig.shown_with_control().await;
+    let (app, id) = (rig.viewing.app.clone(), shown.viewing.id);
+
+    // The window is 400 by 300 points with its corner at (100, 50) on the screen of the Mac, and
+    // the picture shows all of it.
+    for input in [
+        touch(0.5, 0.5, WindowPointer::Down(WindowButton::Left)),
+        touch(0.5, 0.5, WindowPointer::Up(WindowButton::Left)),
+        touch(0.25, 0.75, WindowPointer::Move),
+        typed(0x04, true, Some("a")),
+        typed(0x04, false, None),
+        // Text that came with no key is typed once.
+        typed(0, true, Some("ok")),
+    ] {
+        assert!(app.window_input(id, input.clone()), "{input:?}");
+    }
+    let expected = [
+        left_down(300.0, 200.0),
+        left_up(300.0, 200.0),
+        pointer_post(200.0, 275.0, PointerAction::Move),
+        key_post(0x04, true, Some("a")),
+        key_post(0x04, false, None),
+        key_post(NO_KEY, true, Some("ok")),
+    ];
+    until("the window to be done to", || {
+        rig.platform.posts(shown.window).len() >= expected.len()
+    })
+    .await;
+    assert_eq!(rig.platform.posts(shown.window), expected);
+
+    assert!(app.end_window(id));
+    rig.nothing_is_left().await;
+}
+
+#[tokio::test]
+async fn a_window_that_is_shared_without_control_is_never_put_to_and_the_mac_is_not_asked_about() {
+    let mut rig = Rig::controlled().await;
+    let shown = rig.share(false).await;
+    assert!(!shown.request.control);
+    assert_eq!(
+        rig.send_laid_out(shown.link, 0, window_layout()).await,
+        (BEGIN_KEY, SENT, 0)
+    );
+    rig.until_shown(0).await;
+
+    // The app does not take it, and a platform that is asked nothing is not called.
+    let id = shown.viewing.id;
+    assert!(
+        !rig.viewing
+            .app
+            .window_input(id, touch(0.5, 0.5, WindowPointer::Move))
+    );
+    assert!(
+        !rig.viewing
+            .app
+            .window_input(id, typed(0x04, true, Some("a")))
+    );
+    tokio::time::sleep(QUIET).await;
+    let asked = |call: &SharerCall| matches!(call, SharerCall::Surroundings | SharerCall::Post(_));
+    assert_eq!(rig.platform.count(asked), 0);
+
+    assert!(rig.viewing.app.end_window(id));
+    rig.nothing_is_left().await;
+    assert_eq!(rig.platform.calls(shown.window).len(), 4);
+}
+
+#[tokio::test]
+async fn what_the_mac_does_not_do_is_told_to_the_person_with_the_reason() {
+    let mut rig = Rig::controlled().await;
+    let shown = rig.shown_with_control().await;
+    let (app, id) = (rig.viewing.app.clone(), shown.viewing.id);
+
+    // The Mac is locked: nothing is done to the window, and the person is told why.
+    rig.platform.set_around(Around {
+        locked: true,
+        ..Around::default()
+    });
+    assert!(app.window_input(id, touch(0.5, 0.5, WindowPointer::Move)));
+    assert_eq!(rig.notice().await, (id, WindowNoticeReason::Locked, 1));
+    assert_eq!(rig.platform.posts(shown.window), []);
+
+    // It is unlocked, and what the person does is done.
+    rig.platform.set_around(Around::default());
+    assert!(app.window_input(id, touch(0.5, 0.5, WindowPointer::Move)));
+    until("the window to be done to", || {
+        rig.platform.posts(shown.window).len() == 1
+    })
+    .await;
+    assert_eq!(
+        rig.platform.posts(shown.window),
+        [pointer_post(300.0, 200.0, PointerAction::Move)]
+    );
+
+    assert!(app.end_window(id));
+    rig.nothing_is_left().await;
+}
+
+#[tokio::test]
+async fn a_button_is_let_go_of_when_the_mac_locks_under_it_without_a_word_from_the_person() {
+    let mut rig = Rig::controlled().await;
+    let shown = rig.shown_with_control().await;
+    let (app, id) = (rig.viewing.app.clone(), shown.viewing.id);
+    assert!(app.window_input(id, touch(0.5, 0.5, WindowPointer::Down(WindowButton::Left))));
+    assert!(app.window_input(id, typed(0x04, true, Some("a"))));
+    until("the window to be pressed", || {
+        rig.platform.posts(shown.window).len() == 2
+    })
+    .await;
+
+    // Nothing arrives from the person. The Mac locks, and the thread that serves the window sees
+    // it by itself, and lets go of both.
+    rig.platform.set_around(Around {
+        locked: true,
+        ..Around::default()
+    });
+    until("both to be let go of", || {
+        rig.platform.posts(shown.window).len() == 4
+    })
+    .await;
+    let posts = rig.platform.posts(shown.window);
+    assert!(posts.contains(&left_up(300.0, 200.0)), "{posts:?}");
+    assert!(posts.contains(&key_post(0x04, false, None)), "{posts:?}");
+
+    assert!(app.end_window(id));
+    rig.nothing_is_left().await;
+    // They were let go of once, and not again when the window ended.
+    assert_eq!(rig.platform.posts(shown.window).len(), 4);
+}
+
+#[tokio::test]
+async fn a_pause_lets_go_of_what_the_person_holds_and_drops_what_they_do_until_it_goes_on() {
+    let mut rig = Rig::controlled().await;
+    let shown = rig.shown_with_control().await;
+    let (app, id) = (rig.viewing.app.clone(), shown.viewing.id);
+    assert!(app.window_input(id, touch(0.5, 0.5, WindowPointer::Down(WindowButton::Left))));
+    until("the button to be pressed", || {
+        rig.platform.posts(shown.window).len() == 1
+    })
+    .await;
+
+    // The platform pauses the window, for example because it was hidden: the button is let go of
+    // at once, without waiting for the person or for a look at the Mac.
+    assert_eq!(pause(&rig.registry, shown.link, PAUSE_HIDDEN), Ok(()));
+    until("the button to be let go of", || {
+        rig.platform.posts(shown.window).len() == 2
+    })
+    .await;
+    assert_eq!(rig.platform.posts(shown.window)[1], left_up(300.0, 200.0));
+
+    // What the person does meanwhile is dropped, and they are told why.
+    assert!(app.window_input(id, touch(0.5, 0.5, WindowPointer::Move)));
+    assert_eq!(rig.notice().await, (id, WindowNoticeReason::Paused, 1));
+    assert_eq!(rig.platform.posts(shown.window).len(), 2);
+
+    // The pictures go on, and so does what the person does.
+    assert_eq!(resume(&rig.registry, shown.link), Ok(()));
+    assert!(app.window_input(id, touch(0.5, 0.5, WindowPointer::Move)));
+    until("the window to be done to", || {
+        rig.platform.posts(shown.window).len() == 3
+    })
+    .await;
+    assert_eq!(
+        rig.platform.posts(shown.window)[2],
+        pointer_post(300.0, 200.0, PointerAction::Move)
+    );
+
+    assert!(app.end_window(id));
+    rig.nothing_is_left().await;
+}
+
+#[tokio::test]
+async fn a_window_that_ends_with_something_held_has_it_let_go_of_before_the_platform_is_told() {
+    // However it ends: the person who shares it, the person who shows it, or the platform.
+    for ending in ["sharer", "viewer", "platform"] {
+        let mut rig = Rig::controlled().await;
+        let shown = rig.shown_with_control().await;
+        let (app, id) = (rig.viewing.app.clone(), shown.viewing.id);
+        assert!(app.window_input(id, touch(0.5, 0.5, WindowPointer::Down(WindowButton::Left))));
+        assert!(app.window_input(id, typed(0x04, true, Some("a"))));
+        until("the window to be pressed", || {
+            rig.platform.posts(shown.window).len() == 2
+        })
+        .await;
+
+        match ending {
+            "sharer" => assert!(rig.sharing.app.end_window(shown.sharing.id)),
+            "viewer" => assert!(app.end_window(id)),
+            _ => end(&rig.registry, shown.link, None).unwrap(),
+        }
+        rig.nothing_is_left().await;
+        let calls = rig.platform.calls(shown.window);
+        // The thread looks at the Mac for where the window is, lets go, and then the platform is
+        // told. The window is released last, once.
+        assert_eq!(
+            calls[calls.len() - 4..],
+            [
+                SharerCall::Post(left_up(300.0, 200.0)),
+                SharerCall::Post(key_post(0x04, false, None)),
+                SharerCall::Ended,
+                SharerCall::Release
+            ],
+            "{ending}: {calls:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_tap_on_a_picture_that_the_window_has_changed_since_is_dropped_once_the_picture_is_old() {
+    let mut rig = Rig::controlled().await;
+    let shown = rig.shown_with_control().await;
+    let (app, id) = (rig.viewing.app.clone(), shown.viewing.id);
+
+    // The picture is old by now, but the window did not change after it: a tap is right.
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert!(app.window_input(id, touch(0.5, 0.5, WindowPointer::Move)));
+    until("the window to be done to", || {
+        rig.platform.posts(shown.window).len() == 1
+    })
+    .await;
+
+    // The platform says that it changed right after the picture, which is long ago.
+    assert_eq!(changed(&rig.registry, shown.link, 1), Ok(()));
+    assert!(app.window_input(id, touch(0.5, 0.5, WindowPointer::Move)));
+    assert_eq!(rig.notice().await, (id, WindowNoticeReason::OutOfDate, 1));
+    assert_eq!(rig.platform.posts(shown.window).len(), 1);
+
+    assert!(app.end_window(id));
+    rig.nothing_is_left().await;
+}
+
+#[tokio::test]
+async fn a_window_that_is_not_the_size_the_picture_showed_it_at_is_not_touched() {
+    let mut rig = Rig::controlled().await;
+    let shown = rig.shown_with_control().await;
+    let (app, id) = (rig.viewing.app.clone(), shown.viewing.id);
+
+    // The Mac says that the window is wider than it was in the picture.
+    rig.platform.set_around(Around {
+        window: BatonRect {
+            x: 100.0,
+            y: 50.0,
+            width: 500.0,
+            height: 300.0,
+        },
+        ..Around::default()
+    });
+    assert!(app.window_input(id, touch(0.5, 0.5, WindowPointer::Move)));
+    assert_eq!(rig.notice().await, (id, WindowNoticeReason::Resized, 1));
+    assert_eq!(rig.platform.posts(shown.window), []);
+
+    assert!(app.end_window(id));
+    rig.nothing_is_left().await;
+}
+
+#[tokio::test]
+async fn pictures_with_no_layout_of_the_window_cannot_be_touched() {
+    // A platform that says nothing of it, and one that was written when the struct ended before
+    // the layout: what lies in the memory after the end of the struct is not read.
+    for cut in [false, true] {
+        let mut rig = Rig::controlled().await;
+        let shown = rig.share(true).await;
+        let kind = rig.wanted(shown.link).await;
+        let size = if cut {
+            u32::try_from(offset_of!(BatonPicture, geometry)).unwrap()
+        } else {
+            size_of_u32::<BatonPicture>()
+        };
+        let layout = if cut {
+            window_layout()
+        } else {
+            BatonGeometry::default()
+        };
+        assert_eq!(
+            sent_sized(&rig.registry, shown.link, &pic(kind, 0), layout, size),
+            Ok((SENT, 0))
+        );
+        rig.until_shown(0).await;
+        let (app, id) = (rig.viewing.app.clone(), shown.viewing.id);
+
+        // The person can touch the picture, and the Mac does not know where.
+        assert!(app.window_input(id, touch(0.5, 0.5, WindowPointer::Move)));
+        assert_eq!(
+            rig.notice().await,
+            (id, WindowNoticeReason::OutOfDate, 1),
+            "cut: {cut}"
+        );
+        assert_eq!(rig.platform.posts(shown.window), [], "cut: {cut}");
+
+        assert!(app.end_window(id));
+        rig.nothing_is_left().await;
+    }
+}
+
+#[tokio::test]
+async fn the_thread_that_serves_a_window_keeps_time_as_the_registry_says() {
+    // A press that the person never lets go of is let go of once they have said nothing for the
+    // quiet time that the registry gives, and not after the ten seconds of the default.
+    let mut rig = Rig::timed(Timing {
+        poll: Duration::from_millis(10),
+        quiet: Duration::from_millis(150),
+    })
+    .await;
+    let shown = rig.shown_with_control().await;
+    let (app, id) = (rig.viewing.app.clone(), shown.viewing.id);
+
+    let pressed = Instant::now();
+    assert!(app.window_input(id, touch(0.5, 0.5, WindowPointer::Down(WindowButton::Left))));
+    until("the button to be let go of", || {
+        rig.platform.posts(shown.window).len() == 2
+    })
+    .await;
+    assert!(
+        pressed.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        pressed.elapsed()
+    );
+    assert_eq!(
+        rig.platform.posts(shown.window),
+        [left_down(300.0, 200.0), left_up(300.0, 200.0)]
+    );
+
+    assert!(app.end_window(id));
+    rig.nothing_is_left().await;
+}
+
+#[tokio::test]
+async fn the_capture_times_of_pictures_and_of_changes_are_in_microseconds() {
+    let mut rig = Rig::controlled().await;
+    let shown = rig.share(true).await;
+    // The picture was captured 16 ms into the session: 16,000 microseconds.
+    assert_eq!(
+        rig.send_laid_out(shown.link, 1, window_layout()).await,
+        (BEGIN_KEY, SENT, 0)
+    );
+    rig.until_shown(0).await;
+    let (app, id) = (rig.viewing.app.clone(), shown.viewing.id);
+    tokio::time::sleep(Duration::from_millis(700)).await;
+
+    // The window changed at 15 ms, before the picture: it is of no matter to it.
+    assert_eq!(changed(&rig.registry, shown.link, 15_000), Ok(()));
+    assert!(app.window_input(id, touch(0.5, 0.5, WindowPointer::Move)));
+    until("the window to be done to", || {
+        rig.platform.posts(shown.window).len() == 1
+    })
+    .await;
+
+    // It changed again at 20 ms, after the picture, which is old by now.
+    assert_eq!(changed(&rig.registry, shown.link, 20_000), Ok(()));
+    assert!(app.window_input(id, touch(0.5, 0.5, WindowPointer::Move)));
+    assert_eq!(rig.notice().await, (id, WindowNoticeReason::OutOfDate, 1));
+    assert_eq!(rig.platform.posts(shown.window).len(), 1);
+
+    assert!(app.end_window(id));
+    rig.nothing_is_left().await;
+}
+
+#[tokio::test]
+async fn a_picture_that_did_not_go_out_still_shows_that_the_window_changed() {
+    let mut rig = Rig::controlled().await;
+    let shown = rig.shown_with_control().await;
+    let (app, id) = (rig.viewing.app.clone(), shown.viewing.id);
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert!(app.window_input(id, touch(0.5, 0.5, WindowPointer::Move)));
+    until("the window to be done to", || {
+        rig.platform.posts(shown.window).len() == 1
+    })
+    .await;
+
+    // The window is resized while a picture of it is made, so the picture is of the old size and
+    // does not go out. It showed that the window changed all the same.
+    assert_eq!(rig.wanted(shown.link).await, BEGIN_DELTA);
+    assert_eq!(
+        new_epoch(&rig.registry, shown.link, (CODEC_H264, 32, 24, 15)),
+        Ok(())
+    );
+    assert_eq!(
+        sent_with(
+            &rig.registry,
+            shown.link,
+            &pic(BEGIN_DELTA, 1),
+            window_layout()
+        ),
+        Ok((SENT_STALE, 0))
+    );
+    assert!(app.window_input(id, touch(0.5, 0.5, WindowPointer::Move)));
+    assert_eq!(rig.notice().await, (id, WindowNoticeReason::OutOfDate, 1));
+    assert_eq!(rig.platform.posts(shown.window).len(), 1);
+
+    assert!(app.end_window(id));
+    rig.nothing_is_left().await;
+}
+
+#[tokio::test]
+async fn a_picture_whose_struct_ends_before_the_layout_of_the_header_is_refused() {
+    // A delta needs no parameter sets, so nothing but the size of the struct says that this one is
+    // not whole: it ends where the count of the sets should be.
+    let mut rig = Rig::new().await;
+    let link = rig.share(false).await.link;
+    assert_eq!(rig.send(link, 0).await, (BEGIN_KEY, SENT, 0));
+    let delta = pic(BEGIN_DELTA, 1);
+    let cut = BatonPicture {
+        size: u32::try_from(offset_of!(BatonPicture, set_count)).unwrap(),
+        flags: delta.flags,
+        capture_time: delta.capture_time,
+        length_size: delta.length_size,
+        reserved: 0,
+        sample: BatonBytes::of(&delta.sample),
+        sets: ptr::null(),
+        set_count: 0,
+        geometry: BatonGeometry::default(),
+    };
+    assert_eq!(rig.wanted(link).await, BEGIN_DELTA);
+    let (before_outcome, before_number) = (0xaaaa_aaaa_u32, 0xbbbb_bbbb_bbbb_bbbb_u64);
+    let (mut outcome, mut number) = (before_outcome, before_number);
+    // SAFETY: the sample is there, and lives through the call.
+    let result = unsafe {
+        fake_sharer::sent_raw(
+            &rig.registry,
+            link,
+            Some(&cut),
+            Some(&mut outcome),
+            Some(&mut number),
+        )
+    };
+    assert_eq!(result, Err(Error::Argument));
+    assert_eq!((outcome, number), (before_outcome, before_number));
+
+    assert!(rig.sharing.app.end_window(1));
+    rig.nothing_is_left().await;
+}
+
+#[tokio::test]
+async fn a_picture_does_not_go_out_before_the_gate_can_have_its_frame() {
+    // An event names a picture by its number and is looked at under the lock of the gate. The lock
+    // is taken before the number is made and held until the frame is recorded, so that an event
+    // that names a picture that went out finds it recorded. A picture is therefore not sent while
+    // someone else holds the gate.
+    let mut rig = Rig::controlled().await;
+    let shown = rig.share(true).await;
+    let screen = rig.viewer.screens_made() as u64;
+    assert_eq!(screen, 1, "the other device has the window");
+    let input = rig.registry.source(shown.link).unwrap().input();
+
+    let (held, is_held) = std::sync::mpsc::channel();
+    let (let_go, to_let_go) = std::sync::mpsc::channel::<()>();
+    let holder = thread::spawn(move || {
+        let gate = input.gate();
+        held.send(()).unwrap();
+        // Also when the test fails and the sender is dropped.
+        let _ = to_let_go.recv();
+        drop(gate);
+    });
+    is_held.recv().unwrap();
+
+    let kind = rig.wanted(shown.link).await;
+    assert_eq!(kind, BEGIN_KEY);
+    let (registry, link) = (Arc::clone(&rig.registry), shown.link);
+    let sender = thread::spawn(move || sent_with(&registry, link, &pic(kind, 0), window_layout()));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        rig.decoded(screen).is_empty(),
+        "the picture went out while another thread held the gate"
+    );
+
+    let_go.send(()).unwrap();
+    holder.join().unwrap();
+    assert_eq!(sender.join().unwrap(), Ok((SENT, 0)));
+    rig.until_shown(0).await;
+
+    assert!(rig.sharing.app.end_window(shown.sharing.id));
+    rig.nothing_is_left().await;
 }

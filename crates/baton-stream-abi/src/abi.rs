@@ -122,6 +122,53 @@ pub const SENT_TOO_LARGE: u32 = 2;
 /// The session is over: nothing went out.
 pub const SENT_OVER: u32 = 3;
 
+/// Another window has the keyboard, or the application is not in front.
+pub const KEYBOARD_ELSEWHERE: u32 = 0;
+/// The application is in front and the shared window is its focused window.
+pub const KEYBOARD_SHARED: u32 = 1;
+/// The platform cannot tell, which counts as not the shared window.
+pub const KEYBOARD_UNKNOWN: u32 = 2;
+
+/// A window in front of the shared one belongs to its application.
+pub const FRONT_SAME_APPLICATION: u32 = 1;
+/// A window in front of the shared one is on the layer of an open menu.
+pub const FRONT_MENU: u32 = 2;
+
+/// The most windows in front of the shared one that `surroundings` has room for.
+pub const FRONTS_MAX: u32 = 128;
+
+/// A post of a pointer.
+pub const POST_POINTER: u32 = 1;
+/// A post of a key.
+pub const POST_KEY: u32 = 2;
+
+/// The pointer moved, with a button down or not.
+pub const POINTER_MOVE: u32 = 1;
+/// A button went down.
+pub const POINTER_DOWN: u32 = 2;
+/// A button came up.
+pub const POINTER_UP: u32 = 3;
+/// A scroll.
+pub const POINTER_SCROLL: u32 = 4;
+
+/// The primary button, or a touch.
+pub const BUTTON_LEFT: u32 = 0;
+/// The secondary button.
+pub const BUTTON_RIGHT: u32 = 1;
+/// The middle button.
+pub const BUTTON_MIDDLE: u32 = 2;
+
+/// Shift is down.
+pub const MOD_SHIFT: u32 = 1;
+/// Control is down.
+pub const MOD_CONTROL: u32 = 2;
+/// Option is down.
+pub const MOD_OPTION: u32 = 4;
+/// Command is down.
+pub const MOD_COMMAND: u32 = 8;
+/// Caps lock is on.
+pub const MOD_CAPS_LOCK: u32 = 16;
+
 /// The most parameter sets that a picture is given with.
 pub const SETS_MAX: u32 = 256;
 /// The most bytes of a parameter set.
@@ -346,6 +393,36 @@ pub struct BatonPicked {
     pub app: BatonBytes,
 }
 
+/// A rectangle on the screen, in points.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct BatonRect {
+    /// The left edge, from the left edge of the main display.
+    pub x: f64,
+    /// The top edge, from the top edge of the main display.
+    pub y: f64,
+    /// The width.
+    pub width: f64,
+    /// The height.
+    pub height: f64,
+}
+
+/// How the window was laid out in a picture.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct BatonGeometry {
+    /// The width of the window on the screen, in points.
+    pub window_width: f64,
+    /// The height of the window on the screen, in points.
+    pub window_height: f64,
+    /// The width of the picture in pixels.
+    pub picture_width: u32,
+    /// The height of the picture in pixels.
+    pub picture_height: u32,
+    /// Where the content of the window is in the picture, in pixels.
+    pub content: BatonRect,
+}
+
 /// A picture that the encoder made.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -366,6 +443,75 @@ pub struct BatonPicture {
     pub sets: *const BatonBytes,
     /// How many parameter sets.
     pub set_count: usize,
+    /// How the window was laid out in this picture. A struct that ends before it is read with a
+    /// geometry of zero.
+    pub geometry: BatonGeometry,
+}
+
+/// A window that is in front of the shared one.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct BatonFront {
+    /// Where it is.
+    pub rect: BatonRect,
+    /// `FRONT_` bits.
+    pub flags: u32,
+    /// Zero.
+    pub reserved: u32,
+}
+
+/// What the Mac is doing around the window.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BatonSurroundings {
+    /// The bytes the platform may write.
+    pub size: u32,
+    /// 1 if the Mac is locked or its display is off.
+    pub locked: u32,
+    /// 1 if the shared window is on screen.
+    pub on_screen: u32,
+    /// `KEYBOARD_`.
+    pub keyboard: u32,
+    /// Where the shared window is now.
+    pub window: BatonRect,
+    /// Room for `front_cap` windows, written by the platform.
+    pub fronts: *mut BatonFront,
+    /// How many windows there is room for.
+    pub front_cap: u32,
+    /// How many the platform wrote.
+    pub front_count: u32,
+}
+
+/// One thing that the person did at the other device, put to the shared window.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BatonPost {
+    /// The bytes of this struct.
+    pub size: u32,
+    /// `POST_`.
+    pub kind: u32,
+    /// A pointer: where, in points on the screen.
+    pub x: f64,
+    /// A pointer: where, in points on the screen.
+    pub y: f64,
+    /// A pointer: `POINTER_`.
+    pub action: u32,
+    /// A pointer that went down or came up: `BUTTON_`.
+    pub button: u32,
+    /// A scroll: along x, in points. Positive moves the content to the right.
+    pub dx: f32,
+    /// A scroll: along y, in points. Positive moves the content down.
+    pub dy: f32,
+    /// `MOD_` bits.
+    pub modifiers: u32,
+    /// A key: a USB HID usage of the keyboard page, or 0 for text with no key.
+    pub code: u32,
+    /// A key: 1 if it went down.
+    pub down: u32,
+    /// A key: 1 if the system repeats a key that is held.
+    pub repeat: u32,
+    /// A key: the text it produced. Not for a log.
+    pub text: BatonBytes,
 }
 
 /// Fills in what the device can show.
@@ -435,9 +581,15 @@ pub type PrepareFn = unsafe extern "C" fn(
 /// Starts to capture and encode the window.
 pub type StartFn =
     unsafe extern "C" fn(picked: *mut c_void, link: u64, message: *mut BatonMessage) -> i32;
+/// Fills in what the Mac is doing around the window.
+pub type SurroundingsFn =
+    unsafe extern "C" fn(picked: *mut c_void, surroundings: *mut BatonSurroundings) -> i32;
+/// Puts one thing that the person did to the window.
+pub type PostFn = unsafe extern "C" fn(picked: *mut c_void, post: *const BatonPost) -> i32;
 
 /// What the platform registers to share windows. A function that is `None` here is a registration
-/// that is refused. `ended` and `release` are called with the pointer of the window, where the
+/// that is refused, except `surroundings` and `post`, which a platform that cannot post input
+/// leaves out. `ended` and `release` are called with the pointer of the window, where the
 /// viewer's are called with the pointer of a screen.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -462,4 +614,8 @@ pub struct BatonSharerVTable {
     pub ended: Option<EndedFn>,
     /// See [`ReleaseFn`].
     pub release: Option<ReleaseFn>,
+    /// See [`SurroundingsFn`].
+    pub surroundings: Option<SurroundingsFn>,
+    /// See [`PostFn`].
+    pub post: Option<PostFn>,
 }

@@ -170,7 +170,7 @@ func testAPickThatCannotBeShownWritesTheSentenceAndAnythingElseHasOneOfItsOwn() 
   platform.pickFailure = Other()
   result = withMessage { pick(table.context, 2, $0) }
   check(result.code == Int32(BATON_E_PLATFORM))
-  check(result.sentence == "The window picker could not be shown.", result.sentence)
+  check(result.sentence == "The picker could not be shown.", result.sentence)
 
   // A message that is too short, or none, or no context, is refused without asking the platform.
   platform.pickFailure = nil

@@ -130,7 +130,8 @@ impl WindowShare {
 
     /// The person at this device lets the viewer control the window. The viewer cannot ask for
     /// it and cannot turn it on later, so it is decided here. The node must have been set up to
-    /// take input (`NodeBuilder::share_windows`).
+    /// take input (`NodeBuilder::share_windows`). A whole display cannot be offered with control
+    /// in this version: the node refuses such an offer.
     #[must_use]
     pub fn with_control(mut self) -> Self {
         self.control = true;
@@ -150,8 +151,15 @@ impl WindowShare {
         }
     }
 
-    /// Whether the offer is within the limits of the protocol.
+    /// Whether the offer is within the limits of the protocol, and of what a source may offer.
     pub(crate) fn check(&self) -> Result<()> {
+        // Section 9: how input is judged on a whole screen is not specified yet, so an offer of
+        // one is never one with control.
+        if self.source == SourceKind::Display && self.control {
+            return Err(Error::BadItem(
+                "a whole display cannot be shared with control".to_owned(),
+            ));
+        }
         Request::Stream(StreamRequest::Offer(
             self.offer(SessionId::from_bytes([0; SessionId::LEN])),
         ))

@@ -25,15 +25,23 @@
 //! - The window that the person picks ([`exports::baton_stream_pick_done`]) belongs to the Rust
 //!   side from then on, and is passed from one owner to the next: it is prepared only after the
 //!   other person says yes, started when the session runs, and let go of exactly once, started or
-//!   not. A task that waits for the end of the session closes its link, tells the platform with
-//!   `ended` and then lets go, on a thread of the runtime and with no lock held, so that the
-//!   platform can stop its capture threads in `ended`.
+//!   not. From the start a thread of its own serves the window: it calls `start`, puts the events
+//!   of the person at the other device to the window (see below), and, when the task that waits
+//!   for the end of the session has closed the link, tells the platform with `ended` and then lets
+//!   go, with no lock held, so that the platform can stop its capture threads in `ended`.
 //! - The capture threads of the platform ask the session with the link that `start` gave
 //!   ([`exports::baton_stream_source_begin`] and the functions beside it) whether to make a
 //!   picture, and hand over the ones they made. The Rust side converts each picture from AVCC to
 //!   the form of the wire and refuses one that cannot go on it. A call that comes after the end,
 //!   before the link is closed, is answered as the session would; after that, as a link that is
 //!   not open.
+//! - A window can be shared with control. What the person does at the other device then reaches
+//!   the window through the rules of ADR 0009 (`baton_stream::gate`): for each batch of events
+//!   the platform says what the Mac is doing around the window (`surroundings`), and what the
+//!   rules let through it posts (`post`). The platform tells the rules how each picture laid the
+//!   window out (the geometry of `baton_stream_source_sent`) and when the window changed
+//!   ([`exports::baton_stream_source_changed`]), which is what turns a place in a picture into a
+//!   place on the screen, and what makes a tap on a picture that is out of date come to nothing.
 //!
 //! # Why this crate has `unsafe` code
 //!
@@ -73,8 +81,10 @@
 //! The tests play the platform in Rust, through the same C functions: they hold the layout to the
 //! header, run a session against the registry, and check that nothing leaks and that a wrong call
 //! is refused. The Swift of the viewer calls the half for showing windows, and CI decodes a short
-//! video with it on a Mac. No Swift code calls the half for sharing yet, so nothing real has been
-//! captured or encoded through it.
+//! video with it on a Mac. The Swift of the Mac source calls the half for sharing a window, and CI
+//! builds it. No Swift code fills in `surroundings` and `post` yet, so the rules of the gate have
+//! put nothing to a real window through this interface, and the platform's side of them (what the
+//! Mac is doing around the window, and the events it is asked to post) is only played in Rust.
 
 #[cfg(not(target_pointer_width = "64"))]
 compile_error!(
@@ -90,6 +100,7 @@ mod fake;
 mod fake_sharer;
 #[cfg(test)]
 mod fixture;
+mod input;
 #[allow(unsafe_code)]
 mod platform;
 mod registry;

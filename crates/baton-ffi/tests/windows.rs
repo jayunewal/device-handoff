@@ -16,8 +16,8 @@ use baton_ffi::api::baton::Baton;
 use baton_stream_abi::{
     abi::{
         ABI_VERSION, BatonDecoderState, BatonFormat, BatonFrame, BatonLimits, BatonMessage,
-        BatonScreen, BatonSharerVTable, BatonSourceMessage, BatonTakes, BatonViewerVTable,
-        BatonWindow, CODEC_H264, E_PLATFORM, OK,
+        BatonPost, BatonScreen, BatonSharerVTable, BatonSourceMessage, BatonSurroundings,
+        BatonTakes, BatonViewerVTable, BatonWindow, CODEC_H264, E_PLATFORM, OK,
     },
     exports::{baton_stream_register_sharer, baton_stream_register_viewer},
 };
@@ -81,6 +81,14 @@ unsafe extern "C" fn prepare(_: *mut c_void, _: *const BatonTakes, _: *mut Baton
 }
 
 unsafe extern "C" fn begin(_: *mut c_void, _: u64, _: *mut BatonMessage) -> i32 {
+    E_PLATFORM
+}
+
+unsafe extern "C" fn surroundings(_: *mut c_void, _: *mut BatonSurroundings) -> i32 {
+    E_PLATFORM
+}
+
+unsafe extern "C" fn post(_: *mut c_void, _: *const BatonPost) -> i32 {
     E_PLATFORM
 }
 
@@ -151,6 +159,8 @@ async fn the_app_is_started_with_the_viewer_and_the_sharer_that_the_platform_reg
         start: Some(begin),
         ended: Some(ended),
         release: Some(release),
+        surroundings: Some(surroundings),
+        post: Some(post),
     };
     // SAFETY: a vtable that is whole, with functions that keep to the header.
     assert_eq!(

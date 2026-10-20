@@ -17,22 +17,38 @@
 //!   points into memory that this module keeps alive for the call.
 //! - [`SharerCalls`] and [`PickedHandle`] are the same two for sharing: the vtable of the sharer,
 //!   and one window that the person picked, whose pointer the platform gave with its answer
-//!   ([`SharerCalls::adopt`]) and which is released once, when the handle is dropped.
+//!   ([`SharerCalls::adopt`]) and which is released once, when the handle is dropped. A window
+//!   that is shared with control also asks the platform what the Mac is doing around it
+//!   ([`PickedHandle::surroundings`]) and has it put what the person did there
+//!   ([`PickedHandle::post`]).
 //!
 //! Every call is made inside [`within`], which marks the thread. The functions of the interface
 //! that the platform calls refuse to run on a thread that is inside a call into the platform,
 //! since the session's lock is held there and a call back would wait for it.
 
-use std::{cell::Cell, ffi::c_void, ptr::NonNull};
+use std::{
+    cell::Cell,
+    ffi::c_void,
+    mem::{MaybeUninit, offset_of},
+    ptr::{self, NonNull},
+};
+
+use baton_stream::{
+    gate::{Front, Geometry, Keyboard, Post, Rect, Size},
+    input::{Button, PointerAction},
+};
 
 use crate::{
     Error,
     abi::{
-        ABI_VERSION, BatonBytes, BatonDecoderState, BatonFormat, BatonFrame, BatonLimits,
-        BatonMessage, BatonScreen, BatonSharerVTable, BatonSourceMessage, BatonTakes,
-        BatonViewerVTable, BatonWindow, CancelPickFn, ControlFn, DecodeFn, EndedFn, LimitsFn,
-        MESSAGE_MAX, OK, OpenFn, PickFn, PrepareFn, ReleaseFn, ShowFn, SourceFn, StartFn, StateFn,
-        size_of_u32,
+        ABI_VERSION, BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT, BatonBytes, BatonDecoderState,
+        BatonFormat, BatonFrame, BatonFront, BatonGeometry, BatonLimits, BatonMessage, BatonPost,
+        BatonRect, BatonScreen, BatonSharerVTable, BatonSourceMessage, BatonSurroundings,
+        BatonTakes, BatonViewerVTable, BatonWindow, CancelPickFn, ControlFn, DecodeFn, EndedFn,
+        FRONT_MENU, FRONT_SAME_APPLICATION, FRONTS_MAX, KEYBOARD_ELSEWHERE, KEYBOARD_SHARED,
+        KEYBOARD_UNKNOWN, LimitsFn, MESSAGE_MAX, OK, OpenFn, POINTER_DOWN, POINTER_MOVE,
+        POINTER_SCROLL, POINTER_UP, POST_KEY, POST_POINTER, PickFn, PostFn, PrepareFn, ReleaseFn,
+        ShowFn, SourceFn, StartFn, StateFn, SurroundingsFn, size_of_u32,
     },
     registry::Registry,
 };
@@ -60,20 +76,23 @@ fn within<R>(call: impl FnOnce() -> R) -> R {
     call()
 }
 
-/// Reads a vtable that the platform registered: a copy of the struct, if it is whole.
+/// Reads a vtable that the platform registered: a copy of the struct, if it holds the first
+/// `mandatory` bytes of it. What the platform's struct lacks of this version's reads as zero, so a
+/// function it lacks is `None`; and so does a function that its size cuts in two.
 ///
 /// # Errors
 ///
 /// The pointer is null or not aligned, the version is not the one of this library, or the size is
-/// smaller than the struct that this version knows. A larger one is accepted: the end of it
+/// smaller than `mandatory`. A larger one than this version knows is accepted: the end of it
 /// belongs to a newer version.
 ///
 /// # Safety
 ///
 /// `table` is either null, or points to a struct that begins with a `u32` version and a `u32`
 /// size, as the two vtables of the header do, and is `size` bytes long, that nothing writes to
-/// during this call.
-unsafe fn read_table<T: Copy>(table: *const T) -> Result<T, Error> {
+/// during this call. All zero bytes are a valid `T`: it holds numbers, pointers and optional
+/// functions, and nothing else.
+unsafe fn read_table<T: Copy>(table: *const T, mandatory: usize) -> Result<T, Error> {
     if table.is_null() || !table.is_aligned() {
         return Err(Error::Argument);
     }
@@ -82,12 +101,25 @@ unsafe fn read_table<T: Copy>(table: *const T) -> Result<T, Error> {
     // too), and the caller promises that a struct that has these two fields first is there; they
     // are read before anything else of it.
     let (version, size) = unsafe { (head.read(), head.add(1).read()) };
-    if version != ABI_VERSION || usize::try_from(size).map_or(true, |size| size < size_of::<T>()) {
+    let Ok(size) = usize::try_from(size) else {
+        return Err(Error::Argument);
+    };
+    if version != ABI_VERSION || size < mandatory {
         return Err(Error::Argument);
     }
-    // SAFETY: the struct is at least as long as `T` (the caller promises it is `size` bytes), and
-    // the pointer is aligned. The bytes after `T` belong to a newer version and are not read.
-    Ok(unsafe { table.read() })
+    // A size that ends in the middle of a field is not copied to the end: half of a pointer is
+    // not a pointer. Every field starts at a multiple of the alignment of the struct.
+    let copied = size.min(size_of::<T>()) & !(align_of::<T>() - 1);
+    let mut whole = MaybeUninit::<T>::zeroed();
+    // SAFETY: the struct is at least `size` bytes long, as the caller promises, and the bytes that
+    // are copied are the first of them, no more than `T` has; they land in a `T` that was zeroed
+    // first. The bytes after `T` belong to a newer version and are not read.
+    unsafe {
+        ptr::copy_nonoverlapping(table.cast::<u8>(), whole.as_mut_ptr().cast::<u8>(), copied);
+    }
+    // SAFETY: the caller promises that all zero bytes are a valid `T`, and so is a zeroed `T`
+    // that has had the platform's bytes written over its start.
+    Ok(unsafe { whole.assume_init() })
 }
 
 /// The functions that the platform registered, and the pointer that `limits` and `open` take.
@@ -128,7 +160,7 @@ impl Calls {
     /// `u32` size and is `size` bytes long, that nothing writes to during this call.
     pub(crate) unsafe fn read(vtable: *const BatonViewerVTable) -> Result<Self, Error> {
         // SAFETY: the caller's promise about `vtable` is this function's own.
-        let table = unsafe { read_table(vtable) }?;
+        let table = unsafe { read_table(vtable, size_of::<BatonViewerVTable>()) }?;
         match (
             table.limits,
             table.open,
@@ -430,6 +462,9 @@ pub(crate) struct SharerCalls {
     start: StartFn,
     ended: EndedFn,
     release: ReleaseFn,
+    /// `surroundings` and `post`, which a platform that cannot post input leaves out: both or
+    /// neither.
+    input: Option<(SurroundingsFn, PostFn)>,
 }
 
 // SAFETY: a `SharerCalls` exists only for a vtable that the platform registered, and the header's
@@ -447,8 +482,10 @@ impl SharerCalls {
     /// # Errors
     ///
     /// The pointer is null or not aligned, the version is not the one of this library, the size
-    /// is smaller than the struct that this version knows (a larger one is accepted: the end of
-    /// it belongs to a newer version), or a function is missing.
+    /// is smaller than the part of the struct that ends at `release` (a larger one is accepted:
+    /// the end of it belongs to a newer version), or one of the functions up to `release` is
+    /// missing. `surroundings` and `post` may be missing; a table that has only one of them has
+    /// neither.
     ///
     /// # Safety
     ///
@@ -456,7 +493,7 @@ impl SharerCalls {
     /// `u32` size and is `size` bytes long, that nothing writes to during this call.
     pub(crate) unsafe fn read(vtable: *const BatonSharerVTable) -> Result<Self, Error> {
         // SAFETY: the caller's promise about `vtable` is this function's own.
-        let table = unsafe { read_table(vtable) }?;
+        let table = unsafe { read_table(vtable, offset_of!(BatonSharerVTable, surroundings)) }?;
         match (
             table.control,
             table.pick,
@@ -483,6 +520,7 @@ impl SharerCalls {
                 start,
                 ended,
                 release,
+                input: table.surroundings.zip(table.post),
             }),
             _ => Err(Error::Argument),
         }
@@ -492,6 +530,11 @@ impl SharerCalls {
     pub(crate) fn control(&self) -> bool {
         // SAFETY: the function is the platform's, called as the header says.
         within(|| unsafe { (self.control)(self.context) }) == 1
+    }
+
+    /// Whether the platform gave the functions that put input to a window.
+    pub(crate) fn can_post(&self) -> bool {
+        self.input.is_some()
     }
 
     /// Has the platform show the picker for `request`.
@@ -530,8 +573,8 @@ pub(crate) struct PickedHandle {
 // SAFETY: the header's rule for a window is that its calls may come from any thread as long as
 // they do not overlap. Every call but `release` takes `&mut self`, and `release` runs when the
 // handle is dropped, which needs it to be unborrowed; and a handle has one owner at a time,
-// which `sharer` passes it on to (the pick, the offer, the task that waits for the end of the
-// session), so two calls never overlap. Rust never reads through `context`.
+// which `sharer` passes it on to (the pick, the offer, the thread that serves the session), so
+// two calls never overlap. Rust never reads through `context`.
 unsafe impl Send for PickedHandle {}
 
 impl PickedHandle {
@@ -581,10 +624,187 @@ impl PickedHandle {
         })
     }
 
+    /// Asks the platform what the Mac is doing around the window. `None` if the platform gave no
+    /// way to ask, or the call failed.
+    pub(crate) fn surroundings(&mut self) -> Option<Surroundings> {
+        let (call, _) = self.calls.input?;
+        let mut fronts = [BatonFront::default(); FRONTS_MAX as usize];
+        // The answer that is left if the platform writes nothing is the careful one.
+        let mut asked = BatonSurroundings {
+            size: size_of_u32::<BatonSurroundings>(),
+            locked: 1,
+            on_screen: 0,
+            keyboard: KEYBOARD_UNKNOWN,
+            window: BatonRect::default(),
+            fronts: fronts.as_mut_ptr(),
+            front_cap: FRONTS_MAX,
+            front_count: 0,
+        };
+        // SAFETY: the struct and the room for the windows in front live until the call returns,
+        // and `context` is the window the platform gave, not yet released.
+        let code = within(|| unsafe { call(self.context.as_ptr(), &raw mut asked) });
+        if code != OK {
+            return None;
+        }
+        let count = usize::try_from(asked.front_count)
+            .ok()
+            .filter(|count| *count <= fronts.len())?;
+        Some(Surroundings {
+            locked: asked.locked != 0,
+            on_screen: asked.on_screen == 1,
+            keyboard: match asked.keyboard {
+                KEYBOARD_SHARED => Keyboard::Shared,
+                KEYBOARD_ELSEWHERE => Keyboard::Elsewhere,
+                _ => Keyboard::Unknown,
+            },
+            window: rect_of(&asked.window),
+            fronts: fronts[..count]
+                .iter()
+                .map(|front| Front {
+                    rect: rect_of(&front.rect),
+                    same_application: front.flags & FRONT_SAME_APPLICATION != 0,
+                    menu: front.flags & FRONT_MENU != 0,
+                })
+                .collect(),
+        })
+    }
+
+    /// Has the platform put one thing that the person did to the window. `false` if the platform
+    /// gave no way to, or the call failed.
+    pub(crate) fn post(&mut self, post: &Post) -> bool {
+        let Some((_, call)) = self.calls.input else {
+            return false;
+        };
+        let post = c_post(post);
+        // SAFETY: the struct, and the text that it points to, live until the call returns, and
+        // `context` is the window the platform gave, not yet released.
+        within(|| unsafe { call(self.context.as_ptr(), &raw const post) }) == OK
+    }
+
     /// Tells the platform that the session is over.
     pub(crate) fn ended(&mut self) {
         // SAFETY: `context` is the window the platform gave, not yet released.
         within(|| unsafe { (self.calls.ended)(self.context.as_ptr()) });
+    }
+}
+
+/// What the Mac is doing around a window, as the platform said.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Surroundings {
+    /// The Mac is locked, or its display is off.
+    pub(crate) locked: bool,
+    /// The window is on screen.
+    pub(crate) on_screen: bool,
+    /// Whether the window has the keyboard.
+    pub(crate) keyboard: Keyboard,
+    /// Where the window is now.
+    pub(crate) window: Rect,
+    /// The windows in front of it that draw something.
+    pub(crate) fronts: Vec<Front>,
+}
+
+impl Surroundings {
+    /// What is assumed of a window that the platform could not say anything about: it is not
+    /// known to be on the screen, so nothing is put to it.
+    pub(crate) fn unknown() -> Self {
+        Self {
+            locked: false,
+            on_screen: false,
+            keyboard: Keyboard::Unknown,
+            window: Rect::default(),
+            fronts: Vec::new(),
+        }
+    }
+}
+
+pub(crate) fn rect_of(rect: &BatonRect) -> Rect {
+    Rect::new(rect.x, rect.y, rect.width, rect.height)
+}
+
+/// How a picture laid out its window, as the platform wrote it. A geometry that is all zero, as
+/// one that a platform without input leaves, is one that the gate does not remember.
+pub(crate) fn geometry_of(geometry: &BatonGeometry) -> Geometry {
+    Geometry {
+        window: Size {
+            width: geometry.window_width,
+            height: geometry.window_height,
+        },
+        picture: Size {
+            width: f64::from(geometry.picture_width),
+            height: f64::from(geometry.picture_height),
+        },
+        content: rect_of(&geometry.content),
+    }
+}
+
+fn button_code(button: Button) -> u32 {
+    match button {
+        Button::Left => BUTTON_LEFT,
+        Button::Right => BUTTON_RIGHT,
+        Button::Middle => BUTTON_MIDDLE,
+    }
+}
+
+/// What the platform is given for `post`. The text of a key is borrowed: the struct is good for
+/// as long as `post` lives.
+fn c_post(post: &Post) -> BatonPost {
+    let empty = BatonPost {
+        size: size_of_u32::<BatonPost>(),
+        kind: 0,
+        x: 0.0,
+        y: 0.0,
+        action: 0,
+        button: 0,
+        dx: 0.0,
+        dy: 0.0,
+        modifiers: 0,
+        code: 0,
+        down: 0,
+        repeat: 0,
+        text: BatonBytes::of(&[]),
+    };
+    match post {
+        Post::Pointer {
+            at,
+            modifiers,
+            action,
+        } => {
+            let (action, button, dx, dy) = match *action {
+                PointerAction::Move => (POINTER_MOVE, 0, 0.0, 0.0),
+                PointerAction::Down(button) => (POINTER_DOWN, button_code(button), 0.0, 0.0),
+                PointerAction::Up(button) => (POINTER_UP, button_code(button), 0.0, 0.0),
+                PointerAction::Scroll { dx, dy } => (POINTER_SCROLL, 0, dx, dy),
+            };
+            BatonPost {
+                kind: POST_POINTER,
+                x: at.x,
+                y: at.y,
+                action,
+                button,
+                dx,
+                dy,
+                modifiers: u32::from(modifiers.bits()),
+                ..empty
+            }
+        }
+        Post::Key {
+            code,
+            down,
+            modifiers,
+            repeat,
+            text,
+        } => BatonPost {
+            kind: POST_KEY,
+            modifiers: u32::from(modifiers.bits()),
+            code: u32::from(*code),
+            down: u32::from(*down),
+            repeat: u32::from(*repeat),
+            text: text.as_deref().map_or_else(
+                || BatonBytes::of(&[]),
+                |text| BatonBytes::of(text.as_bytes()),
+            ),
+            ..empty
+        },
     }
 }
 
@@ -651,10 +871,19 @@ impl Registry {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use baton_stream::{gate::Point, input::Modifiers};
+
     use super::*;
     use crate::{
-        abi::{FRAME_KEY, FRAME_REFERENCED, SOURCE_RESUME, THERMAL_SERIOUS},
+        abi::{
+            CODEC_H264, FRAME_KEY, FRAME_REFERENCED, MOD_CAPS_LOCK, MOD_COMMAND, MOD_CONTROL,
+            MOD_OPTION, MOD_SHIFT, SOURCE_RESUME, THERMAL_SERIOUS,
+        },
         fake::{Call, Fake, OpenPlan, Watchdog},
+        fake_sharer::{
+            Around, AroundPlan, FakeSharer, SharerCall, key_post, left_down, pointer_post,
+            read_table,
+        },
     };
 
     /// Takes one function out of a vtable.
@@ -1081,5 +1310,280 @@ mod tests {
         unsafe { registry.register_viewer(&raw const table) }.unwrap();
         assert_eq!(*seen.lock().unwrap(), Some(Err(Error::Reentrant)));
         assert!(registry.viewer().is_some());
+    }
+
+    /// A window of the sharing platform of the tests that was prepared and started, which is
+    /// when the platform is asked about the Mac.
+    fn started(fake: &Arc<FakeSharer>, calls: &SharerCalls) -> PickedHandle {
+        let mut window = calls.adopt(NonNull::new(fake.new_window()).unwrap());
+        let takes = Takes {
+            max_width: 1920,
+            max_height: 1080,
+            max_fps: 60,
+            codecs: CODEC_H264,
+        };
+        window.prepare(&takes).unwrap();
+        window.start(1).unwrap();
+        window
+    }
+
+    #[test]
+    fn the_numbers_of_the_header_are_the_bits_and_the_buttons_that_the_rules_use() {
+        // The modifiers go across as the byte that the rules hold them in.
+        assert_eq!(u32::from(Modifiers::SHIFT.bits()), MOD_SHIFT);
+        assert_eq!(u32::from(Modifiers::CONTROL.bits()), MOD_CONTROL);
+        assert_eq!(u32::from(Modifiers::OPTION.bits()), MOD_OPTION);
+        assert_eq!(u32::from(Modifiers::COMMAND.bits()), MOD_COMMAND);
+        assert_eq!(u32::from(Modifiers::CAPS_LOCK.bits()), MOD_CAPS_LOCK);
+        assert_eq!(button_code(Button::Left), BUTTON_LEFT);
+        assert_eq!(button_code(Button::Right), BUTTON_RIGHT);
+        assert_eq!(button_code(Button::Middle), BUTTON_MIDDLE);
+    }
+
+    #[test]
+    fn every_kind_of_post_reaches_the_platform_as_the_header_describes_it() {
+        let fake = FakeSharer::new();
+        let mut window = started(&fake, &fake.platform());
+        let every_key = Modifiers::SHIFT
+            | Modifiers::CONTROL
+            | Modifiers::OPTION
+            | Modifiers::COMMAND
+            | Modifiers::CAPS_LOCK;
+        let mut posts = Vec::new();
+        for modifiers in [Modifiers::NONE, Modifiers::OPTION, every_key] {
+            // A window on a display to the left of the main one is at negative places.
+            let at = Point { x: -123.5, y: 4.25 };
+            for action in [
+                PointerAction::Move,
+                PointerAction::Down(Button::Left),
+                PointerAction::Down(Button::Right),
+                PointerAction::Down(Button::Middle),
+                PointerAction::Up(Button::Left),
+                PointerAction::Up(Button::Right),
+                PointerAction::Up(Button::Middle),
+                PointerAction::Scroll { dx: 12.5, dy: -3.0 },
+                PointerAction::Scroll { dx: 0.0, dy: 7.0 },
+                PointerAction::Scroll { dx: -1.5, dy: 0.0 },
+            ] {
+                posts.push(Post::Pointer {
+                    at,
+                    modifiers,
+                    action,
+                });
+            }
+            for (code, down, repeat, text) in [
+                (0x04, true, false, Some("a")),
+                (0x04, true, true, Some("a")),
+                (0x04, false, false, None),
+                (0xE7, true, false, None),
+                (0, true, false, Some("h\u{e9}llo \u{1f600} \u{4e16}")),
+            ] {
+                posts.push(Post::Key {
+                    code,
+                    down,
+                    modifiers,
+                    repeat,
+                    text: text.map(str::to_owned),
+                });
+            }
+        }
+        for post in &posts {
+            assert!(window.post(post), "{post:?}");
+        }
+        assert_eq!(fake.posts(1), posts);
+        assert_eq!(fake.complaints(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_surroundings_of_a_window_are_read_as_the_header_says() {
+        let fake = FakeSharer::new();
+        let mut window = started(&fake, &fake.platform());
+        let in_front = |x: f64, flags: u32| BatonFront {
+            rect: BatonRect {
+                x,
+                y: -2.0,
+                width: 10.0,
+                height: 20.0,
+            },
+            flags,
+            reserved: 0,
+        };
+        let front = |x: f64, same_application, menu| Front {
+            rect: Rect::new(x, -2.0, 10.0, 20.0),
+            same_application,
+            menu,
+        };
+
+        fake.set_around(Around {
+            locked: false,
+            on_screen: true,
+            keyboard: KEYBOARD_ELSEWHERE,
+            window: BatonRect {
+                x: 100.0,
+                y: 50.0,
+                width: 400.0,
+                height: 300.0,
+            },
+            fronts: vec![
+                in_front(1.0, 0),
+                in_front(2.0, FRONT_SAME_APPLICATION),
+                in_front(3.0, FRONT_MENU),
+                in_front(4.0, FRONT_SAME_APPLICATION | FRONT_MENU),
+                // A bit that this version does not know is nothing to it.
+                in_front(5.0, !(FRONT_SAME_APPLICATION | FRONT_MENU)),
+            ],
+        });
+        assert_eq!(
+            window.surroundings(),
+            Some(Surroundings {
+                locked: false,
+                on_screen: true,
+                keyboard: Keyboard::Elsewhere,
+                window: Rect::new(100.0, 50.0, 400.0, 300.0),
+                fronts: vec![
+                    front(1.0, false, false),
+                    front(2.0, true, false),
+                    front(3.0, false, true),
+                    front(4.0, true, true),
+                    front(5.0, false, false),
+                ],
+            })
+        );
+
+        assert_eq!(fake.complaints(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_numbers_that_the_platform_writes_for_the_mac_are_read_with_care() {
+        let fake = FakeSharer::new();
+        let mut window = started(&fake, &fake.platform());
+        let in_front = |x: f64| BatonFront {
+            rect: BatonRect {
+                x,
+                y: -2.0,
+                width: 10.0,
+                height: 20.0,
+            },
+            flags: 0,
+            reserved: 0,
+        };
+
+        // Who has the keyboard: a number that this version does not know is not "the window".
+        for (keyboard, expected) in [
+            (KEYBOARD_SHARED, Keyboard::Shared),
+            (KEYBOARD_ELSEWHERE, Keyboard::Elsewhere),
+            (KEYBOARD_UNKNOWN, Keyboard::Unknown),
+            (3, Keyboard::Unknown),
+            (u32::MAX, Keyboard::Unknown),
+        ] {
+            fake.plan_around(AroundPlan::Numbers {
+                locked: 0,
+                on_screen: 1,
+                keyboard,
+            });
+            let around = window.surroundings().unwrap();
+            assert_eq!(around.keyboard, expected, "keyboard {keyboard}");
+        }
+
+        // The Mac is locked unless the platform says that it is not, and the window is on the
+        // screen only if the platform says so with the number that means it.
+        for (locked, on_screen, expected) in [
+            (0, 1, (false, true)),
+            (1, 1, (true, true)),
+            (2, 1, (true, true)),
+            (u32::MAX, 1, (true, true)),
+            (0, 0, (false, false)),
+            (0, 2, (false, false)),
+            (0, u32::MAX, (false, false)),
+        ] {
+            fake.plan_around(AroundPlan::Numbers {
+                locked,
+                on_screen,
+                keyboard: KEYBOARD_SHARED,
+            });
+            let around = window.surroundings().unwrap();
+            assert_eq!(
+                (around.locked, around.on_screen),
+                expected,
+                "locked {locked}, on screen {on_screen}"
+            );
+        }
+
+        // A platform that writes nothing leaves the careful answer.
+        fake.plan_around(AroundPlan::WritesNothing);
+        assert_eq!(
+            window.surroundings(),
+            Some(Surroundings {
+                locked: true,
+                on_screen: false,
+                keyboard: Keyboard::Unknown,
+                window: Rect::default(),
+                fronts: Vec::new(),
+            })
+        );
+
+        // As many windows in front as there is room for are read, and more than that are not
+        // believed.
+        let crowd = Around {
+            fronts: (0..FRONTS_MAX).map(|at| in_front(f64::from(at))).collect(),
+            ..Around::default()
+        };
+        fake.plan_around(AroundPlan::Claims(crowd.clone(), FRONTS_MAX));
+        let around = window.surroundings().unwrap();
+        assert_eq!(around.fronts.len(), FRONTS_MAX as usize);
+        fake.plan_around(AroundPlan::Claims(crowd.clone(), FRONTS_MAX + 1));
+        assert_eq!(window.surroundings(), None);
+        fake.plan_around(AroundPlan::Claims(crowd, u32::MAX));
+        assert_eq!(window.surroundings(), None);
+
+        // A call that fails says nothing.
+        fake.plan_around(AroundPlan::Fails(-1));
+        assert_eq!(window.surroundings(), None);
+        assert_eq!(fake.complaints(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_platform_that_posts_nothing_is_not_asked_and_cannot_be_told() {
+        let fake = FakeSharer::new();
+        // Neither function: a table that ends before them, or one that has none of them.
+        let ends_early = fake.vtable_without_input();
+        let none = BatonSharerVTable {
+            surroundings: None,
+            post: None,
+            ..fake.vtable()
+        };
+        // Only one of them is as good as none.
+        let only_asks = BatonSharerVTable {
+            post: None,
+            ..fake.vtable()
+        };
+        let only_posts = BatonSharerVTable {
+            surroundings: None,
+            ..fake.vtable()
+        };
+        for (what, table) in [
+            ("a table that ends early", ends_early),
+            ("a table with neither", none),
+            ("a table that can only ask", only_asks),
+            ("a table that can only post", only_posts),
+        ] {
+            let calls = read_table(&table).unwrap();
+            assert!(!calls.can_post(), "{what}");
+            let mut window = started(&fake, &calls);
+            assert_eq!(window.surroundings(), None, "{what}");
+            assert!(!window.post(&left_down(1.0, 2.0)), "{what}");
+        }
+        let asked =
+            |call: &SharerCall| matches!(call, SharerCall::Surroundings | SharerCall::Post(_));
+        assert_eq!(fake.count(asked), 0);
+
+        // The whole table can.
+        let calls = fake.platform();
+        assert!(calls.can_post());
+        let mut window = started(&fake, &calls);
+        assert!(window.surroundings().is_some());
+        assert!(window.post(&pointer_post(1.0, 2.0, PointerAction::Move)));
+        assert!(window.post(&key_post(4, true, None)));
+        assert_eq!(fake.count(asked), 3);
     }
 }

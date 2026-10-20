@@ -8,9 +8,9 @@
  * Showing. The Rust side takes the pictures off the network and puts them in order. The platform
  * decodes them, draws them, and says how it is doing.
  *
- * Sharing. The person picks the window with the picker of the system, and the platform captures
- * it and encodes it. The Rust side offers the window to the other device, decides when a picture
- * may be made and how it goes out, and sends it.
+ * Sharing. The person picks a window, or a whole display, with the picker of the system, and the
+ * platform captures it and encodes it. The Rust side offers it to the other device, decides when
+ * a picture may be made and how it goes out, and sends it.
  *
  * This file is the whole of what the two sides say to each other, and
  * docs/adr/0009-window-streaming.md says why it is this small. It is written by hand, and the
@@ -24,13 +24,14 @@
  *     at launch: baton_stream_abi_version, baton_stream_register_viewer and
  *       baton_stream_register_sharer;
  *     while a window is shown: baton_stream_link_decode_failed;
- *     while the person picks a window to share: baton_stream_pick_done;
+ *     while the person picks a window or a display to share: baton_stream_pick_done;
  *     while a window is shared: the baton_stream_source_ functions.
  *   The Rust side calls the functions of the vtables that the platform registered:
  *     viewer: limits and open (about the device), and decode, show, source, state, ended and
  *       release (about one screen, with the pointer that open gave);
- *     sharer: control, pick and cancel_pick (about the device), and prepare, start, ended and
- *       release (about one window, with the pointer that baton_stream_pick_done gave).
+ *     sharer: control, pick and cancel_pick (about the device), and prepare, start, surroundings,
+ *       post, ended and release (about one window, with the pointer that baton_stream_pick_done
+ *       gave).
  *
  * Rules that hold for every call.
  *
@@ -64,8 +65,8 @@
  *     never overlap, but two calls may come on two threads, so a screen keeps nothing in
  *     thread-local storage. The calls of two screens may overlap. The same holds for the
  *     sharer: control, pick and cancel_pick are called on a thread of the app's runtime and may
- *     overlap each other; the calls of one window (prepare, start, ended, release) never
- *     overlap, and release is the last; the calls of two windows may overlap.
+ *     overlap each other; the calls of one window (prepare, start, surroundings, post, ended,
+ *     release) never overlap, and release is the last; the calls of two windows may overlap.
  *   - Nothing in the platform may unwind into the Rust side: a Swift error or an exception
  *     is caught before it leaves the call.
  */
@@ -174,6 +175,40 @@ extern "C" {
 #define BATON_SENT_STALE 1u     /* it is of no use any more: drop it and begin again */
 #define BATON_SENT_TOO_LARGE 2u /* it is larger than the protocol allows: nothing went out */
 #define BATON_SENT_OVER 3u      /* the session is over: nothing went out */
+
+/* Whether the shared window has the keyboard, in BatonSurroundings. */
+#define BATON_KEYBOARD_ELSEWHERE 0u /* another window has it, or the application is not in front */
+#define BATON_KEYBOARD_SHARED 1u    /* the application is in front and the window is its focus */
+#define BATON_KEYBOARD_UNKNOWN 2u   /* the platform cannot tell, which counts as not the window */
+
+/* The flags of a window that is in front of the shared one, in BatonFront. */
+#define BATON_FRONT_SAME_APPLICATION 1u /* it belongs to the application of the shared window */
+#define BATON_FRONT_MENU 2u             /* it is on the layer of an open menu */
+
+/* The most windows in front of the shared one that surroundings has room for. */
+#define BATON_FRONTS_MAX 128u
+
+/* What a BatonPost puts to the window. */
+#define BATON_POST_POINTER 1u
+#define BATON_POST_KEY 2u
+
+/* What a pointer did, in a post of a pointer. */
+#define BATON_POINTER_MOVE 1u   /* it moved, with a button down or not */
+#define BATON_POINTER_DOWN 2u   /* a button went down */
+#define BATON_POINTER_UP 3u     /* a button came up */
+#define BATON_POINTER_SCROLL 4u /* a scroll, by dx and dy */
+
+/* The buttons of a pointer. */
+#define BATON_BUTTON_LEFT 0u /* the primary button, or a touch */
+#define BATON_BUTTON_RIGHT 1u
+#define BATON_BUTTON_MIDDLE 2u
+
+/* The modifier keys that are down, as bits. */
+#define BATON_MOD_SHIFT 1u
+#define BATON_MOD_CONTROL 2u
+#define BATON_MOD_OPTION 4u
+#define BATON_MOD_COMMAND 8u
+#define BATON_MOD_CAPS_LOCK 16u
 
 /*
  * Bytes in memory that the other side owns: text (UTF-8, no terminator) or a picture. When len is
@@ -348,6 +383,37 @@ typedef struct BatonPicked {
 } BatonPicked;
 
 /*
+ * A rectangle on the screen, in points: the corner at the top left, measured from the top left
+ * corner of the main display, with y growing downward. Where a window is and where something
+ * is put to it are all given in this one space.
+ */
+typedef struct BatonRect {
+    double x;
+    double y;
+    double width;
+    double height;
+} BatonRect;
+
+/*
+ * How the window was laid out in a picture, which is what turns a place in the picture into a
+ * place on the screen when the person at the other device touches it. The platform writes it for
+ * each picture that it hands over, from the window as it was when the picture was captured.
+ * window_width and window_height are the size of the window on the screen, in points;
+ * picture_width and picture_height are the size of the picture in pixels, as the encoder made it;
+ * content is where the content of the window is in the picture, in pixels, and the rest is margin
+ * that the platform added to keep the shape of the window. A geometry with a size that is not a
+ * number above zero, as one that is all zero, says nothing: the picture is sent all the same, and
+ * what the person touches on it is dropped. A platform that cannot post input leaves it zero.
+ */
+typedef struct BatonGeometry {
+    double window_width;
+    double window_height;
+    uint32_t picture_width;
+    uint32_t picture_height;
+    BatonRect content;
+} BatonGeometry;
+
+/*
  * A picture that the encoder made, as baton_stream_source_sent gives it.
  *
  * sample is the picture in the form that the Apple encoder makes (AVCC): NAL units behind lengths
@@ -363,6 +429,9 @@ typedef struct BatonPicked {
  * is the one that baton_stream_source_begin said, so the other bits are ignored.
  * capture_time is when the window was captured, in the microseconds that
  * baton_stream_source_clock counts. A sample of more than 8 MiB is not read.
+ *
+ * geometry is how the window was laid out in this picture. A struct that ends before it, as one
+ * did before input was carried, is read with a geometry of zero.
  */
 typedef struct BatonPicture {
     uint32_t size;
@@ -373,7 +442,84 @@ typedef struct BatonPicture {
     BatonBytes sample;
     const BatonBytes *sets;  /* set_count entries */
     size_t set_count;
+    BatonGeometry geometry;
 } BatonPicture;
+
+/*
+ * A window that is in front of the shared one: where it is, and what the Rust side needs to know
+ * of it. flags holds BATON_FRONT_ bits.
+ */
+typedef struct BatonFront {
+    BatonRect rect;
+    uint32_t flags;
+    uint32_t reserved;
+} BatonFront;
+
+/*
+ * What the Mac is doing around the window at the moment of the call, for the events that the
+ * person at the other device sent. The Rust side writes size, front_cap and fronts, and sets
+ * locked to 1, on_screen to 0 and keyboard to BATON_KEYBOARD_UNKNOWN, so that what the platform
+ * leaves unwritten reads as the careful answer. The platform writes the rest:
+ *
+ *   locked:      1 if the Mac is locked or its display is off, 0 if not.
+ *   on_screen:   1 if the shared window is on screen, 0 if it is minimized, closed or gone.
+ *   keyboard:    BATON_KEYBOARD_SHARED if the application of the window is in front and the
+ *                window is its focused window, BATON_KEYBOARD_ELSEWHERE if another window has
+ *                the keyboard, BATON_KEYBOARD_UNKNOWN if it cannot tell.
+ *   window:      where the shared window is now.
+ *   fronts:      room for front_cap windows, written by the Rust side. The platform writes the
+ *                windows that lie in front of the shared window and draw something, in any order,
+ *                and leaves out one that is fully transparent, or on a layer that covers nothing
+ *                and takes no keys.
+ *   front_count: how many of them the platform wrote, at most front_cap. A platform that has
+ *                more fails the call.
+ */
+typedef struct BatonSurroundings {
+    uint32_t size;
+    uint32_t locked;
+    uint32_t on_screen;
+    uint32_t keyboard;
+    BatonRect window;
+    BatonFront *fronts;
+    uint32_t front_cap;
+    uint32_t front_count;
+} BatonSurroundings;
+
+/*
+ * One thing that the person did at the other device, put to the shared window. The Rust side has
+ * decided that it belongs to this window and made its place a place on the screen. Fields that
+ * the kind does not use are zero.
+ *
+ *   BATON_POST_POINTER: a pointer at x and y, in points on the screen. action says what it did
+ *                       (BATON_POINTER_), and button which button went down or came up. A scroll
+ *                       has dx and dy in points: a positive dx moves the content to the right and
+ *                       a positive dy moves it down, as a finger that drags the content does,
+ *                       whatever the platform's own calls count as positive.
+ *   BATON_POST_KEY:     a key. code is a USB HID usage of the keyboard page (0x07), where a is
+ *                       0x04, or 0 for text that came with no key: that is typed, goes down and
+ *                       up once, and is not held. down is 1 when the key went down and 0 when it
+ *                       came up, repeat is 1 when the system repeats a key that is held, and
+ *                       text is what the key produced, if anything (UTF-8, at most 20 UTF-16
+ *                       units). Typed text is a secret: do not log it.
+ *
+ * modifiers holds BATON_MOD_ bits: the modifier keys that are down. The platform puts them on the
+ * event it makes.
+ */
+typedef struct BatonPost {
+    uint32_t size;
+    uint32_t kind;
+    double x;
+    double y;
+    uint32_t action;
+    uint32_t button;
+    float dx;
+    float dy;
+    uint32_t modifiers;
+    uint32_t code;
+    uint32_t down;
+    uint32_t repeat;
+    BatonBytes text;
+} BatonPost;
 
 /*
  * The functions of the platform. All of them are mandatory. A function that returns int32_t
@@ -425,20 +571,22 @@ typedef struct BatonViewerVTable {
 } BatonViewerVTable;
 
 /*
- * The functions of the platform that shares windows. All of them are mandatory. The first two are
- * about the device and take the context of the table; the others are about one window, and take
- * the pointer that baton_stream_pick_done gave. BatonEndedFn and BatonReleaseFn are the types of
- * ended and release above, with the pointer of the window in place of the one of the screen.
+ * The functions of the platform that shares windows. All of them are mandatory but the last two.
+ * The first three are about the device and take the context of the table; the others are about
+ * one window, and take the pointer that baton_stream_pick_done gave. BatonEndedFn and
+ * BatonReleaseFn are the types of ended and release above, with the pointer of the window in
+ * place of the one of the screen.
  *
  *   control:     whether the person can let another device control a window that they share, 1
  *                or 0. A platform that cannot post input says 0, and no window is offered with
- *                control. This version of the interface carries no input to the platform, so
- *                every platform says 0 for now: a window that was offered with control would
- *                drop every touch. Called each time the app asks what the device can do.
- *   pick:        the person wants to share a window: shows the picker of the system. request is
- *                the number that baton_stream_pick_done is given when the person has chosen, or
- *                given up, or the picker failed. Does not wait for the person. On a failure to
- *                show the picker fills in message if it can, as open does.
+ *                control; the same holds for a platform that gave no surroundings and post,
+ *                whatever control says. A whole display is not offered with control either.
+ *                Called each time the app asks what the device can do.
+ *   pick:        the person wants to share a window or a whole display: shows the picker of the
+ *                system. request is the number that baton_stream_pick_done is given when the
+ *                person has chosen, or given up, or the picker failed. Does not wait for the
+ *                person. On a failure to show the picker fills in message if it can, as open
+ *                does.
  *   cancel_pick: nobody waits for the answer any more: takes the picker down if it is up. An
  *                answer that comes anyway is refused with BATON_E_UNKNOWN_LINK, and the window
  *                it names stays with the platform.
@@ -464,14 +612,34 @@ typedef struct BatonViewerVTable {
  *   release:     the window is not needed any more, whether or not ended came first, and
  *                whether or not it was ever started. Let go of all of it, the picker's
  *                result included. Called exactly once, and nothing follows.
+ *
+ * The last two are about the input of a window that was offered with control, and a platform that
+ * cannot post input leaves both NULL: a table that ends at release is accepted, and so is one that
+ * gives only one of the two, which reads as neither. They are called after a start that returned
+ * BATON_OK and not after ended, from the one thread of the Rust side that also calls start, ended
+ * and release, one call after the other, so a slow call holds up the events behind it and
+ * nothing else of the window.
+ *
+ *   surroundings: fills in what the Mac is doing around the window, once for each batch of events
+ *                that the person at the other device sent (BatonSurroundings). A failure drops
+ *                the events of that batch, except the release of a press that was put to the
+ *                window.
+ *   post:        puts one thing that the person did to the window (BatonPost). A failure drops
+ *                that event.
  */
 typedef uint32_t (*BatonControlFn)(void *context);
 typedef int32_t (*BatonPickFn)(void *context, uint64_t request, BatonMessage *message);
 typedef void (*BatonCancelPickFn)(void *context, uint64_t request);
 typedef int32_t (*BatonPrepareFn)(void *picked, const BatonTakes *takes, BatonFormat *format);
 typedef int32_t (*BatonStartFn)(void *picked, uint64_t link, BatonMessage *message);
+typedef int32_t (*BatonSurroundingsFn)(void *picked, BatonSurroundings *surroundings);
+typedef int32_t (*BatonPostFn)(void *picked, const BatonPost *post);
 
-/* What the platform registers to share windows, as the table above does to show them. */
+/*
+ * What the platform registers to share windows, as the table above does to show them. A table of
+ * the size it had before input was carried (72 bytes, ending at release) is accepted: the two
+ * functions it lacks read as NULL.
+ */
 typedef struct BatonSharerVTable {
     uint32_t version;
     uint32_t size;
@@ -483,6 +651,8 @@ typedef struct BatonSharerVTable {
     BatonStartFn start;
     BatonEndedFn ended;
     BatonReleaseFn release;
+    BatonSurroundingsFn surroundings;
+    BatonPostFn post;
 } BatonSharerVTable;
 
 /* The version of the interface that the library was built with, for the platform to compare. */
@@ -597,6 +767,18 @@ int32_t baton_stream_source_sent(uint64_t link, const BatonPicture *picture, uin
                                  uint64_t *number);
 
 /*
+ * The window changed: the capture the platform made at capture_time, in the microseconds that
+ * baton_stream_source_clock counts, shows something other than the one before. Call it for every
+ * capture that shows a change, whether or not a picture is made of it. What the person at the
+ * other device touched is out of date from the moment the window changes, and not from the moment
+ * the picture was captured; a window that does not change has a current picture however old it
+ * is, so a tap on a window that is still works. A picture that baton_stream_source_sent takes
+ * counts as a change at its capture time as well, so a platform that only calls that is right
+ * about the pictures that it sends, and wrong about those that it drops before them.
+ */
+int32_t baton_stream_source_changed(uint64_t link, uint64_t capture_time);
+
+/*
  * The size of the picture changed, because the window did or the viewer wants less: starts a new
  * epoch, which begins with a key frame, and tells the viewer. The frames in flight are of the
  * old size, and so is a picture that is being made. baton_stream_source_sent drops it
@@ -613,7 +795,8 @@ int32_t baton_stream_source_new_epoch(uint64_t link, const BatonFormat *format);
  * locked or its display is off, BATON_PAUSE_HIDDEN when the window is minimized or not on screen,
  * BATON_PAUSE_OTHER for any other reason. A reason that is none of the three returns
  * BATON_E_ARGUMENT and changes nothing. begin answers BATON_BEGIN_NOT_NOW until
- * baton_stream_source_resume.
+ * baton_stream_source_resume. What the person does at the other device is dropped while the
+ * session is paused, and whatever it holds down is released.
  */
 int32_t baton_stream_source_pause(uint64_t link, uint32_t reason);
 
@@ -736,7 +919,21 @@ BATON_STATIC_ASSERT(offsetof(BatonPicked, context) == 16, "BatonPicked.context")
 BATON_STATIC_ASSERT(offsetof(BatonPicked, title) == 24, "BatonPicked.title");
 BATON_STATIC_ASSERT(offsetof(BatonPicked, app) == 40, "BatonPicked.app");
 
-BATON_STATIC_ASSERT(sizeof(BatonPicture) == 56, "BatonPicture");
+BATON_STATIC_ASSERT(sizeof(BatonRect) == 32, "BatonRect");
+BATON_STATIC_ASSERT(offsetof(BatonRect, x) == 0, "BatonRect.x");
+BATON_STATIC_ASSERT(offsetof(BatonRect, y) == 8, "BatonRect.y");
+BATON_STATIC_ASSERT(offsetof(BatonRect, width) == 16, "BatonRect.width");
+BATON_STATIC_ASSERT(offsetof(BatonRect, height) == 24, "BatonRect.height");
+
+BATON_STATIC_ASSERT(sizeof(BatonGeometry) == 56, "BatonGeometry");
+BATON_STATIC_ASSERT(offsetof(BatonGeometry, window_width) == 0, "BatonGeometry.window_width");
+BATON_STATIC_ASSERT(offsetof(BatonGeometry, window_height) == 8, "BatonGeometry.window_height");
+BATON_STATIC_ASSERT(offsetof(BatonGeometry, picture_width) == 16, "BatonGeometry.picture_width");
+BATON_STATIC_ASSERT(offsetof(BatonGeometry, picture_height) == 20,
+                    "BatonGeometry.picture_height");
+BATON_STATIC_ASSERT(offsetof(BatonGeometry, content) == 24, "BatonGeometry.content");
+
+BATON_STATIC_ASSERT(sizeof(BatonPicture) == 112, "BatonPicture");
 BATON_STATIC_ASSERT(offsetof(BatonPicture, size) == 0, "BatonPicture.size");
 BATON_STATIC_ASSERT(offsetof(BatonPicture, flags) == 4, "BatonPicture.flags");
 BATON_STATIC_ASSERT(offsetof(BatonPicture, capture_time) == 8, "BatonPicture.capture_time");
@@ -745,6 +942,38 @@ BATON_STATIC_ASSERT(offsetof(BatonPicture, reserved) == 20, "BatonPicture.reserv
 BATON_STATIC_ASSERT(offsetof(BatonPicture, sample) == 24, "BatonPicture.sample");
 BATON_STATIC_ASSERT(offsetof(BatonPicture, sets) == 40, "BatonPicture.sets");
 BATON_STATIC_ASSERT(offsetof(BatonPicture, set_count) == 48, "BatonPicture.set_count");
+BATON_STATIC_ASSERT(offsetof(BatonPicture, geometry) == 56, "BatonPicture.geometry");
+
+BATON_STATIC_ASSERT(sizeof(BatonFront) == 40, "BatonFront");
+BATON_STATIC_ASSERT(offsetof(BatonFront, rect) == 0, "BatonFront.rect");
+BATON_STATIC_ASSERT(offsetof(BatonFront, flags) == 32, "BatonFront.flags");
+BATON_STATIC_ASSERT(offsetof(BatonFront, reserved) == 36, "BatonFront.reserved");
+
+BATON_STATIC_ASSERT(sizeof(BatonSurroundings) == 64, "BatonSurroundings");
+BATON_STATIC_ASSERT(offsetof(BatonSurroundings, size) == 0, "BatonSurroundings.size");
+BATON_STATIC_ASSERT(offsetof(BatonSurroundings, locked) == 4, "BatonSurroundings.locked");
+BATON_STATIC_ASSERT(offsetof(BatonSurroundings, on_screen) == 8, "BatonSurroundings.on_screen");
+BATON_STATIC_ASSERT(offsetof(BatonSurroundings, keyboard) == 12, "BatonSurroundings.keyboard");
+BATON_STATIC_ASSERT(offsetof(BatonSurroundings, window) == 16, "BatonSurroundings.window");
+BATON_STATIC_ASSERT(offsetof(BatonSurroundings, fronts) == 48, "BatonSurroundings.fronts");
+BATON_STATIC_ASSERT(offsetof(BatonSurroundings, front_cap) == 56, "BatonSurroundings.front_cap");
+BATON_STATIC_ASSERT(offsetof(BatonSurroundings, front_count) == 60,
+                    "BatonSurroundings.front_count");
+
+BATON_STATIC_ASSERT(sizeof(BatonPost) == 72, "BatonPost");
+BATON_STATIC_ASSERT(offsetof(BatonPost, size) == 0, "BatonPost.size");
+BATON_STATIC_ASSERT(offsetof(BatonPost, kind) == 4, "BatonPost.kind");
+BATON_STATIC_ASSERT(offsetof(BatonPost, x) == 8, "BatonPost.x");
+BATON_STATIC_ASSERT(offsetof(BatonPost, y) == 16, "BatonPost.y");
+BATON_STATIC_ASSERT(offsetof(BatonPost, action) == 24, "BatonPost.action");
+BATON_STATIC_ASSERT(offsetof(BatonPost, button) == 28, "BatonPost.button");
+BATON_STATIC_ASSERT(offsetof(BatonPost, dx) == 32, "BatonPost.dx");
+BATON_STATIC_ASSERT(offsetof(BatonPost, dy) == 36, "BatonPost.dy");
+BATON_STATIC_ASSERT(offsetof(BatonPost, modifiers) == 40, "BatonPost.modifiers");
+BATON_STATIC_ASSERT(offsetof(BatonPost, code) == 44, "BatonPost.code");
+BATON_STATIC_ASSERT(offsetof(BatonPost, down) == 48, "BatonPost.down");
+BATON_STATIC_ASSERT(offsetof(BatonPost, repeat) == 52, "BatonPost.repeat");
+BATON_STATIC_ASSERT(offsetof(BatonPost, text) == 56, "BatonPost.text");
 
 BATON_STATIC_ASSERT(sizeof(BatonViewerVTable) == 80, "BatonViewerVTable");
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, version) == 0, "BatonViewerVTable.version");
@@ -759,7 +988,7 @@ BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, state) == 56, "BatonViewerVTable
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, ended) == 64, "BatonViewerVTable.ended");
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, release) == 72, "BatonViewerVTable.release");
 
-BATON_STATIC_ASSERT(sizeof(BatonSharerVTable) == 72, "BatonSharerVTable");
+BATON_STATIC_ASSERT(sizeof(BatonSharerVTable) == 88, "BatonSharerVTable");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, version) == 0, "BatonSharerVTable.version");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, size) == 4, "BatonSharerVTable.size");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, context) == 8, "BatonSharerVTable.context");
@@ -771,6 +1000,9 @@ BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, prepare) == 40, "BatonSharerVTab
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, start) == 48, "BatonSharerVTable.start");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, ended) == 56, "BatonSharerVTable.ended");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, release) == 64, "BatonSharerVTable.release");
+BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, surroundings) == 72,
+                    "BatonSharerVTable.surroundings");
+BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, post) == 80, "BatonSharerVTable.post");
 
 #ifdef __cplusplus
 }

@@ -198,7 +198,7 @@ private func sharerPick(
     write(failure.sentence, to: message)
     return platformFailure
   } catch {
-    write("The window picker could not be shown.", to: message)
+    write("The picker could not be shown.", to: message)
     return platformFailure
   }
 }
@@ -277,7 +277,10 @@ func registerSharer(_ platform: SharerPlatform) -> Int32 {
     prepare: sharerPrepare,
     start: sharerStart,
     ended: sharerEnded,
-    release: sharerRelease)
+    release: sharerRelease,
+    // Putting what the person does to a window comes with the piece that asks the Mac about it.
+    surroundings: nil,
+    post: nil)
   let code = baton_stream_register_sharer(&table)
   if code != ok {
     context.release()
@@ -447,7 +450,7 @@ final class LibrarySourceSession: SourceSession {
           capture_time: picture.captureTime, length_size: picture.lengthSize, reserved: 0,
           sample: BatonBytes(
             ptr: sample.bindMemory(to: UInt8.self).baseAddress, len: sample.count),
-          sets: sets.baseAddress, set_count: sets.count)
+          sets: sets.baseAddress, set_count: sets.count, geometry: BatonGeometry())
         var outcome: UInt32 = 0
         var number: UInt64 = 0
         let code = baton_stream_source_sent(link, &c, &outcome, &number)

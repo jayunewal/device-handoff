@@ -690,10 +690,12 @@ pub struct WindowModifiers {
 /// [`App::window_input`](crate::App::window_input).
 ///
 /// A position is a fraction of the picture as it is drawn, from 0 to 1 across and from 0 to 1
-/// down from its top left corner. A key is a USB HID usage of the keyboard page (`a` is 4, which
-/// is what Flutter's `PhysicalKeyboardKey.usbHidUsage` ends in), and code 0 means text that came
-/// with no key, such as dictation or the keyboard on the screen: it must go down once, carry the
-/// text and not repeat.
+/// down from its top left corner. A key is a USB HID usage of the keyboard page (`a` is 4).
+/// Flutter's `PhysicalKeyboardKey.usbHidUsage` carries the page above the usage, so a screen sends
+/// its low 16 bits only when the page is 7, and sends no key for a usage of another page, such as
+/// a media key, whose low bits would be taken for a key of the keyboard. Code 0 means text that
+/// came with no key, such as dictation or the keyboard on the screen: it must go down once, carry
+/// the text and not repeat.
 ///
 /// Taking an event does not mean that the other device does it: it drops what does not belong to
 /// the window, such as a touch outside it, and says so with
@@ -856,7 +858,7 @@ pub enum WindowNoticeReason {
     TooManyKeys,
     /// The release of a button or a key that was not pressed.
     NotPressed,
-    /// Something that this version does not know.
+    /// A rule of a later version, or an event that the other device found not valid.
     Other,
 }
 

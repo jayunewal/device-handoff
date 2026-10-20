@@ -38,7 +38,7 @@ final class MacSharer: NSObject, SharerPlatform, SCContentSharingPickerObserver 
     if !busy { self.request = request }
     lock.unlock()
     if busy {
-      throw SharerFailure(sentence: "A window is being chosen already.")
+      throw SharerFailure(sentence: "A window or screen is being chosen already.")
     }
     // The picker is an AppKit window, and AppKit is used from the main thread. The answer comes
     // through the observer, later.
@@ -86,8 +86,8 @@ final class MacSharer: NSObject, SharerPlatform, SCContentSharingPickerObserver 
   }
 
   func contentSharingPickerStartDidFailWithError(_ error: any Error) {
-    NSLog("Baton: the window picker could not be shown (%ld).", (error as NSError).code)
-    answer(.failed("The window picker of the system could not be shown."))
+    NSLog("Baton: the picker could not be shown (%ld).", (error as NSError).code)
+    answer(.failed("The picker of the system could not be shown."))
   }
 
   /// Gives the answer to the request that waits for one, if one does.
