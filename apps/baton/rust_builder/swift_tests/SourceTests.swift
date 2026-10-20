@@ -18,6 +18,17 @@ final class FakeSharedWindow: SharedWindow {
   var endedCalls = 0
   var releasedCalls = 0
   var onDeinit: (() -> Void)?
+  /// What the window says of its surroundings, and what is put to it.
+  var around: WindowSurroundings?
+  var posts: [InputPost] = []
+  var postWorks = true
+
+  func surroundings() -> WindowSurroundings? { around }
+
+  func post(_ post: InputPost) -> Bool {
+    posts.append(post)
+    return postWorks
+  }
 
   func prepare(takes: ViewerTakes) throws -> PictureFormat {
     self.takes.append(takes)
@@ -821,6 +832,10 @@ final class FakeSession: SourceSession {
   var sent: [EncodedPicture] = []
   var ended: [String?] = []
   var violations: [String] = []
+  /// The capture times of the changes that were told, in order.
+  var changes: [UInt64] = []
+  var pauses: [PauseReason] = []
+  var resumes = 0
   private(set) var announced = false
   /// How many pictures `begin` announced.
   private(set) var announcements = 0
@@ -856,6 +871,21 @@ final class FakeSession: SourceSession {
     announced = false
     sent.append(picture)
     return sends.isEmpty ? .sent : sends.removeFirst()
+  }
+
+  func changed(_ captureTime: UInt64) {
+    calls.append("changed")
+    changes.append(captureTime)
+  }
+
+  func pause(_ reason: PauseReason) {
+    calls.append("pause")
+    pauses.append(reason)
+  }
+
+  func resume() {
+    calls.append("resume")
+    resumes += 1
   }
 
   func end(sentence: String?) {

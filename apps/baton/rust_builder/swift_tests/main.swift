@@ -428,6 +428,231 @@ var tests: [(String, () -> Void)] = [
   ),
 ]
 
+tests += [
+  (
+    "the surroundings of a window in front are on the screen with the keyboard",
+    testTheSurroundingsOfAWindowInFrontAreOnTheScreenWithTheKeyboard
+  ),
+  (
+    "a locked Mac is told without asking the window server",
+    testALockedMacIsToldWithoutAskingTheWindowServer
+  ),
+  (
+    "a window that is gone or not on the screen is not on the screen",
+    testAWindowThatIsGoneOrNotOnTheScreenIsNotOnTheScreen
+  ),
+  (
+    "a window server that cannot be asked makes no answer",
+    testAWindowServerThatCannotBeAskedMakesNoAnswer
+  ),
+  (
+    "windows in front are listed when they draw something and can lie over the window",
+    testWindowsInFrontAreListedWhenTheyDrawSomethingAndCanLieOverTheWindow
+  ),
+  (
+    "an open menu counts wherever it is and other windows only where they overlap",
+    testAnOpenMenuCountsWhereverItIsAndOtherWindowsOnlyWhereTheyOverlap
+  ),
+  (
+    "the keyboard is the window's only while its application is in front with no window of it before",
+    testTheKeyboardIsTheWindowsOnlyWhileItsApplicationIsInFrontWithNoWindowOfItBefore
+  ),
+  (
+    "more windows in front than the Rust side takes make no answer",
+    testMoreWindowsInFrontThanTheRustSideTakesMakeNoAnswer
+  ),
+  (
+    "the application is brought to the front once at the first touch before anything is read",
+    testTheApplicationIsBroughtToTheFrontOnceAtTheFirstTouchBeforeAnythingIsRead
+  ),
+  (
+    "the application is not brought forward when it is in front or when the Mac does not say",
+    testTheApplicationIsNotBroughtForwardWhenItIsInFrontOrWhenTheMacDoesNotSay
+  ),
+  (
+    "a locked Mac is not touched and the first touch after the unlock brings the application",
+    testALockedMacIsNotTouchedAndTheFirstTouchAfterTheUnlockBringsTheApplication
+  ),
+  (
+    "what the watch looks at is the lock and whether the window is on the screen",
+    testWhatTheWatchLooksAtIsTheLockAndWhetherTheWindowIsOnTheScreen
+  ),
+  (
+    "the pause watch tells the library only when the answer changes",
+    testThePauseWatchTellsTheLibraryOnlyWhenTheAnswerChanges
+  ),
+  (
+    "the geometry of a picture holds the window and where it is in the picture",
+    testTheGeometryOfAPictureHoldsTheWindowAndWhereItIsInThePicture
+  ),
+  ("a geometry that does not fit the picture is none", testAGeometryThatDoesNotFitThePictureIsNone),
+  (
+    "a rectangle that is not the window scaled to fit is not its geometry",
+    testARectangleThatIsNotTheWindowScaledToFitIsNotItsGeometry
+  ),
+  (
+    "a rectangle is read from the dictionary that the system gives",
+    testARectangleIsReadFromTheDictionaryThatTheSystemGives
+  ),
+  (
+    "the layout of an image is the window and what the capture says of it",
+    testTheLayoutOfAnImageIsTheWindowAndWhatTheCaptureSaysOfIt
+  ),
+  (
+    "when the capture says nothing that fits a window of the shape of the picture fills it",
+    testWhenTheCaptureSaysNothingThatFitsAWindowOfTheShapeOfThePictureFillsIt
+  ),
+  (
+    "when nothing fits the image has no layout and the numbers are told",
+    testWhenNothingFitsTheImageHasNoLayoutAndTheNumbersAreTold
+  ),
+  (
+    "the layout is told when it changes and only then", testTheLayoutIsToldWhenItChangesAndOnlyThen
+  ),
+  (
+    "a window that the window server does not have has no layout",
+    testAWindowThatTheWindowServerDoesNotHaveHasNoLayout
+  ),
+  (
+    "a reading of the window server is used for less than its time and not for all of it",
+    testAReadingOfTheWindowServerIsUsedForLessThanItsTimeAndNotForAllOfIt
+  ),
+  (
+    "the window server is asked once for many images", testTheWindowServerIsAskedOnceForManyImages
+  ),
+  (
+    "every key of a US keyboard has the code of its position on a Mac",
+    testEveryKeyOfAUsKeyboardHasTheCodeOfItsPositionOnAMac
+  ),
+  (
+    "the table of keys has no other keys and no two usages for one code",
+    testTheTableOfKeysHasNoOtherKeysAndNoTwoUsagesForOneCode
+  ),
+  (
+    "the modifier keys are the eight usages at the end of the page",
+    testTheModifierKeysAreTheEightUsagesAtTheEndOfThePage
+  ),
+  ("the modifiers are the bits of the interface", testTheModifiersAreTheBitsOfTheInterface),
+  (
+    "a key goes down and comes up with the modifiers that are down",
+    testAKeyGoesDownAndComesUpWithTheModifiersThatAreDown
+  ),
+  (
+    "a key that is held repeats only while it goes down",
+    testAKeyThatIsHeldRepeatsOnlyWhileItGoesDown
+  ),
+  (
+    "a modifier key makes no event and a key with no code on a Mac makes none",
+    testAModifierKeyMakesNoEventAndAKeyWithNoCodeOnAMacMakesNone
+  ),
+  (
+    "the text of a key is left to the key and text with no key is typed once",
+    testTheTextOfAKeyIsLeftToTheKeyAndTextWithNoKeyIsTypedOnce
+  ),
+  (
+    "text of more than twenty units of UTF-16 is not typed",
+    testTextOfMoreThanTwentyUnitsOfUtf16IsNotTyped
+  ),
+  ("a pointer moves presses drags and releases", testAPointerMovesPressesDragsAndReleases),
+  ("the buttons are their own", testTheButtonsAreTheirOwn),
+  (
+    "with two buttons down the first one drags and a release lets go of only its own button",
+    testWithTwoButtonsDownTheFirstOneDragsAndAReleaseLetsGoOfOnlyItsOwnButton
+  ),
+  (
+    "presses count as clicks when they come soon and close to each other",
+    testPressesCountAsClicksWhenTheyComeSoonAndCloseToEachOther
+  ),
+  (
+    "clicks in a row go on counting until one comes too late",
+    testClicksInARowGoOnCountingUntilOneComesTooLate
+  ),
+  (
+    "a drag and the release of a click carry its count",
+    testADragAndTheReleaseOfAClickCarryItsCount
+  ),
+  (
+    "a pointer at a place that is not a number makes no event",
+    testAPointerAtAPlaceThatIsNotANumberMakesNoEvent
+  ),
+  (
+    "a scroll moves by whole pixels and keeps what is left",
+    testAScrollMovesByWholePixelsAndKeepsWhatIsLeft
+  ),
+  ("a scroll is bounded and must be a number", testAScrollIsBoundedAndMustBeANumber),
+  (
+    "a window is steered by handing each event to its process",
+    testAWindowIsSteeredByHandingEachEventToItsProcess
+  ),
+  (
+    "an event that cannot be handed over is a failure and the rest of the post is not tried",
+    testAnEventThatCannotBeHandedOverIsAFailureAndTheRestOfThePostIsNotTried
+  ),
+  ("the table has the two functions of input", testTheTableHasTheTwoFunctionsOfInput),
+  (
+    "the consent is told to the app with the words it reads",
+    testTheConsentIsToldToTheAppWithTheWordsItReads
+  ),
+  (
+    "a rectangle can hold something only with a finite size above zero",
+    testARectangleCanHoldSomethingOnlyWithAFiniteSizeAboveZero
+  ),
+  ("a rectangle ends where its size takes it", testARectangleEndsWhereItsSizeTakesIt),
+  (
+    "two rectangles overlap only when they share some area",
+    testTwoRectanglesOverlapOnlyWhenTheyShareSomeArea
+  ),
+  (
+    "the surroundings of a window are written where the Rust side left room for them",
+    testTheSurroundingsOfAWindowAreWrittenWhereTheRustSideLeftRoomForThem
+  ),
+  (
+    "surroundings that cannot be said or do not fit are a failure and leave the struct alone",
+    testSurroundingsThatCannotBeSaidOrDoNotFitAreAFailureAndLeaveTheStructAlone
+  ),
+  (
+    "surroundings are refused for a struct that is too short or a window that is not there",
+    testSurroundingsAreRefusedForAStructThatIsTooShortOrAWindowThatIsNotThere
+  ),
+  (
+    "a pointer that the Rust side puts to the window is read as it was meant",
+    testAPointerThatTheRustSidePutsToTheWindowIsReadAsItWasMeant
+  ),
+  (
+    "a key that the Rust side puts to the window is read as it was meant",
+    testAKeyThatTheRustSidePutsToTheWindowIsReadAsItWasMeant
+  ),
+  (
+    "a post that is not well formed is refused and never reaches the window",
+    testAPostThatIsNotWellFormedIsRefusedAndNeverReachesTheWindow
+  ),
+  (
+    "a window that cannot be steered says nothing and puts nothing",
+    testAWindowThatCannotBeSteeredSaysNothingAndPutsNothing
+  ),
+  (
+    "a picture carries the geometry of its window to the library",
+    testAPictureCarriesTheGeometryOfItsWindowToTheLibrary
+  ),
+  (
+    "a change a pause and a resume reach the library about the link",
+    testAChangeAPauseAndAResumeReachTheLibraryAboutTheLink
+  ),
+  (
+    "every image the capture hands over is told as a change before a picture is asked for",
+    testEveryImageTheCaptureHandsOverIsToldAsAChangeBeforeAPictureIsAskedFor
+  ),
+  ("no change is told once the session is over", testNoChangeIsToldOnceTheSessionIsOver),
+  (
+    "a picture has the geometry of the image it was made from",
+    testAPictureHasTheGeometryOfTheImageItWasMadeFrom
+  ),
+  (
+    "a picture that the encoder made keeps its own fields",
+    testAPictureThatTheEncoderMadeKeepsItsOwnFields
+  ),
+]
+
 #if canImport(VideoToolbox)
   tests += [
     (

@@ -18,8 +18,10 @@ String _read(String path) =>
 
 const _files = [
   'BatonCapture.swift',
+  'BatonControl.swift',
   'BatonH264Decoder.swift',
   'BatonH264Encoder.swift',
+  'BatonInput.swift',
   'BatonSource.swift',
   'BatonStreamPlugin.swift',
   'BatonViewer.swift',
@@ -83,8 +85,10 @@ void main() {
     // an Apple framework, on a Mac), and rust_builder/swift_tests/run.sh does just that.
     const others = [
       'BatonCapture.swift',
+      'BatonControl.swift',
       'BatonH264Decoder.swift',
       'BatonH264Encoder.swift',
+      'BatonInput.swift',
       'BatonSource.swift',
       'BatonViewer.swift',
     ];
@@ -94,7 +98,11 @@ void main() {
       expect(swift, isNot(contains('import FlutterMacOS')), reason: file);
     }
     // The files with the rules must build and be tested everywhere.
-    for (final file in ['BatonViewer.swift', 'BatonSource.swift']) {
+    for (final file in [
+      'BatonViewer.swift',
+      'BatonSource.swift',
+      'BatonInput.swift',
+    ]) {
       final swift = _read('rust_builder/macos/Classes/$file');
       final imports = RegExp(
         r'^import (\w+)$',

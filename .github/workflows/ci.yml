@@ -312,7 +312,8 @@ jobs:
             baton_stream_register_sharer baton_stream_pick_done baton_stream_source_clock \
             baton_stream_source_begin baton_stream_source_cancel \
             baton_stream_source_recovery_pending baton_stream_source_sent \
-            baton_stream_source_new_epoch baton_stream_source_pause baton_stream_source_resume \
+            baton_stream_source_new_epoch baton_stream_source_changed \
+            baton_stream_source_pause baton_stream_source_resume \
             baton_stream_source_end; do
             nm -gU "$lib" | grep -q " _$symbol\$" || { echo "$symbol is missing from $lib" >&2; exit 1; }
           done
@@ -398,7 +399,8 @@ jobs:
             baton_stream_register_sharer baton_stream_pick_done baton_stream_source_clock \
             baton_stream_source_begin baton_stream_source_cancel \
             baton_stream_source_recovery_pending baton_stream_source_sent \
-            baton_stream_source_new_epoch baton_stream_source_pause baton_stream_source_resume \
+            baton_stream_source_new_epoch baton_stream_source_changed \
+            baton_stream_source_pause baton_stream_source_resume \
             baton_stream_source_end; do
             nm -gU "$lib" | grep -q " _$symbol\$" || { echo "$symbol is missing from $lib" >&2; exit 1; }
           done

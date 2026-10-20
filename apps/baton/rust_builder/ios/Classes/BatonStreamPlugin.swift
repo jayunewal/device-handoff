@@ -120,8 +120,11 @@ final class DeviceViewer: ViewerPlatform {
 /// side what it can show and share.
 @objc(BatonStreamPlugin)
 public class BatonStreamPlugin: NSObject, FlutterPlugin {
-  /// The channel with which the tests of the app ask what the plugin did
-  /// (integration_test/app_test.dart). The app does not use it.
+  /// The channel of the questions that the app asks the plugin. `controlAccess` says whether this
+  /// device lets Baton steer the windows it shares (`ControlAccess`), and `requestControlAccess`
+  /// asks the system to let it. `status` is for the tests of the app, and says what the plugin did
+  /// (integration_test/app_test.dart). The names are the ones in
+  /// apps/baton/lib/src/control_access.dart.
   static let channelName = "io.github.jayunewal.baton/stream"
 
   /// How many textures windows are drawn from, which is how many windows are shown at a time.
@@ -220,8 +223,31 @@ public class BatonStreamPlugin: NSObject, FlutterPlugin {
         "viewer": Int(registration), "sharer": Int(sharerRegistration),
         "textures": status.made, "wanted": status.wanted, "tries": status.tries,
       ])
+    case "controlAccess":
+      result(controlAccess().rawValue)
+    case "requestControlAccess":
+      requestControlAccess()
+      result(nil)
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+
+  /// Whether this device lets Baton hand input events to the windows of others. A device that
+  /// registered no sharer shares no window.
+  private func controlAccess() -> ControlAccess {
+    #if os(macOS)
+    let registered =
+      sharerRegistration == Int32(BATON_OK) || sharerRegistration == Int32(BATON_E_REGISTERED)
+    return registered ? macControlAccess() : .unavailable
+    #else
+    return .unavailable
+    #endif
+  }
+
+  private func requestControlAccess() {
+    #if os(macOS)
+    requestMacControlAccess()
+    #endif
   }
 }
