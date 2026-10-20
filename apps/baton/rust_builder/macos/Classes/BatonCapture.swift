@@ -49,13 +49,14 @@ final class MacSharer: NSObject, SharerPlatform, SCContentSharingPickerObserver 
         observing = true
       }
       var configuration = SCContentSharingPickerConfiguration()
-      // One window, or one whole display: the picker starts on the windows, and the person
-      // switches to the displays there.
+      // One window, or one whole display: the picker offers both, and the person chooses there. It
+      // is presented with no style, because `present(using:)` is for a single type of selection
+      // and would allow nothing else.
       configuration.allowedPickerModes = [.singleWindow, .singleDisplay]
       configuration.allowsChangingSelectedContent = false
       picker.defaultConfiguration = configuration
       picker.isActive = true
-      picker.present(using: .window)
+      picker.present()
     }
   }
 
