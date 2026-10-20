@@ -31,16 +31,17 @@ use baton_proto::limits::{
 };
 use baton_stream_abi::{
     abi::{
-        self, BatonBytes, BatonDecoderState, BatonFormat, BatonFrame, BatonLimits, BatonMessage,
-        BatonPicked, BatonPicture, BatonScreen, BatonSharerVTable, BatonSourceMessage, BatonTakes,
-        BatonViewerVTable, BatonWindow, CancelPickFn, ControlFn, DecodeFn, EndedFn, LimitsFn,
-        OpenFn, PickFn, PrepareFn, ReleaseFn, ShowFn, SourceFn, StartFn, StateFn,
+        self, BatonBytes, BatonDecoderState, BatonFormat, BatonFrame, BatonFront, BatonGeometry,
+        BatonLimits, BatonMessage, BatonPicked, BatonPicture, BatonPost, BatonRect, BatonScreen,
+        BatonSharerVTable, BatonSourceMessage, BatonSurroundings, BatonTakes, BatonViewerVTable,
+        BatonWindow, CancelPickFn, ControlFn, DecodeFn, EndedFn, LimitsFn, OpenFn, PickFn, PostFn,
+        PrepareFn, ReleaseFn, ShowFn, SourceFn, StartFn, StateFn, SurroundingsFn,
     },
     exports::{
         baton_stream_abi_version, baton_stream_link_decode_failed, baton_stream_pick_done,
         baton_stream_register_sharer, baton_stream_register_viewer, baton_stream_source_begin,
-        baton_stream_source_cancel, baton_stream_source_clock, baton_stream_source_end,
-        baton_stream_source_new_epoch, baton_stream_source_pause,
+        baton_stream_source_cancel, baton_stream_source_changed, baton_stream_source_clock,
+        baton_stream_source_end, baton_stream_source_new_epoch, baton_stream_source_pause,
         baton_stream_source_recovery_pending, baton_stream_source_resume, baton_stream_source_sent,
     },
 };
@@ -381,8 +382,8 @@ struct Compiled {
 /// The size and alignment of a type of the header.
 fn size_align(c_type: &str, known: &BTreeMap<String, (usize, usize)>) -> (usize, usize) {
     match c_type {
-        "uint32_t" | "int32_t" => (4, 4),
-        "uint64_t" | "int64_t" | "size_t" => (8, 8),
+        "uint32_t" | "int32_t" | "float" => (4, 4),
+        "uint64_t" | "int64_t" | "size_t" | "double" => (8, 8),
         pointer if pointer.ends_with('*') => (8, 8),
         other => *known
             .get(other)
@@ -574,6 +575,19 @@ fn structs_for_sharing() -> Vec<RustStruct> {
             title: BatonBytes = "BatonBytes",
             app: BatonBytes = "BatonBytes",
         }),
+        rust_struct!(BatonRect {
+            x: f64 = "double",
+            y: f64 = "double",
+            width: f64 = "double",
+            height: f64 = "double",
+        }),
+        rust_struct!(BatonGeometry {
+            window_width: f64 = "double",
+            window_height: f64 = "double",
+            picture_width: u32 = "uint32_t",
+            picture_height: u32 = "uint32_t",
+            content: BatonRect = "BatonRect",
+        }),
         rust_struct!(BatonPicture {
             size: u32 = "uint32_t",
             flags: u32 = "uint32_t",
@@ -583,6 +597,37 @@ fn structs_for_sharing() -> Vec<RustStruct> {
             sample: BatonBytes = "BatonBytes",
             sets: *const BatonBytes = "const BatonBytes *",
             set_count: usize = "size_t",
+            geometry: BatonGeometry = "BatonGeometry",
+        }),
+        rust_struct!(BatonFront {
+            rect: BatonRect = "BatonRect",
+            flags: u32 = "uint32_t",
+            reserved: u32 = "uint32_t",
+        }),
+        rust_struct!(BatonSurroundings {
+            size: u32 = "uint32_t",
+            locked: u32 = "uint32_t",
+            on_screen: u32 = "uint32_t",
+            keyboard: u32 = "uint32_t",
+            window: BatonRect = "BatonRect",
+            fronts: *mut BatonFront = "BatonFront *",
+            front_cap: u32 = "uint32_t",
+            front_count: u32 = "uint32_t",
+        }),
+        rust_struct!(BatonPost {
+            size: u32 = "uint32_t",
+            kind: u32 = "uint32_t",
+            x: f64 = "double",
+            y: f64 = "double",
+            action: u32 = "uint32_t",
+            button: u32 = "uint32_t",
+            dx: f32 = "float",
+            dy: f32 = "float",
+            modifiers: u32 = "uint32_t",
+            code: u32 = "uint32_t",
+            down: u32 = "uint32_t",
+            repeat: u32 = "uint32_t",
+            text: BatonBytes = "BatonBytes",
         }),
     ]
 }
@@ -614,6 +659,8 @@ fn tables_of_functions() -> Vec<RustStruct> {
             start: Option<StartFn> = "BatonStartFn",
             ended: Option<EndedFn> = "BatonEndedFn",
             release: Option<ReleaseFn> = "BatonReleaseFn",
+            surroundings: Option<SurroundingsFn> = "BatonSurroundingsFn",
+            post: Option<PostFn> = "BatonPostFn",
         }),
     ]
 }
@@ -680,6 +727,11 @@ fn rust_fn_types() -> Vec<CFunction> {
         rust_fn_type!(StartFn as "BatonStartFn": "int32_t"
             ["void *", "uint64_t", "BatonMessage *"]
             is unsafe extern "C" fn(*mut c_void, u64, *mut BatonMessage) -> i32),
+        rust_fn_type!(SurroundingsFn as "BatonSurroundingsFn": "int32_t"
+            ["void *", "BatonSurroundings *"]
+            is unsafe extern "C" fn(*mut c_void, *mut BatonSurroundings) -> i32),
+        rust_fn_type!(PostFn as "BatonPostFn": "int32_t" ["void *", "const BatonPost *"]
+            is unsafe extern "C" fn(*mut c_void, *const BatonPost) -> i32),
     ]
 }
 
@@ -698,6 +750,7 @@ fn rust_exports() -> Vec<CFunction> {
     let _: unsafe extern "C" fn(u64, *mut u32) -> i32 = baton_stream_source_recovery_pending;
     let _: unsafe extern "C" fn(u64, *const BatonPicture, *mut u32, *mut u64) -> i32 =
         baton_stream_source_sent;
+    let _: extern "C" fn(u64, u64) -> i32 = baton_stream_source_changed;
     let _: unsafe extern "C" fn(u64, *const BatonFormat) -> i32 = baton_stream_source_new_epoch;
     let _: extern "C" fn(u64, u32) -> i32 = baton_stream_source_pause;
     let _: extern "C" fn(u64) -> i32 = baton_stream_source_resume;
@@ -745,6 +798,11 @@ fn rust_exports() -> Vec<CFunction> {
                 "uint32_t *",
                 "uint64_t *",
             ],
+        ),
+        function(
+            "baton_stream_source_changed",
+            "int32_t",
+            &["uint64_t", "uint64_t"],
         ),
         function(
             "baton_stream_source_new_epoch",
@@ -830,6 +888,26 @@ fn rust_numbers() -> Vec<(String, i64)> {
         SENT_STALE,
         SENT_TOO_LARGE,
         SENT_OVER,
+        KEYBOARD_ELSEWHERE,
+        KEYBOARD_SHARED,
+        KEYBOARD_UNKNOWN,
+        FRONT_SAME_APPLICATION,
+        FRONT_MENU,
+        FRONTS_MAX,
+        POST_POINTER,
+        POST_KEY,
+        POINTER_MOVE,
+        POINTER_DOWN,
+        POINTER_UP,
+        POINTER_SCROLL,
+        BUTTON_LEFT,
+        BUTTON_RIGHT,
+        BUTTON_MIDDLE,
+        MOD_SHIFT,
+        MOD_CONTROL,
+        MOD_OPTION,
+        MOD_COMMAND,
+        MOD_CAPS_LOCK,
     ]
 }
 
@@ -1147,6 +1225,47 @@ static int32_t start(void *picked, uint64_t link, BatonMessage *message) {
     return link == 0 ? BATON_E_PLATFORM : BATON_OK;
 }
 
+static int32_t surroundings(void *picked, BatonSurroundings *around) {
+    (void)picked;
+    if (around->front_cap == 0 || around->fronts == NULL) {
+        return BATON_E_ARGUMENT;
+    }
+    around->locked = 0;
+    around->on_screen = 1;
+    around->keyboard = BATON_KEYBOARD_SHARED;
+    around->window.x = 100.0;
+    around->window.y = 50.0;
+    around->window.width = 800.0;
+    around->window.height = 600.0;
+    around->fronts[0].rect = around->window;
+    around->fronts[0].flags = BATON_FRONT_SAME_APPLICATION | BATON_FRONT_MENU;
+    around->fronts[0].reserved = 0;
+    around->front_count = 1;
+    return BATON_OK;
+}
+
+static int32_t post_input(void *picked, const BatonPost *post) {
+    (void)picked;
+    if (post->kind == BATON_POST_POINTER) {
+        if (post->action == BATON_POINTER_SCROLL) {
+            return post->dy > 0.0f || post->dx > 0.0f ? BATON_OK : BATON_E_ARGUMENT;
+        }
+        if (post->action == BATON_POINTER_DOWN || post->action == BATON_POINTER_UP) {
+            return post->button == BATON_BUTTON_LEFT ? BATON_OK : BATON_E_PLATFORM;
+        }
+        return post->action == BATON_POINTER_MOVE && post->x >= 0.0 && post->y >= 0.0
+                   ? BATON_OK
+                   : BATON_E_ARGUMENT;
+    }
+    if (post->kind == BATON_POST_KEY) {
+        if ((post->modifiers & BATON_MOD_SHIFT) != 0 && post->text.len > 0) {
+            return post->text.ptr != NULL ? BATON_OK : BATON_E_ARGUMENT;
+        }
+        return post->down == 1 || post->repeat == 0 ? BATON_OK : BATON_E_PLATFORM;
+    }
+    return BATON_E_ARGUMENT;
+}
+
 static void window_ended(void *picked) { (void)picked; }
 
 static void window_released(void *picked) { (void)picked; }
@@ -1163,6 +1282,8 @@ static int32_t register_sharer(void) {
     table.start = start;
     table.ended = window_ended;
     table.release = window_released;
+    table.surroundings = surroundings;
+    table.post = post_input;
     return baton_stream_register_sharer(&table);
 }
 
@@ -1245,6 +1366,18 @@ int32_t capture(uint64_t link, uint32_t pending_picture) {
     picture.sample.len = sizeof slice;
     picture.sets = sets;
     picture.set_count = 2;
+    picture.geometry.window_width = 800.0;
+    picture.geometry.window_height = 600.0;
+    picture.geometry.picture_width = 1600;
+    picture.geometry.picture_height = 1200;
+    picture.geometry.content.x = 0.0;
+    picture.geometry.content.y = 0.0;
+    picture.geometry.content.width = 1600.0;
+    picture.geometry.content.height = 1200.0;
+    status = baton_stream_source_changed(link, micros);
+    if (status != BATON_OK) {
+        return status;
+    }
     status = baton_stream_source_sent(link, &picture, &outcome, &number);
     if (status != BATON_OK) {
         return status;
@@ -1420,14 +1553,23 @@ fn a_compiler_refuses_a_header_whose_numbers_are_wrong() {
             "    uint32_t thermal;   /* BATON_THERMAL_ */\n    uint32_t reserved;\n}",
             "    uint32_t thermal;   /* BATON_THERMAL_ */\n}",
         ),
-        ("sizeof(BatonPicture) == 56", "sizeof(BatonPicture) == 48"),
+        ("sizeof(BatonPicture) == 112", "sizeof(BatonPicture) == 104"),
         (
             "offsetof(BatonSharerVTable, start) == 48",
             "offsetof(BatonSharerVTable, start) == 40",
         ),
         (
-            "    const BatonBytes *sets;  /* set_count entries */\n    size_t set_count;\n} BatonPicture;",
-            "    const BatonBytes *sets;  /* set_count entries */\n} BatonPicture;",
+            "    size_t set_count;\n    BatonGeometry geometry;\n} BatonPicture;",
+            "    size_t set_count;\n} BatonPicture;",
+        ),
+        ("sizeof(BatonPost) == 72", "sizeof(BatonPost) == 64"),
+        (
+            "offsetof(BatonSurroundings, front_cap) == 56",
+            "offsetof(BatonSurroundings, front_cap) == 52",
+        ),
+        (
+            "offsetof(BatonSharerVTable, post) == 80",
+            "offsetof(BatonSharerVTable, post) == 72",
         ),
     ] {
         assert_eq!(text.matches(right).count(), 1, "the header has `{right}`");

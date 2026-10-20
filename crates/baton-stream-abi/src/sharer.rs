@@ -13,8 +13,10 @@
 //! 2. `prepare`, once the other device has said yes: the platform chooses the picture to begin
 //!    with, and what it chose is held to the protocol and to what the other device takes.
 //! 3. `start`, when the session runs. The window gets a link in the table of [`Links`] first, so
-//!    that the platform can use it from the first moment, and a task waits for the end.
-//! 4. `ended`, from that task, once the session is over, whoever ended it, and then `release`
+//!    that the platform can use it from the first moment, and a thread of its own takes the
+//!    window from here on ([`Worker`]): it calls `start`, and then, for a window that is shared
+//!    with control, `surroundings` and `post`. A task waits for the end.
+//! 4. `ended`, from that thread, once the session is over, whoever ended it, and then `release`
 //!    when the window is dropped. Neither is called with a lock of the session held, so neither
 //!    can wait for a thread of the platform that is on its way into the session.
 //!
@@ -25,8 +27,9 @@ use std::{
     collections::BTreeMap,
     ffi::c_void,
     ptr::NonNull,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
     task::{Context, Waker},
+    thread,
     time::Duration,
 };
 
@@ -40,10 +43,10 @@ use baton_proto::{
     stream::Codec,
 };
 use baton_stream::{
-    control::{Config as Format, InputBatch, PauseReason, Report, Want},
+    control::{Config as Format, PauseReason},
+    gate::Geometry,
     h264,
     header::FrameKind,
-    sender::LtrToken,
 };
 use tokio::sync::oneshot;
 
@@ -53,7 +56,8 @@ use crate::{
         BEGIN_DELTA, BEGIN_KEY, BEGIN_NOT_NOW, BEGIN_RECOVERY, CODEC_H264, PAUSE_HIDDEN,
         PAUSE_LOCKED, PAUSE_OTHER, SENT, SENT_OVER, SENT_STALE, SENT_TOO_LARGE,
     },
-    platform::{Chosen, PickedHandle, SharerCalls, Takes as WhatItTakes},
+    input::{Closing, Dropped, Forward, Input, Timing, Worker},
+    platform::{Chosen, Failure, PickedHandle, SharerCalls, Takes as WhatItTakes},
     registry::{Links, lock},
 };
 
@@ -73,6 +77,8 @@ const NOT_STARTED: &str = "This device could not start sharing the window.";
 pub(crate) struct Shared {
     calls: SharerCalls,
     links: Arc<Links>,
+    /// How the threads that put input to a window keep time.
+    timing: Timing,
 }
 
 /// The window that the platform gave with its answer to a pick, as it was read.
@@ -175,17 +181,28 @@ pub(crate) struct AbiSharer {
 
 impl AbiSharer {
     /// A sharer for the platform that registered `calls`.
-    pub(crate) fn new(calls: SharerCalls, links: Arc<Links>, picks: Arc<Picks>) -> Self {
+    pub(crate) fn new(
+        calls: SharerCalls,
+        links: Arc<Links>,
+        picks: Arc<Picks>,
+        timing: Timing,
+    ) -> Self {
         Self {
-            shared: Arc::new(Shared { calls, links }),
+            shared: Arc::new(Shared {
+                calls,
+                links,
+                timing,
+            }),
             picks,
         }
     }
 }
 
 impl WindowSharer for AbiSharer {
+    /// A platform that gave no way to ask about the surroundings of a window and to post to it
+    /// cannot let another device control one, whatever it says.
     fn control(&self) -> bool {
-        self.shared.calls.control()
+        self.shared.calls.can_post() && self.shared.calls.control()
     }
 
     fn pick(&self) -> BoxFuture<'static, Result<Option<Box<dyn PickedWindow>>, PlatformError>> {
@@ -244,6 +261,8 @@ pub(crate) struct AbiPicked {
     window: PickedHandle,
     shared: Arc<Shared>,
     display: bool,
+    /// The events of the session, and the rules that decide what they do to the window.
+    input: Arc<Input>,
     title: String,
     app: String,
     width: u32,
@@ -258,6 +277,7 @@ impl AbiPicked {
             window: shared.calls.adopt(given.context),
             shared: Arc::clone(shared),
             display: given.display,
+            input: Input::new(shared.timing),
             title: given.title,
             app: given.app,
             width: given.width,
@@ -265,27 +285,6 @@ impl AbiPicked {
             prepared: None,
         }
     }
-}
-
-/// What the session tells the platform that the interface does not carry yet: how the viewer is
-/// doing, what it wants, what the person does there, which references it holds, and that a
-/// recovery is wanted. The platform asks `begin` and `recovery_pending` on its own clock, and a
-/// window is shared without control. The end is heard through `on_end`, outside the lock of the
-/// session, see [`AbiPicked::start`].
-struct Quiet;
-
-impl SourceEvents for Quiet {
-    fn report(&mut self, _: Report) {}
-
-    fn want(&mut self, _: Want) {}
-
-    fn input(&mut self, _: InputBatch, _: Duration) {}
-
-    fn held(&mut self, _: Vec<LtrToken>) {}
-
-    fn recovery(&mut self) {}
-
-    fn ended(&mut self) {}
 }
 
 impl PickedWindow for AbiPicked {
@@ -306,7 +305,7 @@ impl PickedWindow for AbiPicked {
     }
 
     fn events(&mut self) -> Box<dyn SourceEvents> {
-        Box::new(Quiet)
+        Box::new(Forward::new(Arc::clone(&self.input)))
     }
 
     fn prepare(&mut self, takes: &Takes) -> Option<Format> {
@@ -321,15 +320,18 @@ impl PickedWindow for AbiPicked {
     }
 
     /// Starts the capture. The window is given a link first, so that the platform's threads can
-    /// use it from the first moment, and a task waits for the end of the session: when it comes,
-    /// whoever ended the session, the link closes, the platform is told with `ended`, and the
-    /// window is released. That is done outside the lock of the session, which the events of the
-    /// session are called with, so `ended` and `release` may stop threads that are in the middle
-    /// of a call into the library.
+    /// use it from the first moment, and a thread of its own takes the window: it calls `start`,
+    /// serves the events of the person while the session runs, and, once the session is over,
+    /// tells the platform with `ended` and lets go of the window. A task waits for the end of the
+    /// session and closes the link first, whoever ended the session, and then tells the thread.
+    /// That is done outside the lock of the session, which the events of the session are called
+    /// with, so `ended` and `release` may stop threads that are in the middle of a call into the
+    /// library.
     fn start(self: Box<Self>, handle: Arc<SourceHandle>, failure: SharingFailure) {
         let Self {
-            mut window,
+            window,
             shared,
+            input,
             prepared,
             ..
         } = *self;
@@ -349,21 +351,43 @@ impl PickedWindow for AbiPicked {
         // A window that was not prepared has no picture that a set could be held to, and gets no
         // key frame through. The app prepares every window that it starts.
         let size = prepared.unwrap_or_default();
-        let link = Arc::new(SourceLink::new(handle, failure.clone(), size));
+        // The thread tells the session what it dropped, but does not hold the session up: a
+        // handle that it kept would outlive the app's own, and nothing would end the session.
+        let session = Arc::downgrade(&handle);
+        let dropped: Dropped = Box::new(move |reason| {
+            if let Some(handle) = session.upgrade() {
+                handle.dropped(reason);
+            }
+        });
+        let link = Arc::new(SourceLink::new(
+            handle,
+            failure.clone(),
+            size,
+            Arc::clone(&input),
+        ));
         let number = shared.links.add_source(Arc::clone(&link));
-        if let Err(why) = window.start(number) {
+        // The thread starts the window, so that a thread that cannot be made leaves a window that
+        // was never started, and the answer comes back here.
+        let (told, answer) = mpsc::sync_channel(1);
+        let worker = Worker::new(Arc::clone(&input), window, dropped);
+        let started = thread::Builder::new()
+            .name("baton-input".to_owned())
+            .spawn(move || worker.run(number, &told))
+            .map_err(|_| Failure(None))
+            .and_then(|_| answer.recv().unwrap_or(Err(Failure(None))));
+        if let Err(why) = started {
             shared.links.remove(number);
             failure.fail(why.0.unwrap_or_else(|| NOT_STARTED.to_owned()));
             return;
         }
         // The task holds the link table and not the link: the table's entry is the only copy of
-        // the handle that lasts, and it goes when the session is over.
-        let links = Arc::clone(&shared.links);
+        // the handle that lasts, and it goes when the session is over. It holds the way to tell
+        // the thread too, and that is told when the task is dropped, also with its runtime.
+        let (links, closing) = (Arc::clone(&shared.links), Closing::new(input));
         runtime.spawn(async move {
             over.await;
             links.remove(number);
-            window.ended();
-            // Released here, when the window drops.
+            drop(closing);
         });
     }
 }
@@ -424,6 +448,8 @@ pub(crate) struct Made<'a> {
     pub(crate) sample: &'a [u8],
     /// The parameter sets of the encoder's format, each without a start code.
     pub(crate) sets: Vec<&'a [u8]>,
+    /// How the window was laid out in it.
+    pub(crate) geometry: Geometry,
 }
 
 /// What became of a picture.
@@ -469,16 +495,31 @@ pub(crate) struct SourceLink {
     /// `prepare` chose, and then the one of each `new_epoch`. The sequence parameter sets of a key
     /// frame are held to it.
     size: Mutex<(u32, u32)>,
+    /// The events of the session, and the rules that decide what they do to the window. The gate
+    /// is told about every picture.
+    input: Arc<Input>,
 }
 
 impl SourceLink {
-    fn new(handle: Arc<SourceHandle>, failure: SharingFailure, size: (u32, u32)) -> Self {
+    fn new(
+        handle: Arc<SourceHandle>,
+        failure: SharingFailure,
+        size: (u32, u32),
+        input: Arc<Input>,
+    ) -> Self {
         Self {
             handle,
             failure,
             announced: Mutex::new(None),
             size: Mutex::new(size),
+            input,
         }
+    }
+
+    /// The input of the window, for a test to hold the gate.
+    #[cfg(test)]
+    pub(crate) fn input(&self) -> Arc<Input> {
+        Arc::clone(&self.input)
     }
 
     /// The microseconds since the session began: the clock of the capture times.
@@ -546,12 +587,22 @@ impl SourceLink {
         if summary.idr && !self.fit(&picture.sets) {
             return Err(Error::Argument);
         }
+        // The gate has the frame by the time that anyone can name it: its lock is held from the
+        // moment the number is made until the frame is recorded, and an event is looked at under
+        // the same lock. A picture that did not go out still showed a change.
+        let capture = Duration::from_micros(picture.capture_time);
+        let mut gate = self.input.gate();
         let sent = self.handle.sent(Picture {
             bytes,
             referenced: picture.referenced,
             ltr: None,
             capture_time: picture.capture_time,
         });
+        match sent {
+            Ok(Some(number)) => gate.record_frame(number, capture, picture.geometry),
+            _ => gate.record_change(capture),
+        }
+        drop(gate);
         Ok(match sent {
             Ok(Some(number)) => Outcome::Sent(number),
             Ok(None) => Outcome::Stale,
@@ -573,6 +624,14 @@ impl SourceLink {
         sets.iter()
             .filter(|set| set.first().is_some_and(|byte| byte & 0x1f == h264::NAL_SPS))
             .all(|set| h264::picture_fits(set, width, height))
+    }
+
+    /// The window changed at `capture_time`, on the clock of the session, whether or not a picture
+    /// was made of it: what the person touched is out of date from that moment.
+    pub(crate) fn changed(&self, capture_time: u64) {
+        self.input
+            .gate()
+            .record_change(Duration::from_micros(capture_time));
     }
 
     /// A picture of more than [`MAX_PICTURE_BYTES`](baton_proto::limits::MAX_PICTURE_BYTES) is not
@@ -609,12 +668,14 @@ impl SourceLink {
             _ => return Err(Error::Argument),
         };
         self.handle.pause(reason);
+        self.input.pause();
         Ok(())
     }
 
     /// The pictures go on.
     pub(crate) fn resume(&self) {
         self.handle.resume();
+        self.input.resume();
     }
 
     /// Ends the session. With a sentence, something went wrong and the person is told what; with
@@ -1230,6 +1291,7 @@ mod tests {
             shared: Arc::new(Shared {
                 calls: platform.platform(),
                 links: Arc::clone(&registry.links),
+                timing: Timing::default(),
             }),
         });
         assert_eq!(registry.waiting_picks(), 1);

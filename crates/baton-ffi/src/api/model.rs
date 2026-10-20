@@ -508,9 +508,11 @@ pub struct WindowModifiers {
 /// `Baton.windowInput`.
 ///
 /// A position is a fraction of the picture as it is drawn, from 0 to 1 across and from 0 to 1
-/// down from its top left corner. A key is a USB HID usage of the keyboard page (`a` is 4: the
-/// low 16 bits of Flutter's `PhysicalKeyboardKey.usbHidUsage`), and code 0 means text that came
-/// with no key, such as dictation or the keyboard on the screen: it must go down once, carry
+/// down from its top left corner. A key is a USB HID usage of the keyboard page (`a` is 4).
+/// Flutter's `PhysicalKeyboardKey.usbHidUsage` carries the page above the usage, so a screen sends
+/// its low 16 bits only when the page is 7, and sends no key for a usage of another page, such as
+/// a media key, whose low bits would be taken for a key of the keyboard. Code 0 means text that
+/// came with no key, such as dictation or the keyboard on the screen: it must go down once, carry
 /// the text and not repeat.
 #[derive(Clone, PartialEq)]
 pub enum WindowInput {

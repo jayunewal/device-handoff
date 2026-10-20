@@ -19,6 +19,7 @@ use baton_app::{
 
 use crate::{
     abi::{E_ARGUMENT, E_PANIC, E_PLATFORM, E_REENTRANT, E_REGISTERED, E_UNKNOWN_LINK, OK},
+    input::Timing,
     platform::{Calls, SharerCalls, inside_call},
     sharer::{AbiSharer, Picks, SourceLink},
     viewer::AbiViewer,
@@ -156,6 +157,8 @@ pub struct Registry {
     sharer: Mutex<Option<Arc<AbiSharer>>>,
     pub(crate) links: Arc<Links>,
     pub(crate) picks: Arc<Picks>,
+    /// How the threads that put input to a window keep time.
+    pub(crate) input_timing: Timing,
 }
 
 impl fmt::Debug for Registry {
@@ -196,7 +199,12 @@ impl Registry {
         if slot.is_some() {
             return Err(Error::Registered);
         }
-        let sharer = AbiSharer::new(calls, Arc::clone(&self.links), Arc::clone(&self.picks));
+        let sharer = AbiSharer::new(
+            calls,
+            Arc::clone(&self.links),
+            Arc::clone(&self.picks),
+            self.input_timing,
+        );
         *slot = Some(Arc::new(sharer));
         Ok(())
     }
@@ -293,6 +301,8 @@ pub fn registered_windows() -> Windows {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use std::mem::offset_of;
+
     use super::*;
     use crate::{
         abi::{ABI_VERSION, BatonLimits, BatonSharerVTable, BatonViewerVTable, CODEC_H264},
@@ -497,6 +507,82 @@ mod tests {
     }
 
     #[test]
+    fn a_sharer_that_cannot_post_cannot_let_another_device_control_a_window() {
+        let register = |table: &BatonSharerVTable| {
+            let registry = Registry::new();
+            fake_sharer::register_table(&registry, table).unwrap();
+            registry
+        };
+        let platform = FakeSharer::new();
+        platform.set_control(true);
+        let whole = platform.vtable();
+        let none = BatonSharerVTable {
+            surroundings: None,
+            post: None,
+            ..whole
+        };
+        let before = u32::try_from(offset_of!(BatonSharerVTable, surroundings)).unwrap();
+        let tables = [
+            // Written before input was carried: the table ends at `release`.
+            (
+                "a table that ends at release",
+                BatonSharerVTable {
+                    size: before,
+                    ..none
+                },
+            ),
+            ("a table without the two", none),
+            (
+                "a table with only the one that asks",
+                BatonSharerVTable {
+                    post: None,
+                    ..whole
+                },
+            ),
+            (
+                "a table with only the one that posts",
+                BatonSharerVTable {
+                    surroundings: None,
+                    ..whole
+                },
+            ),
+            // A size that cuts a function in two gives half of a pointer to nobody: the function
+            // is not read.
+            (
+                "a size that cuts the first",
+                BatonSharerVTable {
+                    size: before + 4,
+                    ..whole
+                },
+            ),
+            (
+                "a size that cuts the second",
+                BatonSharerVTable {
+                    size: before + 12,
+                    ..whole
+                },
+            ),
+        ];
+        for (what, table) in tables {
+            let registry = register(&table);
+            // The platform says yes, and the library does not pass it on, and does not even ask.
+            assert!(!registry.sharer().unwrap().control(), "{what}");
+        }
+        assert_eq!(platform.count(|call| *call == SharerCall::Control), 0);
+
+        // With both, the platform is asked, and its answer is the answer.
+        let registry = register(&whole);
+        assert!(registry.sharer().unwrap().control());
+        assert_eq!(platform.count(|call| *call == SharerCall::Control), 1);
+        // A table that is longer than this version knows is read as far as this version goes.
+        let longer = BatonSharerVTable {
+            size: whole.size + 16,
+            ..whole
+        };
+        assert!(register(&longer).sharer().unwrap().control());
+    }
+
+    #[test]
     fn a_sharer_can_be_registered_once() {
         let registry = Registry::new();
         let (first, second) = (FakeSharer::new(), FakeSharer::new());
@@ -562,7 +648,9 @@ mod tests {
             }),
             Err(Error::Argument)
         );
-        for size in [0, 4, 8, table.size - 1] {
+        // The part that every version has ends at `release`; one byte short of it is refused.
+        let before_input = u32::try_from(offset_of!(BatonSharerVTable, surroundings)).unwrap();
+        for size in [0, 4, 8, before_input - 1] {
             assert_eq!(
                 refused(BatonSharerVTable { size, ..table }),
                 Err(Error::Argument),

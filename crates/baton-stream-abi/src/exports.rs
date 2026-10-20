@@ -15,8 +15,9 @@
 //! when the function succeeds, and nothing that a pointer led to is kept past the call.
 
 use std::{
+    mem::{MaybeUninit, offset_of},
     panic::{AssertUnwindSafe, catch_unwind},
-    ptr::NonNull,
+    ptr::{self, NonNull},
     slice,
 };
 
@@ -31,7 +32,7 @@ use crate::{
         BatonViewerVTable, FRAME_REFERENCED, MESSAGE_MAX, PICKED_DISPLAY, PICKED_WINDOW,
         SET_BYTES_MAX, SETS_MAX,
     },
-    platform::{Chosen, inside_call},
+    platform::{Chosen, geometry_of, inside_call},
     registry::{Registry, global},
     sharer::{Given, Made, PickAnswer, SourceLink},
 };
@@ -154,6 +155,12 @@ pub unsafe extern "C" fn baton_stream_source_sent(
 ) -> i32 {
     // SAFETY: the caller's promise about the pointers is this function's own.
     answer(|| unsafe { global().source_sent(link, picture, outcome, number) })
+}
+
+/// The window changed. See the header.
+#[unsafe(no_mangle)]
+pub extern "C" fn baton_stream_source_changed(link: u64, capture_time: u64) -> i32 {
+    answer(|| global().source_changed(link, capture_time))
 }
 
 /// The size of the picture changed. See the header.
@@ -288,6 +295,12 @@ impl Registry {
         sent
     }
 
+    /// The window changed at `capture_time`.
+    pub(crate) fn source_changed(&self, link: u64, capture_time: u64) -> Result<(), Error> {
+        self.source(link)?.changed(capture_time);
+        Ok(())
+    }
+
     /// The size of the picture changed.
     ///
     /// # Safety
@@ -300,7 +313,7 @@ impl Registry {
     ) -> Result<(), Error> {
         let source = self.source(link)?;
         // SAFETY: the caller's promise about `format` is this function's own.
-        let format = unsafe { read_struct(format) }?;
+        let format = unsafe { read_struct(format, size_of::<BatonFormat>()) }?;
         source.new_epoch(&Chosen {
             codec: format.codec,
             width: format.width,
@@ -346,25 +359,46 @@ fn writable<T>(pointer: *mut T) -> Result<NonNull<T>, Error> {
 }
 
 /// Copies a struct that the platform passed, if it is whole: the pointer is not null and is
-/// aligned, and the `u32` at its start, which says how many bytes the struct has, holds the part
-/// of it that this version knows. A longer struct is accepted, and what follows the part that
-/// this version knows is not read.
+/// aligned, and the `u32` at its start, which says how many bytes the struct has, holds the first
+/// `mandatory` bytes of it, which the caller chooses. A struct that ends after those but before
+/// the end of what this version knows is from an older platform, and what it lacks reads as zero,
+/// also a field that its size cuts in two. A longer struct is accepted, and what follows the part
+/// that this version knows is not read.
 ///
 /// # Safety
 ///
 /// `pointer` is either null, or points to a struct that begins with a `u32` that is its size in
-/// bytes, and is that long, and that nothing writes to during this call.
-unsafe fn read_struct<T: Copy>(pointer: *const T) -> Result<T, Error> {
+/// bytes, and is that long, and that nothing writes to during this call. All zero bytes are a
+/// valid `T`: it holds numbers, pointers and optional functions, and nothing else.
+unsafe fn read_struct<T: Copy>(pointer: *const T, mandatory: usize) -> Result<T, Error> {
     if pointer.is_null() || !pointer.is_aligned() {
         return Err(Error::Argument);
     }
     // SAFETY: not null and aligned, and the caller promises that a `u32` is first.
     let size = unsafe { pointer.cast::<u32>().read() };
-    if usize::try_from(size).map_or(true, |size| size < size_of::<T>()) {
+    let Ok(size) = usize::try_from(size) else {
+        return Err(Error::Argument);
+    };
+    if size < mandatory {
         return Err(Error::Argument);
     }
-    // SAFETY: the struct is at least as long as `T`, as the caller promises and the size says.
-    Ok(unsafe { pointer.read() })
+    // A size that ends in the middle of a field is not copied to the end: half of a number is not
+    // a number. Every field starts at a multiple of the alignment of the struct.
+    let copied = size.min(size_of::<T>()) & !(align_of::<T>() - 1);
+    let mut whole = MaybeUninit::<T>::zeroed();
+    // SAFETY: the struct is at least `size` bytes long, as the caller promises, and the bytes that
+    // are copied are the first of them, no more than `T` has; they land in a `T` that was zeroed
+    // first. The bytes after `T` belong to a newer version and are not read.
+    unsafe {
+        ptr::copy_nonoverlapping(
+            pointer.cast::<u8>(),
+            whole.as_mut_ptr().cast::<u8>(),
+            copied,
+        );
+    }
+    // SAFETY: the caller promises that all zero bytes are a valid `T`, and so is a zeroed `T`
+    // that has had the platform's bytes written over its start.
+    Ok(unsafe { whole.assume_init() })
 }
 
 /// The bytes that `bytes` describes, up to `most` of them: none when the length is zero, whatever
@@ -442,7 +476,7 @@ unsafe fn read_answer(
         return Err(Error::Argument);
     }
     // SAFETY: the caller's promise about `picked` is this function's own.
-    let picked = unsafe { read_struct(picked) }?;
+    let picked = unsafe { read_struct(picked, size_of::<BatonPicked>()) }?;
     let context = NonNull::new(picked.context).ok_or(Error::Argument)?;
     if picked.width == 0 || picked.height == 0 {
         return Err(Error::Argument);
@@ -484,8 +518,9 @@ unsafe fn send_picture(
     number: *mut u64,
 ) -> Result<(), Error> {
     let (outcome, number) = (writable(outcome)?, writable(number)?);
-    // SAFETY: the caller's promise about `picture` is this function's own.
-    let picture = unsafe { read_struct(picture) }?;
+    // SAFETY: the caller's promise about `picture` is this function's own. A struct that ends
+    // before `geometry` is from a platform that does not carry input: the geometry is zero.
+    let picture = unsafe { read_struct(picture, offset_of!(BatonPicture, geometry)) }?;
     let sent = if picture.sample.len > MAX_PICTURE_BYTES {
         // Not read: a length that large is not a picture, and what is behind it is the
         // platform's business.
@@ -509,6 +544,7 @@ unsafe fn send_picture(
             length_size,
             sample,
             sets,
+            geometry: geometry_of(&picture.geometry),
         })?
     };
     // SAFETY: both are writable for the call, as the caller promises, and were checked.
@@ -559,7 +595,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        abi::{E_ARGUMENT, E_PLATFORM, E_REENTRANT, E_REGISTERED, E_UNKNOWN_LINK, OK, size_of_u32},
+        abi::{
+            BatonGeometry, BatonRect, E_ARGUMENT, E_PLATFORM, E_REENTRANT, E_REGISTERED,
+            E_UNKNOWN_LINK, OK, size_of_u32,
+        },
         fake::{Call, Fake, Watchdog},
         fake_sharer::FakeSharer,
         registered_windows,
@@ -676,6 +715,7 @@ mod tests {
                     baton_stream_source_cancel(link),
                     baton_stream_source_recovery_pending(link, &raw mut small),
                     baton_stream_source_sent(link, ptr::null(), &raw mut small, &raw mut number),
+                    baton_stream_source_changed(link, 1),
                     baton_stream_source_new_epoch(link, ptr::null()),
                     baton_stream_source_pause(link, 0),
                     baton_stream_source_resume(link),
@@ -684,7 +724,7 @@ mod tests {
             }
         };
         for link in [0, 1, 99, u64::MAX] {
-            assert_eq!(everything(link), [E_UNKNOWN_LINK; 9], "link {link}");
+            assert_eq!(everything(link), [E_UNKNOWN_LINK; 10], "link {link}");
         }
         assert_eq!(
             // SAFETY: both null is one of the answers that the function is made for.
@@ -862,7 +902,8 @@ mod tests {
         };
         let read = |format: &BatonFormat| {
             // SAFETY: a struct that begins with its size, and lives through the call.
-            unsafe { read_struct(ptr::from_ref(format)) }.map(|read| read.width)
+            unsafe { read_struct(ptr::from_ref(format), size_of::<BatonFormat>()) }
+                .map(|read| read.width)
         };
         assert_eq!(read(&format(whole)), Ok(2));
         // A longer struct is a newer one: what follows the part that is known is not read.
@@ -872,7 +913,8 @@ mod tests {
         }
         // SAFETY: null is one of the arguments that the function is made for.
         assert_eq!(
-            unsafe { read_struct::<BatonFormat>(ptr::null()) }.map(|_| ()),
+            unsafe { read_struct::<BatonFormat>(ptr::null(), size_of::<BatonFormat>()) }
+                .map(|_| ()),
             Err(Error::Argument)
         );
         // A pointer that is not aligned is refused without being read, also when a whole struct is
@@ -890,8 +932,81 @@ mod tests {
         // SAFETY: `at` is inside the buffer, with room for the struct, and is written unaligned.
         unsafe { at.write_unaligned(format(whole)) };
         // SAFETY: the pointer is not read: it is refused for the way it is aligned.
-        let unaligned = unsafe { read_struct::<BatonFormat>(at) };
+        let unaligned = unsafe { read_struct::<BatonFormat>(at, size_of::<BatonFormat>()) };
         assert_eq!(unaligned.map(|_| ()), Err(Error::Argument));
+    }
+
+    #[test]
+    fn what_a_struct_lacks_reads_as_zero_and_a_field_that_its_size_cuts_is_not_read_at_all() {
+        let whole = BatonPicture {
+            size: size_of_u32::<BatonPicture>(),
+            flags: FRAME_REFERENCED,
+            capture_time: 7,
+            length_size: 4,
+            reserved: 0,
+            sample: BatonBytes {
+                ptr: ptr::null(),
+                len: 0,
+            },
+            sets: ptr::null(),
+            set_count: 0,
+            geometry: BatonGeometry {
+                window_width: 400.0,
+                window_height: 300.0,
+                picture_width: 64,
+                picture_height: 48,
+                content: BatonRect {
+                    x: 1.0,
+                    y: 2.0,
+                    width: 3.0,
+                    height: 4.0,
+                },
+            },
+        };
+        let geometry_at = offset_of!(BatonPicture, geometry);
+        // What the platform says its struct is, with all of the memory there all the same.
+        let read = |size: usize| {
+            let picture = BatonPicture {
+                size: u32::try_from(size).unwrap(),
+                ..whole
+            };
+            // SAFETY: a struct that begins with its size, and lives through the call.
+            unsafe { read_struct(ptr::from_ref(&picture), geometry_at) }.unwrap()
+        };
+        assert_eq!(read(size_of::<BatonPicture>()).geometry, whole.geometry);
+        // A longer struct is a newer one, and what follows is not read.
+        assert_eq!(
+            read(size_of::<BatonPicture>() + 64).geometry,
+            whole.geometry
+        );
+        // A struct from before the layout was carried has none.
+        assert_eq!(read(geometry_at).geometry, BatonGeometry::default());
+        assert_eq!(read(geometry_at).capture_time, 7);
+        // A struct that ends after some of the fields has those, and the rest are zero.
+        let some = read(geometry_at + 16).geometry;
+        assert_eq!((some.window_width, some.window_height), (400.0, 300.0));
+        assert_eq!((some.picture_width, some.picture_height), (0, 0));
+        assert_eq!(some.content, BatonRect::default());
+        let more = read(geometry_at + 24).geometry;
+        assert_eq!((more.picture_width, more.picture_height), (64, 48));
+        assert_eq!(more.content, BatonRect::default());
+        // A size that cuts a field in two gives none of the field, and not half of it: no number
+        // is made of the first bytes of another.
+        for cut in 1..8 {
+            let first = read(geometry_at + cut).geometry;
+            assert_eq!(first, BatonGeometry::default(), "cut {cut}");
+            let second = read(geometry_at + 8 + cut).geometry;
+            assert_eq!(second.window_width, 400.0, "cut {cut}");
+            assert_eq!(second.window_height, 0.0, "cut {cut}");
+        }
+        // A size that is less than what every version has is refused.
+        let short = BatonPicture {
+            size: u32::try_from(geometry_at - 1).unwrap(),
+            ..whole
+        };
+        // SAFETY: a struct that begins with its size, and lives through the call.
+        let refused = unsafe { read_struct(ptr::from_ref(&short), geometry_at) };
+        assert_eq!(refused.map(|_| ()), Err(Error::Argument));
     }
 
     #[test]
@@ -931,6 +1046,7 @@ mod tests {
             sample: BatonBytes::of(b""),
             sets,
             set_count,
+            geometry: BatonGeometry::default(),
         };
         let read = |picture: &BatonPicture| {
             // SAFETY: the sets that it describes live through the call.

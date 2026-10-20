@@ -14,9 +14,11 @@
 //! The code of a key is a USB HID usage of the keyboard page (0x07), where `a` is 0x04. It is
 //! what the viewer has (Flutter's `PhysicalKeyboardKey.usbHidUsage`, which is reported to carry
 //! the page above the usage, and `UIKey.keyCode` on iPadOS) and it belongs to no operating
-//! system, so each source translates from one published table to its own codes. [`NO_KEY`] means
-//! no key: the on-screen keyboard and dictation give text without one. An event with it types its
-//! text, goes down once, and is neither held, repeated nor released.
+//! system, so each source translates from one published table to its own codes. A viewer sends the
+//! low 16 bits of a usage only when its page is the keyboard page: the bits of a usage of another
+//! page, such as a media key, mean another key on this one, and a source would press it. [`NO_KEY`]
+//! means no key: the on-screen keyboard and dictation give text without one. An event with it
+//! types its text, goes down once, and is neither held, repeated nor released.
 //!
 //! The text of a key is at most [`MAX_KEY_TEXT_UNITS`] UTF-16 units, which is as much as one call
 //! of the Mac's function that attaches text to an event is reported to keep, so that text which
@@ -112,7 +114,8 @@ pub enum PointerAction {
     Down(Button),
     /// A button came up.
     Up(Button),
-    /// A scroll, in points.
+    /// A scroll, in points. A positive `dx` moves the content to the right and a positive `dy`
+    /// moves it down, as a finger that drags the content does.
     Scroll {
         /// Along the x axis.
         dx: f32,

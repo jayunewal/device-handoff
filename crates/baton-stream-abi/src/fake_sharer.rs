@@ -11,6 +11,11 @@
 //! header with [`FakeSharer::complaints`], and makes the platform fail, lie or call back into the
 //! library with the settings.
 //!
+//! A window that is shared with control also gets `surroundings` and `post`: the first answers
+//! with what the test says the Mac is doing ([`Around`]), the second checks the struct against
+//! the header and records what it says as the [`Post`] that the gate made, so that a test can
+//! compare it with what it expects.
+//!
 //! The other half of a platform, the capture thread that asks `begin` and hands over what the
 //! encoder made, is a set of functions that call the library the way Swift would, with the same
 //! structs and pointers: [`begin`], [`sent`] and the others.
@@ -20,25 +25,33 @@
 use std::{
     collections::BTreeSet,
     ffi::c_void,
-    ptr,
+    mem::offset_of,
+    ptr, slice,
     sync::{
         Arc, Mutex, MutexGuard, PoisonError, Weak,
         atomic::{AtomicBool, Ordering},
     },
 };
 
+use baton_stream::{
+    gate::{Point, Post},
+    input::{Button, MAX_KEY_CODE, Modifiers, PointerAction},
+};
+
 use crate::{
     Error, Registry,
     abi::{
-        ABI_VERSION, BatonBytes, BatonFormat, BatonMessage, BatonPicked, BatonPicture,
-        BatonSharerVTable, BatonTakes, CODEC_H264, MESSAGE_MAX, OK, PICKED_DISPLAY, PICKED_WINDOW,
-        size_of_u32,
+        ABI_VERSION, BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT, BatonBytes, BatonFormat, BatonFront,
+        BatonGeometry, BatonMessage, BatonPicked, BatonPicture, BatonPost, BatonRect,
+        BatonSharerVTable, BatonSurroundings, BatonTakes, CODEC_H264, FRONTS_MAX, KEYBOARD_SHARED,
+        KEYBOARD_UNKNOWN, MESSAGE_MAX, OK, PICKED_DISPLAY, PICKED_WINDOW, POINTER_DOWN,
+        POINTER_MOVE, POINTER_SCROLL, POINTER_UP, POST_KEY, POST_POINTER, size_of_u32,
     },
     platform::SharerCalls,
 };
 
 /// What the platform got, as a test can compare it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum SharerCall {
     Control,
     Pick {
@@ -54,6 +67,11 @@ pub(crate) enum SharerCall {
     Start {
         link: u64,
     },
+    /// The platform was asked what the Mac is doing around the window.
+    Surroundings,
+    /// The platform was told to put this to the window: what the struct said, as the rules made
+    /// it.
+    Post(Post),
     Ended,
     Release,
 }
@@ -101,6 +119,87 @@ pub(crate) enum StartPlan {
     },
 }
 
+/// What the platform says the Mac is doing around the window.
+#[derive(Debug, Clone)]
+pub(crate) struct Around {
+    pub(crate) locked: bool,
+    pub(crate) on_screen: bool,
+    /// A `KEYBOARD_` number.
+    pub(crate) keyboard: u32,
+    pub(crate) window: BatonRect,
+    pub(crate) fronts: Vec<BatonFront>,
+}
+
+impl Default for Around {
+    /// A window of 400 by 300 points at (100, 50), on screen, with the keyboard, and nothing in
+    /// front of it.
+    fn default() -> Self {
+        Self {
+            locked: false,
+            on_screen: true,
+            keyboard: KEYBOARD_SHARED,
+            window: BatonRect {
+                x: 100.0,
+                y: 50.0,
+                width: 400.0,
+                height: 300.0,
+            },
+            fronts: Vec::new(),
+        }
+    }
+}
+
+/// The post of the left button going down at this point of the screen, with no modifier key.
+pub(crate) fn left_down(x: f64, y: f64) -> Post {
+    pointer_post(x, y, PointerAction::Down(Button::Left))
+}
+
+/// The post of the left button coming up at this point of the screen, with no modifier key.
+pub(crate) fn left_up(x: f64, y: f64) -> Post {
+    pointer_post(x, y, PointerAction::Up(Button::Left))
+}
+
+/// The post of a pointer at this point of the screen, with no modifier key.
+pub(crate) fn pointer_post(x: f64, y: f64, action: PointerAction) -> Post {
+    Post::Pointer {
+        at: Point { x, y },
+        modifiers: Modifiers::NONE,
+        action,
+    }
+}
+
+/// The post of a key going down or up, with no modifier key, and not a repeat.
+pub(crate) fn key_post(code: u16, down: bool, text: Option<&str>) -> Post {
+    Post::Key {
+        code,
+        down,
+        modifiers: Modifiers::NONE,
+        repeat: false,
+        text: text.map(str::to_owned),
+    }
+}
+
+/// What `surroundings` does.
+#[derive(Debug, Clone)]
+pub(crate) enum AroundPlan {
+    /// Answers with this.
+    Says(Around),
+    /// Fails with this code, having written nothing.
+    Fails(i32),
+    /// Works, and writes nothing: what the library put in the struct is what it gets back.
+    WritesNothing,
+    /// Answers with this, and claims this many windows in front, whatever there is room for.
+    Claims(Around, u32),
+    /// Writes these numbers as they are, which a platform that is wrong about the header may do:
+    /// whether the Mac is locked, whether the window is on the screen, and who has the keyboard.
+    /// The window is that of [`Around::default`], and nothing is in front of it.
+    Numbers {
+        locked: u32,
+        on_screen: u32,
+        keyboard: u32,
+    },
+}
+
 /// Called inside a call of the platform, with the call and the number of the window it is about
 /// (0 for the calls about the device), to make the platform call the library.
 pub(crate) type Hook = Arc<dyn Fn(u64, &SharerCall) + Send + Sync>;
@@ -112,6 +211,9 @@ struct State {
     pick: PickPlan,
     prepare: PreparePlan,
     start: StartPlan,
+    around: AroundPlan,
+    /// What `post` answers: `OK`, or a failure.
+    post: i32,
     hook: Option<Hook>,
     /// The requests of picks that wait for an answer.
     waiting: BTreeSet<u64>,
@@ -183,6 +285,8 @@ impl FakeSharer {
                 pick: PickPlan::Later,
                 prepare: PreparePlan::Within,
                 start: StartPlan::Works,
+                around: AroundPlan::Says(Around::default()),
+                post: OK,
                 hook: None,
                 waiting: BTreeSet::new(),
             }),
@@ -205,6 +309,19 @@ impl FakeSharer {
             start: Some(start),
             ended: Some(ended),
             release: Some(release),
+            surroundings: Some(surroundings),
+            post: Some(post),
+        }
+    }
+
+    /// The vtable of a platform that was written before input was carried: it ends at `release`,
+    /// and the library reads the two functions that it lacks as missing.
+    pub(crate) fn vtable_without_input(self: &Arc<Self>) -> BatonSharerVTable {
+        BatonSharerVTable {
+            size: u32::try_from(offset_of!(BatonSharerVTable, surroundings)).unwrap(),
+            surroundings: None,
+            post: None,
+            ..self.vtable()
         }
     }
 
@@ -263,6 +380,21 @@ impl FakeSharer {
         self.state().start = plan;
     }
 
+    /// What the Mac is doing from now on.
+    pub(crate) fn plan_around(&self, plan: AroundPlan) {
+        self.state().around = plan;
+    }
+
+    /// The Mac is doing this from now on.
+    pub(crate) fn set_around(&self, around: Around) {
+        self.plan_around(AroundPlan::Says(around));
+    }
+
+    /// What `post` answers from now on.
+    pub(crate) fn plan_post(&self, code: i32) {
+        self.state().post = code;
+    }
+
     pub(crate) fn on_call(&self, hook: impl Fn(u64, &SharerCall) + Send + Sync + 'static) {
         self.state().hook = Some(Arc::new(hook));
     }
@@ -273,6 +405,17 @@ impl FakeSharer {
     /// the device: the first window is 1).
     pub(crate) fn log(&self) -> Vec<(u64, SharerCall)> {
         self.state().log.clone()
+    }
+
+    /// What the window was told to do, in order.
+    pub(crate) fn posts(&self, window: u64) -> Vec<Post> {
+        self.calls(window)
+            .into_iter()
+            .filter_map(|call| match call {
+                SharerCall::Post(post) => Some(post),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The calls about one window, in order.
@@ -297,6 +440,13 @@ impl FakeSharer {
     /// The promises of the header that the Rust side broke. Empty when it kept them all.
     pub(crate) fn complaints(&self) -> Vec<String> {
         self.state().complaints.clone()
+    }
+
+    /// Fails the test with the promises of the header that the Rust side broke, if it broke any.
+    #[track_caller]
+    pub(crate) fn assert_no_complaints(&self) {
+        let complaints = self.complaints();
+        assert!(complaints.is_empty(), "{complaints:?}");
     }
 
     /// The requests of the picks that were not answered or taken down.
@@ -726,6 +876,202 @@ unsafe extern "C" fn start(picked: *mut c_void, link: u64, message: *mut BatonMe
     }
 }
 
+/// Checks that the window may be asked about its surroundings or told to post: it was started,
+/// and the call is about input and not about a window that never got that far.
+fn input_is_due(cell: &Cell, fake: &FakeSharer, what: &str) {
+    let progress = locked(&cell.progress);
+    if !progress.started {
+        fake.complain(format!(
+            "{what} before a start that worked, on window {}",
+            cell.number
+        ));
+    }
+}
+
+unsafe extern "C" fn surroundings(picked: *mut c_void, around: *mut BatonSurroundings) -> i32 {
+    // SAFETY: `picked` is a pointer that an answer gave.
+    let (cell, fake) = unsafe { window_of(picked) };
+    if around.is_null() {
+        fake.complain("surroundings: a null struct");
+        return -1;
+    }
+    // SAFETY: not null, and the Rust side gives a struct of the interface.
+    let given = unsafe { *around };
+    // What the library puts in before it asks is the careful answer, and the room for the windows
+    // in front.
+    if given.size != size_of_u32::<BatonSurroundings>()
+        || given.locked != 1
+        || given.on_screen != 0
+        || given.keyboard != KEYBOARD_UNKNOWN
+        || given.window != BatonRect::default()
+        || given.fronts.is_null()
+        || given.front_cap != FRONTS_MAX
+        || given.front_count != 0
+    {
+        fake.complain(format!(
+            "surroundings: the struct is not as agreed: {given:?}"
+        ));
+    }
+    let _busy = about_window(cell, &fake, &SharerCall::Surroundings);
+    input_is_due(cell, &fake, "surroundings");
+    let plan = fake.state().around.clone();
+    let (says, claimed) = match plan {
+        AroundPlan::Fails(code) => return code,
+        AroundPlan::WritesNothing => return OK,
+        AroundPlan::Says(says) => {
+            let count = u32::try_from(says.fronts.len()).unwrap();
+            (says, count)
+        }
+        AroundPlan::Claims(says, claimed) => (says, claimed),
+        AroundPlan::Numbers {
+            locked,
+            on_screen,
+            keyboard,
+        } => {
+            // SAFETY: not null, and the struct is the platform's to write.
+            unsafe {
+                (*around).locked = locked;
+                (*around).on_screen = on_screen;
+                (*around).keyboard = keyboard;
+                (*around).window = Around::default().window;
+                (*around).front_count = 0;
+            }
+            return OK;
+        }
+    };
+    // SAFETY: not null, and the struct is the platform's to write; the room for the windows in
+    // front is `front_cap` long, and no more than that is written.
+    unsafe {
+        (*around).locked = u32::from(says.locked);
+        (*around).on_screen = u32::from(says.on_screen);
+        (*around).keyboard = says.keyboard;
+        (*around).window = says.window;
+        for (at, front) in says
+            .fronts
+            .iter()
+            .take(given.front_cap as usize)
+            .enumerate()
+        {
+            given.fronts.add(at).write(*front);
+        }
+        (*around).front_count = claimed;
+    }
+    OK
+}
+
+/// What a struct for `post` says, if it keeps the promises of the header, or the promise that it
+/// breaks.
+fn read_post(post: &BatonPost) -> Result<Post, String> {
+    if post.size != size_of_u32::<BatonPost>() {
+        return Err(format!("the size is {}", post.size));
+    }
+    let modifiers = u8::try_from(post.modifiers)
+        .ok()
+        .and_then(Modifiers::from_bits)
+        .ok_or_else(|| format!("modifiers {:#x}", post.modifiers))?;
+    match post.kind {
+        POST_POINTER => {
+            if (post.code, post.down, post.repeat, post.text.len) != (0, 0, 0, 0) {
+                return Err("a pointer with the fields of a key".to_owned());
+            }
+            if !post.x.is_finite() || !post.y.is_finite() {
+                return Err("a place that is not a number".to_owned());
+            }
+            let button = match post.button {
+                BUTTON_LEFT => Some(Button::Left),
+                BUTTON_RIGHT => Some(Button::Right),
+                BUTTON_MIDDLE => Some(Button::Middle),
+                _ => None,
+            };
+            // A move and a scroll have no button, which is a zero like the left one.
+            let no_button = post.button == 0;
+            let scrolls = (post.dx, post.dy) != (0.0, 0.0);
+            let action = match (post.action, button) {
+                (POINTER_MOVE, _) if no_button && !scrolls => PointerAction::Move,
+                (POINTER_DOWN, Some(button)) if !scrolls => PointerAction::Down(button),
+                (POINTER_UP, Some(button)) if !scrolls => PointerAction::Up(button),
+                (POINTER_SCROLL, _) if no_button => PointerAction::Scroll {
+                    dx: post.dx,
+                    dy: post.dy,
+                },
+                _ => {
+                    return Err(format!(
+                        "action {}, button {}, scroll {} {}",
+                        post.action, post.button, post.dx, post.dy
+                    ));
+                }
+            };
+            Ok(Post::Pointer {
+                at: Point {
+                    x: post.x,
+                    y: post.y,
+                },
+                modifiers,
+                action,
+            })
+        }
+        POST_KEY => {
+            if (post.x, post.y, post.dx, post.dy) != (0.0, 0.0, 0.0, 0.0)
+                || (post.action, post.button) != (0, 0)
+            {
+                return Err("a key with the fields of a pointer".to_owned());
+            }
+            let code = u16::try_from(post.code)
+                .ok()
+                .filter(|code| *code <= MAX_KEY_CODE)
+                .ok_or_else(|| format!("key code {}", post.code))?;
+            if post.down > 1 || post.repeat > 1 {
+                return Err(format!("down {}, repeat {}", post.down, post.repeat));
+            }
+            // 20 UTF-16 units are at most 60 bytes of UTF-8.
+            let text = match post.text.len {
+                0 => None,
+                len if len <= 60 && !post.text.ptr.is_null() => {
+                    // SAFETY: the library gives `len` bytes that live through the call.
+                    let bytes = unsafe { slice::from_raw_parts(post.text.ptr, len) };
+                    Some(
+                        String::from_utf8(bytes.to_vec())
+                            .map_err(|_| "text that is not UTF-8".to_owned())?,
+                    )
+                }
+                len => return Err(format!("{len} bytes of text at {:?}", post.text.ptr)),
+            };
+            Ok(Post::Key {
+                code,
+                down: post.down == 1,
+                modifiers,
+                repeat: post.repeat == 1,
+                text,
+            })
+        }
+        kind => Err(format!("kind {kind}")),
+    }
+}
+
+unsafe extern "C" fn post(picked: *mut c_void, post: *const BatonPost) -> i32 {
+    // SAFETY: `picked` is a pointer that an answer gave.
+    let (cell, fake) = unsafe { window_of(picked) };
+    if post.is_null() {
+        fake.complain("post: a null struct");
+        return -1;
+    }
+    // SAFETY: not null, and the Rust side gives a struct of the interface.
+    let read = read_post(unsafe { &*post });
+    let post = read.unwrap_or_else(|why| {
+        fake.complain(format!("post: {why}"));
+        Post::Key {
+            code: 0,
+            down: false,
+            modifiers: Modifiers::NONE,
+            repeat: false,
+            text: None,
+        }
+    });
+    let _busy = about_window(cell, &fake, &SharerCall::Post(post));
+    input_is_due(cell, &fake, "post");
+    fake.state().post
+}
+
 unsafe extern "C" fn ended(picked: *mut c_void) {
     // SAFETY: `picked` is a pointer that an answer gave.
     let (cell, fake) = unsafe { window_of(picked) };
@@ -832,11 +1178,34 @@ pub(crate) fn recovery_pending(registry: &Registry, link: u64) -> Result<bool, E
 }
 
 /// Hands over a picture, and gives what became of it: a `SENT_` number and the number of the
-/// frame.
+/// frame. The platform says nothing of the layout of the window, as one that cannot post does.
 pub(crate) fn sent(registry: &Registry, link: u64, pic: &Pic) -> Result<(u32, u64), Error> {
+    sent_with(registry, link, pic, BatonGeometry::default())
+}
+
+/// As [`sent`], with the layout of the window in the picture.
+pub(crate) fn sent_with(
+    registry: &Registry,
+    link: u64,
+    pic: &Pic,
+    geometry: BatonGeometry,
+) -> Result<(u32, u64), Error> {
+    sent_sized(registry, link, pic, geometry, size_of_u32::<BatonPicture>())
+}
+
+/// As [`sent_with`], with the struct saying that it is `size` bytes long, as a platform does that
+/// was written when the struct was shorter: what lies beyond `size` is in the memory, and is not
+/// to be read.
+pub(crate) fn sent_sized(
+    registry: &Registry,
+    link: u64,
+    pic: &Pic,
+    geometry: BatonGeometry,
+    size: u32,
+) -> Result<(u32, u64), Error> {
     let sets: Vec<BatonBytes> = pic.sets.iter().map(|set| BatonBytes::of(set)).collect();
     let picture = BatonPicture {
-        size: size_of_u32::<BatonPicture>(),
+        size,
         flags: pic.flags,
         capture_time: pic.capture_time,
         length_size: pic.length_size,
@@ -848,6 +1217,7 @@ pub(crate) fn sent(registry: &Registry, link: u64, pic: &Pic) -> Result<(u32, u6
             sets.as_ptr()
         },
         set_count: sets.len(),
+        geometry,
     };
     let (mut outcome, mut number) = (u32::MAX, u64::MAX);
     // SAFETY: a struct of the interface that is whole, with bytes that outlive the call, and
@@ -876,6 +1246,11 @@ pub(crate) unsafe fn sent_raw(
     // SAFETY: the caller's promise about the picture is this function's own, and the others are
     // null or point to values that live through the call.
     unsafe { registry.source_sent(link, picture, outcome, number) }
+}
+
+/// The window changed at `capture_time`.
+pub(crate) fn changed(registry: &Registry, link: u64, capture_time: u64) -> Result<(), Error> {
+    registry.source_changed(link, capture_time)
 }
 
 /// The size of the picture changed.
