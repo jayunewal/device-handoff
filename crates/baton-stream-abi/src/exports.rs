@@ -383,7 +383,8 @@ unsafe fn read_struct<T: Copy>(pointer: *const T, mandatory: usize) -> Result<T,
         return Err(Error::Argument);
     }
     // A size that ends in the middle of a field is not copied to the end: half of a number is not
-    // a number. Every field starts at a multiple of the alignment of the struct.
+    // a number. No field crosses a multiple of the alignment of the struct, so a copy that ends
+    // at one never cuts a field in two.
     let copied = size.min(size_of::<T>()) & !(align_of::<T>() - 1);
     let mut whole = MaybeUninit::<T>::zeroed();
     // SAFETY: the struct is at least `size` bytes long, as the caller promises, and the bytes that

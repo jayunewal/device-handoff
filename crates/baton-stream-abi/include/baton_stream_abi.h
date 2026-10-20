@@ -606,9 +606,9 @@ typedef struct BatonViewerVTable {
  *                threads of the platform to leave the functions of this interface: the link is
  *                closed before ended is called, and a call that is on its way is answered with
  *                BATON_E_UNKNOWN_LINK. Stop capturing and encoding, and let go of what the
- *                capture holds. Called only after a start that returned BATON_OK, once. No call
- *                follows but release, which can come without ended when the runtime of the app
- *                is shut down before the end is told.
+ *                capture holds. Called only after a start that returned BATON_OK, once, and
+ *                also when the runtime of the app is shut down before the session is over: the
+ *                link is closed before ended then too. No call follows but release.
  *   release:     the window is not needed any more, whether or not ended came first, and
  *                whether or not it was ever started. Let go of all of it, the picker's
  *                result included. Called exactly once, and nothing follows.
@@ -625,7 +625,10 @@ typedef struct BatonViewerVTable {
  *                the events of that batch, except the release of a press that was put to the
  *                window.
  *   post:        puts one thing that the person did to the window (BatonPost). A failure drops
- *                that event.
+ *                that event. Every post is for the process that owns the shared window, the
+ *                release of a press included: it goes to the process that got the press. A
+ *                release should not fail, since the Rust side forgets the press whether or not
+ *                the release was posted, and does not try again.
  */
 typedef uint32_t (*BatonControlFn)(void *context);
 typedef int32_t (*BatonPickFn)(void *context, uint64_t request, BatonMessage *message);
@@ -691,9 +694,9 @@ int32_t baton_stream_register_sharer(const BatonSharerVTable *vtable);
  * The answer to a pick, once for each request, from any thread but not from inside a call of the
  * vtable (pick that cannot show the picker fails instead). One of three:
  *
- *   - picked is not NULL and failure is NULL: the person chose a window. On BATON_OK the Rust side
- *     owns picked->context and calls release for it exactly once. On any other result the window
- *     stays with the platform, which lets go of it itself.
+ *   - picked is not NULL and failure is NULL: the person chose a window or a display. On
+ *     BATON_OK the Rust side owns picked->context and calls release for it exactly once. On any
+ *     other result the window stays with the platform, which lets go of it itself.
  *   - picked is NULL and failure holds a sentence: the picker failed. The person is told it, so
  *     it says what happened in plain words (at most 256 bytes, cut to one line).
  *   - picked is NULL, and failure is NULL or empty: the person gave up. Nothing is shown.

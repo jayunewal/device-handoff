@@ -2170,6 +2170,64 @@ async fn a_platform_that_waits_in_ended_for_its_capture_thread_does_not_hold_up_
     );
 }
 
+/// The runtime of the app is shut down before the session is over, which drops the task that
+/// waits for the end. The window is told all the same, and the link is closed by then, as it is
+/// when the session ends in any other way.
+#[test]
+fn a_window_is_told_of_the_end_with_its_link_closed_also_when_the_runtime_is_shut_down() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let (rig, link) = runtime.block_on(async {
+        let mut rig = Rig::new().await;
+        let link = rig.share(false).await.link;
+        (rig, link)
+    });
+    let (platform, registry) = (Arc::clone(&rig.platform), Arc::clone(&rig.registry));
+    let answers = Arc::new(Mutex::new(Vec::new()));
+    platform.on_call({
+        let (registry, answers) = (Arc::clone(&registry), Arc::clone(&answers));
+        move |_, call| {
+            if *call == SharerCall::Ended {
+                // From a thread of the platform's own: a call made inside a call of the library
+                // is refused for another reason.
+                let registry = Arc::clone(&registry);
+                let answer = thread::spawn(move || begin(&registry, link))
+                    .join()
+                    .unwrap();
+                answers.lock().unwrap().push(answer);
+            }
+        }
+    });
+    drop(runtime);
+
+    let deadline = Instant::now() + LET_GO;
+    while platform.calls(1).last() != Some(&SharerCall::Release) {
+        assert!(
+            Instant::now() < deadline,
+            "the window was not let go: {:?}",
+            platform.calls(1)
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(*answers.lock().unwrap(), [Err(Error::UnknownLink)]);
+    assert_eq!(
+        platform.calls(1),
+        [
+            asked_to_prepare(),
+            SharerCall::Start { link },
+            SharerCall::Ended,
+            SharerCall::Release
+        ]
+    );
+    platform.assert_no_complaints();
+    assert_eq!(registry.open_links(), 0);
+    // The two devices belong to the runtime that is gone, and are not dropped.
+    mem::forget(rig);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn threads_of_the_platform_that_are_in_the_library_when_a_session_ends_are_all_told_so() {
     // The session is ended by the person at the other device, by the platform itself from one of

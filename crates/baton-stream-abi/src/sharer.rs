@@ -380,13 +380,13 @@ impl PickedWindow for AbiPicked {
             failure.fail(why.0.unwrap_or_else(|| NOT_STARTED.to_owned()));
             return;
         }
-        // The task holds the link table and not the link: the table's entry is the only copy of
-        // the handle that lasts, and it goes when the session is over. It holds the way to tell
-        // the thread too, and that is told when the task is dropped, also with its runtime.
-        let (links, closing) = (Arc::clone(&shared.links), Closing::new(input));
+        // The task holds the means to close the link and to tell the thread, and not the link: the
+        // table's entry is the only copy of the handle that lasts, and it goes when the session
+        // is over. Both are done, the link first, when the task is dropped as well, which is what
+        // happens to it when the runtime is shut down before the end.
+        let closing = Closing::new(Arc::clone(&shared.links), number, input);
         runtime.spawn(async move {
             over.await;
-            links.remove(number);
             drop(closing);
         });
     }

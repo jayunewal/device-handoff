@@ -108,7 +108,8 @@ unsafe fn read_table<T: Copy>(table: *const T, mandatory: usize) -> Result<T, Er
         return Err(Error::Argument);
     }
     // A size that ends in the middle of a field is not copied to the end: half of a pointer is
-    // not a pointer. Every field starts at a multiple of the alignment of the struct.
+    // not a pointer. No field crosses a multiple of the alignment of the struct, so a copy that
+    // ends at one never cuts a field in two.
     let copied = size.min(size_of::<T>()) & !(align_of::<T>() - 1);
     let mut whole = MaybeUninit::<T>::zeroed();
     // SAFETY: the struct is at least `size` bytes long, as the caller promises, and the bytes that
