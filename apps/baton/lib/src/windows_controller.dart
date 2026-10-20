@@ -88,6 +88,7 @@ class WindowsController extends ChangeNotifier {
   final List<WindowRequest> _requests = [];
   WindowRequest? _opening;
   Device? _offering;
+  bool _offeringControl = false;
   final List<WindowSession> _sessions = [];
   final Map<int, PictureSize> _pictures = {};
   final List<WindowNote> _notes = [];
@@ -105,6 +106,9 @@ class WindowsController extends ChangeNotifier {
   /// one until the other device has answered, or `null`. The person chooses the window in that
   /// time.
   Device? get offering => _offering;
+
+  /// Whether the window that is being offered is offered to be controlled as well as looked at.
+  bool get offeringControl => _offeringControl;
 
   /// The windows that run, shown here or shared from here, oldest first.
   List<WindowSession> get sessions => List.unmodifiable(_sessions);
@@ -238,6 +242,7 @@ class WindowsController extends ChangeNotifier {
   Future<void> share(Device device, {bool control = false}) async {
     if (_offering != null) return;
     _offering = device;
+    _offeringControl = control;
     notifyListeners();
     try {
       final shared = await _session.shareWindow(device.id, control: control);
@@ -252,6 +257,7 @@ class WindowsController extends ChangeNotifier {
     } finally {
       if (!_disposed) {
         _offering = null;
+        _offeringControl = false;
         notifyListeners();
       }
     }

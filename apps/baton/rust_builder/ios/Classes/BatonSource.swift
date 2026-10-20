@@ -594,14 +594,22 @@ final class LibrarySourceSession: SourceSession {
     _ = baton_stream_source_changed(link, captureTime)
   }
 
+  // The watch tells of a change only, so each pause and each resume is one line in the log. The
+  // line says why and nothing about the window, so that whoever installs the app can see in the
+  // lines they already read that a window which is only looked at was paused, and for what.
   func pause(_ reason: PauseReason) {
     switch reason {
-    case .locked: _ = baton_stream_source_pause(link, BATON_PAUSE_LOCKED)
-    case .hidden: _ = baton_stream_source_pause(link, BATON_PAUSE_HIDDEN)
+    case .locked:
+      NSLog("Baton: the shared window is paused, because the Mac is locked.")
+      _ = baton_stream_source_pause(link, BATON_PAUSE_LOCKED)
+    case .hidden:
+      NSLog("Baton: the shared window is paused, because it is not on the screen.")
+      _ = baton_stream_source_pause(link, BATON_PAUSE_HIDDEN)
     }
   }
 
   func resume() {
+    NSLog("Baton: the shared window goes on.")
     _ = baton_stream_source_resume(link)
   }
 

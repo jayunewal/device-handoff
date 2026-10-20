@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../awake.dart';
 import '../backend.dart';
+import '../control_access.dart';
 import '../file_chooser.dart';
 import '../file_shower.dart';
 import '../format.dart';
@@ -32,6 +33,7 @@ class HomeScreen extends StatefulWidget {
     this.chooser = const SystemFileChooser(),
     this.shower = const SystemFileShower(),
     this.screen = const PlatformScreenKeeper(),
+    this.controlAccess = const PlatformControlAccess(),
     super.key,
   });
 
@@ -55,6 +57,10 @@ class HomeScreen extends StatefulWidget {
   /// Keeps the screen of the device on while a window is offered and shown. Tests give it one of
   /// their own.
   final ScreenKeeper screen;
+
+  /// What the system says about letting another device control a window of this one. Tests give
+  /// it one of their own.
+  final ControlAccessKeeper controlAccess;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -213,8 +219,10 @@ class _HomeScreenState extends State<HomeScreen> {
             now: widget.now,
             scanner: widget.scanner,
             chooser: widget.chooser,
+            controlAccess: widget.controlAccess,
             onShareWindow: _windows.abilities.canShare
-                ? (device) => unawaited(_windows.share(device))
+                ? (device, {required control}) =>
+                      unawaited(_windows.share(device, control: control))
                 : null,
           ),
           InboxScreen(
