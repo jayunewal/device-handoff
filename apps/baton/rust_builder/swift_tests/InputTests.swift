@@ -263,7 +263,7 @@ func testMoreWindowsInFrontThanTheRustSideTakesMakeNoAnswer() {
   check(SurroundingsReader.mostFronts == Int(BATON_FRONTS_MAX))
 }
 
-func testTheApplicationIsBroughtToTheFrontOnceAtTheFirstTouchBeforeAnythingIsRead() {
+func testTheApplicationIsBroughtToTheFrontOnceAtTheFirstTouchBeforeTheWindowsInFrontAreRead() {
   var listingToChange: FakeListing?
   let (reader, listing, activity) = readerOfASharedWindow { listing, activity in
     activity.frontmostProcess = 300
@@ -299,6 +299,37 @@ func testTheApplicationIsNotBroughtForwardWhenItIsInFrontOrWhenTheMacDoesNotSay(
   quiet.frontmostProcess = 300
   _ = silent.read()
   check(quiet.brought.isEmpty)
+}
+
+func testAWindowThatIsNotOnTheScreenBringsNothingForwardAndTheFirstTouchAfterItIsBackDoes() {
+  let (reader, listing, activity) = readerOfASharedWindow { listing, activity in
+    activity.frontmostProcess = 300
+    listing.described = .window(listed(sharedWindow, process: sharedProcess, onScreen: false))
+  }
+  // Minimized, on another desktop or its application hidden: bringing the application forward
+  // would show it again, switch the desktop or reopen the window, and the session is paused.
+  _ = reader.read()
+  check(activity.brought.isEmpty, "a touch on a hidden window brought it: \(activity.brought)")
+
+  listing.described = .gone
+  _ = reader.read()
+  check(activity.brought.isEmpty, "a touch on a closed window brought the application")
+
+  let flat = ScreenRect(x: 0, y: 0, width: 0, height: 600)
+  listing.described = .window(listed(sharedWindow, process: sharedProcess, bounds: flat))
+  _ = reader.read()
+  check(activity.brought.isEmpty, "a touch on a window with no size brought the application")
+
+  listing.described = .unavailable
+  _ = reader.read()
+  check(activity.brought.isEmpty, "a window server that cannot be asked brought the application")
+
+  // The window is on the screen again: the first touch after it brings the application, once.
+  listing.described = .window(listed(sharedWindow, process: sharedProcess))
+  _ = reader.read()
+  check(activity.brought == [sharedProcess], "\(activity.brought)")
+  _ = reader.read()
+  check(activity.brought == [sharedProcess], "\(activity.brought)")
 }
 
 func testALockedMacIsNotTouchedAndTheFirstTouchAfterTheUnlockBringsTheApplication() {

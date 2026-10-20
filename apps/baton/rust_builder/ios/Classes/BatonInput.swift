@@ -186,7 +186,6 @@ final class SurroundingsReader {
       return WindowSurroundings(
         locked: true, onScreen: false, keyboard: .unknown, window: .zero, fronts: [])
     }
-    bringToFrontOnce()
     let own: ListedWindow
     switch listing.describe(window: window) {
     case .unavailable:
@@ -199,6 +198,11 @@ final class SurroundingsReader {
     guard own.onScreen, own.bounds.isUsable else {
       return notOnScreen(at: own.bounds.isUsable ? own.bounds : .zero)
     }
+    // Only a window that is on the screen is worth bringing the application forward for, and the
+    // windows in front are read after it, since bringing it forward changes them. A touch on a
+    // window that the person at the Mac minimized or hid, or that lies on another desktop, must not
+    // show it again or switch their desktop: the session is paused then, and the touch is dropped.
+    bringToFrontOnce()
     guard let above = listing.windowsOnScreen(inFrontOf: window) else { return nil }
 
     var fronts: [WindowFront] = []
@@ -240,8 +244,9 @@ final class SurroundingsReader {
   }
 
   /// The person at the other device touches a window that is shared, and the application must be
-  /// in front for the window to take keys. It is brought there once, when the first touch comes,
-  /// and not again: the person at the Mac may bring another one forward, and is not fought for it.
+  /// in front for the window to take keys. It is brought there once, when the first touch comes
+  /// for a window that is on the screen, and not again: the person at the Mac may bring another one
+  /// forward, and is not fought for it.
   private func bringToFrontOnce() {
     if brought { return }
     brought = true

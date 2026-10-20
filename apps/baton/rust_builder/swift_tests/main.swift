@@ -462,12 +462,16 @@ tests += [
     testMoreWindowsInFrontThanTheRustSideTakesMakeNoAnswer
   ),
   (
-    "the application is brought to the front once at the first touch before anything is read",
-    testTheApplicationIsBroughtToTheFrontOnceAtTheFirstTouchBeforeAnythingIsRead
+    "the application is brought to the front once at the first touch before the windows in front are read",
+    testTheApplicationIsBroughtToTheFrontOnceAtTheFirstTouchBeforeTheWindowsInFrontAreRead
   ),
   (
     "the application is not brought forward when it is in front or when the Mac does not say",
     testTheApplicationIsNotBroughtForwardWhenItIsInFrontOrWhenTheMacDoesNotSay
+  ),
+  (
+    "a window that is not on the screen brings nothing forward and the first touch after it is back does",
+    testAWindowThatIsNotOnTheScreenBringsNothingForwardAndTheFirstTouchAfterItIsBackDoes
   ),
   (
     "a locked Mac is not touched and the first touch after the unlock brings the application",
