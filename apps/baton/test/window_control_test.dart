@@ -843,6 +843,116 @@ void main() {
     });
   });
 
+  group('a key of a keyboard that the window takes', () {
+    FocusScopeNode scopeOf(WidgetTester tester) =>
+        FocusScope.of(tester.element(find.byIcon(Icons.close)));
+
+    testWidgets('does not move the focus of the app', (tester) async {
+      final shown = await _open(tester);
+      await _turnOn(tester);
+      final before = FocusManager.instance.primaryFocus;
+      expect(scopeOf(tester).hasFocus, isTrue);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+
+      expect(FocusManager.instance.primaryFocus, same(before));
+      expect(shown.given, [..._tap(HidKey.tab), ..._tap(HidKey.tab)]);
+    });
+
+    testWidgets('does not press the button that has the focus', (tester) async {
+      final shown = await _open(tester);
+      await _turnOn(tester);
+      Focus.of(tester.element(find.byIcon(Icons.close))).requestFocus();
+      await tester.pump();
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await tester.pumpAndSettle();
+
+      expect(shown.given, [
+        ..._tap(HidKey.enter),
+        _key(0x2C, text: ' '),
+        _key(0x2C, down: false),
+      ]);
+      expect(find.text('Stop showing this window?'), findsNothing);
+      expect(find.text('Esc'), findsOneWidget, reason: 'control stays on');
+    });
+
+    testWidgets('does not also edit the field of the keyboard', (tester) async {
+      final shown = await _open(tester);
+      await _turnOn(tester);
+      await tester.tap(find.byTooltip('Bring up the keyboard'));
+      await tester.pump();
+
+      // On an Apple device this is a shortcut of the field, which deletes up to the start of the
+      // line.
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.metaLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.metaLeft);
+      await tester.pump();
+
+      expect(shown.given, _tap(HidKey.backspace, _command));
+      expect(
+        tester
+            .state<EditableTextState>(find.byType(EditableText))
+            .textEditingValue
+            .text,
+        TypingField.anchor,
+      );
+    }, variant: TargetPlatformVariant.only(TargetPlatform.iOS));
+
+    testWidgets('goes on coming once the keyboard of the screen is down', (
+      tester,
+    ) async {
+      final shown = await _open(tester);
+      await _turnOn(tester);
+      await tester.tap(find.byTooltip('Bring up the keyboard'));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Put the keyboard down'));
+      await tester.pump();
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyA, character: 'a');
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyA);
+
+      expect(shown.given, [_key(0x04, text: 'a'), _key(0x04, down: false)]);
+    });
+
+    testWidgets('does not come while a dialog is over the screen', (
+      tester,
+    ) async {
+      final shown = await _open(tester);
+      await _turnOn(tester);
+      await tester.tap(find.byTooltip('Stop showing'));
+      await tester.pumpAndSettle();
+      expect(find.text('Stop showing this window?'), findsOneWidget);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyA, character: 'a');
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyA);
+      expect(shown.session.windowInputs, isEmpty);
+
+      await tester.tap(find.text('Keep showing'));
+      await tester.pumpAndSettle();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyA, character: 'a');
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyA);
+
+      expect(shown.given, [_key(0x04, text: 'a'), _key(0x04, down: false)]);
+    });
+
+    testWidgets('is left to the app while control is off', (tester) async {
+      final shown = await _open(tester);
+      final before = FocusManager.instance.primaryFocus;
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      expect(FocusManager.instance.primaryFocus, isNot(same(before)));
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Stop showing this window?'), findsOneWidget);
+      expect(shown.session.windowInputs, isEmpty);
+    });
+  });
+
   group('the keyboard of the screen', () {
     bool focused(WidgetTester tester) => tester
         .widget<EditableText>(find.byType(EditableText))
@@ -1185,6 +1295,21 @@ void main() {
 
       expect(shown.session.windowInputsReleased, isEmpty);
     });
+
+    testWidgets('the screen going away disposes its focus scope and the focus '
+        'of its keyboard', (tester) async {
+      await _open(tester);
+      await _turnOn(tester);
+      final scope = FocusScope.of(tester.element(find.byIcon(Icons.close)));
+      final keyboard = tester
+          .widget<EditableText>(find.byType(EditableText))
+          .focusNode;
+
+      await tester.pumpWidget(const SizedBox());
+
+      expect(() => scope.addListener(() {}), throwsFlutterError);
+      expect(() => keyboard.addListener(() {}), throwsFlutterError);
+    });
   });
 
   group('the control, without a screen', () {
@@ -1242,33 +1367,19 @@ void main() {
     });
 
     group('the keys of a keyboard', () {
-      testWidgets('are heard once, however often it was turned on', (
+      testWidgets('are not heard from the keyboard by the control itself', (
         tester,
       ) async {
         final rig = await _Control.start(tester);
-        rig.control
-          ..turnOn()
-          ..turnOn();
+        rig.control.turnOn();
 
+        // The screen gives the keys to the control from its focus scope, where a key that the
+        // window takes stops. A control that listened to the keyboard too would take every key
+        // twice.
         await tester.sendKeyDownEvent(LogicalKeyboardKey.keyA, character: 'a');
         await tester.sendKeyUpEvent(LogicalKeyboardKey.keyA);
 
-        expect(rig.given, [_key(0x04, text: 'a'), _key(0x04, down: false)]);
-      });
-
-      testWidgets('are heard once after it was turned off and on again', (
-        tester,
-      ) async {
-        final rig = await _Control.start(tester);
-        rig.control
-          ..turnOn()
-          ..turnOff()
-          ..turnOn();
-
-        await tester.sendKeyDownEvent(LogicalKeyboardKey.keyA, character: 'a');
-        await tester.sendKeyUpEvent(LogicalKeyboardKey.keyA);
-
-        expect(rig.given, [_key(0x04, text: 'a'), _key(0x04, down: false)]);
+        expect(rig.given, isEmpty);
       });
 
       testWidgets('are not let go of if they went down before it was off', (
@@ -1568,6 +1679,38 @@ void main() {
         await tester.pump(Duration.zero);
         expect(rig.control.notice, 'Anna’s Mac is locked.');
         await tester.pump(const Duration(seconds: 4));
+      });
+
+      testWidgets('is heard once, however often control was turned on', (
+        tester,
+      ) async {
+        final rig = await _Control.start(tester);
+        rig.control
+          ..turnOn()
+          ..turnOn();
+        var told = 0;
+        rig.control.addListener(() => told++);
+
+        rig.backend.emit(notice(1));
+        await tester.pump(Duration.zero);
+
+        expect(told, 1);
+        await tester.pump(const Duration(seconds: 4));
+      });
+
+      testWidgets('is not heard once control is off, however often it was on', (
+        tester,
+      ) async {
+        final rig = await _Control.start(tester);
+        rig.control
+          ..turnOn()
+          ..turnOn()
+          ..turnOff();
+
+        rig.backend.emit(notice(1));
+        await tester.pump(Duration.zero);
+
+        expect(rig.control.notice, isNull);
       });
     });
   });

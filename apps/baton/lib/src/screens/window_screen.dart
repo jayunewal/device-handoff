@@ -17,7 +17,9 @@ import 'windows_panel.dart';
 ///
 /// The window is looked at, and zoomed with two fingers. If the other device let this one control
 /// it, the person can turn control on: their fingers and keys then act on the window, and the
-/// picture is not zoomed until they turn it off. Leaving the screen ends the window, after
+/// picture is not zoomed until they turn it off. The keys of an attached keyboard are taken by the
+/// focus scope of the screen, so that a key which the window takes does not also move the focus,
+/// press a button or type into a field of the app. Leaving the screen ends the window, after
 /// asking: it would have to be shared again. A window that ends by itself leaves the screen in
 /// place and says how, so that the person is not left wondering what happened.
 ///
@@ -58,6 +60,13 @@ class _WindowScreenState extends State<WindowScreen> {
     debugLabel: 'The keyboard for the window',
   );
 
+  /// The scope of the whole screen, which takes the keys of a keyboard that is attached to this
+  /// device while the window is controlled.
+  late final FocusScopeNode _scope = FocusScopeNode(
+    debugLabel: 'The window that is controlled',
+    onKeyEvent: _key,
+  );
+
   /// Names the picture, to ask how large it is.
   final GlobalKey _picture = GlobalKey();
   Timer? _renew;
@@ -77,6 +86,7 @@ class _WindowScreenState extends State<WindowScreen> {
     widget.controller.removeListener(_changed);
     _control.dispose();
     _keyboard.dispose();
+    _scope.dispose();
     _letGo();
     super.dispose();
   }
@@ -106,9 +116,19 @@ class _WindowScreenState extends State<WindowScreen> {
     return box.size;
   }
 
+  /// A key of a keyboard that is attached to this device. The focus tree gives it to every
+  /// widget between the focus and the root until one takes it, and the shortcuts of the app, which
+  /// move the focus with Tab and press the button that has it with Return and Space, sit above this
+  /// scope: a key that the window takes stops here, and so does not also act on the app.
+  KeyEventResult _key(FocusNode node, KeyEvent event) =>
+      _control.key(event) ? KeyEventResult.handled : KeyEventResult.ignored;
+
   void _setControl(bool on) {
     if (on) {
       _control.turnOn();
+      // A key goes through the scope only while the focus is in it, and the focus lies on the
+      // route around the screen, above the scope, until it is given to the scope.
+      _scope.requestFocus();
     } else {
       _keyboard.unfocus();
       _control.turnOff();
@@ -155,6 +175,13 @@ class _WindowScreenState extends State<WindowScreen> {
 
   @override
   Widget build(BuildContext context) {
+    return FocusScope.withExternalFocusNode(
+      focusScopeNode: _scope,
+      child: _screen(context),
+    );
+  }
+
+  Widget _screen(BuildContext context) {
     final session = widget.session;
     return ListenableBuilder(
       listenable: widget.controller,

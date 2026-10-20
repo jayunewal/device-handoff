@@ -20,6 +20,10 @@ import 'windows_controller.dart';
 /// and what the other device does not do comes back as a [notice]. Nothing here is on until the
 /// person turns it on, and turning it off, or leaving, lets go of every button and key that is
 /// down.
+///
+/// The keys of an attached keyboard are not heard here. The screen gives each one to [key] from
+/// its focus scope, where a key that the window takes stops, so that the shortcuts of the app and
+/// the field of the keyboard do not act on it as well.
 class WindowControl extends ChangeNotifier {
   WindowControl({
     required this.windows,
@@ -73,7 +77,6 @@ class WindowControl extends ChangeNotifier {
   void turnOn() {
     if (_on) return;
     _on = true;
-    HardwareKeyboard.instance.addHandler(key);
     _dropped = windows.dropped.listen(_told);
     notifyListeners();
   }
@@ -87,7 +90,6 @@ class WindowControl extends ChangeNotifier {
 
   void _leave() {
     _on = false;
-    HardwareKeyboard.instance.removeHandler(key);
     unawaited(_dropped?.cancel());
     _dropped = null;
     _noticeTimer?.cancel();
@@ -161,7 +163,8 @@ class WindowControl extends ChangeNotifier {
   // MARK: Keys
 
   /// A key of a hardware keyboard. Returns whether the window took it: a key that the window
-  /// does not have, like the Globe key, is left to the system.
+  /// does not have, like the Globe key, is left to the system, and so is any key while control is
+  /// off.
   bool key(KeyEvent event) {
     if (!_on) return false;
     final input = windowKey(event, _modifiers());
