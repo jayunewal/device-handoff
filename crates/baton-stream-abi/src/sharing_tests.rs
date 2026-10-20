@@ -38,8 +38,8 @@ use crate::{
     abi::{
         BEGIN_DELTA, BEGIN_KEY, BEGIN_NOT_NOW, BatonBytes, BatonFormat, BatonPicked, BatonPicture,
         CODEC_H264, FRAME_KEY, FRAME_RECOVERY, FRAME_REFERENCED, PAUSE_HIDDEN, PAUSE_LOCKED,
-        PAUSE_OTHER, SENT, SENT_OVER, SENT_STALE, SENT_TOO_LARGE, SOURCE_CONFIG, SOURCE_PAUSE,
-        SOURCE_RESUME, size_of_u32,
+        PAUSE_OTHER, PICKED_WINDOW, SENT, SENT_OVER, SENT_STALE, SENT_TOO_LARGE, SOURCE_CONFIG,
+        SOURCE_PAUSE, SOURCE_RESUME, size_of_u32,
     },
     fake::{Call, Decoded, Fake, Watchdog},
     fake_sharer::{
@@ -125,6 +125,10 @@ struct MeddledWindow {
 }
 
 impl PickedWindow for MeddledWindow {
+    fn display(&self) -> bool {
+        self.window.display()
+    }
+
     fn title(&self) -> String {
         self.window.title()
     }
@@ -481,6 +485,8 @@ async fn a_window_is_offered_as_the_platform_described_it_and_prepared_within_wh
     assert_eq!(shown.request.app.as_deref(), Some("Preview"));
     assert_eq!((shown.request.width, shown.request.height), (1440, 900));
     assert!(shown.request.control);
+    assert!(!shown.request.display, "a window was offered as a display");
+    assert!(!shown.sharing.display);
     assert_eq!(shown.sharing.title.as_deref(), Some("Report.pdf"));
 
     // The platform was asked for the picture within what the other device said it takes (the
@@ -522,6 +528,54 @@ async fn a_window_is_offered_as_the_platform_described_it_and_prepared_within_wh
         rig.viewer.complaints().is_empty(),
         "{:?}",
         rig.viewer.complaints()
+    );
+}
+
+#[tokio::test]
+async fn a_whole_display_is_offered_and_shown_as_a_display_and_the_platform_is_started_for_it() {
+    let mut rig = Rig::new().await;
+    let share = rig.begin_share(false);
+    let request = rig.next_pick().await;
+    rig.windows += 1;
+    rig.platform
+        .choose_display(&rig.registry, request, b"", (3024, 1964))
+        .unwrap();
+
+    // The person at the other device was asked about a display, which has no title.
+    let asked = next_matching(&mut rig.viewing_events, |event| match event {
+        Event::WindowRequested(request) => Some(request),
+        _ => None,
+    })
+    .await;
+    assert!(asked.display);
+    assert_eq!((asked.title, asked.app), (None, None));
+    assert_eq!((asked.width, asked.height), (3024, 1964));
+    assert!(!asked.control);
+    assert!(rig.viewing.app.answer_window(asked.id, true));
+
+    // Both ends have a display, and the platform captures it like it would a window.
+    let Ok(WindowShared::Started(sharing)) = share.await.unwrap() else {
+        panic!("the display was not shared");
+    };
+    assert!(sharing.display);
+    let viewing = next_matching(&mut rig.viewing_events, |event| match event {
+        Event::WindowStarted(session) => Some(session),
+        _ => None,
+    })
+    .await;
+    assert!(viewing.display);
+    let window = rig.windows;
+    until("the platform to be started", || {
+        rig.platform
+            .calls(window)
+            .iter()
+            .any(|call| matches!(call, SharerCall::Start { .. }))
+    })
+    .await;
+    assert!(
+        rig.platform.complaints().is_empty(),
+        "{:?}",
+        rig.platform.complaints()
     );
 }
 
@@ -1815,7 +1869,7 @@ async fn a_person_who_gives_up_choosing_offers_nothing_and_a_picker_that_fails_t
         size: 0,
         width: 1440,
         height: 900,
-        reserved: 0,
+        kind: PICKED_WINDOW,
         context: ptr::null_mut(),
         title: BatonBytes::of(b"Report.pdf"),
         app: BatonBytes::of(b"Preview"),

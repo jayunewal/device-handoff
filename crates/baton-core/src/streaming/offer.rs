@@ -91,12 +91,13 @@ impl Drop for Reservation {
     }
 }
 
-/// A window that the person at this device chose to show to another device.
+/// A window, or a whole display, that the person at this device chose to show to another device.
 ///
 /// The title and the name of the application are what the person at the other device is shown
 /// before they decide, and they are never written to a log.
 #[derive(Clone, PartialEq, Eq)]
 pub struct WindowShare {
+    source: SourceKind,
     title: String,
     app: String,
     width: u32,
@@ -110,12 +111,21 @@ impl WindowShare {
     #[must_use]
     pub fn new(title: impl Into<String>, app: impl Into<String>, width: u32, height: u32) -> Self {
         Self {
+            source: SourceKind::Window,
             title: title.into(),
             app: app.into(),
             width,
             height,
             control: false,
         }
+    }
+
+    /// What is shared is a whole display, with every window on it, and not one window: the size
+    /// is the display's, and the title is its name, if the platform knows one, and can be empty.
+    #[must_use]
+    pub fn whole_display(mut self) -> Self {
+        self.source = SourceKind::Display;
+        self
     }
 
     /// The person at this device lets the viewer control the window. The viewer cannot ask for
@@ -131,7 +141,7 @@ impl WindowShare {
     pub(crate) fn offer(&self, session: SessionId) -> Offer {
         Offer {
             session,
-            source: SourceKind::Window,
+            source: self.source,
             title: self.title.clone(),
             app: self.app.clone(),
             width: self.width,
@@ -159,6 +169,7 @@ impl WindowShare {
 impl fmt::Debug for WindowShare {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WindowShare")
+            .field("source", &self.source)
             .field("width", &self.width)
             .field("height", &self.height)
             .field("control", &self.control)

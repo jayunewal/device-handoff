@@ -104,6 +104,10 @@ extern "C" {
 /* The codecs that a device can decode, as bits. */
 #define BATON_CODEC_H264 1u
 
+/* What the person picked, as BatonPicked.kind says. */
+#define BATON_PICKED_WINDOW 0u
+#define BATON_PICKED_DISPLAY 1u
+
 /* The flags of a frame. */
 #define BATON_FRAME_KEY 1u
 #define BATON_FRAME_RECOVERY 2u
@@ -318,20 +322,26 @@ typedef struct BatonFormat {
 } BatonFormat;
 
 /*
- * The window that the person picked, as baton_stream_pick_done gives it. context is the
- * platform's own pointer for the window, which the Rust side hands back as the first argument of
- * every call about it until release, and is not NULL. The platform keeps it valid until then.
+ * The window, or the whole display, that the person picked, as baton_stream_pick_done gives it.
+ * context is the platform's own pointer for it, which the Rust side hands back as the first
+ * argument of every call about it until release, and is not NULL. The platform keeps it valid
+ * until then.
  *
- * width and height are the size of the window in pixels, from 1; a window larger than 16384 reads
- * as 16384. The window may be larger than any picture that is sent, which is scaled down. title
- * and app are copied before the call returns. They are cut to 512 and 256 bytes, and may be
- * empty. A title names a document, a person or a page: do not log it.
+ * kind is BATON_PICKED_WINDOW or BATON_PICKED_DISPLAY; a platform that was written before the
+ * field had a name wrote zero there, which is a window, and any other value is refused with
+ * BATON_E_ARGUMENT. A display is everything on one screen, every window on it included.
+ *
+ * width and height are the size of the window, or of the display, in pixels, from 1; one larger
+ * than 16384 reads as 16384. It may be larger than any picture that is sent, which is scaled
+ * down. title and app are copied before the call returns. They are cut to 512 and 256 bytes, and
+ * may be empty. A title names a document, a person or a page: do not log it. A display has no
+ * application, so app is empty, and its title is its name, if the platform knows one.
  */
 typedef struct BatonPicked {
     uint32_t size;
     uint32_t width;
     uint32_t height;
-    uint32_t reserved;
+    uint32_t kind;
     void *context;
     BatonBytes title;
     BatonBytes app;
@@ -721,7 +731,7 @@ BATON_STATIC_ASSERT(sizeof(BatonPicked) == 56, "BatonPicked");
 BATON_STATIC_ASSERT(offsetof(BatonPicked, size) == 0, "BatonPicked.size");
 BATON_STATIC_ASSERT(offsetof(BatonPicked, width) == 4, "BatonPicked.width");
 BATON_STATIC_ASSERT(offsetof(BatonPicked, height) == 8, "BatonPicked.height");
-BATON_STATIC_ASSERT(offsetof(BatonPicked, reserved) == 12, "BatonPicked.reserved");
+BATON_STATIC_ASSERT(offsetof(BatonPicked, kind) == 12, "BatonPicked.kind");
 BATON_STATIC_ASSERT(offsetof(BatonPicked, context) == 16, "BatonPicked.context");
 BATON_STATIC_ASSERT(offsetof(BatonPicked, title) == 24, "BatonPicked.title");
 BATON_STATIC_ASSERT(offsetof(BatonPicked, app) == 40, "BatonPicked.app");

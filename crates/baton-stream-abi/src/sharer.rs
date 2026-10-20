@@ -79,6 +79,8 @@ pub(crate) struct Shared {
 pub(crate) struct Given {
     /// The platform's pointer for the window, not null.
     pub(crate) context: NonNull<c_void>,
+    /// Whether it is a whole display and not one window.
+    pub(crate) display: bool,
     pub(crate) title: String,
     pub(crate) app: String,
     pub(crate) width: u32,
@@ -237,10 +239,11 @@ impl Drop for Withdraw<'_> {
     }
 }
 
-/// A window that the person picked.
+/// A window, or a whole display, that the person picked.
 pub(crate) struct AbiPicked {
     window: PickedHandle,
     shared: Arc<Shared>,
+    display: bool,
     title: String,
     app: String,
     width: u32,
@@ -254,6 +257,7 @@ impl AbiPicked {
         Self {
             window: shared.calls.adopt(given.context),
             shared: Arc::clone(shared),
+            display: given.display,
             title: given.title,
             app: given.app,
             width: given.width,
@@ -285,6 +289,10 @@ impl SourceEvents for Quiet {
 }
 
 impl PickedWindow for AbiPicked {
+    fn display(&self) -> bool {
+        self.display
+    }
+
     fn title(&self) -> String {
         self.title.clone()
     }
@@ -631,7 +639,7 @@ mod tests {
     use super::*;
     use crate::{
         Registry,
-        abi::{BatonBytes, BatonPicked, OK, size_of_u32},
+        abi::{BatonBytes, BatonPicked, OK, PICKED_DISPLAY, PICKED_WINDOW, size_of_u32},
         fake_sharer::{FakeSharer, PickPlan, SharerCall},
     };
 
@@ -772,11 +780,40 @@ mod tests {
         assert_eq!(picked.title(), "Report.pdf");
         assert_eq!(picked.app(), "Preview");
         assert_eq!(picked.size(), (1440, 900));
+        assert!(!picked.display(), "a window was taken for a display");
         assert_eq!(registry.waiting_picks(), 0);
         assert_eq!((platform.windows_made(), platform.live_windows()), (1, 1));
         // The window is the Rust side's now, and goes back to the platform when it is dropped,
         // also when nothing was done with it.
         assert_eq!(platform.calls(1), []);
+        drop(picked);
+        assert_eq!(platform.calls(1), [SharerCall::Release]);
+        assert_eq!(platform.live_windows(), 0);
+        assert!(
+            platform.complaints().is_empty(),
+            "{:?}",
+            platform.complaints()
+        );
+    }
+
+    #[test]
+    fn a_display_that_the_person_chose_is_a_display_with_the_size_it_has() {
+        let (registry, platform, sharer) = sharing();
+        let mut pick = sharer.pick();
+        asked(&mut pick);
+        platform
+            .choose_display(&registry, 1, b"", (3024, 1964))
+            .unwrap();
+        let Poll::Ready(Ok(Some(picked))) = poll(&mut pick) else {
+            panic!("the pick was not answered with a display");
+        };
+        assert!(picked.display());
+        assert_eq!(
+            (picked.title(), picked.app()),
+            (String::new(), String::new())
+        );
+        assert_eq!(picked.size(), (3024, 1964));
+        // A display is let go of as a window is.
         drop(picked);
         assert_eq!(platform.calls(1), [SharerCall::Release]);
         assert_eq!(platform.live_windows(), 0);
@@ -988,7 +1025,7 @@ mod tests {
             size: size_of_u32::<BatonPicked>(),
             width: 100,
             height: 50,
-            reserved: 0,
+            kind: PICKED_WINDOW,
             context: window,
             title: BatonBytes::of(b"Title"),
             app: BatonBytes::of(b"App"),
@@ -1074,6 +1111,40 @@ mod tests {
             // The person who waits is told, and the window was not taken.
             assert_eq!(sentence(poll(&mut pick)), NOT_CHOSEN, "{what}");
             assert_eq!(registry.waiting_picks(), 0, "{what}");
+        }
+        FakeSharer::keep(window);
+        assert_eq!(platform.calls(1), [], "the platform's window was released");
+        assert!(
+            platform.complaints().is_empty(),
+            "{:?}",
+            platform.complaints()
+        );
+    }
+
+    #[test]
+    fn a_kind_of_pick_that_the_interface_does_not_have_is_an_answer_that_cannot_be_read() {
+        let (registry, platform, sharer) = sharing();
+        let window = platform.new_window();
+        for (request, kind) in (1..).zip([PICKED_DISPLAY + 1, 7, u32::MAX]) {
+            let picked = BatonPicked {
+                size: size_of_u32::<BatonPicked>(),
+                width: 100,
+                height: 50,
+                kind,
+                context: window,
+                title: BatonBytes::of(b"Title"),
+                app: BatonBytes::of(b"App"),
+            };
+            let mut pick = sharer.pick();
+            asked(&mut pick);
+            assert_eq!(
+                platform.answer_raw(&registry, request, Some(&picked), None),
+                Err(Error::Argument),
+                "kind {kind}"
+            );
+            // The person who waits is told, and the window was not taken.
+            assert_eq!(sentence(poll(&mut pick)), NOT_CHOSEN, "kind {kind}");
+            assert_eq!(registry.waiting_picks(), 0, "kind {kind}");
         }
         FakeSharer::keep(window);
         assert_eq!(platform.calls(1), [], "the platform's window was released");

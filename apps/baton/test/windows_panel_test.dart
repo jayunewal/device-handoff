@@ -121,8 +121,20 @@ const _oddOffer = WindowRequest(
   id: 5,
   deviceId: 'd2',
   deviceName: 'Mac\u202Eexe',
+  display: false,
   width: 800,
   height: 600,
+  control: false,
+);
+
+/// The whole screen of a Mac, which has no title and no application.
+const _screenOffer = WindowRequest(
+  id: 6,
+  deviceId: 'd3',
+  deviceName: 'Anna’s Mac',
+  display: true,
+  width: 3024,
+  height: 1964,
   control: false,
 );
 
@@ -130,6 +142,7 @@ const _offer2 = WindowRequest(
   id: 4,
   deviceId: 'd1',
   deviceName: 'Desk PC',
+  display: false,
   width: 800,
   height: 600,
   control: false,
@@ -176,6 +189,7 @@ void main() {
           id: 4,
           deviceId: 'd1',
           deviceName: 'Desk PC',
+          display: false,
           title: 'Plan',
           width: 800,
           height: 600,
@@ -192,6 +206,7 @@ void main() {
           id: 5,
           deviceId: 'd2',
           deviceName: 'Den PC',
+          display: false,
           app: 'Terminal',
           width: 800,
           height: 600,
@@ -212,6 +227,7 @@ void main() {
           id: 4,
           deviceId: 'd1',
           deviceName: 'Desk PC',
+          display: false,
           title: 'Plan\n  for\r\nMarch',
           app: ' Pages ',
           width: 800,
@@ -313,6 +329,7 @@ void main() {
           id: 4,
           deviceId: 'd1',
           deviceName: 'Mac\u202Eexe',
+          display: false,
           title: 'Plan\u202Etxt',
           app: 'App\u200Bname',
           width: 800,
@@ -337,10 +354,13 @@ void main() {
       final done = controller.share(_ipad);
       await tester.pump();
 
-      expect(find.text('Sharing a window with Kitchen iPad'), findsOneWidget);
+      expect(
+        find.text('Sharing a window or screen with Kitchen iPad'),
+        findsOneWidget,
+      );
       expect(
         find.text(
-          'Choose the window. Kitchen iPad is then asked whether to show it.',
+          'Choose a window or a screen. Kitchen iPad is then asked whether to show it.',
         ),
         findsOneWidget,
       );
@@ -360,10 +380,13 @@ void main() {
       final done = controller.share(_oddPad);
       await tester.pump();
 
-      expect(find.text('Sharing a window with Pad\uFFFDexe'), findsOneWidget);
+      expect(
+        find.text('Sharing a window or screen with Pad\uFFFDexe'),
+        findsOneWidget,
+      );
       expect(
         find.text(
-          'Choose the window. Pad\uFFFDexe is then asked whether to show it.',
+          'Choose a window or a screen. Pad\uFFFDexe is then asked whether to show it.',
         ),
         findsOneWidget,
       );
@@ -614,6 +637,7 @@ void main() {
           id: i,
           deviceId: 'd$i',
           deviceName: 'Device $i',
+          display: false,
           width: 800,
           height: 600,
           control: false,
@@ -627,6 +651,106 @@ void main() {
     expect(height, greaterThan(300));
   });
 
+  group('a whole screen', () {
+    testWidgets(
+      'is offered as the screen of the device, with nothing to name',
+      (tester) async {
+        final (session, _) = await _show(tester);
+
+        await _offer(tester, session, _screenOffer);
+
+        expect(
+          find.text('Anna’s Mac wants to show you its screen'),
+          findsOneWidget,
+        );
+        expect(find.textContaining('a window'), findsNothing);
+        // The heading, the line about looking, and the two buttons: no line for what it is.
+        expect(
+          find.descendant(of: find.byType(Card), matching: find.byType(Text)),
+          findsNWidgets(4),
+        );
+      },
+    );
+
+    testWidgets('is opened, shown and shared as a screen', (tester) async {
+      final (session, _) = await _show(tester);
+      await _offer(tester, session, _screenOffer);
+
+      await tester.tap(find.text('Show it'));
+      await tester.pump();
+
+      expect(find.text('Opening the screen from Anna’s Mac…'), findsOneWidget);
+      expect(find.text('Opening the window from Anna’s Mac…'), findsNothing);
+
+      await _begin(
+        tester,
+        session,
+        sampleWindowSession(id: 1, display: true, title: null, app: null),
+      );
+      await _begin(
+        tester,
+        session,
+        sampleWindowSession(
+          id: 2,
+          role: WindowRole.sharing,
+          device: 'Kitchen iPad',
+          display: true,
+          title: null,
+          app: null,
+        ),
+      );
+
+      expect(find.text('Showing a screen from Anna’s Mac'), findsOneWidget);
+      expect(find.text('Sharing a screen with Kitchen iPad'), findsOneWidget);
+    });
+
+    test('is a screen in what a note says', () {
+      final shown = sampleWindowSession(display: true, title: null, app: null);
+      final shared = sampleWindowSession(
+        role: WindowRole.sharing,
+        device: 'Kitchen iPad',
+        display: true,
+        title: null,
+        app: null,
+      );
+
+      expect(
+        describeWindowNote(WindowOver(shown, const WindowEnd.thisDevice())),
+        (title: 'You stopped showing a screen', detail: null, problem: false),
+      );
+      expect(
+        describeWindowNote(WindowOver(shown, const WindowEnd.otherDevice())),
+        (
+          title: 'Anna’s Mac stopped sharing a screen',
+          detail: null,
+          problem: false,
+        ),
+      );
+      expect(
+        describeWindowNote(WindowOver(shown, const WindowEnd.lost())).detail,
+        'The screen stopped. Ask Anna’s Mac to share it again.',
+      );
+      expect(
+        describeWindowNote(WindowOver(shared, const WindowEnd.lost())).detail,
+        'Sharing stopped. Share the screen again when Kitchen iPad is back.',
+      );
+      expect(
+        describeWindowNote(
+          WindowOver(shown, const WindowEnd.failed(message: 'it broke')),
+        ).title,
+        'The screen from Anna’s Mac stopped',
+      );
+      expect(
+        describeWindowNote(const WindowWithdrawn(_screenOffer)).title,
+        ('Anna’s Mac is not offering that screen any more'),
+      );
+      expect(
+        describeWindowNote(const WindowNotOpened(_screenOffer)).title,
+        'The screen from Anna’s Mac did not open',
+      );
+    });
+  });
+
   group('the name of a window', () {
     test('is its title, else its application, else "a window"', () {
       expect(windowName('Plan', 'Pages'), 'Plan');
@@ -636,6 +760,18 @@ void main() {
       expect(windowName(null, null), 'a window');
       expect(windowName('', ''), 'a window');
       expect(windowName(' ', '\t'), 'a window');
+    });
+
+    test('is "a screen" for a display that has no name, or its name', () {
+      expect(windowName(null, null, display: true), 'a screen');
+      expect(windowName('  ', '', display: true), 'a screen');
+      expect(
+        windowName('Studio Display', null, display: true),
+        'Studio Display',
+      );
+      expect(windowName(null, null), 'a window');
+      expect(windowNoun(display: true), 'screen');
+      expect(windowNoun(display: false), 'window');
     });
 
     test('is made fit to show, and a title that is only marks falls back', () {

@@ -366,7 +366,7 @@ class _DeviceTile extends StatelessWidget {
             ),
             if (onShareWindow != null)
               IconButton(
-                tooltip: 'Share a window with ${device.name}',
+                tooltip: 'Share a window or screen with ${device.name}',
                 icon: const Icon(Icons.screen_share_outlined),
                 onPressed: () => onShareWindow!(device),
               ),

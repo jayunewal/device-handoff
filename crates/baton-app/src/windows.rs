@@ -204,6 +204,11 @@ pub trait WindowViewer: Send + Sync + 'static {
     fn open(&self, window: &WindowOffer, link: ScreenLink) -> Result<Screen, PlatformError>;
 }
 
+/// What is shared is called in a sentence of the app: a whole display is a screen.
+pub(crate) fn noun(display: bool) -> &'static str {
+    if display { "screen" } else { "window" }
+}
+
 /// The part of a platform that shares the windows of this device.
 pub trait WindowSharer: Send + Sync + 'static {
     /// Whether the person can let another device control a window that they share. A platform
@@ -218,6 +223,13 @@ pub trait WindowSharer: Send + Sync + 'static {
 /// A window that the person picked, and everything that the platform keeps for it. Dropping it
 /// lets go of all of that.
 pub trait PickedWindow: Send + 'static {
+    /// Whether what the person picked is a whole display, with every window on it, and not one
+    /// window. The size is then that of the display, and the title is its name, if the platform
+    /// knows one. A platform that cannot share a display leaves this as it is.
+    fn display(&self) -> bool {
+        false
+    }
+
     /// The title of the window, which the person at the other device is shown. May be empty.
     fn title(&self) -> String;
 

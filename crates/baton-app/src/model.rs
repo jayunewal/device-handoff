@@ -528,11 +528,12 @@ pub struct WindowAbilities {
     pub can_control: bool,
 }
 
-/// A window that a paired device offers to show on this one, for the person to answer.
+/// A window, or a whole display, that a paired device offers to show on this one, for the person
+/// to answer.
 ///
-/// Show what the window is and which device offers it, and whether that device lets this one
-/// control the window. The title and the name of the application were written by the other
-/// device and are cleaned for display, but they are labels and nothing more. Answer with
+/// Show what is offered and which device offers it, and whether that device lets this one
+/// control it. The title and the name of the application were written by the other device and
+/// are cleaned for display, but they are labels and nothing more. Answer with
 /// [`App::answer_window`](crate::App::answer_window).
 #[derive(Clone, PartialEq, Eq)]
 pub struct WindowRequest {
@@ -542,7 +543,9 @@ pub struct WindowRequest {
     pub device_id: String,
     /// The name this device shows for it.
     pub device_name: String,
-    /// The title of the window, or `None` if it has none.
+    /// Whether what is offered is a whole display, with every window on it, and not one window.
+    pub display: bool,
+    /// The title of the window, or the name of the display, or `None` if it has none.
     pub title: Option<String>,
     /// The name of the application the window belongs to, or `None`.
     pub app: Option<String>,
@@ -560,6 +563,7 @@ impl fmt::Debug for WindowRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WindowRequest")
             .field("id", &self.id)
+            .field("display", &self.display)
             .field("width", &self.width)
             .field("height", &self.height)
             .field("control", &self.control)
@@ -576,7 +580,7 @@ pub enum WindowRole {
     Sharing,
 }
 
-/// A window that is shown on this device or shared from it.
+/// A window, or a whole display, that is shown on this device or shared from it.
 #[derive(Clone, PartialEq, Eq)]
 pub struct WindowSession {
     /// Names this session when ending it with [`App::end_window`](crate::App::end_window),
@@ -589,7 +593,9 @@ pub struct WindowSession {
     pub device_id: String,
     /// The name this device shows for it.
     pub device_name: String,
-    /// The title of the window, or `None`.
+    /// Whether it is a whole display, with every window on it, and not one window.
+    pub display: bool,
+    /// The title of the window, or the name of the display, or `None`.
     pub title: Option<String>,
     /// The name of the application the window belongs to, or `None`.
     pub app: Option<String>,
@@ -611,6 +617,7 @@ impl fmt::Debug for WindowSession {
         f.debug_struct("WindowSession")
             .field("id", &self.id)
             .field("role", &self.role)
+            .field("display", &self.display)
             .field("width", &self.width)
             .field("height", &self.height)
             .field("control", &self.control)
@@ -897,6 +904,7 @@ mod tests {
             id: 1,
             device_id: "ab".repeat(32),
             device_name: "Studio Mac".to_owned(),
+            display: false,
             title: Some("Salary 2027.xlsx".to_owned()),
             app: Some("Numbers".to_owned()),
             width: 1440,
@@ -908,6 +916,7 @@ mod tests {
             role: WindowRole::Viewing,
             device_id: "ab".repeat(32),
             device_name: "Studio Mac".to_owned(),
+            display: true,
             title: Some("Salary 2027.xlsx".to_owned()),
             app: Some("Numbers".to_owned()),
             width: 1440,
@@ -919,6 +928,9 @@ mod tests {
             assert!(!shown.contains("Salary"), "{shown}");
             assert!(!shown.contains("Numbers"), "{shown}");
         }
+        // Whether it is a window or a whole screen is not a name, and a log says which.
+        assert!(format!("{request:?}").contains("display: false"));
+        assert!(format!("{session:?}").contains("display: true"));
     }
 
     #[test]

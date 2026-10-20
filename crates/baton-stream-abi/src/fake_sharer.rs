@@ -31,7 +31,8 @@ use crate::{
     Error, Registry,
     abi::{
         ABI_VERSION, BatonBytes, BatonFormat, BatonMessage, BatonPicked, BatonPicture,
-        BatonSharerVTable, BatonTakes, CODEC_H264, MESSAGE_MAX, OK, size_of_u32,
+        BatonSharerVTable, BatonTakes, CODEC_H264, MESSAGE_MAX, OK, PICKED_DISPLAY, PICKED_WINDOW,
+        size_of_u32,
     },
     platform::SharerCalls,
 };
@@ -379,12 +380,36 @@ impl FakeSharer {
         app: &[u8],
         size: (u32, u32),
     ) -> Result<(), Error> {
+        self.choose_kind(registry, request, PICKED_WINDOW, title, app, size)
+    }
+
+    /// Answers the pick of `request` with a whole display, as a platform does when the person
+    /// chose a screen. It has no application.
+    pub(crate) fn choose_display(
+        self: &Arc<Self>,
+        registry: &Registry,
+        request: u64,
+        title: &[u8],
+        size: (u32, u32),
+    ) -> Result<(), Error> {
+        self.choose_kind(registry, request, PICKED_DISPLAY, title, b"", size)
+    }
+
+    fn choose_kind(
+        self: &Arc<Self>,
+        registry: &Registry,
+        request: u64,
+        kind: u32,
+        title: &[u8],
+        app: &[u8],
+        size: (u32, u32),
+    ) -> Result<(), Error> {
         let window = self.new_window();
         let picked = BatonPicked {
             size: size_of_u32::<BatonPicked>(),
             width: size.0,
             height: size.1,
-            reserved: 0,
+            kind,
             context: window,
             title: BatonBytes::of(title),
             app: BatonBytes::of(app),

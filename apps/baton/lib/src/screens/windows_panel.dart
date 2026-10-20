@@ -6,10 +6,10 @@ import '../backend.dart';
 import '../format.dart';
 import '../windows_controller.dart';
 
-/// The windows, at the bottom of the home screen where both places can show it: the offers for
-/// the person to answer, the window that is being opened, the offer that this device is making,
-/// the windows that run, and how the last ones ended. It takes no room when there is nothing to
-/// show.
+/// The windows and screens, at the bottom of the home screen where both places can show it: the
+/// offers for the person to answer, the one that is being opened, the offer that this device is
+/// making, the ones that run, and how the last ones ended. It takes no room when there is nothing
+/// to show.
 class WindowsPanel extends StatelessWidget {
   const WindowsPanel({
     required this.controller,
@@ -72,15 +72,19 @@ class WindowsPanel extends StatelessWidget {
 String windowLabel(String? text) =>
     visibleText(text ?? '').replaceAll(RegExp(r'\s+'), ' ').trim();
 
-/// What a window is called: its title, else the application it belongs to, else "a window".
-String windowName(String? title, String? app) {
+/// What a window is called: its title, else the application it belongs to, else "a window". A
+/// whole display is "a screen" when it has no name.
+String windowName(String? title, String? app, {bool display = false}) {
   for (final label in [windowLabel(title), windowLabel(app)]) {
     if (label.isNotEmpty) return label;
   }
-  return 'a window';
+  return display ? 'a screen' : 'a window';
 }
 
-/// A device offers to show a window on this one. The person says yes or no.
+/// The word for what is shared, in a sentence of the app: a whole display is a screen.
+String windowNoun({required bool display}) => display ? 'screen' : 'window';
+
+/// A device offers to show a window, or its whole screen, on this one. The person says yes or no.
 class _RequestCard extends StatelessWidget {
   const _RequestCard({required this.request, required this.onAnswer});
 
@@ -105,7 +109,8 @@ class _RequestCard extends StatelessWidget {
             Semantics(
               liveRegion: true,
               child: Text(
-                '${visibleText(request.deviceName)} wants to show you a window',
+                '${visibleText(request.deviceName)} wants to show you '
+                '${request.display ? 'its screen' : 'a window'}',
                 style: theme.textTheme.titleMedium,
               ),
             ),
@@ -148,6 +153,7 @@ class _OpeningCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final noun = windowNoun(display: request.display);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -157,12 +163,12 @@ class _OpeningCard extends StatelessWidget {
             Semantics(
               liveRegion: true,
               child: Text(
-                'Opening the window from ${visibleText(request.deviceName)}…',
+                'Opening the $noun from ${visibleText(request.deviceName)}…',
                 style: Theme.of(context).textTheme.titleSmall,
               ),
             ),
             const SizedBox(height: 12),
-            const LinearProgressIndicator(semanticsLabel: 'Opening the window'),
+            LinearProgressIndicator(semanticsLabel: 'Opening the $noun'),
           ],
         ),
       ),
@@ -170,7 +176,8 @@ class _OpeningCard extends StatelessWidget {
   }
 }
 
-/// This device is offering a window to [device]: the person chooses it, and the device is asked.
+/// This device is offering a window or a screen to [device]: the person chooses it, and the device
+/// is asked.
 class _OfferingCard extends StatelessWidget {
   const _OfferingCard({required this.device});
 
@@ -189,17 +196,20 @@ class _OfferingCard extends StatelessWidget {
             Semantics(
               liveRegion: true,
               child: Text(
-                'Sharing a window with $name',
+                'Sharing a window or screen with $name',
                 style: theme.textTheme.titleSmall,
               ),
             ),
             const SizedBox(height: 4),
             Text(
-              'Choose the window. $name is then asked whether to show it.',
+              'Choose a window or a screen. $name is then asked whether to show '
+              'it.',
               style: theme.textTheme.bodySmall,
             ),
             const SizedBox(height: 12),
-            const LinearProgressIndicator(semanticsLabel: 'Sharing a window'),
+            const LinearProgressIndicator(
+              semanticsLabel: 'Sharing a window or screen',
+            ),
           ],
         ),
       ),
@@ -207,8 +217,8 @@ class _OfferingCard extends StatelessWidget {
   }
 }
 
-/// A window that runs: one that another device shows on this one, or one of this device that
-/// another shows.
+/// A window or a screen that runs: one that another device shows on this one, or one of this
+/// device that another shows.
 class _SessionCard extends StatelessWidget {
   const _SessionCard({
     required this.session,
@@ -224,7 +234,11 @@ class _SessionCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final viewing = session.role == WindowRole.viewing;
-    final name = windowName(session.title, session.app);
+    final name = windowName(
+      session.title,
+      session.app,
+      display: session.display,
+    );
     final device = visibleText(session.deviceName);
     return Card(
       child: Padding(
@@ -302,7 +316,12 @@ class _NoteCard extends StatelessWidget {
     case WindowOver(:final session, :final end):
       final viewing = session.role == WindowRole.viewing;
       final device = visibleText(session.deviceName);
-      final name = windowName(session.title, session.app);
+      final name = windowName(
+        session.title,
+        session.app,
+        display: session.display,
+      );
+      final noun = windowNoun(display: session.display);
       return switch (end) {
         WindowEnd_ThisDevice() => (
           title: viewing
@@ -321,29 +340,31 @@ class _NoteCard extends StatelessWidget {
         WindowEnd_Lost() => (
           title: 'The connection to $device was lost',
           detail: viewing
-              ? 'The window stopped. Ask $device to share it again.'
-              : 'Sharing stopped. Share the window again when $device is back.',
+              ? 'The $noun stopped. Ask $device to share it again.'
+              : 'Sharing stopped. Share the $noun again when $device is back.',
           problem: true,
         ),
         WindowEnd_Failed(:final message) => (
           title: viewing
-              ? 'The window from $device stopped'
+              ? 'The $noun from $device stopped'
               : 'Sharing with $device stopped',
           detail: sentence(visibleText(message)),
           problem: true,
         ),
       };
     case WindowWithdrawn(:final request):
+      final noun = windowNoun(display: request.display);
       return (
         title:
-            '${visibleText(request.deviceName)} is not offering that window any more',
+            '${visibleText(request.deviceName)} is not offering that $noun any more',
         detail: null,
         problem: false,
       );
     case WindowNotOpened(:final request):
       final device = visibleText(request.deviceName);
+      final noun = windowNoun(display: request.display);
       return (
-        title: 'The window from $device did not open',
+        title: 'The $noun from $device did not open',
         detail: 'Ask $device to share it again.',
         problem: true,
       );

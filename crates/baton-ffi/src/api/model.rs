@@ -338,11 +338,12 @@ pub struct WindowAbilities {
     pub can_control: bool,
 }
 
-/// A window that a paired device offers to show on this one, for the person to answer.
+/// A window, or a whole display, that a paired device offers to show on this one, for the person
+/// to answer.
 ///
-/// Show what the window is and which device offers it, and whether that device lets this one
-/// control the window. The title and the name of the application were written by the other
-/// device: they are labels, and nothing else. Answer with `Baton.answerWindow`.
+/// Show what is offered and which device offers it, and whether that device lets this one
+/// control it. The title and the name of the application were written by the other device: they
+/// are labels, and nothing else. Answer with `Baton.answerWindow`.
 #[derive(Clone, PartialEq, Eq)]
 pub struct WindowRequest {
     /// Names this request when answering it with `Baton.answerWindow`.
@@ -351,7 +352,9 @@ pub struct WindowRequest {
     pub device_id: String,
     /// The name this device shows for it.
     pub device_name: String,
-    /// The title of the window, or `null` if it has none.
+    /// Whether what is offered is a whole display, with every window on it, and not one window.
+    pub display: bool,
+    /// The title of the window, or the name of the display, or `null` if it has none.
     pub title: Option<String>,
     /// The name of the application the window belongs to, or `null`.
     pub app: Option<String>,
@@ -369,6 +372,7 @@ impl std::fmt::Debug for WindowRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WindowRequest")
             .field("id", &self.id)
+            .field("display", &self.display)
             .field("width", &self.width)
             .field("height", &self.height)
             .field("control", &self.control)
@@ -385,7 +389,7 @@ pub enum WindowRole {
     Sharing,
 }
 
-/// A window that is shown on this device or shared from it.
+/// A window, or a whole display, that is shown on this device or shared from it.
 #[derive(Clone, PartialEq, Eq)]
 pub struct WindowSession {
     /// Names this session when ending it with `Baton.endWindow`, and in `Event.windowEnded`.
@@ -397,7 +401,9 @@ pub struct WindowSession {
     pub device_id: String,
     /// The name this device shows for it.
     pub device_name: String,
-    /// The title of the window, or `null`.
+    /// Whether it is a whole display, with every window on it, and not one window.
+    pub display: bool,
+    /// The title of the window, or the name of the display, or `null`.
     pub title: Option<String>,
     /// The name of the application the window belongs to, or `null`.
     pub app: Option<String>,
@@ -420,6 +426,7 @@ impl std::fmt::Debug for WindowSession {
         f.debug_struct("WindowSession")
             .field("id", &self.id)
             .field("role", &self.role)
+            .field("display", &self.display)
             .field("width", &self.width)
             .field("height", &self.height)
             .field("control", &self.control)

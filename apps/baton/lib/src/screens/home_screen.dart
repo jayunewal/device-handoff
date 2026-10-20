@@ -167,9 +167,9 @@ class _HomeScreenState extends State<HomeScreen> {
     _goHome();
   }
 
-  /// Says that a device offers to show a window, when a screen on top of the two places hides
-  /// the question that waits at the bottom of them. It says who offers and nothing of what: the
-  /// title of a window can be private.
+  /// Says that a device offers to show a window or its screen, when a screen on top of the two
+  /// places hides the question that waits at the bottom of them. It says who offers and whether it
+  /// is a window or a screen, and not the title of the window, which can be private.
   void _windowAsked(WindowRequest request) {
     if (ModalRoute.of(context)?.isCurrent ?? true) return;
     ScaffoldMessenger.of(context)
@@ -177,7 +177,8 @@ class _HomeScreenState extends State<HomeScreen> {
       ..showSnackBar(
         SnackBar(
           content: Text(
-            '${visibleText(request.deviceName)} wants to show you a window.',
+            '${visibleText(request.deviceName)} wants to show you '
+            '${request.display ? 'its screen' : 'a window'}.',
           ),
           duration: const Duration(seconds: 10),
           action: SnackBarAction(label: 'Review', onPressed: _review),

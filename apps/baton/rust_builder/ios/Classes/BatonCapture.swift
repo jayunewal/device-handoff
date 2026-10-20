@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// The Mac's side of sharing a window: the picker of the system lets the person choose the window,
-// ScreenCaptureKit captures it, and VideoToolbox encodes what it captures (BatonH264Encoder.swift).
+// The Mac's side of sharing a window, or a whole screen: the picker of the system lets the person
+// choose which, ScreenCaptureKit captures it, and VideoToolbox encodes what it captures
+// (BatonH264Encoder.swift).
 // What decides when a picture is made, and what becomes of it, is in BatonSource.swift, which does
 // not depend on any of this.
 //
 // The system's picker is used, and not a list of windows made by the app, for two reasons: the
-// person chooses at the place where the system shows what a window is, and an app that is given a
-// window by the picker needs no permission to record the screen, which an app that builds for a
-// free Apple ID would lose again with every build.
+// person chooses at the place where the system shows what a window or a screen is, and an app that
+// is given one by the picker needs no permission to record the screen, which an app that builds for
+// a free Apple ID would lose again with every build.
 //
 // An iPhone or an iPad cannot share a window, so there is nothing here for them.
 
@@ -48,7 +49,9 @@ final class MacSharer: NSObject, SharerPlatform, SCContentSharingPickerObserver 
         observing = true
       }
       var configuration = SCContentSharingPickerConfiguration()
-      configuration.allowedPickerModes = .singleWindow
+      // One window, or one whole display: the picker starts on the windows, and the person
+      // switches to the displays there.
+      configuration.allowedPickerModes = [.singleWindow, .singleDisplay]
       configuration.allowsChangingSelectedContent = false
       picker.defaultConfiguration = configuration
       picker.isActive = true
@@ -102,29 +105,33 @@ final class MacSharer: NSObject, SharerPlatform, SCContentSharingPickerObserver 
 
   /// What the person chose, as the answer to the request.
   private static func choice(of filter: SCContentFilter) -> PickAnswer {
-    guard filter.style == .window else {
-      return .failed("Choose a window, and not a screen.")
+    let display: Bool
+    switch filter.style {
+    case .window: display = false
+    case .display: display = true
+    default: return .failed("Choose a window or a screen.")
     }
     let scale = Double(filter.pointPixelScale)
     let width = (Double(filter.contentRect.width) * scale).rounded()
     let height = (Double(filter.contentRect.height) * scale).rounded()
     guard width >= 1, height >= 1, width < 100_000, height < 100_000 else {
-      return .failed("The window has no size to share.")
+      return .failed("The \(display ? "screen" : "window") has no size to share.")
     }
     var title = ""
     var app = ""
-    // The system tells which window it is only from macOS 15.2 on.
-    if #available(macOS 15.2, *), let window = filter.includedWindows.first {
+    // The system tells which window it is only from macOS 15.2 on. A display has neither a title
+    // nor an application.
+    if !display, #available(macOS 15.2, *), let window = filter.includedWindows.first {
       title = window.title ?? ""
       app = window.owningApplication?.applicationName ?? ""
     }
     let info = PickedWindowInfo(
-      width: UInt32(width), height: UInt32(height), title: title, app: app)
+      width: UInt32(width), height: UInt32(height), title: title, app: app, display: display)
     return .chose(MacSharedWindow(filter: filter, info: info), info)
   }
 }
 
-/// A window that the person picked, shared from this Mac.
+/// A window, or a whole screen, that the person picked, shared from this Mac.
 @available(macOS 14.0, *)
 final class MacSharedWindow: SharedWindow {
   private let filter: SCContentFilter
@@ -143,7 +150,7 @@ final class MacSharedWindow: SharedWindow {
       let chosen = chooseFormat(
         windowWidth: info.width, windowHeight: info.height, takes: takes)
     else {
-      throw SharerFailure(sentence: "The other device cannot show a picture of this window.")
+      throw SharerFailure(sentence: "The other device cannot show a picture of this \(info.noun).")
     }
     do {
       encoder = try H264Encoder(format: chosen)
@@ -157,7 +164,7 @@ final class MacSharedWindow: SharedWindow {
 
   func start(link: UInt64) throws {
     guard let format, let encoder, capture == nil else {
-      throw SharerFailure(sentence: "This device could not start sharing the window.")
+      throw SharerFailure(sentence: "This device could not start sharing the \(info.noun).")
     }
     let made = Capture(session: LibrarySourceSession(link: link), encoder: encoder, format: format)
     do {
@@ -167,7 +174,7 @@ final class MacSharedWindow: SharedWindow {
     } catch {
       let failure = error as NSError
       NSLog("Baton: the capture could not be set up (%@, %ld).", failure.domain, failure.code)
-      throw SharerFailure(sentence: "This device could not start capturing the window.")
+      throw SharerFailure(sentence: "This device could not start capturing the \(info.noun).")
     }
     capture = made
   }

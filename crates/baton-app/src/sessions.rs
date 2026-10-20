@@ -31,7 +31,7 @@ use crate::{
         WindowAbilities, WindowEnd, WindowInput, WindowRequest, WindowRole, WindowSession,
         WindowShared,
     },
-    windows::{PickedWindow, ScreenLink, SharingFailure, WindowSharer, WindowViewer},
+    windows::{PickedWindow, ScreenLink, SharingFailure, WindowSharer, WindowViewer, noun},
 };
 
 /// A session that runs, and how to end it.
@@ -306,6 +306,7 @@ impl Sessions {
                 id,
                 device_id: device_id.clone(),
                 device_name: device_name.clone(),
+                display: offer.display,
                 title: offer.title.clone(),
                 app: offer.app.clone(),
                 width: offer.width,
@@ -354,6 +355,7 @@ impl Sessions {
                 id,
                 device_id,
                 device_name,
+                display: offer.display,
                 title: offer.title.clone(),
                 app: offer.app.clone(),
                 width: offer.width,
@@ -378,6 +380,7 @@ impl Sessions {
         let WindowRequest {
             device_id,
             device_name,
+            display,
             title,
             app,
             width,
@@ -390,6 +393,7 @@ impl Sessions {
             role: WindowRole::Viewing,
             device_id,
             device_name,
+            display,
             title,
             app,
             width,
@@ -422,7 +426,13 @@ impl Sessions {
     ) -> Result<WindowShared> {
         let (width, height) = picked.size();
         let (title, app) = (picked.title(), picked.app());
+        let display = picked.display();
+        // A display is looked at: how input is judged on a whole screen is not decided yet.
+        let control = control && !display;
         let mut window = WindowShare::new(title.clone(), app.clone(), width, height);
+        if display {
+            window = window.whole_display();
+        }
         if control {
             window = window.with_control();
         }
@@ -448,6 +458,7 @@ impl Sessions {
                     role: WindowRole::Sharing,
                     device_id: peer.to_string(),
                     device_name: name.to_owned(),
+                    display,
                     title: non_empty(&title),
                     app: non_empty(&app),
                     width,
@@ -464,16 +475,19 @@ impl Sessions {
                 picked.start(handle, failure);
                 Ok(WindowShared::Started(session))
             }
-            Ok(ShareOutcome::Declined(reason)) => {
-                Ok(WindowShared::Declined(declined_window(name, reason)))
-            }
+            Ok(ShareOutcome::Declined(reason)) => Ok(WindowShared::Declined(declined_window(
+                name, reason, display,
+            ))),
             Ok(ShareOutcome::Unmatched) => Ok(WindowShared::Declined(format!(
-                "{name} cannot show the picture that this device makes of the window."
+                "{name} cannot show the picture that this device makes of the {}.",
+                noun(display)
             ))),
-            Ok(_) => Ok(WindowShared::Declined(format!(
-                "{name} did not take the window."
+            Ok(_) => Ok(WindowShared::Declined(declined_window(
+                name,
+                DeclineReason::Other,
+                display,
             ))),
-            Err(error) => Err(Error::sharing(&error, name)),
+            Err(error) => Err(Error::sharing(&error, name, display)),
         }
     }
 }
@@ -521,23 +535,24 @@ fn window_end(end: End) -> WindowEnd {
     }
 }
 
-/// What to tell the person when the other device did not take the window.
-fn declined_window(device: &str, reason: DeclineReason) -> String {
+/// What to tell the person when the other device did not take the window, or the screen.
+fn declined_window(device: &str, reason: DeclineReason, display: bool) -> String {
+    let what = noun(display);
     match reason {
-        DeclineReason::Refused => format!("{device} did not accept the window."),
+        DeclineReason::Refused => format!("{device} did not accept the {what}."),
         DeclineReason::Blocked => {
             format!(
-                "{device} does not take windows from this device: its settings do not allow it."
+                "{device} does not take {what}s from this device: its settings do not allow it."
             )
         }
         DeclineReason::Unsupported => {
-            format!("{device} cannot show windows. It may need a newer version of Baton.")
+            format!("{device} cannot show {what}s. It may need a newer version of Baton.")
         }
         DeclineReason::RateLimited => {
-            format!("{device} is busy with another window. Try again in a moment.")
+            format!("{device} is busy with another {what}. Try again in a moment.")
         }
-        DeclineReason::Invalid => format!("{device} could not read the offer of the window."),
-        _ => format!("{device} did not take the window."),
+        DeclineReason::Invalid => format!("{device} could not read the offer of the {what}."),
+        _ => format!("{device} did not take the {what}."),
     }
 }
 
@@ -733,6 +748,7 @@ mod tests {
             role,
             device_id: "ab".repeat(32),
             device_name: "Studio Mac".to_owned(),
+            display: false,
             title: None,
             app: None,
             width: 1440,
@@ -986,9 +1002,27 @@ mod tests {
             (DeclineReason::Invalid, "could not read the offer"),
             (DeclineReason::Other, "did not take the window"),
         ] {
-            let told = declined_window("Kitchen iPad", reason);
+            let told = declined_window("Kitchen iPad", reason, false);
             assert!(told.contains("Kitchen iPad"), "{reason:?}: {told}");
             assert!(told.contains(why), "{reason:?}: {told}");
+            assert!(!told.contains("screen"), "{reason:?}: {told}");
+        }
+    }
+
+    #[test]
+    fn what_the_person_is_told_of_a_screen_that_was_not_taken_calls_it_a_screen() {
+        for (reason, why) in [
+            (DeclineReason::Refused, "did not accept the screen"),
+            (DeclineReason::Blocked, "does not take screens"),
+            (DeclineReason::Unsupported, "cannot show screens"),
+            (DeclineReason::RateLimited, "busy with another screen"),
+            (DeclineReason::Invalid, "offer of the screen"),
+            (DeclineReason::Other, "did not take the screen"),
+        ] {
+            let told = declined_window("Kitchen iPad", reason, true);
+            assert!(told.contains("Kitchen iPad"), "{reason:?}: {told}");
+            assert!(told.contains(why), "{reason:?}: {told}");
+            assert!(!told.contains("window"), "{reason:?}: {told}");
         }
     }
 }
