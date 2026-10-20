@@ -58,7 +58,7 @@ use baton_stream::{
 
 use crate::{
     platform::{Failure, PickedHandle, Surroundings},
-    registry::lock,
+    registry::{Links, lock},
 };
 
 /// How many batches wait for the thread. A viewer sends a batch for each event when they come
@@ -327,19 +327,30 @@ impl SourceEvents for Forward {
     }
 }
 
-/// Tells the thread to let the window go when it is dropped. The task that waits for the end of
-/// the session holds it, so it goes whether the task finishes or is dropped with its runtime.
-pub(crate) struct Closing(Arc<Input>);
+/// Closes the link of the session and then tells the thread to let the window go, when it is
+/// dropped. The task that waits for the end of the session holds it, so both happen whether the
+/// task finishes or is dropped with its runtime. The link is closed first, so that the platform,
+/// which is told that the session is over by the thread, finds the link closed by then.
+pub(crate) struct Closing {
+    links: Arc<Links>,
+    number: u64,
+    input: Arc<Input>,
+}
 
 impl Closing {
-    pub(crate) fn new(input: Arc<Input>) -> Self {
-        Self(input)
+    pub(crate) fn new(links: Arc<Links>, number: u64, input: Arc<Input>) -> Self {
+        Self {
+            links,
+            number,
+            input,
+        }
     }
 }
 
 impl Drop for Closing {
     fn drop(&mut self) {
-        self.0.close();
+        self.links.remove(self.number);
+        self.input.close();
     }
 }
 
@@ -786,7 +797,11 @@ mod tests {
         /// Ends the way that the task of the session does: the link is closed and the window is
         /// to be told.
         fn close(&mut self) {
-            drop(Closing::new(Arc::clone(&self.input)));
+            drop(Closing::new(
+                Arc::new(Links::default()),
+                1,
+                Arc::clone(&self.input),
+            ));
             end(self.thread.take().unwrap());
         }
     }

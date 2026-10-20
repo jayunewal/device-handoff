@@ -108,6 +108,17 @@ struct SentRecord: Equatable {
   var lengthSize: UInt32
   var sample: [UInt8]
   var sets: [[UInt8]]
+  /// nil for a geometry that is all zero, which says nothing.
+  var geometry: SentGeometry? = nil
+}
+
+/// The geometry of a picture, as the Rust side reads it.
+struct SentGeometry: Equatable {
+  var windowWidth: Double
+  var windowHeight: Double
+  var pictureWidth: UInt32
+  var pictureHeight: UInt32
+  var content: [Double]
 }
 
 /// A call about a window that is shared.
@@ -117,6 +128,9 @@ enum SourceCall: Equatable {
   case cancel(UInt64)
   case recoveryPending(UInt64)
   case sent(UInt64, SentRecord)
+  case changed(UInt64, UInt64)
+  case pause(UInt64, UInt32)
+  case resume(UInt64)
   /// nil is a NULL pointer for the sentence.
   case end(UInt64, String?)
 }
@@ -135,6 +149,9 @@ struct SourceAnswers {
   var sentCode: Int32 = 0
   var outcome: UInt32 = BATON_SENT
   var number: UInt64 = 5
+  var changedCode: Int32 = 0
+  var pauseCode: Int32 = 0
+  var resumeCode: Int32 = 0
   var endCode: Int32 = 0
 }
 
@@ -203,12 +220,22 @@ func stubSourceSent(
     let sets: [[UInt8]] =
       c.set_count == 0 || c.sets == nil
       ? [] : UnsafeBufferPointer(start: c.sets, count: c.set_count).map { bytes($0) }
+    let g = c.geometry
+    let silent = g.window_width == 0 && g.window_height == 0 && g.picture_width == 0
+      && g.picture_height == 0 && g.content.x == 0 && g.content.y == 0 && g.content.width == 0
+      && g.content.height == 0
     sourceCalls.append(
       .sent(
         link,
         SentRecord(
           size: c.size, flags: c.flags, captureTime: c.capture_time, lengthSize: c.length_size,
-          sample: bytes(c.sample), sets: sets)))
+          sample: bytes(c.sample), sets: sets,
+          geometry: silent
+            ? nil
+            : SentGeometry(
+              windowWidth: g.window_width, windowHeight: g.window_height,
+              pictureWidth: g.picture_width, pictureHeight: g.picture_height,
+              content: [g.content.x, g.content.y, g.content.width, g.content.height]))))
   }
   if sourceAnswers.sentCode == 0 {
     outcome?.pointee = sourceAnswers.outcome
@@ -230,4 +257,28 @@ func stubSourceEnd(_ link: UInt64, _ sentence: UnsafePointer<BatonBytes>?) -> In
   }
   sourceCalls.append(.end(link, text))
   return sourceAnswers.endCode
+}
+
+@_cdecl("baton_stream_source_changed")
+func stubSourceChanged(_ link: UInt64, _ captureTime: UInt64) -> Int32 {
+  stubLock.lock()
+  defer { stubLock.unlock() }
+  sourceCalls.append(.changed(link, captureTime))
+  return sourceAnswers.changedCode
+}
+
+@_cdecl("baton_stream_source_pause")
+func stubSourcePause(_ link: UInt64, _ reason: UInt32) -> Int32 {
+  stubLock.lock()
+  defer { stubLock.unlock() }
+  sourceCalls.append(.pause(link, reason))
+  return sourceAnswers.pauseCode
+}
+
+@_cdecl("baton_stream_source_resume")
+func stubSourceResume(_ link: UInt64) -> Int32 {
+  stubLock.lock()
+  defer { stubLock.unlock() }
+  sourceCalls.append(.resume(link))
+  return sourceAnswers.resumeCode
 }

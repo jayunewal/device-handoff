@@ -94,6 +94,19 @@ protocol SharedWindow: AnyObject {
   /// The window is not needed any more, whether or not `ended` came first, and whether or not it
   /// was ever started. Lets go of all of it, the result of the picker included. Called once.
   func released()
+
+  /// What the Mac is doing around the window, for the events that the other device sent. nil if it
+  /// cannot be said, and the events are dropped then. A window that cannot be steered says nil.
+  func surroundings() -> WindowSurroundings?
+
+  /// Puts one thing that the person did to the window. false if it could not be done, and that
+  /// event is dropped. A window that cannot be steered says false.
+  func post(_ post: InputPost) -> Bool
+}
+
+extension SharedWindow {
+  func surroundings() -> WindowSurroundings? { nil }
+  func post(_ post: InputPost) -> Bool { false }
 }
 
 // MARK: - The answer to a pick
@@ -259,6 +272,98 @@ private func sharerRelease(_ picked: UnsafeMutableRawPointer?) {
   box.release()
 }
 
+/// The part of the window that the Rust side asks about, in the form it has in the C interface.
+private func batonRect(_ rect: ScreenRect) -> BatonRect {
+  BatonRect(x: rect.x, y: rect.y, width: rect.width, height: rect.height)
+}
+
+private func sharerSurroundings(
+  _ picked: UnsafeMutableRawPointer?, _ around: UnsafeMutablePointer<BatonSurroundings>?
+) -> Int32 {
+  guard let window = windowOf(picked), let around,
+    around.pointee.size >= UInt32(MemoryLayout<BatonSurroundings>.size)
+  else { return badArgument }
+  guard let seen = window.surroundings() else { return platformFailure }
+  // Room for the windows in front is the Rust side's to give, and a Mac that has more than fits
+  // says nothing, so that no window that covers the shared one is left out.
+  let room = min(Int(around.pointee.front_cap), Int(BATON_FRONTS_MAX))
+  guard seen.fronts.count <= room, seen.fronts.isEmpty || around.pointee.fronts != nil
+  else { return platformFailure }
+  if let fronts = around.pointee.fronts {
+    for (place, front) in seen.fronts.enumerated() {
+      fronts[place] = BatonFront(
+        rect: batonRect(front.rect),
+        flags: (front.sameApplication ? UInt32(BATON_FRONT_SAME_APPLICATION) : 0)
+          | (front.menu ? UInt32(BATON_FRONT_MENU) : 0),
+        reserved: 0)
+    }
+  }
+  around.pointee.front_count = UInt32(seen.fronts.count)
+  around.pointee.locked = seen.locked ? 1 : 0
+  around.pointee.on_screen = seen.onScreen ? 1 : 0
+  switch seen.keyboard {
+  case .elsewhere: around.pointee.keyboard = UInt32(BATON_KEYBOARD_ELSEWHERE)
+  case .shared: around.pointee.keyboard = UInt32(BATON_KEYBOARD_SHARED)
+  case .unknown: around.pointee.keyboard = UInt32(BATON_KEYBOARD_UNKNOWN)
+  }
+  around.pointee.window = batonRect(seen.window)
+  return ok
+}
+
+/// What the Rust side put to the window, as a value, or nil for one that this version does not know
+/// or that is not well formed.
+private func inputPost(from post: BatonPost) -> InputPost? {
+  let modifiers = InputModifiers(rawValue: post.modifiers & 31)
+  switch post.kind {
+  case UInt32(BATON_POST_POINTER):
+    let action: PointerAction
+    switch post.action {
+    case UInt32(BATON_POINTER_MOVE): action = .move
+    case UInt32(BATON_POINTER_DOWN): action = .down
+    case UInt32(BATON_POINTER_UP): action = .up
+    case UInt32(BATON_POINTER_SCROLL): action = .scroll
+    default: return nil
+    }
+    let button: PointerButton
+    switch post.button {
+    case UInt32(BATON_BUTTON_LEFT): button = .left
+    case UInt32(BATON_BUTTON_RIGHT): button = .right
+    case UInt32(BATON_BUTTON_MIDDLE): button = .middle
+    default: return nil
+    }
+    return .pointer(
+      PointerPost(
+        at: ScreenPoint(x: post.x, y: post.y), action: action, button: button,
+        dx: Double(post.dx), dy: Double(post.dy), modifiers: modifiers))
+  case UInt32(BATON_POST_KEY):
+    var text: String?
+    if post.text.len > 0 {
+      // The Rust side sends text as UTF-8. What is not is not typed.
+      guard let start = post.text.ptr,
+        let decoded = String(
+          bytes: UnsafeBufferPointer(start: start, count: post.text.len), encoding: .utf8)
+      else { return nil }
+      text = decoded
+    }
+    return .key(
+      KeyPost(
+        code: post.code, down: post.down != 0, repeating: post.`repeat` != 0,
+        modifiers: modifiers, text: text))
+  default:
+    return nil
+  }
+}
+
+private func sharerPost(
+  _ picked: UnsafeMutableRawPointer?, _ post: UnsafePointer<BatonPost>?
+) -> Int32 {
+  guard let window = windowOf(picked), let post,
+    post.pointee.size >= UInt32(MemoryLayout<BatonPost>.size),
+    let input = inputPost(from: post.pointee)
+  else { return badArgument }
+  return window.post(input) ? ok : platformFailure
+}
+
 /// Gives the Rust side the platform's sharer: a device that has registered one lets the person
 /// share a window, and a device that has not shares none. Call it once, at launch, before the app
 /// starts. Returns what `baton_stream_register_sharer` returned.
@@ -278,9 +383,8 @@ func registerSharer(_ platform: SharerPlatform) -> Int32 {
     start: sharerStart,
     ended: sharerEnded,
     release: sharerRelease,
-    // Putting what the person does to a window comes with the piece that asks the Mac about it.
-    surroundings: nil,
-    post: nil)
+    surroundings: sharerSurroundings,
+    post: sharerPost)
   let code = baton_stream_register_sharer(&table)
   if code != ok {
     context.release()
@@ -380,6 +484,9 @@ struct EncodedPicture: Equatable {
   var sets: [Data]
   /// When the window was captured, on the clock of the session.
   var captureTime: UInt64
+  /// How the window was laid out in the picture, if the platform can steer the window. Without it
+  /// the picture is sent all the same, and what the person touches on it is dropped.
+  var geometry: PictureGeometry? = nil
 }
 
 /// The calls the platform makes about a window that it shares, as `baton_stream_source_*` has them.
@@ -394,6 +501,13 @@ protocol SourceSession: AnyObject {
   /// if the window has not changed. nil once the session is over.
   func recoveryPending() -> Bool?
   func send(_ picture: EncodedPicture) -> SendAnswer
+  /// The window shows something other than it did: the capture made at this time on the clock of
+  /// the session differs from the one before. Told for every capture that shows a change, whether
+  /// or not a picture is made of it.
+  func changed(_ captureTime: UInt64)
+  /// Stops the pictures, and tells the viewer why, until `resume`.
+  func pause(_ reason: PauseReason)
+  func resume()
   /// Ends the session. A sentence says that something went wrong, and the person is shown it;
   /// without one the person closed the window themselves.
   func end(sentence: String?)
@@ -450,7 +564,8 @@ final class LibrarySourceSession: SourceSession {
           capture_time: picture.captureTime, length_size: picture.lengthSize, reserved: 0,
           sample: BatonBytes(
             ptr: sample.bindMemory(to: UInt8.self).baseAddress, len: sample.count),
-          sets: sets.baseAddress, set_count: sets.count, geometry: BatonGeometry())
+          sets: sets.baseAddress, set_count: sets.count,
+          geometry: batonGeometry(picture.geometry))
         var outcome: UInt32 = 0
         var number: UInt64 = 0
         let code = baton_stream_source_sent(link, &c, &outcome, &number)
@@ -475,6 +590,21 @@ final class LibrarySourceSession: SourceSession {
     }
   }
 
+  func changed(_ captureTime: UInt64) {
+    _ = baton_stream_source_changed(link, captureTime)
+  }
+
+  func pause(_ reason: PauseReason) {
+    switch reason {
+    case .locked: _ = baton_stream_source_pause(link, BATON_PAUSE_LOCKED)
+    case .hidden: _ = baton_stream_source_pause(link, BATON_PAUSE_HIDDEN)
+    }
+  }
+
+  func resume() {
+    _ = baton_stream_source_resume(link)
+  }
+
   func end(sentence: String?) {
     guard var text = sentence, !text.isEmpty else {
       _ = baton_stream_source_end(link, nil)
@@ -485,6 +615,16 @@ final class LibrarySourceSession: SourceSession {
       _ = baton_stream_source_end(link, &c)
     }
   }
+}
+
+/// The geometry of a picture in the form it has in the C interface: all zero for a picture of a
+/// window that cannot be steered, which the Rust side reads as no geometry.
+private func batonGeometry(_ geometry: PictureGeometry?) -> BatonGeometry {
+  guard let geometry else { return BatonGeometry() }
+  return BatonGeometry(
+    window_width: geometry.windowWidth, window_height: geometry.windowHeight,
+    picture_width: geometry.pictureWidth, picture_height: geometry.pictureHeight,
+    content: batonRect(geometry.content))
 }
 
 /// Calls `body` with a `BatonBytes` for each of `sets`, valid for the call and not after it.
@@ -542,6 +682,8 @@ final class FramePump<Encoder: PictureEncoder> {
 
   private var latest: Encoder.Image?
   private var latestTime: UInt64 = 0
+  /// How the window was laid out in `latest`, if it is known.
+  private var latestGeometry: PictureGeometry?
   /// Whether `latest` is an image that no picture was made of.
   private var changed = false
   private var failures = 0
@@ -555,8 +697,9 @@ final class FramePump<Encoder: PictureEncoder> {
     self.mostFailures = mostFailures
   }
 
-  /// The capture has a new image of the window.
-  func captured(_ image: Encoder.Image) {
+  /// The capture has a new image of the window, and `geometry` says how the window was laid out in
+  /// it, if the platform can steer the window.
+  func captured(_ image: Encoder.Image, geometry: PictureGeometry? = nil) {
     if over { return }
     guard let micros = session.clock() else {
       stop()
@@ -564,7 +707,10 @@ final class FramePump<Encoder: PictureEncoder> {
     }
     latest = image
     latestTime = micros
+    latestGeometry = geometry
     changed = true
+    // What the person touched is out of date from now on, whether or not a picture is made.
+    session.changed(micros)
     attempt()
   }
 
@@ -589,6 +735,7 @@ final class FramePump<Encoder: PictureEncoder> {
   func stop() {
     over = true
     latest = nil
+    latestGeometry = nil
   }
 
   private func attempt() {
@@ -602,9 +749,12 @@ final class FramePump<Encoder: PictureEncoder> {
   }
 
   private func make(_ image: Encoder.Image, key: Bool) {
-    let picture: EncodedPicture
+    var picture: EncodedPicture
     do {
       picture = try encoder.encode(image, key: key, captureTime: latestTime)
+      // The encoder knows nothing of windows. The picture is of this image, so it has the layout
+      // of the window that the image has.
+      picture.geometry = latestGeometry
     } catch {
       NSLog(
         "Baton: a picture of the shared window could not be made (%@).",
