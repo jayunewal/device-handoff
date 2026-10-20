@@ -548,8 +548,9 @@ fn declined_window(device: &str, reason: DeclineReason, display: bool) -> String
         DeclineReason::Unsupported => {
             format!("{device} cannot show {what}s. It may need a newer version of Baton.")
         }
+        // What the other device is busy with is a window or a screen, whichever was offered.
         DeclineReason::RateLimited => {
-            format!("{device} is busy with another {what}. Try again in a moment.")
+            format!("{device} is busy with another window or screen. Try again in a moment.")
         }
         DeclineReason::Invalid => format!("{device} could not read the offer of the {what}."),
         _ => format!("{device} did not take the {what}."),
@@ -998,7 +999,6 @@ mod tests {
             (DeclineReason::Refused, "did not accept the window"),
             (DeclineReason::Blocked, "its settings do not allow it"),
             (DeclineReason::Unsupported, "may need a newer version"),
-            (DeclineReason::RateLimited, "busy with another window"),
             (DeclineReason::Invalid, "could not read the offer"),
             (DeclineReason::Other, "did not take the window"),
         ] {
@@ -1015,7 +1015,6 @@ mod tests {
             (DeclineReason::Refused, "did not accept the screen"),
             (DeclineReason::Blocked, "does not take screens"),
             (DeclineReason::Unsupported, "cannot show screens"),
-            (DeclineReason::RateLimited, "busy with another screen"),
             (DeclineReason::Invalid, "offer of the screen"),
             (DeclineReason::Other, "did not take the screen"),
         ] {
@@ -1023,6 +1022,19 @@ mod tests {
             assert!(told.contains("Kitchen iPad"), "{reason:?}: {told}");
             assert!(told.contains(why), "{reason:?}: {told}");
             assert!(!told.contains("window"), "{reason:?}: {told}");
+        }
+    }
+
+    #[test]
+    fn a_device_that_is_busy_is_busy_with_a_window_or_a_screen_whichever_was_offered() {
+        // What it is busy with is not known, and it need not be what was offered.
+        for display in [false, true] {
+            let told = declined_window("Kitchen iPad", DeclineReason::RateLimited, display);
+            assert!(told.contains("Kitchen iPad"), "{display}: {told}");
+            assert!(
+                told.contains("busy with another window or screen"),
+                "{display}: {told}"
+            );
         }
     }
 }

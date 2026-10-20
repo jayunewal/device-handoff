@@ -8,9 +8,9 @@
  * Showing. The Rust side takes the pictures off the network and puts them in order. The platform
  * decodes them, draws them, and says how it is doing.
  *
- * Sharing. The person picks the window with the picker of the system, and the platform captures
- * it and encodes it. The Rust side offers the window to the other device, decides when a picture
- * may be made and how it goes out, and sends it.
+ * Sharing. The person picks a window, or a whole display, with the picker of the system, and the
+ * platform captures it and encodes it. The Rust side offers it to the other device, decides when
+ * a picture may be made and how it goes out, and sends it.
  *
  * This file is the whole of what the two sides say to each other, and
  * docs/adr/0009-window-streaming.md says why it is this small. It is written by hand, and the
@@ -24,7 +24,7 @@
  *     at launch: baton_stream_abi_version, baton_stream_register_viewer and
  *       baton_stream_register_sharer;
  *     while a window is shown: baton_stream_link_decode_failed;
- *     while the person picks a window to share: baton_stream_pick_done;
+ *     while the person picks a window or a display to share: baton_stream_pick_done;
  *     while a window is shared: the baton_stream_source_ functions.
  *   The Rust side calls the functions of the vtables that the platform registered:
  *     viewer: limits and open (about the device), and decode, show, source, state, ended and
@@ -580,11 +580,13 @@ typedef struct BatonViewerVTable {
  *   control:     whether the person can let another device control a window that they share, 1
  *                or 0. A platform that cannot post input says 0, and no window is offered with
  *                control; the same holds for a platform that gave no surroundings and post,
- *                whatever control says. Called each time the app asks what the device can do.
- *   pick:        the person wants to share a window: shows the picker of the system. request is
- *                the number that baton_stream_pick_done is given when the person has chosen, or
- *                given up, or the picker failed. Does not wait for the person. On a failure to
- *                show the picker fills in message if it can, as open does.
+ *                whatever control says. A whole display is not offered with control either.
+ *                Called each time the app asks what the device can do.
+ *   pick:        the person wants to share a window or a whole display: shows the picker of the
+ *                system. request is the number that baton_stream_pick_done is given when the
+ *                person has chosen, or given up, or the picker failed. Does not wait for the
+ *                person. On a failure to show the picker fills in message if it can, as open
+ *                does.
  *   cancel_pick: nobody waits for the answer any more: takes the picker down if it is up. An
  *                answer that comes anyway is refused with BATON_E_UNKNOWN_LINK, and the window
  *                it names stays with the platform.

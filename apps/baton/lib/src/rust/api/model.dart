@@ -1023,7 +1023,7 @@ enum WindowNoticeReason {
   /// The release of a button or a key that was not pressed.
   notPressed,
 
-  /// Something that this version does not know.
+  /// A rule of a later version, or an event that the other device found not valid.
   other,
 }
 

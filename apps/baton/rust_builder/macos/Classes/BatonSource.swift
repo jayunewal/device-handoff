@@ -198,7 +198,7 @@ private func sharerPick(
     write(failure.sentence, to: message)
     return platformFailure
   } catch {
-    write("The window picker could not be shown.", to: message)
+    write("The picker could not be shown.", to: message)
     return platformFailure
   }
 }

@@ -536,18 +536,20 @@ impl App {
         waiting.is_some_and(|answer| answer.send(accept).is_ok())
     }
 
-    /// Lets the person pick a window of this device, and offers it to the paired device `id`.
-    /// The call returns when the person at the other device has answered, which can take as
-    /// long as a person takes to decide. Dropping the future withdraws the offer.
+    /// Lets the person pick a window or a whole screen of this device, and offers it to the
+    /// paired device `id`. The call returns when the person at the other device has answered,
+    /// which can take as long as a person takes to decide. Dropping the future withdraws the
+    /// offer.
     ///
     /// `control` lets the other device control the window, if this device can grant it
-    /// ([`window_abilities`](Self::window_abilities)).
+    /// ([`window_abilities`](Self::window_abilities)). A whole screen is only looked at, whatever
+    /// `control` says.
     ///
     /// # Errors
     ///
     /// [`ErrorKind::NotPaired`], [`ErrorKind::Unreachable`] if the device cannot be reached,
     /// [`ErrorKind::Declined`] if it does not show windows, and [`ErrorKind::Other`] if this
-    /// device does not share windows or a window is being shared or shown already.
+    /// device does not share windows or a window or screen is being shared or shown already.
     pub async fn share_window(&self, id: &str, control: bool) -> Result<WindowShared> {
         let node = self.running()?;
         let (peer, name) = self.paired(id)?;
