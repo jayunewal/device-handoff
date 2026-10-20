@@ -176,6 +176,7 @@ async fn a_window_goes_through_from_the_offer_to_the_pictures_and_the_reports() 
     assert_eq!(asked[0].app.as_deref(), Some("Preview"));
     assert_eq!((asked[0].width, asked[0].height), (1440, 900));
     assert!(!asked[0].control);
+    assert!(!asked[0].display, "a window was offered as a display");
 
     // The source says what the picture is, and the viewer reports.
     rig.until("the viewer to hear the picture format", |rig| {
@@ -217,6 +218,38 @@ async fn a_window_goes_through_from_the_offer_to_the_pictures_and_the_reports() 
         End::Peer
     );
     assert!(heard.count("ended") >= 1);
+}
+
+#[tokio::test]
+async fn a_display_is_offered_as_a_display_with_the_size_it_has() {
+    let rig = Rig::new(Plan::Accept).await;
+    let (outcome, _) = rig
+        .share(WindowShare::new("", "", 3024, 1964).whole_display())
+        .await;
+    assert!(matches!(outcome.unwrap(), ShareOutcome::Started(_)));
+    let asked = rig.app.asked();
+    assert_eq!(asked.len(), 1);
+    assert!(asked[0].display);
+    assert_eq!((asked[0].width, asked[0].height), (3024, 1964));
+    assert_eq!(
+        (asked[0].title.as_deref(), asked[0].app.as_deref()),
+        (None, None)
+    );
+    assert!(!asked[0].control);
+}
+
+#[test]
+fn what_is_shared_is_printed_as_a_kind_and_a_size_and_not_by_name() {
+    let window = WindowShare::new("Q3 totals", "Numbers", 800, 600);
+    let display = WindowShare::new("Studio Display", "", 3024, 1964).whole_display();
+    let (window, display) = (format!("{window:?}"), format!("{display:?}"));
+    assert!(window.contains("source: Window"), "{window}");
+    assert!(display.contains("source: Display"), "{display}");
+    for shown in [&window, &display] {
+        for name in ["Q3", "Numbers", "Studio"] {
+            assert!(!shown.contains(name), "{shown}");
+        }
+    }
 }
 
 #[tokio::test]

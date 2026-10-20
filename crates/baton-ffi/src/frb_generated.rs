@@ -2757,6 +2757,7 @@ impl SseDecode for crate::api::model::WindowRequest {
         let mut var_id = <i64>::sse_decode(deserializer);
         let mut var_deviceId = <String>::sse_decode(deserializer);
         let mut var_deviceName = <String>::sse_decode(deserializer);
+        let mut var_display = <bool>::sse_decode(deserializer);
         let mut var_title = <Option<String>>::sse_decode(deserializer);
         let mut var_app = <Option<String>>::sse_decode(deserializer);
         let mut var_width = <u32>::sse_decode(deserializer);
@@ -2766,6 +2767,7 @@ impl SseDecode for crate::api::model::WindowRequest {
             id: var_id,
             device_id: var_deviceId,
             device_name: var_deviceName,
+            display: var_display,
             title: var_title,
             app: var_app,
             width: var_width,
@@ -2794,6 +2796,7 @@ impl SseDecode for crate::api::model::WindowSession {
         let mut var_role = <crate::api::model::WindowRole>::sse_decode(deserializer);
         let mut var_deviceId = <String>::sse_decode(deserializer);
         let mut var_deviceName = <String>::sse_decode(deserializer);
+        let mut var_display = <bool>::sse_decode(deserializer);
         let mut var_title = <Option<String>>::sse_decode(deserializer);
         let mut var_app = <Option<String>>::sse_decode(deserializer);
         let mut var_width = <u32>::sse_decode(deserializer);
@@ -2805,6 +2808,7 @@ impl SseDecode for crate::api::model::WindowSession {
             role: var_role,
             device_id: var_deviceId,
             device_name: var_deviceName,
+            display: var_display,
             title: var_title,
             app: var_app,
             width: var_width,
@@ -3732,6 +3736,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::model::WindowRequest {
             self.id.into_into_dart().into_dart(),
             self.device_id.into_into_dart().into_dart(),
             self.device_name.into_into_dart().into_dart(),
+            self.display.into_into_dart().into_dart(),
             self.title.into_into_dart().into_dart(),
             self.app.into_into_dart().into_dart(),
             self.width.into_into_dart().into_dart(),
@@ -3778,6 +3783,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::model::WindowSession {
             self.role.into_into_dart().into_dart(),
             self.device_id.into_into_dart().into_dart(),
             self.device_name.into_into_dart().into_dart(),
+            self.display.into_into_dart().into_dart(),
             self.title.into_into_dart().into_dart(),
             self.app.into_into_dart().into_dart(),
             self.width.into_into_dart().into_dart(),
@@ -4612,6 +4618,7 @@ impl SseEncode for crate::api::model::WindowRequest {
         <i64>::sse_encode(self.id, serializer);
         <String>::sse_encode(self.device_id, serializer);
         <String>::sse_encode(self.device_name, serializer);
+        <bool>::sse_encode(self.display, serializer);
         <Option<String>>::sse_encode(self.title, serializer);
         <Option<String>>::sse_encode(self.app, serializer);
         <u32>::sse_encode(self.width, serializer);
@@ -4643,6 +4650,7 @@ impl SseEncode for crate::api::model::WindowSession {
         <crate::api::model::WindowRole>::sse_encode(self.role, serializer);
         <String>::sse_encode(self.device_id, serializer);
         <String>::sse_encode(self.device_name, serializer);
+        <bool>::sse_encode(self.display, serializer);
         <Option<String>>::sse_encode(self.title, serializer);
         <Option<String>>::sse_encode(self.app, serializer);
         <u32>::sse_encode(self.width, serializer);

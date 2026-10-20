@@ -569,7 +569,7 @@ fn structs_for_sharing() -> Vec<RustStruct> {
             size: u32 = "uint32_t",
             width: u32 = "uint32_t",
             height: u32 = "uint32_t",
-            reserved: u32 = "uint32_t",
+            kind: u32 = "uint32_t",
             context: *mut c_void = "void *",
             title: BatonBytes = "BatonBytes",
             app: BatonBytes = "BatonBytes",
@@ -786,6 +786,8 @@ fn rust_numbers() -> Vec<(String, i64)> {
         E_REENTRANT,
         E_PANIC,
         CODEC_H264,
+        PICKED_WINDOW,
+        PICKED_DISPLAY,
         FRAME_KEY,
         FRAME_RECOVERY,
         FRAME_REFERENCED,
@@ -983,9 +985,9 @@ fn the_header_says_what_the_protocol_allows() {
     );
     assert!(
         text.contains(&format!(
-            "a window larger than {MAX_WINDOW_EDGE} reads as {MAX_WINDOW_EDGE}"
+            "one larger than {MAX_WINDOW_EDGE} reads as {MAX_WINDOW_EDGE}"
         )),
-        "the header's longest edge of a window is not the protocol's"
+        "the header's longest edge of a window or a display is not the protocol's"
     );
     assert!(
         text.contains(&format!(
@@ -1184,7 +1186,7 @@ int32_t answer_pick(uint64_t request, void *window, int32_t how) {
         picked.size = (uint32_t)sizeof picked;
         picked.width = 1200;
         picked.height = 800;
-        picked.reserved = 0;
+        picked.kind = BATON_PICKED_WINDOW;
         picked.context = window;
         picked.title.ptr = (const uint8_t *)title;
         picked.title.len = sizeof title - 1;

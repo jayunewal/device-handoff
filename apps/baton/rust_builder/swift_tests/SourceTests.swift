@@ -198,12 +198,44 @@ func testTheAnswerToAPickGivesTheWindowAndWhatIsKnownOfIt() {
   check(chosen.size == UInt32(MemoryLayout<BatonPicked>.size), "size \(chosen.size)")
   check(chosen.width == 1440 && chosen.height == 900, "\(chosen)")
   check(chosen.title == "Report.pdf" && chosen.app == "Preview", "\(chosen)")
+  check(chosen.kind == UInt32(BATON_PICKED_WINDOW), "kind \(chosen.kind)")
   check(chosen.context != nil, "no pointer for the window")
   // The Rust side owns the window now, and gives it back with release.
   var table = BatonSharerVTable()
   _ = registeredSharing(FakeSharerPlatform()).map { table = $0 }
   table.release?(chosen.context)
   check(window.releasedCalls == 1)
+}
+
+func testADisplayIsGivenAsADisplayAndAWindowIsNot() {
+  resetSourceStubs()
+  let screen = FakeSharedWindow()
+  let info = PickedWindowInfo(width: 3024, height: 1964, title: "", app: "", display: true)
+  check(answerPick(request: 2, .chose(screen, info)) == 0)
+  stubLock.lock()
+  let display = pickDones.last?.chosen
+  stubLock.unlock()
+  check(display?.kind == UInt32(BATON_PICKED_DISPLAY), "kind \(String(describing: display?.kind))")
+  check(display?.width == 3024 && display?.height == 1964, "\(String(describing: display))")
+  check(display?.title == "" && display?.app == "", "\(String(describing: display))")
+  check(display?.context != nil)
+
+  // Not saying what it is makes it a window.
+  let window = FakeSharedWindow()
+  let plain = PickedWindowInfo(width: 10, height: 10, title: "Notes", app: "Text")
+  check(!plain.display)
+  check(answerPick(request: 3, .chose(window, plain)) == 0)
+  stubLock.lock()
+  let chosen = pickDones.last?.chosen
+  stubLock.unlock()
+  check(chosen?.kind == UInt32(BATON_PICKED_WINDOW), "kind \(String(describing: chosen?.kind))")
+}
+
+func testAWindowAndADisplayAreCalledWhatTheyAreInASentence() {
+  check(PickedWindowInfo(width: 1, height: 1, title: "", app: "").noun == "window")
+  check(PickedWindowInfo(width: 1, height: 1, title: "", app: "", display: true).noun == "screen")
+  // The numbers that the platform writes are the ones the Rust side reads.
+  check(BATON_PICKED_WINDOW == 0 && BATON_PICKED_DISPLAY == 1)
 }
 
 func testAWindowWithNoTitleAndNoNameIsGivenWithEmptyText() {

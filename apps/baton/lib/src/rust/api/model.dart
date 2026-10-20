@@ -1057,11 +1057,12 @@ sealed class WindowPointer with _$WindowPointer {
   }) = WindowPointer_Scroll;
 }
 
-/// A window that a paired device offers to show on this one, for the person to answer.
+/// A window, or a whole display, that a paired device offers to show on this one, for the person
+/// to answer.
 ///
-/// Show what the window is and which device offers it, and whether that device lets this one
-/// control the window. The title and the name of the application were written by the other
-/// device: they are labels, and nothing else. Answer with `Baton.answerWindow`.
+/// Show what is offered and which device offers it, and whether that device lets this one
+/// control it. The title and the name of the application were written by the other device: they
+/// are labels, and nothing else. Answer with `Baton.answerWindow`.
 class WindowRequest {
   /// Names this request when answering it with `Baton.answerWindow`.
   final PlatformInt64 id;
@@ -1072,7 +1073,10 @@ class WindowRequest {
   /// The name this device shows for it.
   final String deviceName;
 
-  /// The title of the window, or `null` if it has none.
+  /// Whether what is offered is a whole display, with every window on it, and not one window.
+  final bool display;
+
+  /// The title of the window, or the name of the display, or `null` if it has none.
   final String? title;
 
   /// The name of the application the window belongs to, or `null`.
@@ -1091,6 +1095,7 @@ class WindowRequest {
     required this.id,
     required this.deviceId,
     required this.deviceName,
+    required this.display,
     this.title,
     this.app,
     required this.width,
@@ -1103,6 +1108,7 @@ class WindowRequest {
       id.hashCode ^
       deviceId.hashCode ^
       deviceName.hashCode ^
+      display.hashCode ^
       title.hashCode ^
       app.hashCode ^
       width.hashCode ^
@@ -1117,6 +1123,7 @@ class WindowRequest {
           id == other.id &&
           deviceId == other.deviceId &&
           deviceName == other.deviceName &&
+          display == other.display &&
           title == other.title &&
           app == other.app &&
           width == other.width &&
@@ -1133,7 +1140,7 @@ enum WindowRole {
   sharing,
 }
 
-/// A window that is shown on this device or shared from it.
+/// A window, or a whole display, that is shown on this device or shared from it.
 class WindowSession {
   /// Names this session when ending it with `Baton.endWindow`, and in `Event.windowEnded`.
   /// Counts up from 1 while Baton runs and is not reused.
@@ -1148,7 +1155,10 @@ class WindowSession {
   /// The name this device shows for it.
   final String deviceName;
 
-  /// The title of the window, or `null`.
+  /// Whether it is a whole display, with every window on it, and not one window.
+  final bool display;
+
+  /// The title of the window, or the name of the display, or `null`.
   final String? title;
 
   /// The name of the application the window belongs to, or `null`.
@@ -1174,6 +1184,7 @@ class WindowSession {
     required this.role,
     required this.deviceId,
     required this.deviceName,
+    required this.display,
     this.title,
     this.app,
     required this.width,
@@ -1188,6 +1199,7 @@ class WindowSession {
       role.hashCode ^
       deviceId.hashCode ^
       deviceName.hashCode ^
+      display.hashCode ^
       title.hashCode ^
       app.hashCode ^
       width.hashCode ^
@@ -1204,6 +1216,7 @@ class WindowSession {
           role == other.role &&
           deviceId == other.deviceId &&
           deviceName == other.deviceName &&
+          display == other.display &&
           title == other.title &&
           app == other.app &&
           width == other.width &&

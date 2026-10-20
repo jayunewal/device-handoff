@@ -407,7 +407,7 @@ void main() {
       _session(devices: [_device('Phone', Platform.android)]),
     );
 
-    expect(find.byTooltip('Share a window with Phone'), findsNothing);
+    expect(find.byTooltip('Share a window or screen with Phone'), findsNothing);
     expect(find.byTooltip('Send to Phone'), findsOneWidget);
   });
 
@@ -426,7 +426,7 @@ void main() {
       onShareWindow: shared.add,
     );
 
-    await tester.tap(find.byTooltip('Share a window with Phone'));
+    await tester.tap(find.byTooltip('Share a window or screen with Phone'));
     await tester.pumpAndSettle();
 
     expect(shared.map((device) => device.name), ['Phone']);

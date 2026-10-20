@@ -352,6 +352,26 @@ async fn a_source_of_a_kind_that_this_version_does_not_know_is_declined_as_unsup
     assert!(rig.app.asked().is_empty(), "the person was asked");
 }
 
+#[tokio::test]
+async fn a_display_is_a_kind_of_source_that_the_person_is_asked_about_as_one() {
+    let rig = Rig::new(Plan::Refuse).await;
+    let reply = rig
+        .ask(StreamRequest::Offer(Offer {
+            source: SourceKind::Display,
+            title: String::new(),
+            app: String::new(),
+            width: 3024,
+            height: 1964,
+            ..offer(1)
+        }))
+        .await;
+    assert_eq!(reply, declined(1, DeclineReason::Refused));
+    let asked = rig.app.asked();
+    assert_eq!(asked.len(), 1, "the person was not asked");
+    assert!(asked[0].display);
+    assert_eq!((asked[0].width, asked[0].height), (3024, 1964));
+}
+
 // Offers.
 
 #[tokio::test]
@@ -411,8 +431,13 @@ async fn the_person_is_shown_text_that_is_clean_and_not_the_raw_text() {
     assert_eq!(asked[1].title, None);
     assert_eq!(asked[1].app.as_deref(), Some("Preview"));
     assert!(!asked[1].control);
-    // What a window is called does not reach a log.
+    assert!(
+        !asked[0].display && !asked[1].display,
+        "a window is not a display"
+    );
+    // What a window is called does not reach a log, and whether it is a window does.
     let shown = format!("{:?}", asked[0]);
+    assert!(shown.contains("display: false"), "{shown}");
     assert!(!shown.contains("totals"), "{shown}");
 }
 

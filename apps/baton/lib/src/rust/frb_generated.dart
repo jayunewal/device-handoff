@@ -2153,17 +2153,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   WindowRequest dco_decode_window_request(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    if (arr.length != 9)
+      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
     return WindowRequest(
       id: dco_decode_i_64(arr[0]),
       deviceId: dco_decode_String(arr[1]),
       deviceName: dco_decode_String(arr[2]),
-      title: dco_decode_opt_String(arr[3]),
-      app: dco_decode_opt_String(arr[4]),
-      width: dco_decode_u_32(arr[5]),
-      height: dco_decode_u_32(arr[6]),
-      control: dco_decode_bool(arr[7]),
+      display: dco_decode_bool(arr[3]),
+      title: dco_decode_opt_String(arr[4]),
+      app: dco_decode_opt_String(arr[5]),
+      width: dco_decode_u_32(arr[6]),
+      height: dco_decode_u_32(arr[7]),
+      control: dco_decode_bool(arr[8]),
     );
   }
 
@@ -2177,19 +2178,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   WindowSession dco_decode_window_session(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 10)
-      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
+    if (arr.length != 11)
+      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
     return WindowSession(
       id: dco_decode_i_64(arr[0]),
       role: dco_decode_window_role(arr[1]),
       deviceId: dco_decode_String(arr[2]),
       deviceName: dco_decode_String(arr[3]),
-      title: dco_decode_opt_String(arr[4]),
-      app: dco_decode_opt_String(arr[5]),
-      width: dco_decode_u_32(arr[6]),
-      height: dco_decode_u_32(arr[7]),
-      control: dco_decode_bool(arr[8]),
-      screen: dco_decode_opt_box_autoadd_i_64(arr[9]),
+      display: dco_decode_bool(arr[4]),
+      title: dco_decode_opt_String(arr[5]),
+      app: dco_decode_opt_String(arr[6]),
+      width: dco_decode_u_32(arr[7]),
+      height: dco_decode_u_32(arr[8]),
+      control: dco_decode_bool(arr[9]),
+      screen: dco_decode_opt_box_autoadd_i_64(arr[10]),
     );
   }
 
@@ -3088,6 +3090,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_id = sse_decode_i_64(deserializer);
     var var_deviceId = sse_decode_String(deserializer);
     var var_deviceName = sse_decode_String(deserializer);
+    var var_display = sse_decode_bool(deserializer);
     var var_title = sse_decode_opt_String(deserializer);
     var var_app = sse_decode_opt_String(deserializer);
     var var_width = sse_decode_u_32(deserializer);
@@ -3097,6 +3100,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       id: var_id,
       deviceId: var_deviceId,
       deviceName: var_deviceName,
+      display: var_display,
       title: var_title,
       app: var_app,
       width: var_width,
@@ -3119,6 +3123,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_role = sse_decode_window_role(deserializer);
     var var_deviceId = sse_decode_String(deserializer);
     var var_deviceName = sse_decode_String(deserializer);
+    var var_display = sse_decode_bool(deserializer);
     var var_title = sse_decode_opt_String(deserializer);
     var var_app = sse_decode_opt_String(deserializer);
     var var_width = sse_decode_u_32(deserializer);
@@ -3130,6 +3135,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       role: var_role,
       deviceId: var_deviceId,
       deviceName: var_deviceName,
+      display: var_display,
       title: var_title,
       app: var_app,
       width: var_width,
@@ -3958,6 +3964,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_64(self.id, serializer);
     sse_encode_String(self.deviceId, serializer);
     sse_encode_String(self.deviceName, serializer);
+    sse_encode_bool(self.display, serializer);
     sse_encode_opt_String(self.title, serializer);
     sse_encode_opt_String(self.app, serializer);
     sse_encode_u_32(self.width, serializer);
@@ -3978,6 +3985,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_window_role(self.role, serializer);
     sse_encode_String(self.deviceId, serializer);
     sse_encode_String(self.deviceName, serializer);
+    sse_encode_bool(self.display, serializer);
     sse_encode_opt_String(self.title, serializer);
     sse_encode_opt_String(self.app, serializer);
     sse_encode_u_32(self.width, serializer);

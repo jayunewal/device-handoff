@@ -45,7 +45,7 @@ use crate::{
 /// for each window it shows, so this is far more than a connection sees.
 const SEEN_PER_CONNECTION: usize = 256;
 
-/// A window that another device offers, as a person is told about it.
+/// A window, or a whole display, that another device offers, as a person is told about it.
 ///
 /// The title and the name of the application are text that the other device wrote. They are
 /// cleaned here as a device name is (`sanitize_text`), so they are safe to show, but they are
@@ -54,7 +54,10 @@ const SEEN_PER_CONNECTION: usize = 256;
 #[derive(Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct WindowOffer {
-    /// The title of the window, or `None` if it had none or nothing visible was left of it.
+    /// Whether what is offered is a whole display, with every window on it, and not one window.
+    pub display: bool,
+    /// The title of the window, or the name of the display, or `None` if it had none or nothing
+    /// visible was left of it.
     pub title: Option<String>,
     /// The name of the application the window belongs to, or `None` as for the title.
     pub app: Option<String>,
@@ -70,6 +73,7 @@ pub struct WindowOffer {
 impl WindowOffer {
     fn new(offer: &Offer) -> Self {
         Self {
+            display: offer.source == SourceKind::Display,
             title: sanitize_text(&offer.title, MAX_DISPLAY_TITLE_CHARS),
             app: sanitize_text(&offer.app, MAX_DISPLAY_NAME_CHARS),
             width: offer.width,
@@ -83,6 +87,7 @@ impl WindowOffer {
 impl fmt::Debug for WindowOffer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WindowOffer")
+            .field("display", &self.display)
             .field("width", &self.width)
             .field("height", &self.height)
             .field("control", &self.control)
@@ -391,7 +396,7 @@ impl Streaming {
         let Some(viewer) = &self.viewer else {
             return declined(DeclineReason::Unsupported);
         };
-        if offer.source != SourceKind::Window {
+        if !matches!(offer.source, SourceKind::Window | SourceKind::Display) {
             return declined(DeclineReason::Unsupported);
         }
         let withdrawn = CancellationToken::new();

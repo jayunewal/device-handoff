@@ -252,6 +252,7 @@ impl From<app::WindowRequest> for WindowRequest {
             id,
             device_id,
             device_name,
+            display,
             title,
             app,
             width,
@@ -262,6 +263,7 @@ impl From<app::WindowRequest> for WindowRequest {
             id: signed(id),
             device_id,
             device_name,
+            display,
             title,
             app,
             width,
@@ -324,6 +326,7 @@ impl From<app::WindowSession> for WindowSession {
             role,
             device_id,
             device_name,
+            display,
             title,
             app,
             width,
@@ -336,6 +339,7 @@ impl From<app::WindowSession> for WindowSession {
             role: role.into(),
             device_id,
             device_name,
+            display,
             title,
             app,
             width,
@@ -617,6 +621,7 @@ mod tests {
             role: app::WindowRole::Viewing,
             device_id: "ab".repeat(32),
             device_name: "Studio Mac".to_owned(),
+            display: false,
             title: Some("Salary 2027.xlsx".to_owned()),
             app: Some("Numbers".to_owned()),
             width: 1440,
@@ -633,6 +638,7 @@ mod tests {
         assert_eq!(converted.role, WindowRole::Viewing);
         assert_eq!(converted.device_id, "ab".repeat(32));
         assert_eq!(converted.device_name, "Studio Mac");
+        assert!(!converted.display);
         assert_eq!(converted.title.as_deref(), Some("Salary 2027.xlsx"));
         assert_eq!(converted.app.as_deref(), Some("Numbers"));
         assert_eq!((converted.width, converted.height), (1440, 900));
@@ -644,6 +650,11 @@ mod tests {
             ..session()
         });
         assert_eq!((sharing.role, sharing.screen), (WindowRole::Sharing, None));
+        let display = WindowSession::from(app::WindowSession {
+            display: true,
+            ..session()
+        });
+        assert!(display.display);
     }
 
     #[test]
@@ -652,6 +663,7 @@ mod tests {
             id: 9,
             device_id: "cd".repeat(32),
             device_name: "Kitchen iPad".to_owned(),
+            display: false,
             title: None,
             app: Some("Preview".to_owned()),
             width: 800,
@@ -661,10 +673,23 @@ mod tests {
         assert_eq!(converted.id, 9);
         assert_eq!(converted.device_id, "cd".repeat(32));
         assert_eq!(converted.device_name, "Kitchen iPad");
+        assert!(!converted.display);
         assert_eq!(converted.title, None);
         assert_eq!(converted.app.as_deref(), Some("Preview"));
         assert_eq!((converted.width, converted.height), (800, 600));
         assert!(!converted.control);
+        let display = WindowRequest::from(app::WindowRequest {
+            id: 10,
+            device_id: "cd".repeat(32),
+            device_name: "Kitchen iPad".to_owned(),
+            display: true,
+            title: None,
+            app: None,
+            width: 3024,
+            height: 1964,
+            control: false,
+        });
+        assert!(display.display);
     }
 
     #[test]
@@ -769,6 +794,7 @@ mod tests {
                 id: 1,
                 device_id: "ab".repeat(32),
                 device_name: "Studio Mac".to_owned(),
+                display: false,
                 title: Some("Salary 2027.xlsx".to_owned()),
                 app: Some("Numbers".to_owned()),
                 width: 1,

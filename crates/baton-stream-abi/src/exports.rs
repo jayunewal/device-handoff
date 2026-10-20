@@ -28,7 +28,8 @@ use crate::{
     Error,
     abi::{
         ABI_VERSION, BatonBytes, BatonFormat, BatonPicked, BatonPicture, BatonSharerVTable,
-        BatonViewerVTable, FRAME_REFERENCED, MESSAGE_MAX, SET_BYTES_MAX, SETS_MAX,
+        BatonViewerVTable, FRAME_REFERENCED, MESSAGE_MAX, PICKED_DISPLAY, PICKED_WINDOW,
+        SET_BYTES_MAX, SETS_MAX,
     },
     platform::{Chosen, inside_call},
     registry::{Registry, global},
@@ -446,6 +447,13 @@ unsafe fn read_answer(
     if picked.width == 0 || picked.height == 0 {
         return Err(Error::Argument);
     }
+    // A platform that is older than the field wrote zero, which is a window. A value that is
+    // neither is a kind of thing that this version cannot offer, and so it is refused.
+    let display = match picked.kind {
+        PICKED_WINDOW => false,
+        PICKED_DISPLAY => true,
+        _ => return Err(Error::Argument),
+    };
     // SAFETY: the caller's promise about the bytes of the title and the name is this function's
     // own, since they are described by the struct that it vouches for.
     let (title, app) = unsafe {
@@ -456,6 +464,7 @@ unsafe fn read_answer(
     };
     Ok(PickAnswer::Chosen(Given {
         context,
+        display,
         title: text(title, MAX_STREAM_TITLE_BYTES),
         app: text(app, MAX_NAME_BYTES),
         width: picked.width.min(MAX_WINDOW_EDGE),

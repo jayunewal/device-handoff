@@ -29,6 +29,11 @@ pub const E_PANIC: i32 = -6;
 /// The codec bit of H.264 in Annex B form on the wire.
 pub const CODEC_H264: u32 = 1;
 
+/// What the person picked is one window.
+pub const PICKED_WINDOW: u32 = 0;
+/// What the person picked is a whole display, with every window on it.
+pub const PICKED_DISPLAY: u32 = 1;
+
 /// A key frame.
 pub const FRAME_KEY: u32 = 1;
 /// A recovery frame.
@@ -320,23 +325,24 @@ pub struct BatonFormat {
     pub reserved: u32,
 }
 
-/// The window that the person picked.
+/// The window, or the display, that the person picked.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct BatonPicked {
     /// The bytes of this struct.
     pub size: u32,
-    /// The width of the window in pixels.
+    /// The width of the window or the display in pixels.
     pub width: u32,
-    /// The height of the window in pixels.
+    /// The height of the window or the display in pixels.
     pub height: u32,
-    /// Zero.
-    pub reserved: u32,
-    /// The platform's own pointer for the window.
+    /// `PICKED_WINDOW` or `PICKED_DISPLAY`. A platform written before this field had a name
+    /// wrote zero here, which is a window.
+    pub kind: u32,
+    /// The platform's own pointer for the window or the display.
     pub context: *mut c_void,
-    /// The title. What it is called is not for a log.
+    /// The title, or the name of the display. What it is called is not for a log.
     pub title: BatonBytes,
-    /// The name of the application.
+    /// The name of the application, empty for a display.
     pub app: BatonBytes,
 }
 

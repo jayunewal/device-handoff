@@ -72,6 +72,9 @@ impl StreamReply {
 pub enum SourceKind {
     /// One window of one application.
     Window,
+    /// One whole display, with every window on it. It has no application, so `app` is empty, and
+    /// its `title` is its name, if the source knows one.
+    Display,
     /// Any kind this version does not know about. A receiver declines it as unsupported.
     #[serde(other)]
     Other,
@@ -102,7 +105,7 @@ pub enum StopReason {
     Other,
 }
 
-/// The source offers to show a window.
+/// The source offers to show a window, or a whole display.
 ///
 /// This is all the person at the viewer is shown before they decide, so it says what is shared
 /// and whether the viewer may control it.
@@ -112,13 +115,14 @@ pub struct Offer {
     pub session: SessionId,
     /// What is shared.
     pub source: SourceKind,
-    /// The title of the window. Text that another device wrote.
+    /// The title of the window, or the name of the display. Text that another device wrote.
     pub title: String,
-    /// The name of the application the window belongs to. Text that another device wrote.
+    /// The name of the application the window belongs to, empty for a display. Text that another
+    /// device wrote.
     pub app: String,
-    /// The width of the window in pixels.
+    /// The width of the window or the display in pixels.
     pub width: u32,
-    /// The height of the window in pixels.
+    /// The height of the window or the display in pixels.
     pub height: u32,
     /// Whether the person at the source granted the viewer control of the window. The viewer
     /// cannot ask for it and cannot turn it on later. Left out when it is not granted.

@@ -412,7 +412,10 @@ void main() {
   ) async {
     await _show(tester);
 
-    expect(find.byTooltip('Share a window with Kitchen iPad'), findsNothing);
+    expect(
+      find.byTooltip('Share a window or screen with Kitchen iPad'),
+      findsNothing,
+    );
   });
 
   testWidgets('a device that can share a window does so from the row', (
@@ -421,7 +424,9 @@ void main() {
     final session = _session()..abilities = _windowAbilities;
     await _show(tester, session);
 
-    await tester.tap(find.byTooltip('Share a window with Kitchen iPad'));
+    await tester.tap(
+      find.byTooltip('Share a window or screen with Kitchen iPad'),
+    );
     await tester.pumpAndSettle();
 
     expect(session.windowsShared, [(id: _kitchenIpad.id, control: false)]);
@@ -529,6 +534,35 @@ void main() {
     expect(find.text('Budget.numbers · Numbers'), findsOneWidget);
   });
 
+  testWidgets('an offer of a whole screen is pointed out as one', (
+    tester,
+  ) async {
+    final session = await _show(tester);
+    await tester.tap(find.text('Kitchen iPad'));
+    await tester.pumpAndSettle();
+
+    session.emit(
+      Event.windowRequested(
+        request: const WindowRequest(
+          id: 8,
+          deviceId: 'd3',
+          deviceName: 'Anna’s Mac',
+          display: true,
+          width: 3024,
+          height: 1964,
+          control: false,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('Anna’s Mac wants to show you its screen.'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('a window'), findsNothing);
+  });
+
   testWidgets(
     'the notice of an offer has the name of the device made fit to show',
     (tester) async {
@@ -542,6 +576,7 @@ void main() {
             id: 5,
             deviceId: 'd2',
             deviceName: 'Mac\u202Eexe',
+            display: false,
             width: 800,
             height: 600,
             control: false,

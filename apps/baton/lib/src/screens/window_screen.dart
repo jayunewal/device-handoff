@@ -85,7 +85,10 @@ class _WindowScreenState extends State<WindowScreen> {
     final stop = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Stop showing this window?'),
+        title: Text(
+          'Stop showing this '
+          '${windowNoun(display: widget.session.display)}?',
+        ),
         content: Text(
           '${visibleText(widget.session.deviceName)} has to share it again '
           'to show it here.',
@@ -137,7 +140,11 @@ class _WindowScreenState extends State<WindowScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    windowName(session.title, session.app),
+                    windowName(
+                      session.title,
+                      session.app,
+                      display: session.display,
+                    ),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -157,6 +164,7 @@ class _WindowScreenState extends State<WindowScreen> {
                       size: widget.controller.pictureOf(session),
                     )
                   : _Over(
+                      session: session,
                       over: widget.controller.over(session),
                       onClose: () =>
                           unawaited(Navigator.of(context).maybePop()),
@@ -189,8 +197,9 @@ class _Picture extends StatelessWidget {
     final width = size?.width ?? session.width;
     final height = size?.height ?? session.height;
     if (screen == null || width <= 0 || height <= 0) {
-      return const _Message(
-        title: 'This window cannot be shown here',
+      return _Message(
+        title:
+            'This ${windowNoun(display: session.display)} cannot be shown here',
         detail: 'Baton did not get a screen to draw it on.',
       );
     }
@@ -202,9 +211,10 @@ class _Picture extends StatelessWidget {
           child: AspectRatio(
             aspectRatio: width / height,
             child: Semantics(
-              label:
-                  'The window ${windowName(session.title, session.app)} from '
-                  '${visibleText(session.deviceName)}',
+              label: session.display
+                  ? 'The screen from ${visibleText(session.deviceName)}'
+                  : 'The window ${windowName(session.title, session.app)} from '
+                        '${visibleText(session.deviceName)}',
               image: true,
               child: Texture(
                 textureId: screen.toInt(),
@@ -220,8 +230,13 @@ class _Picture extends StatelessWidget {
 
 /// A window that ended while the screen was open.
 class _Over extends StatelessWidget {
-  const _Over({required this.over, required this.onClose});
+  const _Over({
+    required this.session,
+    required this.over,
+    required this.onClose,
+  });
 
+  final WindowSession session;
   final WindowOver? over;
   final VoidCallback onClose;
 
@@ -229,7 +244,9 @@ class _Over extends StatelessWidget {
   Widget build(BuildContext context) {
     final text = over == null ? null : describeWindowNote(over!);
     return _Message(
-      title: text?.title ?? 'The window is closed',
+      title:
+          text?.title ??
+          'The ${windowNoun(display: session.display)} is closed',
       detail: text?.detail,
       onClose: onClose,
     );

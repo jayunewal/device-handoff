@@ -356,6 +356,52 @@ fn a_device_that_takes_part_in_window_streaming_says_so_in_its_capabilities() {
 }
 
 #[test]
+fn a_display_is_a_kind_of_source_that_this_version_knows() {
+    // The kind is the name of the variant, as text, and it is not the kind that is read for a
+    // name this version does not know.
+    let offer = |source: &str| {
+        encode(
+            &cbor!({
+                "Stream" => {
+                    "Offer" => {
+                        "session" => session_id(),
+                        "source" => source,
+                        "title" => "",
+                        "app" => "",
+                        "width" => 3024,
+                        "height" => 1964,
+                    },
+                },
+            })
+            .unwrap(),
+        )
+    };
+    let Request::Stream(StreamRequest::Offer(display)) =
+        frame::decode_payload::<Request>(&offer("Display")).unwrap()
+    else {
+        panic!("not an offer");
+    };
+    assert_eq!(display.source, SourceKind::Display);
+    assert_eq!((display.title.as_str(), display.app.as_str()), ("", ""));
+    assert_eq!((display.width, display.height), (3024, 1964));
+    let Request::Stream(StreamRequest::Offer(window)) =
+        frame::decode_payload::<Request>(&offer("Window")).unwrap()
+    else {
+        panic!("not an offer");
+    };
+    assert_eq!(window.source, SourceKind::Window);
+
+    // And it is written the same way.
+    let written = frame::encode(&Request::Stream(StreamRequest::Offer(display))).unwrap();
+    assert!(
+        written
+            .windows(b"Display".len())
+            .any(|bytes| bytes == b"Display"),
+        "the kind is written as its name"
+    );
+}
+
+#[test]
 fn unknown_keys_are_ignored_in_the_messages_of_a_stream() {
     // The offer, with a key from a later version, and without `control`, which means false.
     let offer = encode(

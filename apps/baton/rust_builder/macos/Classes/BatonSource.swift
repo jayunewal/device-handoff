@@ -35,15 +35,21 @@ struct PictureFormat: Equatable {
   var fps: UInt32
 }
 
-/// The window that the person picked.
+/// The window, or the whole display, that the person picked.
 struct PickedWindowInfo: Equatable {
-  /// The size of the window in pixels.
+  /// The size of the window or the display in pixels.
   var width: UInt32
   var height: UInt32
   /// A title names a document, a person or a page: it is shown to the person at the other device
-  /// and goes nowhere else.
+  /// and goes nowhere else. A display has no application, and its title is its name, if there is
+  /// one.
   var title: String
   var app: String
+  /// Whether it is a whole display, with every window on it, and not one window.
+  var display = false
+
+  /// What it is called in a sentence for the person.
+  var noun: String { display ? "screen" : "window" }
 }
 
 /// Why a window could not be picked, prepared or started, as a sentence that the person is shown.
@@ -94,7 +100,8 @@ protocol SharedWindow: AnyObject {
 
 /// What the person did at the picker.
 enum PickAnswer {
-  /// The person chose this window. The Rust side owns it from then on if it takes the answer.
+  /// The person chose this window or display. The Rust side owns it from then on if it takes the
+  /// answer.
   case chose(SharedWindow, PickedWindowInfo)
   /// The picker failed, with a sentence for the person.
   case failed(String)
@@ -140,7 +147,7 @@ func answerPick(request: UInt64, _ answer: PickAnswer) -> Int32 {
       app.withUTF8 { appBytes in
         var picked = BatonPicked(
           size: UInt32(MemoryLayout<BatonPicked>.size), width: info.width, height: info.height,
-          reserved: 0, context: box.toOpaque(),
+          kind: info.display ? BATON_PICKED_DISPLAY : BATON_PICKED_WINDOW, context: box.toOpaque(),
           title: BatonBytes(ptr: titleBytes.baseAddress, len: titleBytes.count),
           app: BatonBytes(ptr: appBytes.baseAddress, len: appBytes.count))
         return baton_stream_pick_done(request, &picked, nil)

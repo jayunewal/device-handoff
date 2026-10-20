@@ -152,7 +152,11 @@ fn stream_request() -> impl Strategy<Value = StreamRequest> {
     prop_oneof![
         (
             session_id(),
-            prop_oneof![Just(SourceKind::Window), Just(SourceKind::Other)],
+            prop_oneof![
+                Just(SourceKind::Window),
+                Just(SourceKind::Display),
+                Just(SourceKind::Other)
+            ],
             // A title may be 512 bytes and an application name 256, and a character is up to four.
             text(120),
             text(60),

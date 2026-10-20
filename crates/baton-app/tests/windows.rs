@@ -187,6 +187,7 @@ impl Decoder for Screening {
 /// A window that the next pick gives.
 #[derive(Clone)]
 struct Chosen {
+    display: bool,
     title: &'static str,
     app: &'static str,
     size: (u32, u32),
@@ -249,6 +250,7 @@ impl Sharer {
 
 fn untitled_window() -> Chosen {
     Chosen {
+        display: false,
         title: "  ",
         app: "",
         size: (800, 600),
@@ -257,9 +259,20 @@ fn untitled_window() -> Chosen {
 
 fn report_window() -> Chosen {
     Chosen {
+        display: false,
         title: "Report.pdf",
         app: "Preview",
         size: (1440, 900),
+    }
+}
+
+/// A whole display, which has no title and no application.
+fn whole_display() -> Chosen {
+    Chosen {
+        display: true,
+        title: "",
+        app: "",
+        size: (3024, 1964),
     }
 }
 
@@ -315,6 +328,10 @@ impl Drop for Picked {
 }
 
 impl PickedWindow for Picked {
+    fn display(&self) -> bool {
+        self.chosen.as_ref().is_some_and(|chosen| chosen.display)
+    }
+
     fn title(&self) -> String {
         self.chosen.as_ref().map(|c| c.title.to_owned()).unwrap()
     }
@@ -585,6 +602,7 @@ async fn a_window_goes_from_one_device_to_the_other_and_the_viewer_ends_it() {
     assert_eq!(request.app.as_deref(), Some("Preview"));
     assert_eq!((request.width, request.height), (1440, 900));
     assert!(!request.control);
+    assert!(!request.display, "a window was offered as a display");
     assert!(pair.viewing.app.answer_window(request.id, true));
 
     // The window is shown, with the screen that the platform made for it.
@@ -598,6 +616,7 @@ async fn a_window_goes_from_one_device_to_the_other_and_the_viewer_ends_it() {
     assert_eq!(shown.title.as_deref(), Some("Report.pdf"));
     assert_eq!(shown.screen, Some(100));
     assert!(!shown.control);
+    assert!(!shown.display);
     assert_eq!(
         pair.viewer.opened.lock().unwrap().as_slice(),
         [Opened::report(false)]
@@ -611,6 +630,7 @@ async fn a_window_goes_from_one_device_to_the_other_and_the_viewer_ends_it() {
     assert_eq!(shared.device_id, pair.viewing.id());
     assert_eq!(shared.device_name, "Kitchen iPad");
     assert_eq!(shared.screen, None);
+    assert!(!shared.display);
     let event = next_matching(&mut sharing_events, |event| match event {
         Event::WindowStarted(session) => Some(session),
         _ => None,
@@ -660,9 +680,90 @@ async fn a_window_goes_from_one_device_to_the_other_and_the_viewer_ends_it() {
     assert!(!pair.sharing.app.end_window(shared.id));
 }
 
+#[tokio::test]
+async fn a_whole_display_is_offered_shown_and_shared_as_a_display() {
+    let pair = Pair::new(false).await;
+    *pair.sharer.next.lock().unwrap() = Some(whole_display());
+    let mut viewing_events = pair.viewing.app.events();
+
+    let app = pair.sharing.app.clone();
+    let to = pair.viewing.id();
+    let offer = tokio::spawn(async move { app.share_window(&to, false).await });
+
+    // The person at the viewer is told that it is a display, which has no title.
+    let request = pair.requested(&mut viewing_events).await;
+    assert!(request.display);
+    assert_eq!((request.title, request.app), (None, None));
+    assert_eq!((request.width, request.height), (3024, 1964));
+    assert!(!request.control);
+    assert!(pair.viewing.app.answer_window(request.id, true));
+
+    // It is a display where it is shown, and where it is shared.
+    let shown = next_matching(&mut viewing_events, |event| match event {
+        Event::WindowStarted(session) => Some(session),
+        _ => None,
+    })
+    .await;
+    assert_eq!(shown.role, WindowRole::Viewing);
+    assert!(shown.display);
+    let WindowShared::Started(shared) = offer.await.unwrap().unwrap() else {
+        panic!("the display was not shared");
+    };
+    assert_eq!(shared.role, WindowRole::Sharing);
+    assert!(shared.display);
+    assert_eq!((shared.width, shared.height), (3024, 1964));
+}
+
+#[tokio::test]
+async fn a_whole_display_is_never_offered_with_control() {
+    // The platform can grant control, and the person asked for it.
+    let pair = Pair::new(true).await;
+    *pair.sharer.next.lock().unwrap() = Some(whole_display());
+    let mut viewing_events = pair.viewing.app.events();
+
+    let app = pair.sharing.app.clone();
+    let to = pair.viewing.id();
+    let offer = tokio::spawn(async move { app.share_window(&to, true).await });
+
+    let request = pair.requested(&mut viewing_events).await;
+    assert!(request.display);
+    assert!(!request.control, "a display was offered with control");
+    assert!(pair.viewing.app.answer_window(request.id, true));
+    let WindowShared::Started(shared) = offer.await.unwrap().unwrap() else {
+        panic!("the display was not shared");
+    };
+    assert!(!shared.control);
+}
+
+#[tokio::test]
+async fn a_no_to_a_whole_display_is_told_as_a_no_to_a_screen() {
+    let pair = Pair::new(false).await;
+    *pair.sharer.next.lock().unwrap() = Some(whole_display());
+    let WindowShared::Declined(why) = pair.offered_and_answered(false, false).await else {
+        panic!("the display should have been declined");
+    };
+    assert!(why.contains("Kitchen iPad"), "{why}");
+    assert!(why.contains("the screen"), "{why}");
+    assert!(!why.contains("window"), "{why}");
+}
+
+#[tokio::test]
+async fn a_viewer_that_takes_no_picture_of_a_display_is_told_the_screen_is_off() {
+    let pair = Pair::new(false).await;
+    *pair.sharer.next.lock().unwrap() = Some(whole_display());
+    pair.sharer.makes_pictures.store(false, Ordering::Relaxed);
+    let WindowShared::Declined(why) = pair.offered_and_answered(true, false).await else {
+        panic!("the display should not have started");
+    };
+    assert!(why.contains("picture"), "{why}");
+    assert!(why.contains("the screen"), "{why}");
+    assert!(!why.contains("window"), "{why}");
+}
+
 /// A window larger than the viewer takes, so that the picture of it is not the size of the window.
 fn large_window() -> Chosen {
     Chosen {
+        display: false,
         title: "Plan.dwg",
         app: "Drafting",
         size: (3000, 2000),
@@ -1476,6 +1577,41 @@ async fn a_no_is_an_answer_and_not_an_error() {
 }
 
 #[tokio::test]
+async fn a_window_and_a_display_that_are_beyond_what_can_be_offered_are_each_called_what_they_are()
+{
+    for (chosen, called, not_called) in [
+        (
+            Chosen {
+                size: (100_000, 900),
+                ..large_window()
+            },
+            "That window cannot be shared",
+            "screen",
+        ),
+        (
+            Chosen {
+                size: (100_000, 1964),
+                ..whole_display()
+            },
+            "That screen cannot be shared",
+            "window",
+        ),
+    ] {
+        let pair = Pair::new(false).await;
+        *pair.sharer.next.lock().unwrap() = Some(chosen);
+        let error = pair
+            .sharing
+            .app
+            .share_window(&pair.viewing.id(), false)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::BadItem);
+        assert!(error.message().contains(called), "{error}");
+        assert!(!error.message().contains(not_called), "{error}");
+    }
+}
+
+#[tokio::test]
 async fn a_picker_that_fails_is_an_error_and_not_a_person_who_gave_up() {
     let pair = Pair::new(false).await;
     let mut viewing_events = pair.viewing.app.events();
@@ -1857,6 +1993,7 @@ async fn a_viewer_that_takes_nothing_the_platform_can_make_is_told_the_window_is
     };
     assert!(why.contains("Kitchen iPad"), "{why}");
     assert!(why.contains("picture"), "{why}");
+    assert!(why.contains("the window"), "{why}");
     until("the platform to let go of the window", || {
         pair.sharer.dropped.load(Ordering::Relaxed) == 1
     })

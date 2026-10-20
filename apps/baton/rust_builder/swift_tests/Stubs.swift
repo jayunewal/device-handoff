@@ -56,6 +56,7 @@ struct PickDone {
     var size: UInt32
     var width: UInt32
     var height: UInt32
+    var kind: UInt32
     var context: UnsafeMutableRawPointer?
     var title: String
     var app: String
@@ -93,7 +94,7 @@ func stubPickDone(
       chosen: picked.map {
         PickDone.Chosen(
           size: $0.pointee.size, width: $0.pointee.width, height: $0.pointee.height,
-          context: $0.pointee.context, title: text($0.pointee.title), app: text($0.pointee.app))
+          kind: $0.pointee.kind, context: $0.pointee.context, title: text($0.pointee.title), app: text($0.pointee.app))
       },
       failure: failure.map { text($0.pointee) }))
   return pickDoneCode

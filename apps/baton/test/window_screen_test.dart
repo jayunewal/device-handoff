@@ -157,6 +157,22 @@ void main() {
       handle.dispose();
     });
 
+    testWidgets('is described to a screen reader as a screen when it is one', (
+      tester,
+    ) async {
+      final handle = tester.ensureSemantics();
+      await _open(
+        tester,
+        window: sampleWindowSession(display: true, title: null, app: null),
+      );
+
+      expect(
+        find.bySemanticsLabel('The screen from Anna’s Mac'),
+        findsOneWidget,
+      );
+      handle.dispose();
+    });
+
     testWidgets('is not drawn for a window that has no screen', (tester) async {
       await _open(
         tester,
@@ -165,6 +181,7 @@ void main() {
           role: WindowRole.viewing,
           deviceId: 'b0',
           deviceName: 'Anna’s Mac',
+          display: false,
           title: 'Plan',
           width: 800,
           height: 600,
@@ -536,6 +553,66 @@ void main() {
         expect(_onHome(tester), isTrue);
       },
     );
+  });
+
+  group('a whole screen', () {
+    WindowSession screen({int? screen}) => sampleWindowSession(
+      display: true,
+      title: null,
+      app: null,
+      screen: screen,
+    );
+
+    testWidgets('is named a screen in the bar, and from where', (tester) async {
+      await _open(tester, window: screen());
+
+      expect(find.text('a screen'), findsOneWidget);
+      expect(find.text('from Anna’s Mac'), findsOneWidget);
+      expect(find.byType(Texture), findsOneWidget);
+    });
+
+    testWidgets('is asked about as a screen before it is stopped', (
+      tester,
+    ) async {
+      await _open(tester, window: screen());
+
+      await tester.tap(find.byTooltip('Stop showing'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Stop showing this screen?'), findsOneWidget);
+      expect(find.text('Stop showing this window?'), findsNothing);
+    });
+
+    testWidgets('that has no screen to be drawn on says so as a screen', (
+      tester,
+    ) async {
+      await _open(
+        tester,
+        window: const WindowSession(
+          id: 1,
+          role: WindowRole.viewing,
+          deviceId: 'b0',
+          deviceName: 'Anna’s Mac',
+          display: true,
+          width: 800,
+          height: 600,
+          control: false,
+        ),
+      );
+
+      expect(find.text('This screen cannot be shown here'), findsOneWidget);
+      expect(find.text('This window cannot be shown here'), findsNothing);
+    });
+
+    testWidgets('that is over is closed as a screen', (tester) async {
+      final shown = await _open(tester, window: screen());
+
+      shown.controller.end(shown.window);
+      await tester.pumpAndSettle();
+
+      expect(find.text('The screen is closed'), findsOneWidget);
+      expect(find.text('The window is closed'), findsNothing);
+    });
   });
 
   group('a window that ended', () {

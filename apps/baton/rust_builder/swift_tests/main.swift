@@ -227,6 +227,14 @@ var tests: [(String, () -> Void)] = [
     testTheAnswerToAPickGivesTheWindowAndWhatIsKnownOfIt
   ),
   (
+    "a display is given as a display and a window is not",
+    testADisplayIsGivenAsADisplayAndAWindowIsNot
+  ),
+  (
+    "a window and a display are called what they are in a sentence",
+    testAWindowAndADisplayAreCalledWhatTheyAreInASentence
+  ),
+  (
     "a window with no title and no name is given with empty text",
     testAWindowWithNoTitleAndNoNameIsGivenWithEmptyText
   ),

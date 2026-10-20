@@ -20,6 +20,8 @@ use baton_core::{
 };
 use baton_proto::{close_code, device::sanitize_text, message::DeclineReason};
 
+use crate::windows::noun;
+
 /// The longest message kept, in characters.
 const MAX_MESSAGE_CHARS: usize = 300;
 
@@ -213,20 +215,24 @@ impl Error {
         }
     }
 
-    /// A failure while offering a window to the paired device called `device`.
-    pub(crate) fn sharing(error: &Core, device: &str) -> Self {
+    /// A failure while offering a window, or a whole screen when `display` is set, to the paired
+    /// device called `device`.
+    pub(crate) fn sharing(error: &Core, device: &str, display: bool) -> Self {
+        let what = noun(display);
         match error {
             Core::Busy => Self::new(
                 ErrorKind::Other,
-                "A window is being shared or shown already. End it first.",
+                "A window or a screen is being shared or shown already. End it first.",
             ),
             Core::Unsupported(_) => Self::new(
                 ErrorKind::Declined,
-                format!("{device} cannot show windows. It may need a newer version of Baton."),
+                format!("{device} cannot show {what}s. It may need a newer version of Baton."),
             ),
             Core::BadItem(_) => Self::new(
                 ErrorKind::BadItem,
-                "That window cannot be shared: its title or size is beyond what Baton allows.",
+                format!(
+                    "That {what} cannot be shared: its title or size is beyond what Baton allows."
+                ),
             ),
             other => Self::reaching(other, device),
         }
@@ -476,19 +482,52 @@ mod tests {
 
     #[test]
     fn a_window_that_cannot_be_offered_is_told_in_words_of_its_own() {
-        let busy = Error::sharing(&Core::Busy, "Kitchen iPad");
+        let busy = Error::sharing(&Core::Busy, "Kitchen iPad", false);
         assert_eq!(busy.kind(), ErrorKind::Other);
         assert!(busy.message().contains("End it first"), "{busy}");
+        // Whatever is being shared or shown is in the way of both.
+        assert_eq!(
+            busy.message(),
+            Error::sharing(&Core::Busy, "Kitchen iPad", true).message()
+        );
 
-        let old = Error::sharing(&Core::Unsupported("window".to_owned()), "Kitchen iPad");
+        let old = Error::sharing(
+            &Core::Unsupported("window".to_owned()),
+            "Kitchen iPad",
+            false,
+        );
         assert_eq!(old.kind(), ErrorKind::Declined);
         assert!(old.message().contains("Kitchen iPad"), "{old}");
         assert!(old.message().contains("cannot show windows"), "{old}");
         assert!(old.message().contains("newer version"), "{old}");
 
-        let bad = Error::sharing(&Core::BadItem("title".to_owned()), "Kitchen iPad");
+        let bad = Error::sharing(&Core::BadItem("title".to_owned()), "Kitchen iPad", false);
         assert_eq!(bad.kind(), ErrorKind::BadItem);
+        assert!(
+            bad.message().contains("That window cannot be shared"),
+            "{bad}"
+        );
         assert!(bad.message().contains("title or size"), "{bad}");
+    }
+
+    #[test]
+    fn a_screen_that_cannot_be_offered_is_called_a_screen() {
+        let old = Error::sharing(
+            &Core::Unsupported("window".to_owned()),
+            "Kitchen iPad",
+            true,
+        );
+        assert_eq!(old.kind(), ErrorKind::Declined);
+        assert!(old.message().contains("cannot show screens"), "{old}");
+        assert!(!old.message().contains("window"), "{old}");
+
+        let bad = Error::sharing(&Core::BadItem("title".to_owned()), "Kitchen iPad", true);
+        assert_eq!(bad.kind(), ErrorKind::BadItem);
+        assert!(
+            bad.message().contains("That screen cannot be shared"),
+            "{bad}"
+        );
+        assert!(!bad.message().contains("window"), "{bad}");
     }
 
     #[test]
