@@ -41,7 +41,7 @@ iroh-mdns-address-lookup = "0.6"
 # Newer than 0.2.189 takes `in6_ifreq` away from iOS, and `netdev` (which iroh uses) needs it
 # there, so nothing builds for iPhone or iPad. Lift the bound once `netdev` has a release
 # that builds against the newest libc.
-libc = ">=0.2.186, <0.2.190"
+libc = ">=0.2.186, <0.2.192"
 open = "5.4"
 proptest = "1.12"
 serde = { version = "1.0", features = ["derive"] }
