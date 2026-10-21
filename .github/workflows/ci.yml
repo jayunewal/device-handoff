@@ -338,7 +338,7 @@ jobs:
       - name: Package the app
         if: github.event_name != 'pull_request'
         run: ditto -c -k --keepParent apps/baton/build/macos/Build/Products/Release/Baton.app Baton-macos-app.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: github.event_name != 'pull_request'
         with:
           name: baton-app-macos
@@ -539,7 +539,7 @@ jobs:
             tar -czf "${{ matrix.artifact }}.tar.gz" -C dist baton TRY-IT.md LICENSE
             echo "UPLOAD_PATH=${{ matrix.artifact }}.tar.gz" >> "$GITHUB_ENV"
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: ${{ env.UPLOAD_PATH }}
