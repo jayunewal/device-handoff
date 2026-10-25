@@ -14,21 +14,23 @@ use std::{
 };
 
 use baton_app::{
-    App, ErrorKind, Event, Events, Options, WindowAbilities, WindowButton, WindowEnd, WindowInput,
-    WindowModifiers, WindowNoticeReason, WindowPointer, WindowRequest, WindowRole, WindowSession,
-    WindowShared, Windows,
+    App, ErrorKind, Event, Events, Options, StartAccess, WindowAbilities, WindowButton, WindowEnd,
+    WindowInput, WindowModifiers, WindowNoticeReason, WindowPointer, WindowRequest, WindowRole,
+    WindowSession, WindowShared, Windows,
     windows::{
-        PickedWindow, PlatformError, Screen, ScreenLink, SharingFailure, ShowLimits, WindowSharer,
-        WindowViewer,
+        PickedWindow, PlatformError, Screen, ScreenError, ScreenLink, SharingFailure, ShowLimits,
+        WindowSharer, WindowViewer,
     },
 };
 use baton_core::{
+    Config as NodeConfig, Identity, Node, PairedDevice, TrustStore,
     streaming::{
-        DecodeError, Decoder, DecoderState, Picture, SourceEvents, SourceHandle, Takes, WindowOffer,
+        DecodeError, Decoder, DecoderState, Picture, SourceEvents, SourceHandle, StartOutcome,
+        Takes, ViewHandle, Viewing, Wanted, WhyNot, WindowHandler, WindowOffer, WindowVerdict,
     },
     util::BoxFuture,
 };
-use baton_proto::stream::Codec;
+use baton_proto::{DeviceId, stream::Codec, ticket::PairTicket};
 use baton_stream::{
     control::{Config, InputBatch, Report, SourceMessage, Thermal, Want},
     gate::Reason,
@@ -221,10 +223,38 @@ struct Sharer {
     failure: Arc<Mutex<Option<SharingFailure>>>,
     /// What the person at the other device did, as it reached the platform.
     inputs: Arc<Mutex<Vec<InputEvent>>>,
+    /// Whether the platform can give its screen without the person picking it.
+    gives_screen: bool,
+    /// What the next call for the screen does.
+    screen_plan: Mutex<ScreenPlan>,
+    /// Waited for by the call for the screen, if set, before it gives its answer.
+    screen_gate: Mutex<Option<oneshot::Receiver<()>>>,
+    /// How many times the screen was asked for.
+    screens: AtomicUsize,
+    /// How many times the person was given a picker.
+    picks: AtomicUsize,
+}
+
+/// What the platform does when it is asked for its screen.
+#[derive(Clone)]
+enum ScreenPlan {
+    /// Gives this.
+    Gives(Chosen),
+    /// Says why not.
+    Refuses(ScreenError),
 }
 
 impl Sharer {
     fn new(control: bool, next: Option<Chosen>) -> Arc<Self> {
+        Self::building(control, next, false)
+    }
+
+    /// A platform that can give its screen without the person picking it.
+    fn with_screen(control: bool) -> Arc<Self> {
+        Self::building(control, None, true)
+    }
+
+    fn building(control: bool, next: Option<Chosen>, gives_screen: bool) -> Arc<Self> {
         Arc::new(Self {
             control,
             next: Mutex::new(next),
@@ -239,12 +269,33 @@ impl Sharer {
             fails_at_once: Mutex::new(None),
             failure: Arc::new(Mutex::new(None)),
             inputs: Arc::new(Mutex::new(Vec::new())),
+            gives_screen,
+            screen_plan: Mutex::new(ScreenPlan::Gives(whole_display())),
+            screen_gate: Mutex::new(None),
+            screens: AtomicUsize::new(0),
+            picks: AtomicUsize::new(0),
         })
     }
 
     /// What the platform was given of what the person at the other device did, in order.
     fn inputs(&self) -> Vec<InputEvent> {
         self.inputs.lock().unwrap().clone()
+    }
+
+    /// The window that the platform keeps for `chosen`, as the session will use it.
+    fn picked(&self, chosen: Option<Chosen>) -> Picked {
+        Picked {
+            chosen,
+            heard: Arc::clone(&self.heard),
+            handle: Arc::clone(&self.handle),
+            dropped: Arc::clone(&self.dropped),
+            pictures: self.pictures,
+            makes_pictures: self.makes_pictures.load(Ordering::Relaxed),
+            lets_go_at_once: self.lets_go_at_once.load(Ordering::Relaxed),
+            fails_at_once: self.fails_at_once.lock().unwrap().clone(),
+            failure: Arc::clone(&self.failure),
+            inputs: Arc::clone(&self.inputs),
+        }
     }
 }
 
@@ -282,28 +333,40 @@ impl WindowSharer for Sharer {
     }
 
     fn pick(&self) -> BoxFuture<'static, Result<Option<Box<dyn PickedWindow>>, PlatformError>> {
+        self.picks.fetch_add(1, Ordering::Relaxed);
         if let Some(why) = self.fail.lock().unwrap().clone() {
             return Box::pin(async move { Err(PlatformError::new(why)) });
         }
         let chosen = self.next.lock().unwrap().take();
         let gate = self.gate.lock().unwrap().take();
-        let shared = Picked {
-            chosen: chosen.clone(),
-            heard: Arc::clone(&self.heard),
-            handle: Arc::clone(&self.handle),
-            dropped: Arc::clone(&self.dropped),
-            pictures: self.pictures,
-            makes_pictures: self.makes_pictures.load(Ordering::Relaxed),
-            lets_go_at_once: self.lets_go_at_once.load(Ordering::Relaxed),
-            fails_at_once: self.fails_at_once.lock().unwrap().clone(),
-            failure: Arc::clone(&self.failure),
-            inputs: Arc::clone(&self.inputs),
-        };
+        let shared = self.picked(chosen.clone());
         Box::pin(async move {
             if let Some(gate) = gate {
                 let _ = gate.await;
             }
             Ok(chosen.map(|_| Box::new(shared) as Box<dyn PickedWindow>))
+        })
+    }
+
+    fn can_give_screen(&self) -> bool {
+        self.gives_screen
+    }
+
+    fn screen(&self) -> BoxFuture<'static, Result<Box<dyn PickedWindow>, ScreenError>> {
+        self.screens.fetch_add(1, Ordering::Relaxed);
+        let plan = self.screen_plan.lock().unwrap().clone();
+        let gate = self.screen_gate.lock().unwrap().take();
+        let picked = match plan {
+            ScreenPlan::Gives(chosen) => Ok(self.picked(Some(chosen))),
+            ScreenPlan::Refuses(error) => Err(error),
+        };
+        Box::pin(async move {
+            // The window is made before the wait, so that a call that is dropped while it waits
+            // lets go of it.
+            if let Some(gate) = gate {
+                let _ = gate.await;
+            }
+            picked.map(|picked| Box::new(picked) as Box<dyn PickedWindow>)
         })
     }
 }
@@ -502,7 +565,10 @@ struct Pair {
 
 impl Pair {
     async fn new(control: bool) -> Self {
-        let sharer = Sharer::new(control, Some(report_window()));
+        Self::with_sharer(Sharer::new(control, Some(report_window()))).await
+    }
+
+    async fn with_sharer(sharer: Arc<Sharer>) -> Self {
         let viewer = Viewer::new();
         let sharing = Dev::start("Studio Mac", Windows::none().sharing(sharer.clone())).await;
         let viewing = Dev::start("Kitchen iPad", Windows::none().showing(viewer.clone())).await;
@@ -2042,4 +2108,435 @@ async fn stopping_while_the_person_chooses_offers_nothing() {
     )
     .await;
     assert!(asked.is_err(), "a device that had stopped made an offer");
+}
+
+// Sessions that the viewer starts (ADR 0010).
+
+/// Turns down every offer that reaches the person, and counts them: a session that the phone
+/// started has no offer that asks.
+struct Asked(Arc<AtomicUsize>);
+
+impl WindowHandler for Asked {
+    fn offered<'a>(
+        &'a self,
+        _from: &'a PairedDevice,
+        _offer: &'a WindowOffer,
+    ) -> BoxFuture<'a, WindowVerdict> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Box::pin(std::future::ready(WindowVerdict::Refuse))
+    }
+
+    fn started(&self, _from: &PairedDevice, _handle: ViewHandle) {}
+}
+
+/// A phone, as far as these tests need one: a node that shows the screens of other devices and can
+/// ask for one. The app has no call for the asking yet (the button comes with the pull request
+/// after this one), so the asking is the node's own.
+struct Phone {
+    node: Arc<Node>,
+    id: DeviceId,
+    /// How many offers reached the person.
+    asked: Arc<AtomicUsize>,
+    /// What the decoders of the screens heard.
+    heard: Arc<Heard>,
+    _dir: TempDir,
+}
+
+impl Phone {
+    async fn start(name: &str) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = Identity::generate();
+        let trust = TrustStore::load(dir.path().join("devices.json")).unwrap();
+        let config = NodeConfig::from_toml(&format!(
+            "device_name = \"{name}\"\n\n[network]\nrelay = \"disabled\"\nlan_discovery = false\n\
+             port_mapping = false\n"
+        ))
+        .unwrap();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let node = Node::builder(&identity, trust, config)
+            .window_handler(Asked(Arc::clone(&asked)))
+            .bind()
+            .await
+            .unwrap();
+        Self {
+            node: Arc::new(node),
+            id: identity.device_id(),
+            asked,
+            heard: Arc::new(Heard::default()),
+            _dir: dir,
+        }
+    }
+
+    /// Asks `mac` to start sharing its screen, with the picture the phone can show.
+    async fn asks(&self, mac: &Dev, control: bool) -> baton_core::Result<StartOutcome> {
+        let mac: DeviceId = mac.id().parse().unwrap();
+        let viewing = Viewing::new(
+            Screening(Arc::clone(&self.heard)),
+            1920,
+            1200,
+            60,
+            vec![Codec::H264],
+        )
+        .unwrap();
+        self.node
+            .start(&mac, Wanted::Screen, control, viewing)
+            .await
+    }
+}
+
+/// Pairs the phone with the Mac the way two people would: the Mac shows a ticket, the phone
+/// enters it, and the Mac says yes. What the Mac allows the phone is not set: it is off.
+async fn pair_phone(mac: &Dev, phone: &Phone) {
+    let mut events = mac.app.events();
+    let offer = mac.app.offer_pairing().await.unwrap();
+    let ticket: PairTicket = offer.ticket.parse().unwrap();
+    let node = Arc::clone(&phone.node);
+    let task = tokio::spawn(async move { node.join_pairing(&ticket, |_| {}).await });
+    let request = next_matching(&mut events, |event| match event {
+        Event::PairingRequested(request) => Some(request),
+        _ => None,
+    })
+    .await;
+    assert!(mac.app.answer_pairing(request.id, true));
+    task.await.unwrap().unwrap();
+    next_matching(&mut events, |event| match event {
+        Event::OfferEnded(_) => Some(()),
+        _ => None,
+    })
+    .await;
+}
+
+/// A Mac that can give its screen without a picker, a phone that it is paired with, and the
+/// platform of the Mac.
+struct Screens {
+    mac: Dev,
+    phone: Phone,
+    sharer: Arc<Sharer>,
+}
+
+impl Screens {
+    /// The platform of the Mac can post input if `control`.
+    async fn new(control: bool) -> Self {
+        Self::with(Sharer::with_screen(control)).await
+    }
+
+    async fn with(sharer: Arc<Sharer>) -> Self {
+        let mac = Dev::start("Studio Mac", Windows::none().sharing(sharer.clone())).await;
+        let phone = Phone::start("Pocket Phone").await;
+        pair_phone(&mac, &phone).await;
+        Self { mac, phone, sharer }
+    }
+
+    /// What the person at the Mac allows the phone, in the settings for it.
+    fn allow(&self, access: StartAccess) {
+        self.mac
+            .app
+            .set_start_access(&self.phone.id.to_string(), access)
+            .unwrap();
+    }
+
+    /// The phone asks, and the session starts.
+    async fn started(&self, control: bool) -> ViewHandle {
+        match self.phone.asks(&self.mac, control).await.unwrap() {
+            StartOutcome::Started(handle) => handle,
+            other => panic!("the screen was not started: {other:?}"),
+        }
+    }
+
+    /// The phone asks, and the Mac says why not.
+    async fn refused(&self, control: bool) -> WhyNot {
+        match self.phone.asks(&self.mac, control).await.unwrap() {
+            StartOutcome::NotStarted(why) => why,
+            other => panic!("the screen was started: {other:?}"),
+        }
+    }
+
+    fn screens(&self) -> usize {
+        self.sharer.screens.load(Ordering::Relaxed)
+    }
+}
+
+/// The next session that the Mac started.
+async fn started_at(events: &mut Events) -> WindowSession {
+    next_matching(events, |event| match event {
+        Event::WindowStarted(session) => Some(session),
+        _ => None,
+    })
+    .await
+}
+
+#[tokio::test]
+async fn a_phone_that_the_person_allowed_gets_the_screen_with_no_picker_and_no_question() {
+    let screens = Screens::new(true).await;
+    screens.allow(StartAccess::Look);
+    let mut events = screens.mac.app.events();
+
+    let handle = screens.started(false).await;
+
+    // The platform was asked for the screen and the person at the Mac was given no picker.
+    assert_eq!(screens.screens(), 1);
+    assert_eq!(screens.sharer.picks.load(Ordering::Relaxed), 0);
+    // The person at the phone was not asked about an offer either: the offer answered their asking.
+    assert_eq!(screens.phone.asked.load(Ordering::Relaxed), 0);
+
+    // The Mac hears of the session as of any it shares: a whole display, and no control.
+    let shared = started_at(&mut events).await;
+    assert_eq!(shared.role, WindowRole::Sharing);
+    assert_eq!(shared.device_id, screens.phone.id.to_string());
+    assert_eq!(shared.device_name, "Pocket Phone");
+    assert!(shared.display);
+    assert_eq!((shared.title, shared.app), (None, None));
+    assert_eq!((shared.width, shared.height), (3024, 1964));
+    assert!(!shared.control);
+    assert!(!handle.control());
+
+    // Pictures go from the Mac to the decoder of the phone.
+    until("the pictures to be decoded and shown", || {
+        screens.phone.heard.has("decode 2") && screens.phone.heard.has("show 2")
+    })
+    .await;
+    assert!(screens.phone.heard.has("config"));
+
+    // The person at the phone closes it, and the platform of the Mac is told.
+    handle.end();
+    let end = next_matching(&mut events, |event| match event {
+        Event::WindowEnded { id, end } if id == shared.id => Some(end),
+        _ => None,
+    })
+    .await;
+    assert_eq!(end, WindowEnd::OtherDevice);
+    until("the platform of the Mac to be told", || {
+        screens.sharer.heard.has("ended")
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_phone_that_the_person_did_not_allow_is_told_so_and_the_screen_is_left_alone() {
+    let screens = Screens::new(true).await;
+    let mut events = screens.mac.app.events();
+    let phone = screens.phone.id.to_string();
+    assert_eq!(
+        screens.mac.app.start_access(&phone).unwrap(),
+        StartAccess::Off,
+        "a device that was just paired is allowed nothing"
+    );
+
+    assert_eq!(screens.refused(false).await, WhyNot::NotAllowed);
+    assert_eq!(
+        screens.screens(),
+        0,
+        "the platform was asked for the screen"
+    );
+    let started = tokio::time::timeout(QUIET, started_at(&mut events)).await;
+    assert!(started.is_err(), "a session started that was not allowed");
+
+    // The refusal left nothing behind: when the person allows the phone, it starts.
+    screens.allow(StartAccess::Look);
+    let _handle = screens.started(false).await;
+    assert_eq!(screens.screens(), 1);
+}
+
+/// What the two ends were granted when the phone wished for `wish`, the person at the Mac allowed
+/// `access`, and the platform of the Mac can post input if `platform`.
+async fn control_granted(wish: bool, access: StartAccess, platform: bool) -> (bool, bool) {
+    let screens = Screens::new(platform).await;
+    screens.allow(access);
+    let mut events = screens.mac.app.events();
+    let handle = screens.started(wish).await;
+    let shared = started_at(&mut events).await;
+    (handle.control(), shared.control)
+}
+
+#[tokio::test]
+async fn control_is_the_least_of_what_the_phone_wished_the_person_allowed_and_the_platform_can_do()
+{
+    for (wish, access, platform, granted) in [
+        (true, StartAccess::Control, true, true),
+        (false, StartAccess::Control, true, false),
+        (true, StartAccess::Look, true, false),
+        (true, StartAccess::Control, false, false),
+    ] {
+        assert_eq!(
+            control_granted(wish, access, platform).await,
+            (granted, granted),
+            "the phone wished for control: {wish}, the person allowed {access:?}, the platform \
+             can post input: {platform}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn why_the_platform_cannot_give_the_screen_is_what_the_phone_is_told() {
+    let screens = Screens::new(false).await;
+    screens.allow(StartAccess::Look);
+    let reasons = [
+        (ScreenError::Unsupported, WhyNot::Unsupported),
+        (ScreenError::NeedsPermission, WhyNot::NeedsPermission),
+        (ScreenError::Unavailable, WhyNot::Unavailable),
+        (
+            ScreenError::Failed(PlatformError::new("No window server.")),
+            WhyNot::Failed,
+        ),
+    ];
+    for (error, why) in reasons {
+        *screens.sharer.screen_plan.lock().unwrap() = ScreenPlan::Refuses(error.clone());
+        assert_eq!(screens.refused(false).await, why, "{error}");
+    }
+    assert_eq!(screens.screens(), 4);
+
+    // No asking left the Mac busy: once the platform can give the screen, the phone gets it.
+    *screens.sharer.screen_plan.lock().unwrap() = ScreenPlan::Gives(whole_display());
+    let _handle = screens.started(false).await;
+}
+
+#[tokio::test]
+async fn a_platform_that_gives_a_window_for_the_screen_is_not_believed() {
+    let screens = Screens::new(false).await;
+    screens.allow(StartAccess::Look);
+    *screens.sharer.screen_plan.lock().unwrap() = ScreenPlan::Gives(report_window());
+    let mut events = screens.mac.app.events();
+
+    assert_eq!(screens.refused(false).await, WhyNot::Failed);
+    // The window is let go of and not offered in place of the screen.
+    until("the platform to let go of the window", || {
+        screens.sharer.dropped.load(Ordering::Relaxed) == 1
+    })
+    .await;
+    assert_eq!(screens.phone.asked.load(Ordering::Relaxed), 0);
+    let started = tokio::time::timeout(QUIET, started_at(&mut events)).await;
+    assert!(started.is_err(), "a window was shared for the screen");
+}
+
+#[tokio::test]
+async fn a_device_whose_platform_cannot_give_the_screen_is_not_asked_for_it() {
+    // The person allowed the phone, and the platform shows windows only through the picker.
+    let screens = Screens::with(Sharer::new(true, None)).await;
+    screens.allow(StartAccess::Control);
+
+    let error = screens.phone.asks(&screens.mac, false).await.unwrap_err();
+    assert!(
+        matches!(error, baton_core::Error::Unsupported(_)),
+        "{error}"
+    );
+    assert_eq!(screens.screens(), 0);
+}
+
+#[tokio::test]
+async fn a_phone_that_gives_up_while_the_mac_gets_ready_leaves_no_session_behind() {
+    let screens = Screens::new(false).await;
+    screens.allow(StartAccess::Look);
+    let (open, gate) = oneshot::channel();
+    *screens.sharer.screen_gate.lock().unwrap() = Some(gate);
+    let mut events = screens.mac.app.events();
+
+    // The phone asks, the platform of the Mac takes its time to give the screen, and the person at
+    // the phone gives up: the asking is dropped.
+    tokio::select! {
+        outcome = screens.phone.asks(&screens.mac, false) => {
+            panic!("the asking was answered: {outcome:?}");
+        }
+        () = until("the Mac to ask its platform for the screen", || screens.screens() == 1) => {}
+    }
+    open.send(()).unwrap();
+
+    // The platform lets go of the screen it made, and nothing is shared.
+    until("the platform to let go of the screen", || {
+        screens.sharer.dropped.load(Ordering::Relaxed) == 1
+    })
+    .await;
+    let started = tokio::time::timeout(QUIET, started_at(&mut events)).await;
+    assert!(started.is_err(), "a session started that nobody wanted");
+
+    // The Mac is free for the next asking.
+    let _handle = screens.started(false).await;
+}
+
+#[tokio::test]
+async fn stopping_the_mac_ends_the_session_that_the_phone_started() {
+    let screens = Screens::new(false).await;
+    screens.allow(StartAccess::Look);
+    let handle = screens.started(false).await;
+
+    screens.mac.app.stop().await;
+    tokio::time::timeout(WAIT, handle.ended())
+        .await
+        .expect("the session was left running");
+}
+
+#[tokio::test]
+async fn turning_the_setting_off_ends_nothing_that_runs_and_stops_the_next_asking() {
+    let screens = Screens::new(false).await;
+    screens.allow(StartAccess::Look);
+    let mut events = screens.mac.app.events();
+    let handle = screens.started(false).await;
+    let shared = started_at(&mut events).await;
+
+    // The person at the Mac takes the yes back. The session that runs goes on.
+    screens.allow(StartAccess::Off);
+    let ended = tokio::time::timeout(QUIET, handle.ended()).await;
+    assert!(ended.is_err(), "the session ended when the setting did");
+
+    // The next asking is told that the settings do not let the phone.
+    handle.end();
+    next_matching(&mut events, |event| match event {
+        Event::WindowEnded { id, .. } if id == shared.id => Some(()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(screens.refused(false).await, WhyNot::NotAllowed);
+    assert_eq!(screens.screens(), 1);
+}
+
+#[tokio::test]
+async fn a_mac_that_shares_a_window_is_busy_and_its_screen_is_not_asked_for() {
+    let sharer = Sharer::with_screen(false);
+    *sharer.next.lock().unwrap() = Some(report_window());
+    let pair = Pair::with_sharer(Arc::clone(&sharer)).await;
+    let phone = Phone::start("Pocket Phone").await;
+    pair_phone(&pair.sharing, &phone).await;
+    pair.sharing
+        .app
+        .set_start_access(&phone.id.to_string(), StartAccess::Look)
+        .unwrap();
+    let WindowShared::Started(_) = pair.offered_and_answered(true, false).await else {
+        panic!("the window was not shared");
+    };
+
+    let StartOutcome::NotStarted(why) = phone.asks(&pair.sharing, false).await.unwrap() else {
+        panic!("the screen was started on a Mac that shares a window");
+    };
+    assert_eq!(why, WhyNot::Busy);
+    assert_eq!(sharer.screens.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn the_person_at_the_mac_allows_a_paired_device_and_only_a_paired_device() {
+    let pair = Pair::new(false).await;
+    let app = &pair.sharing.app;
+    let viewing = pair.viewing.id();
+    assert_eq!(app.start_access(&viewing).unwrap(), StartAccess::Off);
+    for access in [StartAccess::Control, StartAccess::Look, StartAccess::Off] {
+        app.set_start_access(&viewing, access).unwrap();
+        assert_eq!(app.start_access(&viewing).unwrap(), access);
+    }
+
+    // A device that is not paired is allowed nothing, and cannot be.
+    let stranger = Identity::generate().device_id().to_string();
+    assert_eq!(
+        app.start_access(&stranger).unwrap_err().kind(),
+        ErrorKind::NotPaired
+    );
+    assert_eq!(
+        app.set_start_access(&stranger, StartAccess::Look)
+            .unwrap_err()
+            .kind(),
+        ErrorKind::NotPaired
+    );
+    assert_eq!(
+        app.set_start_access("not an id", StartAccess::Look)
+            .unwrap_err()
+            .kind(),
+        ErrorKind::NotPaired
+    );
 }

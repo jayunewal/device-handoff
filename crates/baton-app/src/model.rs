@@ -10,7 +10,7 @@
 use std::{fmt, path::PathBuf};
 
 use baton_core::{
-    InboxEntry, InboxItem, PairedDevice,
+    InboxEntry, InboxItem, PairedDevice, StartPolicy,
     link::PathKind,
     node::{NodeStatus, PingReport},
     transfer::send::{Progress, Stage},
@@ -97,6 +97,40 @@ impl From<&PairedDevice> for Device {
             fingerprint: device.id.fingerprint().to_string(),
             paired_at: device.added_at,
             last_seen_at: device.last_seen_at,
+        }
+    }
+}
+
+/// What the person at this device allowed a paired device to do without being asked each time:
+/// ask this device to start sharing its screen with it (`docs/adr/0010`). It is off for a device
+/// that was just paired, and only the person at this device can change it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StartAccess {
+    /// Nothing. A device that asks is told that the settings do not let it.
+    #[default]
+    Off,
+    /// Look at the screen of this device.
+    Look,
+    /// Look at the screen of this device, and control it.
+    Control,
+}
+
+impl From<StartPolicy> for StartAccess {
+    fn from(policy: StartPolicy) -> Self {
+        match policy {
+            StartPolicy::Off => Self::Off,
+            StartPolicy::Look => Self::Look,
+            StartPolicy::Control => Self::Control,
+        }
+    }
+}
+
+impl From<StartAccess> for StartPolicy {
+    fn from(access: StartAccess) -> Self {
+        match access {
+            StartAccess::Off => Self::Off,
+            StartAccess::Look => Self::Look,
+            StartAccess::Control => Self::Control,
         }
     }
 }

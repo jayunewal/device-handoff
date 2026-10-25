@@ -209,6 +209,38 @@ pub(crate) fn noun(display: bool) -> &'static str {
     if display { "screen" } else { "window" }
 }
 
+/// Why a platform did not give the screen that it was asked for ([`WindowSharer::screen`]). The
+/// device that asked is told which of these it was, so that the person there knows what to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ScreenError {
+    /// The platform does not give its screen unless the person picks it.
+    Unsupported,
+    /// The operating system has not let the app capture the screen, and the person at this device
+    /// has to allow it.
+    NeedsPermission,
+    /// There is no screen to give now, for example because no display is on.
+    Unavailable,
+    /// The platform could not, and the sentence says why. The device that asked is told only that
+    /// it failed, and the log of this device has the kind of the reason and not the sentence.
+    Failed(PlatformError),
+}
+
+impl fmt::Display for ScreenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unsupported => f.write_str("the platform does not give its screen unasked"),
+            Self::NeedsPermission => {
+                f.write_str("the operating system has not let the app capture the screen")
+            }
+            Self::Unavailable => f.write_str("there is no screen to give now"),
+            Self::Failed(error) => write!(f, "the platform could not give its screen: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for ScreenError {}
+
 /// The part of a platform that shares the windows of this device.
 pub trait WindowSharer: Send + Sync + 'static {
     /// Whether the person can let another device control a window that they share. A platform
@@ -218,6 +250,26 @@ pub trait WindowSharer: Send + Sync + 'static {
     /// Lets the person pick the window to share, and gives it. `None` means that the person gave
     /// up. The future ends when the person has chosen, and may take as long as that takes.
     fn pick(&self) -> BoxFuture<'static, Result<Option<Box<dyn PickedWindow>>, PlatformError>>;
+
+    /// Whether the platform can give the screen of this device without the person picking it
+    /// ([`screen`](Self::screen)). A device where it can lets the devices it is paired with ask it
+    /// to start sharing its screen, if the person here allowed them to
+    /// ([`App::set_start_access`](crate::App::set_start_access)), and says so to them. A device
+    /// where it cannot says nothing of the kind. The same each time.
+    fn can_give_screen(&self) -> bool {
+        false
+    }
+
+    /// Gives the main screen of this device, with every window on it, without the person picking
+    /// it: a paired device asked for it, and the person here allowed that device beforehand. What
+    /// is given must be a whole display ([`PickedWindow::display`]); anything else is refused.
+    ///
+    /// The future may take as long as the system takes. It is dropped when the device that asked
+    /// gives up, or the time for the answer is up, and whatever it was about to give is let go of
+    /// then. Only called if [`can_give_screen`](Self::can_give_screen) says yes.
+    fn screen(&self) -> BoxFuture<'static, Result<Box<dyn PickedWindow>, ScreenError>> {
+        Box::pin(std::future::ready(Err(ScreenError::Unsupported)))
+    }
 }
 
 /// A window that the person picked, and everything that the platform keeps for it. Dropping it
