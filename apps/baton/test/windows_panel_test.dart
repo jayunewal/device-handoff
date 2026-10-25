@@ -18,6 +18,15 @@ const _ipad = Device(
   lastSeenAt: 1760529600,
 );
 
+const _mac = Device(
+  id: 'b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0',
+  name: 'Anna’s Mac',
+  platform: Platform.macOs,
+  fingerprint: 'mnop-qrst-uvwx-yzab-cdef',
+  pairedAt: 1760000000,
+  lastSeenAt: 1760529600,
+);
+
 /// A device whose name turns the text after it round, as a name that another person chose can.
 const _oddPad = Device(
   id: 'c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2',
@@ -502,6 +511,102 @@ void main() {
       );
       session.releaseShare();
       await second;
+    });
+  });
+
+  group('a screen that this device asks for', () {
+    testWidgets('shows who it asks until they have answered', (tester) async {
+      final (session, controller) = await _show(tester);
+      session.holdStart();
+
+      final done = controller.startScreen(_mac);
+      await tester.pump();
+
+      expect(find.text('Asking Anna’s Mac for its screen'), findsOneWidget);
+      expect(
+        find.text(
+          'It starts by itself if the person at Anna’s Mac allowed this '
+          'device to ask.',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        tester
+            .widget<LinearProgressIndicator>(
+              find.byType(LinearProgressIndicator),
+            )
+            .semanticsLabel,
+        'Asking for a screen',
+      );
+
+      session.releaseStart();
+      await done;
+      await tester.pump();
+
+      expect(find.byType(Card), findsNothing);
+    });
+
+    testWidgets('says that the person wishes to control it', (tester) async {
+      final (session, controller) = await _show(tester);
+      session.holdStart();
+
+      final done = controller.startScreen(_mac, control: true);
+      await tester.pump();
+
+      expect(
+        find.text('Asking Anna’s Mac for its screen, to look at and control'),
+        findsOneWidget,
+      );
+      expect(find.text('Asking Anna’s Mac for its screen'), findsNothing);
+      expect(
+        tester
+            .widget<LinearProgressIndicator>(
+              find.byType(LinearProgressIndicator),
+            )
+            .semanticsLabel,
+        'Asking for a screen to look at and control',
+      );
+
+      session.releaseStart();
+      await done;
+      await tester.pump();
+
+      expect(find.byType(Card), findsNothing);
+    });
+
+    testWidgets('names the device as fit to show', (tester) async {
+      final (session, controller) = await _show(tester);
+      session.holdStart();
+
+      final done = controller.startScreen(_oddPad);
+      await tester.pump();
+
+      expect(find.text('Asking Pad\uFFFDexe for its screen'), findsOneWidget);
+
+      session.releaseStart();
+      await done;
+      await tester.pump();
+    });
+
+    testWidgets('that the device did not start tells the person why', (
+      tester,
+    ) async {
+      final (session, controller) = await _show(tester);
+      session.screenStart = const ScreenStarted.notStarted(
+        message:
+            'Anna’s Mac has not allowed this device to ask for its screen.',
+      );
+
+      await controller.startScreen(_mac);
+      await tester.pump();
+
+      expect(
+        find.text(
+          'Anna’s Mac has not allowed this device to ask for its screen.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Asking'), findsNothing);
     });
   });
 

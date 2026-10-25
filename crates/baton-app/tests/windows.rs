@@ -14,9 +14,9 @@ use std::{
 };
 
 use baton_app::{
-    App, ErrorKind, Event, Events, Options, StartAccess, WindowAbilities, WindowButton, WindowEnd,
-    WindowInput, WindowModifiers, WindowNoticeReason, WindowPointer, WindowRequest, WindowRole,
-    WindowSession, WindowShared, Windows,
+    App, ErrorKind, Event, Events, Options, ScreenStarted, StartAccess, WindowAbilities,
+    WindowButton, WindowEnd, WindowInput, WindowModifiers, WindowNoticeReason, WindowPointer,
+    WindowRequest, WindowRole, WindowSession, WindowShared, Windows,
     windows::{
         PickedWindow, PlatformError, Screen, ScreenError, ScreenLink, SharingFailure, ShowLimits,
         WindowSharer, WindowViewer,
@@ -196,7 +196,9 @@ struct Chosen {
 }
 
 struct Sharer {
-    control: bool,
+    /// Whether the platform can post input. It can change while the app runs, as it does when the
+    /// person takes back the consent to control the computer.
+    control: AtomicBool,
     /// What the next pick gives; `None` is a person who gave up.
     next: Mutex<Option<Chosen>>,
     /// If set, the pick fails with this.
@@ -256,7 +258,7 @@ impl Sharer {
 
     fn building(control: bool, next: Option<Chosen>, gives_screen: bool) -> Arc<Self> {
         Arc::new(Self {
-            control,
+            control: AtomicBool::new(control),
             next: Mutex::new(next),
             fail: Mutex::new(None),
             gate: Mutex::new(None),
@@ -329,7 +331,7 @@ fn whole_display() -> Chosen {
 
 impl WindowSharer for Sharer {
     fn control(&self) -> bool {
-        self.control
+        self.control.load(Ordering::Relaxed)
     }
 
     fn pick(&self) -> BoxFuture<'static, Result<Option<Box<dyn PickedWindow>>, PlatformError>> {
@@ -615,39 +617,27 @@ async fn what_a_device_can_do_with_windows_depends_on_the_platform_it_was_given(
             .sharing(Sharer::new(true, None)),
     )
     .await;
+    let gives = Dev::start("Gives", Windows::none().sharing(Sharer::with_screen(false))).await;
+    let gives_and_controls = Dev::start(
+        "Gives and controls",
+        Windows::none().sharing(Sharer::with_screen(true)),
+    )
+    .await;
     let abilities = |dev: &Dev| dev.app.window_abilities();
-    assert_eq!(
-        abilities(&plain),
-        WindowAbilities {
-            can_show: false,
-            can_share: false,
-            can_control: false
-        }
-    );
-    assert_eq!(
-        abilities(&shows),
-        WindowAbilities {
-            can_show: true,
-            can_share: false,
-            can_control: false
-        }
-    );
-    assert_eq!(
-        abilities(&shares),
-        WindowAbilities {
-            can_show: false,
-            can_share: true,
-            can_control: false
-        }
-    );
-    assert_eq!(
-        abilities(&controls),
-        WindowAbilities {
-            can_show: true,
-            can_share: true,
-            can_control: true
-        }
-    );
+    let can = |can_show, can_share, can_control, can_give_screen| WindowAbilities {
+        can_show,
+        can_share,
+        can_control,
+        can_give_screen,
+    };
+    assert_eq!(abilities(&plain), can(false, false, false, false));
+    assert_eq!(abilities(&shows), can(true, false, false, false));
+    assert_eq!(abilities(&shares), can(false, true, false, false));
+    assert_eq!(abilities(&controls), can(true, true, true, false));
+    // Giving the screen is something a platform says it can do, and is a thing apart from taking
+    // input.
+    assert_eq!(abilities(&gives), can(false, true, false, true));
+    assert_eq!(abilities(&gives_and_controls), can(false, true, true, true));
 }
 
 #[tokio::test]
@@ -2367,6 +2357,50 @@ async fn control_is_the_least_of_what_the_phone_wished_the_person_allowed_and_th
 }
 
 #[tokio::test]
+async fn control_is_not_granted_when_the_platform_can_no_longer_post_input() {
+    // The app was started when the platform could post input, so the node takes it. The person
+    // takes back the consent to control the computer while the app runs, and the platform says so
+    // from then on: a phone that asks afterwards, and was allowed, gets no control.
+    let screens = Screens::new(true).await;
+    screens.allow(StartAccess::Control);
+    screens.sharer.control.store(false, Ordering::Relaxed);
+    let mut events = screens.mac.app.events();
+
+    let handle = screens.started(true).await;
+    let shared = started_at(&mut events).await;
+
+    assert_eq!((handle.control(), shared.control), (false, false));
+}
+
+/// A platform written before the screen could be asked for: it picks windows and says nothing
+/// about its screen.
+struct Silent;
+
+impl WindowSharer for Silent {
+    fn control(&self) -> bool {
+        false
+    }
+
+    fn pick(&self) -> BoxFuture<'static, Result<Option<Box<dyn PickedWindow>>, PlatformError>> {
+        Box::pin(std::future::ready(Ok(None)))
+    }
+}
+
+#[tokio::test]
+async fn a_platform_that_says_nothing_of_the_screen_cannot_give_it() {
+    assert!(!Silent.can_give_screen());
+    assert!(matches!(
+        Silent.screen().await,
+        Err(ScreenError::Unsupported)
+    ));
+
+    // Its device does not tell the screens that the setting is worth offering.
+    let dev = Dev::start("Old Mac", Windows::none().sharing(Arc::new(Silent))).await;
+    assert!(dev.app.window_abilities().can_share);
+    assert!(!dev.app.window_abilities().can_give_screen);
+}
+
+#[tokio::test]
 async fn why_the_platform_cannot_give_the_screen_is_what_the_phone_is_told() {
     let screens = Screens::new(false).await;
     screens.allow(StartAccess::Look);
@@ -2539,4 +2573,426 @@ async fn the_person_at_the_mac_allows_a_paired_device_and_only_a_paired_device()
             .kind(),
         ErrorKind::NotPaired
     );
+}
+
+// Sessions that the app of the phone starts (ADR 0010): the call that the button makes.
+
+/// A Mac that can give its screen with no picker and a phone that shows screens: two apps, paired.
+struct Asking {
+    mac: Dev,
+    phone: Dev,
+    sharer: Arc<Sharer>,
+    viewer: Arc<Viewer>,
+}
+
+impl Asking {
+    /// The platform of the Mac can post input if `control`.
+    async fn new(control: bool) -> Self {
+        Self::with(Sharer::with_screen(control)).await
+    }
+
+    async fn with(sharer: Arc<Sharer>) -> Self {
+        let viewer = Viewer::new();
+        let mac = Dev::start("Studio Mac", Windows::none().sharing(sharer.clone())).await;
+        let phone = Dev::start("Pocket Phone", Windows::none().showing(viewer.clone())).await;
+        pair(&mac, &phone).await;
+        Self {
+            mac,
+            phone,
+            sharer,
+            viewer,
+        }
+    }
+
+    /// What the person at the Mac allows the phone, in the settings for it.
+    fn allow(&self, access: StartAccess) {
+        self.mac
+            .app
+            .set_start_access(&self.phone.id(), access)
+            .unwrap();
+    }
+
+    /// The person at the phone asks for the screen of the Mac.
+    async fn asks(&self, control: bool) -> ScreenStarted {
+        self.phone
+            .app
+            .start_screen(&self.mac.id(), control)
+            .await
+            .unwrap()
+    }
+
+    /// The person at the phone asks, and the screen is shown.
+    async fn started(&self, control: bool) -> WindowSession {
+        match self.asks(control).await {
+            ScreenStarted::Started(session) => session,
+            ScreenStarted::NotStarted(why) => panic!("the screen was not started: {why}"),
+        }
+    }
+
+    /// The person at the phone asks, and the Mac says why not, in words.
+    async fn refused(&self, control: bool) -> String {
+        match self.asks(control).await {
+            ScreenStarted::NotStarted(why) => why,
+            ScreenStarted::Started(session) => panic!("the screen was started: {session:?}"),
+        }
+    }
+
+    /// How many times the platform of the Mac was asked for the screen.
+    fn screens(&self) -> usize {
+        self.sharer.screens.load(Ordering::Relaxed)
+    }
+}
+
+#[tokio::test]
+async fn a_screen_that_the_person_at_the_phone_asks_for_is_shown_with_no_question_at_either_end() {
+    let asking = Asking::new(false).await;
+    asking.allow(StartAccess::Look);
+    let mut phone_events = asking.phone.app.events();
+    let mut mac_events = asking.mac.app.events();
+
+    let session = asking.started(false).await;
+
+    // A screen is shown here that has no title and no application, and the size of which is not
+    // known before the first picture.
+    assert_eq!(session.role, WindowRole::Viewing);
+    assert_eq!(session.device_id, asking.mac.id());
+    assert_eq!(session.device_name, "Studio Mac");
+    assert!(session.display);
+    assert_eq!(
+        (session.title.as_deref(), session.app.as_deref()),
+        (None, None)
+    );
+    assert_eq!((session.width, session.height), (0, 0));
+    assert!(!session.control);
+    assert_eq!(session.screen, Some(100));
+    // The platform of the phone made the screen for that, before the Mac was asked.
+    assert_eq!(
+        asking.viewer.opened.lock().unwrap().as_slice(),
+        [Opened {
+            title: None,
+            width: 0,
+            height: 0,
+            control: false
+        }]
+    );
+    // The event says the same as the call.
+    assert_eq!(started_at(&mut phone_events).await, session);
+
+    // The Mac gave the screen without a picker, and shares it as any other.
+    let shared = started_at(&mut mac_events).await;
+    assert_eq!(shared.role, WindowRole::Sharing);
+    assert_eq!(shared.device_id, asking.phone.id());
+    assert_eq!(shared.device_name, "Pocket Phone");
+    assert!(shared.display);
+    assert_eq!((shared.width, shared.height), (3024, 1964));
+    assert!(!shared.control);
+    assert_eq!(asking.screens(), 1);
+    assert_eq!(asking.sharer.picks.load(Ordering::Relaxed), 0);
+
+    // Pictures reach the decoder, and the phone is told the size of the picture, which is the
+    // shape of the screen within what the phone takes.
+    until("the pictures to be decoded and shown", || {
+        asking.viewer.heard.has("decode 2") && asking.viewer.heard.has("show 2")
+    })
+    .await;
+    assert!(asking.viewer.heard.has("config"));
+    let mut heard = Vec::new();
+    while let Ok(Some(event)) = tokio::time::timeout(QUIET, phone_events.next()).await {
+        heard.push(event);
+    }
+    assert!(
+        heard.contains(&Event::WindowPicture {
+            id: session.id,
+            width: 1920,
+            height: 1200
+        }),
+        "{heard:?}"
+    );
+    // Nobody was asked about an offer, because the offer answered the phone.
+    assert!(
+        !heard
+            .iter()
+            .any(|event| matches!(event, Event::WindowRequested(_))),
+        "{heard:?}"
+    );
+
+    // The person at the phone ends it: both ends hear how it ended, and both platforms are told.
+    assert!(asking.phone.app.end_window(session.id));
+    let end = next_matching(&mut phone_events, |event| match event {
+        Event::WindowEnded { id, end } if id == session.id => Some(end),
+        _ => None,
+    })
+    .await;
+    assert_eq!(end, WindowEnd::ThisDevice);
+    let end = next_matching(&mut mac_events, |event| match event {
+        Event::WindowEnded { id, end } if id == shared.id => Some(end),
+        _ => None,
+    })
+    .await;
+    assert_eq!(end, WindowEnd::OtherDevice);
+    until("both platforms to be told", || {
+        asking.viewer.heard.has("ended") && asking.sharer.heard.has("ended")
+    })
+    .await;
+    assert!(!asking.phone.app.end_window(session.id));
+}
+
+/// What the two ends were granted when the person at the phone wished for `wish`, the person at the
+/// Mac allowed `access`, and the platform of the Mac can post input if `platform`.
+async fn screen_control(wish: bool, access: StartAccess, platform: bool) -> (bool, bool) {
+    let asking = Asking::new(platform).await;
+    asking.allow(access);
+    let mut mac_events = asking.mac.app.events();
+    let session = asking.started(wish).await;
+    let shared = started_at(&mut mac_events).await;
+    // The platform of the phone is told what was wished for. What was granted is in the session.
+    assert_eq!(
+        asking
+            .viewer
+            .opened
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|opened| opened.control)
+            .collect::<Vec<_>>(),
+        [wish]
+    );
+    (session.control, shared.control)
+}
+
+#[tokio::test]
+async fn a_screen_is_controlled_as_far_as_the_phone_wished_the_person_allowed_and_the_platform_can()
+{
+    for (wish, access, platform, granted) in [
+        (true, StartAccess::Control, true, true),
+        (false, StartAccess::Control, true, false),
+        (true, StartAccess::Look, true, false),
+        (true, StartAccess::Control, false, false),
+    ] {
+        assert_eq!(
+            screen_control(wish, access, platform).await,
+            (granted, granted),
+            "the phone wished for control: {wish}, the person allowed {access:?}, the platform \
+             can post input: {platform}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_phone_that_the_person_did_not_allow_is_told_so_in_words_and_may_ask_again() {
+    let asking = Asking::new(true).await;
+    let mut mac_events = asking.mac.app.events();
+
+    let why = asking.refused(false).await;
+    assert!(why.contains("Studio Mac"), "{why}");
+    assert!(why.contains("has not allowed this device"), "{why}");
+    assert_eq!(asking.screens(), 0);
+    let started = tokio::time::timeout(QUIET, started_at(&mut mac_events)).await;
+    assert!(started.is_err(), "a screen was shared that was not allowed");
+
+    // Nothing is left behind: when the person at the Mac allows the phone, the next asking starts.
+    asking.allow(StartAccess::Look);
+    let session = asking.started(false).await;
+    assert!(session.display);
+    assert_eq!(asking.screens(), 1);
+}
+
+#[tokio::test]
+async fn why_the_mac_has_no_screen_to_give_is_told_in_words_that_name_it() {
+    let asking = Asking::new(false).await;
+    asking.allow(StartAccess::Look);
+    let reasons = [
+        (ScreenError::Unsupported, "cannot start sharing its screen"),
+        (ScreenError::NeedsPermission, "Screen Recording"),
+        (ScreenError::Unavailable, "no screen to give right now"),
+        (
+            ScreenError::Failed(PlatformError::new("No window server.")),
+            "could not give its screen",
+        ),
+    ];
+    for (error, words) in reasons {
+        *asking.sharer.screen_plan.lock().unwrap() = ScreenPlan::Refuses(error.clone());
+        let why = asking.refused(false).await;
+        assert!(why.contains("Studio Mac"), "{error}: {why}");
+        assert!(why.contains(words), "{error}: {why}");
+    }
+    assert_eq!(asking.screens(), 4);
+
+    // No asking left the Mac or the phone busy: once the Mac has a screen, the phone shows it.
+    *asking.sharer.screen_plan.lock().unwrap() = ScreenPlan::Gives(whole_display());
+    asking.started(false).await;
+}
+
+#[tokio::test]
+async fn a_mac_that_cannot_start_sharing_when_asked_is_an_error_that_names_it() {
+    let asking = Asking::with(Sharer::new(true, None)).await;
+    asking.allow(StartAccess::Control);
+
+    let error = asking
+        .phone
+        .app
+        .start_screen(&asking.mac.id(), false)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Declined);
+    assert!(
+        error.message().contains("Studio Mac"),
+        "{}",
+        error.message()
+    );
+    assert!(
+        error.message().contains("cannot start sharing its screen"),
+        "{}",
+        error.message()
+    );
+    assert_eq!(asking.screens(), 0);
+}
+
+#[tokio::test]
+async fn a_device_that_shows_no_screens_cannot_ask_for_one() {
+    let mac = Dev::start(
+        "Studio Mac",
+        Windows::none().sharing(Sharer::with_screen(true)),
+    )
+    .await;
+    let plain = Dev::start("Plain", Windows::none()).await;
+    pair(&mac, &plain).await;
+    mac.app
+        .set_start_access(&plain.id(), StartAccess::Look)
+        .unwrap();
+
+    let error = plain.app.start_screen(&mac.id(), false).await.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Other);
+    assert!(
+        error.message().contains("cannot show screens"),
+        "{}",
+        error.message()
+    );
+}
+
+#[tokio::test]
+async fn only_a_paired_device_can_be_asked_for_its_screen() {
+    let asking = Asking::new(false).await;
+    for id in [
+        Identity::generate().device_id().to_string(),
+        "not an id".to_owned(),
+    ] {
+        let error = asking.phone.app.start_screen(&id, false).await.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::NotPaired, "{id}");
+    }
+    assert_eq!(asking.screens(), 0);
+}
+
+#[tokio::test]
+async fn a_platform_that_cannot_make_the_screen_says_so_and_the_mac_is_not_asked() {
+    let asking = Asking::new(false).await;
+    asking.allow(StartAccess::Look);
+    *asking.viewer.fail.lock().unwrap() = Some("The screen could not be made.".to_owned());
+
+    let error = asking
+        .phone
+        .app
+        .start_screen(&asking.mac.id(), false)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Other);
+    assert!(
+        error.message().contains("could not be made"),
+        "{}",
+        error.message()
+    );
+    assert_eq!(asking.screens(), 0);
+
+    // It was nothing that the Mac needs to know: once the platform can, the screen is shown.
+    *asking.viewer.fail.lock().unwrap() = None;
+    asking.started(false).await;
+}
+
+#[tokio::test]
+async fn one_screen_at_a_time_and_the_next_asking_waits_until_the_first_is_ended() {
+    let asking = Asking::new(false).await;
+    asking.allow(StartAccess::Look);
+    let mut mac_events = asking.mac.app.events();
+    let session = asking.started(false).await;
+    let shared = started_at(&mut mac_events).await;
+    until("the first picture to be shown", || {
+        asking.viewer.heard.has("show 0")
+    })
+    .await;
+
+    let error = asking
+        .phone
+        .app
+        .start_screen(&asking.mac.id(), false)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Other);
+    assert!(
+        error.message().contains("End it first"),
+        "{}",
+        error.message()
+    );
+    assert_eq!(asking.screens(), 1, "the Mac was asked a second time");
+
+    // The Mac is busy until it has heard that the screen ended, and not for long.
+    assert!(asking.phone.app.end_window(session.id));
+    next_matching(&mut mac_events, |event| match event {
+        Event::WindowEnded { id, .. } if id == shared.id => Some(()),
+        _ => None,
+    })
+    .await;
+    let again = asking.started(false).await;
+    assert_ne!(again.id, session.id);
+    assert_eq!(asking.screens(), 2);
+}
+
+#[tokio::test]
+async fn the_mac_ends_the_screen_it_gave_and_the_phone_hears_it() {
+    let asking = Asking::new(false).await;
+    asking.allow(StartAccess::Look);
+    let mut mac_events = asking.mac.app.events();
+    let mut phone_events = asking.phone.app.events();
+    let session = asking.started(false).await;
+    let shared = started_at(&mut mac_events).await;
+
+    assert!(asking.mac.app.end_window(shared.id));
+    let end = next_matching(&mut phone_events, |event| match event {
+        Event::WindowEnded { id, end } if id == session.id => Some(end),
+        _ => None,
+    })
+    .await;
+    assert_eq!(end, WindowEnd::OtherDevice);
+    until("the platform of the phone to be told", || {
+        asking.viewer.heard.has("ended")
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_person_who_gives_up_while_the_mac_gets_ready_leaves_nothing_shown_and_may_ask_again() {
+    let asking = Asking::new(false).await;
+    asking.allow(StartAccess::Look);
+    let (open, gate) = oneshot::channel();
+    *asking.sharer.screen_gate.lock().unwrap() = Some(gate);
+    let mut phone_events = asking.phone.app.events();
+
+    // The Mac takes its time to give the screen, and the asking is dropped.
+    tokio::select! {
+        outcome = asking.asks(false) => panic!("the asking was answered: {outcome:?}"),
+        () = until("the Mac to ask its platform for the screen", || asking.screens() == 1) => {}
+    }
+    open.send(()).unwrap();
+    until("the platform of the Mac to let go of the screen", || {
+        asking.sharer.dropped.load(Ordering::Relaxed) == 1
+    })
+    .await;
+    let started = tokio::time::timeout(QUIET, started_at(&mut phone_events)).await;
+    assert!(
+        started.is_err(),
+        "a screen was shown that nobody waited for"
+    );
+
+    // The Mac and the phone are free for the next asking.
+    asking.started(false).await;
+    assert_eq!(asking.screens(), 2);
 }

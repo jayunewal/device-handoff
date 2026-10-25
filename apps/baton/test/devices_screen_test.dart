@@ -38,6 +38,8 @@ FakeSession _session({List<Device> devices = const []}) => FakeSession(
 Widget _screen(
   FakeSession session, {
   void Function(Device device, {required bool control})? onShareWindow,
+  void Function(Device device, {required bool control})? onStartScreen,
+  bool canGiveScreen = false,
   ControlAccessKeeper? controlAccess,
 }) => MaterialApp(
   home: DevicesScreen(
@@ -46,6 +48,8 @@ Widget _screen(
     // No camera here: the pairing screens get a stand-in.
     scanner: (context, onCode) => const Text('(camera)'),
     onShareWindow: onShareWindow,
+    onStartScreen: onStartScreen,
+    canGiveScreen: canGiveScreen,
     controlAccess:
         controlAccess ?? FakeControlAccess(ControlAccess.unavailable),
   ),
@@ -55,12 +59,16 @@ Future<void> _show(
   WidgetTester tester,
   FakeSession session, {
   void Function(Device device, {required bool control})? onShareWindow,
+  void Function(Device device, {required bool control})? onStartScreen,
+  bool canGiveScreen = false,
   ControlAccessKeeper? controlAccess,
 }) async {
   await tester.pumpWidget(
     _screen(
       session,
       onShareWindow: onShareWindow,
+      onStartScreen: onStartScreen,
+      canGiveScreen: canGiveScreen,
       controlAccess: controlAccess,
     ),
   );
@@ -684,6 +692,406 @@ void main() {
         find.byTooltip('Share a window or screen with Phone'),
         findsNothing,
       );
+    });
+  });
+
+  group('a screen that a device is asked for', () {
+    final mac = _device('Anna’s Mac', Platform.macOs);
+    final asked = <(String, bool)>[];
+
+    Future<void> show(
+      WidgetTester tester, {
+      List<Device>? devices,
+      bool canAsk = true,
+    }) async {
+      asked.clear();
+      await _show(
+        tester,
+        _session(devices: devices ?? [mac]),
+        onStartScreen: canAsk
+            ? (device, {required control}) => asked.add((device.name, control))
+            : null,
+      );
+    }
+
+    testWidgets('is a button on a Mac, which only asks', (tester) async {
+      await show(tester);
+
+      await tester.tap(find.byTooltip('Look at the screen of Anna’s Mac'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Look at its screen'), findsOneWidget);
+      expect(find.text('Look at its screen and control it'), findsOneWidget);
+      expect(asked, isEmpty);
+    });
+
+    testWidgets('is asked for to look at when that is chosen', (tester) async {
+      await show(tester);
+
+      await tester.tap(find.byTooltip('Look at the screen of Anna’s Mac'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Look at its screen'));
+      await tester.pumpAndSettle();
+
+      expect(asked, [('Anna’s Mac', false)]);
+    });
+
+    testWidgets('is asked for to look at and control when that is chosen', (
+      tester,
+    ) async {
+      await show(tester);
+
+      await tester.tap(find.byTooltip('Look at the screen of Anna’s Mac'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Look at its screen and control it'));
+      await tester.pumpAndSettle();
+
+      expect(asked, [('Anna’s Mac', true)]);
+    });
+
+    testWidgets('is not offered for a device that gives no screen', (
+      tester,
+    ) async {
+      await show(
+        tester,
+        devices: [
+          _device('Kitchen iPad', Platform.ipadOs),
+          _device('Phone', Platform.android),
+          _device('Laptop', Platform.windows),
+        ],
+      );
+
+      expect(find.byIcon(Icons.visibility_outlined), findsNothing);
+      expect(
+        find.byTooltip('Look at the screen of Kitchen iPad'),
+        findsNothing,
+      );
+      expect(find.byTooltip('Look at the screen of Phone'), findsNothing);
+      expect(find.byTooltip('Look at the screen of Laptop'), findsNothing);
+    });
+
+    testWidgets('is not offered where screens are not shown', (tester) async {
+      await show(tester, canAsk: false);
+
+      expect(find.byTooltip('Look at the screen of Anna’s Mac'), findsNothing);
+      expect(find.byTooltip('Send to Anna’s Mac'), findsOneWidget);
+    });
+  });
+
+  group('what a device may do with the screen of this one', () {
+    final phone = _device('Phone', Platform.ios);
+    late FakeSession session;
+    late FakeControlAccess keeper;
+
+    Future<void> show(
+      WidgetTester tester, {
+      ControlAccess access = ControlAccess.allowed,
+      bool canGiveScreen = true,
+    }) async {
+      session = _session(devices: [phone]);
+      keeper = FakeControlAccess(access);
+      await _show(
+        tester,
+        session,
+        onShareWindow: (device, {required control}) {},
+        canGiveScreen: canGiveScreen,
+        controlAccess: keeper,
+      );
+    }
+
+    Future<void> open(WidgetTester tester) async {
+      await tester.tap(find.byTooltip('More about Phone'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Let this device ask for the screen…'));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> choose(WidgetTester tester, String choice) async {
+      await tester.tap(find.text(choice));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+    }
+
+    StartAccess? selected(WidgetTester tester) => tester
+        .widget<RadioGroup<StartAccess>>(find.byType(RadioGroup<StartAccess>))
+        .groupValue;
+
+    testWidgets(
+      'is a choice in the menu of a device, where the screen can be given',
+      (tester) async {
+        await show(tester);
+
+        await tester.tap(find.byTooltip('More about Phone'));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text('Let this device ask for the screen…'),
+          findsOneWidget,
+        );
+        expect(find.text('Forget this device'), findsOneWidget);
+      },
+    );
+
+    testWidgets('is not a choice where no screen can be given', (tester) async {
+      await show(tester, canGiveScreen: false);
+
+      await tester.tap(find.byTooltip('More about Phone'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Let this device ask for the screen…'), findsNothing);
+      expect(find.text('Forget this device'), findsOneWidget);
+    });
+
+    testWidgets('starts at off for a device that was just paired', (
+      tester,
+    ) async {
+      await show(tester);
+
+      await open(tester);
+
+      expect(
+        find.text('When Phone asks for the screen of this Mac'),
+        findsOneWidget,
+      );
+      expect(selected(tester), StartAccess.off);
+      expect(find.text('Do not show it'), findsOneWidget);
+      expect(find.text('Show it to look at'), findsOneWidget);
+      expect(find.text('Show it to look at and control'), findsOneWidget);
+    });
+
+    testWidgets('starts at what was kept', (tester) async {
+      await show(tester);
+      session.startAccesses[phone.id] = StartAccess.look;
+
+      await open(tester);
+
+      expect(selected(tester), StartAccess.look);
+    });
+
+    testWidgets('is kept as the person chose it', (tester) async {
+      await show(tester);
+      await open(tester);
+
+      await choose(tester, 'Show it to look at');
+
+      expect(session.startAccessSet, [
+        (id: phone.id, access: StartAccess.look),
+      ]);
+      expect(find.text('Save'), findsNothing, reason: 'the dialog is closed');
+      expect(keeper.requests, 0);
+    });
+
+    testWidgets('is kept as off when that is chosen', (tester) async {
+      await show(tester);
+      session.startAccesses[phone.id] = StartAccess.control;
+      await open(tester);
+
+      await choose(tester, 'Do not show it');
+
+      expect(session.startAccessSet, [(id: phone.id, access: StartAccess.off)]);
+    });
+
+    testWidgets('is left alone when the person cancels', (tester) async {
+      await show(tester);
+      await open(tester);
+
+      await tester.tap(find.text('Show it to look at'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+
+      expect(session.startAccessSet, isEmpty);
+      expect(find.text('Save'), findsNothing);
+    });
+
+    testWidgets('is not kept again when nothing was changed', (tester) async {
+      await show(tester);
+      session.startAccesses[phone.id] = StartAccess.look;
+      await open(tester);
+
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      expect(session.startAccessSet, isEmpty);
+    });
+
+    testWidgets(
+      'lets the device control the screen when the system allows it',
+      (tester) async {
+        await show(tester);
+        await open(tester);
+
+        await choose(tester, 'Show it to look at and control');
+
+        expect(session.startAccessSet, [
+          (id: phone.id, access: StartAccess.control),
+        ]);
+        expect(keeper.requests, 0);
+        expect(find.textContaining('To let Phone control'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'asks the system, once it is kept, when control has not been allowed',
+      (tester) async {
+        await show(tester, access: ControlAccess.needed);
+        await open(tester);
+
+        await choose(tester, 'Show it to look at and control');
+
+        expect(session.startAccessSet, [
+          (id: phone.id, access: StartAccess.control),
+        ]);
+        expect(keeper.requests, 1);
+        expect(
+          find.text(
+            'To let Phone control a window or a screen, allow Baton to control '
+            'this computer in System Settings, under Privacy & Security, '
+            'Accessibility. If Baton is in the list already, take it out and '
+            'add it again.',
+          ),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets('does not ask the system for the device that may only look', (
+      tester,
+    ) async {
+      await show(tester, access: ControlAccess.needed);
+      await open(tester);
+
+      await choose(tester, 'Show it to look at');
+
+      expect(keeper.requests, 0);
+    });
+
+    testWidgets('leaves control out where the system cannot do it', (
+      tester,
+    ) async {
+      await show(tester, access: ControlAccess.unavailable);
+
+      await open(tester);
+
+      expect(find.text('Show it to look at'), findsOneWidget);
+      expect(find.text('Show it to look at and control'), findsNothing);
+    });
+
+    testWidgets('keeps control in the dialog where it was allowed before', (
+      tester,
+    ) async {
+      await show(tester, access: ControlAccess.unavailable);
+      session.startAccesses[phone.id] = StartAccess.control;
+
+      await open(tester);
+
+      expect(find.text('Show it to look at and control'), findsOneWidget);
+      expect(selected(tester), StartAccess.control);
+    });
+
+    testWidgets('says why it could not be kept', (tester) async {
+      await show(tester);
+      session.startAccessFailure = const BatonError(
+        kind: ErrorKind.storage,
+        message: 'Baton could not keep the setting.',
+      );
+      await open(tester);
+
+      await choose(tester, 'Show it to look at');
+
+      expect(find.text('Baton could not keep the setting.'), findsOneWidget);
+      expect(keeper.requests, 0);
+    });
+
+    testWidgets(
+      'asks for no consent to control when the setting could not be kept',
+      (tester) async {
+        await show(tester, access: ControlAccess.needed);
+        session.startAccessFailure = const BatonError(
+          kind: ErrorKind.storage,
+          message: 'Baton could not keep the setting.',
+        );
+        await open(tester);
+
+        await choose(tester, 'Show it to look at and control');
+
+        expect(find.text('Baton could not keep the setting.'), findsOneWidget);
+        expect(keeper.requests, 0);
+      },
+    );
+
+    testWidgets('shows the choice that the person made until it is kept', (
+      tester,
+    ) async {
+      await show(tester);
+      await open(tester);
+      expect(selected(tester), StartAccess.off);
+
+      await tester.tap(find.text('Show it to look at'));
+      await tester.pumpAndSettle();
+      expect(selected(tester), StartAccess.look);
+
+      await tester.tap(find.text('Show it to look at and control'));
+      await tester.pumpAndSettle();
+      expect(selected(tester), StartAccess.control);
+      expect(session.startAccessSet, isEmpty);
+    });
+
+    testWidgets('asks the system about control where no window is shared', (
+      tester,
+    ) async {
+      session = _session(devices: [phone]);
+      keeper = FakeControlAccess(ControlAccess.allowed);
+      await _show(tester, session, canGiveScreen: true, controlAccess: keeper);
+
+      await open(tester);
+
+      // The screen did not start from "unavailable", which is what it is before the system has
+      // answered: it asked.
+      expect(find.text('Show it to look at'), findsOneWidget);
+      expect(find.text('Show it to look at and control'), findsOneWidget);
+    });
+
+    testWidgets('opens nothing for a device that was forgotten meanwhile', (
+      tester,
+    ) async {
+      await show(tester);
+      session.startAccessUnknown = const BatonError(
+        kind: ErrorKind.notPaired,
+        message: 'Phone is not paired with this device.',
+      );
+
+      await tester.tap(find.byTooltip('More about Phone'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Let this device ask for the screen…'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Save'), findsNothing);
+      expect(session.startAccessSet, isEmpty);
+    });
+
+    testWidgets('names the device as fit to show', (tester) async {
+      const name = 'Pad\u202Eexe';
+      session = _session(devices: [_device(name, Platform.ios)]);
+      await _show(
+        tester,
+        session,
+        onShareWindow: (device, {required control}) {},
+        canGiveScreen: true,
+        controlAccess: FakeControlAccess(),
+      );
+
+      await tester.tap(find.byTooltip('More about $name'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Let this device ask for the screen…'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('When ${visibleText(name)} asks for the screen of this Mac'),
+        findsOneWidget,
+      );
+      expect(visibleText(name), isNot(name));
     });
   });
 }

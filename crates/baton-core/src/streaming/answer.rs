@@ -82,6 +82,22 @@ impl WindowOffer {
             control: offer.control,
         }
     }
+
+    /// The offer that a device expects when it asked another for its whole screen
+    /// ([`Node::start`](crate::Node::start)), for a platform that has to make the screen before
+    /// the offer comes: a display with no name, and a size that is not known yet (nought by
+    /// nought). `control` is whether the person wished to control it; the offer grants no more.
+    #[must_use]
+    pub fn asked_screen(control: bool) -> Self {
+        Self {
+            display: true,
+            title: None,
+            app: None,
+            width: 0,
+            height: 0,
+            control,
+        }
+    }
 }
 
 // What a window is called can name a document, a person or a page.

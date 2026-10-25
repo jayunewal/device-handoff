@@ -55,6 +55,13 @@ void main() {
     }
   });
 
+  test('a Mac is asked for its screen and no other system is', () {
+    expect(givesScreenWhenAsked(Platform.macOs), isTrue);
+    for (final platform in Platform.values.where((p) => p != Platform.macOs)) {
+      expect(givesScreenWhenAsked(platform), isFalse, reason: '$platform');
+    }
+  });
+
   test('the time left is counted down in minutes and seconds', () {
     final start = DateTime.fromMillisecondsSinceEpoch(1760529600 * 1000);
     int expiresAfter(int seconds) => 1760529600 + seconds;

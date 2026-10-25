@@ -24,6 +24,15 @@ final _kitchenIpad = Device(
   lastSeenAt: 1760529600,
 );
 
+final _annasMac = Device(
+  id: 'b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0',
+  name: 'Anna’s Mac',
+  platform: Platform.macOs,
+  fingerprint: 'mnop-qrst-uvwx-yzab-cdef',
+  pairedAt: 1760000000,
+  lastSeenAt: 1760529600,
+);
+
 FakeSession _session() => FakeSession(
   me: const Me(
     id: 'f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0',
@@ -103,6 +112,23 @@ const _windowAbilities = WindowAbilities(
   canShow: true,
   canShare: true,
   canControl: false,
+  canGiveScreen: false,
+);
+
+/// A phone, which shows the screens of others and shares nothing.
+const _phoneAbilities = WindowAbilities(
+  canShow: true,
+  canShare: false,
+  canControl: false,
+  canGiveScreen: false,
+);
+
+/// A Mac that gives its screen to a device that was allowed to ask for it.
+const _macAbilities = WindowAbilities(
+  canShow: false,
+  canShare: true,
+  canControl: true,
+  canGiveScreen: true,
 );
 
 const _plan = ReceivedItem.link(
@@ -460,6 +486,168 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(session.windowsShared, [(id: _kitchenIpad.id, control: true)]);
+  });
+
+  testWidgets('a device that shows no screen offers no button to ask for one', (
+    tester,
+  ) async {
+    final session = _session()..pairedDevices = [_annasMac];
+    await _show(tester, session);
+
+    expect(find.byTooltip('Look at the screen of Anna’s Mac'), findsNothing);
+  });
+
+  testWidgets(
+    'a Mac that gives its screen lets the person say which device may ask',
+    (tester) async {
+      final session = _session()..abilities = _macAbilities;
+      await _show(tester, session);
+
+      await tester.tap(find.byTooltip('More about Kitchen iPad'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Let this device ask for the screen…'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Show it to look at'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      expect(session.startAccessSet, [
+        (id: _kitchenIpad.id, access: StartAccess.look),
+      ]);
+    },
+  );
+
+  testWidgets('a device that gives no screen offers no such choice', (
+    tester,
+  ) async {
+    final session = _session()..abilities = _phoneAbilities;
+    await _show(tester, session);
+
+    await tester.tap(find.byTooltip('More about Kitchen iPad'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Let this device ask for the screen…'), findsNothing);
+  });
+
+  testWidgets(
+    'a device that shares windows but cannot give its screen offers no such '
+    'choice',
+    (tester) async {
+      final session = _session()
+        ..abilities = const WindowAbilities(
+          canShow: true,
+          canShare: true,
+          canControl: true,
+          canGiveScreen: false,
+        );
+      await _show(tester, session);
+
+      await tester.tap(find.byTooltip('More about Kitchen iPad'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Let this device ask for the screen…'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'a screen that is asked for opens on a screen of its own, once it comes',
+    (tester) async {
+      final screen = FakeScreen();
+      final session = _session()
+        ..pairedDevices = [_annasMac]
+        ..abilities = _phoneAbilities
+        ..holdStart();
+      await _show(tester, session, const SystemFileChooser(), null, screen);
+
+      await tester.tap(find.byTooltip('Look at the screen of Anna’s Mac'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Look at its screen'));
+      await tester.pump();
+
+      expect(session.screensAsked, [(id: _annasMac.id, control: false)]);
+      expect(find.text('Asking Anna’s Mac for its screen'), findsOneWidget);
+      expect(
+        screen.on,
+        isTrue,
+        reason: 'the screen stays on while it is asked',
+      );
+
+      // The Mac starts it, and the screen that shows it opens before the Mac has answered.
+      session.emit(
+        Event.windowStarted(
+          session: sampleWindowSession(
+            display: true,
+            title: null,
+            app: null,
+            width: 0,
+            height: 0,
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(
+        find.text('Waiting for the screen of Anna’s Mac'),
+        findsOneWidget,
+        reason: 'it has no size to draw before its first picture',
+      );
+      expect(find.byType(Texture), findsNothing);
+      expect(find.text('The screen cannot be shown here'), findsNothing);
+
+      session.releaseStart();
+      await tester.pump();
+      session.emit(const Event.windowPicture(id: 1, width: 2560, height: 1600));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(find.byType(Texture), findsOneWidget);
+      expect(find.text('Waiting for the screen of Anna’s Mac'), findsNothing);
+      expect(screen.on, isTrue, reason: 'and while the screen shows');
+
+      // The person stops it, after being asked.
+      await tester.tap(find.byTooltip('Stop showing'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Stop'));
+      await tester.pumpAndSettle();
+
+      expect(session.windowsEnded, [1]);
+      expect(find.byType(Texture), findsNothing);
+      expect(screen.on, isFalse);
+    },
+  );
+
+  testWidgets('a screen that the Mac would not start is told with the reason', (
+    tester,
+  ) async {
+    final screen = FakeScreen();
+    final session = _session()
+      ..pairedDevices = [_annasMac]
+      ..abilities = _phoneAbilities
+      ..screenStart = const ScreenStarted.notStarted(
+        message:
+            'Anna’s Mac has not allowed this device to ask for its screen. '
+            'Someone there can allow it in the settings for this device.',
+      );
+    await _show(tester, session, const SystemFileChooser(), null, screen);
+
+    await tester.tap(find.byTooltip('Look at the screen of Anna’s Mac'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Look at its screen and control it'));
+    await tester.pumpAndSettle();
+
+    expect(session.screensAsked, [(id: _annasMac.id, control: true)]);
+    expect(
+      find.text(
+        'Anna’s Mac has not allowed this device to ask for its screen. '
+        'Someone there can allow it in the settings for this device.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Asking'), findsNothing);
+    expect(find.byType(Texture), findsNothing);
+    expect(screen.on, isFalse);
   });
 
   testWidgets(

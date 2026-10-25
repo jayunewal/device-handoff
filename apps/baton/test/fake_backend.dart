@@ -297,6 +297,7 @@ class FakeSession implements Session {
     canShow: false,
     canShare: false,
     canControl: false,
+    canGiveScreen: false,
   );
 
   @override
@@ -339,6 +340,68 @@ class FakeSession implements Session {
     final failure = shareFailure;
     if (failure != null) throw failure;
     return sharing;
+  }
+
+  /// What `startScreen` was asked, in order.
+  final List<({String id, bool control})> screensAsked = [];
+
+  /// What `startScreen` gives: a screen that began, with no size yet.
+  ScreenStarted screenStart = ScreenStarted.started(
+    session: sampleWindowSession(
+      display: true,
+      title: null,
+      app: null,
+      width: 0,
+      height: 0,
+    ),
+  );
+
+  /// What `startScreen` throws, if it should fail.
+  Object? startFailure;
+
+  /// Makes `startScreen` wait until [releaseStart], as it does while the other device gets its
+  /// screen ready.
+  void holdStart() => _startReady = Completer<void>();
+
+  /// Lets the held `startScreen` answer.
+  void releaseStart() => _startReady?.complete();
+
+  Completer<void>? _startReady;
+
+  @override
+  Future<ScreenStarted> startScreen(String id, {bool control = false}) async {
+    screensAsked.add((id: id, control: control));
+    await _startReady?.future;
+    final failure = startFailure;
+    if (failure != null) throw failure;
+    return screenStart;
+  }
+
+  /// What `startAccess` gives for each device. A device that is not here is `StartAccess.off`.
+  final Map<String, StartAccess> startAccesses = {};
+
+  /// What `startAccess` throws, if it should fail: say a device that was forgotten.
+  Object? startAccessUnknown;
+
+  @override
+  StartAccess startAccess(String id) {
+    final failure = startAccessUnknown;
+    if (failure != null) throw failure;
+    return startAccesses[id] ?? StartAccess.off;
+  }
+
+  /// What `setStartAccess` was asked, in order.
+  final List<({String id, StartAccess access})> startAccessSet = [];
+
+  /// What `setStartAccess` throws, if it should fail.
+  Object? startAccessFailure;
+
+  @override
+  Future<void> setStartAccess(String id, StartAccess access) async {
+    startAccessSet.add((id: id, access: access));
+    final failure = startAccessFailure;
+    if (failure != null) throw failure;
+    startAccesses[id] = access;
   }
 
   /// The sessions that `endWindow` was asked to end, in order.

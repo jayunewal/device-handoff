@@ -552,6 +552,9 @@ pub struct FilesSent {
 }
 
 /// What a device does with windows, as a screen needs to know it to offer only what is possible.
+// Four things a device can do, each of which it can or cannot on its own: a state that combined
+// them would only hide which one a screen means.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowAbilities {
     /// This device shows the windows that paired devices offer.
@@ -560,6 +563,10 @@ pub struct WindowAbilities {
     pub can_share: bool,
     /// The person can let another device control a window that this one shares.
     pub can_control: bool,
+    /// This device can give its screen to a paired device that asks for it, with no picker, if the
+    /// person here allowed that device ([`App::set_start_access`](crate::App::set_start_access)).
+    /// A screen offers that setting only where this is so.
+    pub can_give_screen: bool,
 }
 
 /// A window, or a whole display, that a paired device offers to show on this one, for the person
@@ -634,9 +641,11 @@ pub struct WindowSession {
     /// The name of the application the window belongs to, or `None`.
     pub app: Option<String>,
     /// The width of the window in pixels, as it was offered. The picture may differ from it, and
-    /// change while the session runs.
+    /// change while the session runs. It is nought for a screen that this device asked another to
+    /// start sharing: that screen is shown before its size is known, and the size comes with the
+    /// first picture ([`Event::WindowPicture`](crate::Event::WindowPicture)).
     pub width: u32,
-    /// The height of the window in pixels, as it was offered.
+    /// The height of the window in pixels, as it was offered; nought in the same case.
     pub height: u32,
     /// Whether the viewer may control the window.
     pub control: bool,
@@ -919,6 +928,19 @@ impl From<Reason> for WindowNoticeReason {
             Reason::Malformed | Reason::Other => Self::Other,
         }
     }
+}
+
+/// What came of asking a paired device to start sharing its screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScreenStarted {
+    /// The other device offered its screen, this one took it without asking anybody, and it is
+    /// shown. A screen that is started has no title and no application, and its size is not known
+    /// until the first picture ([`Event::WindowPicture`](crate::Event::WindowPicture)). Its end
+    /// comes as [`Event::WindowEnded`](crate::Event::WindowEnded).
+    Started(WindowSession),
+    /// The other device did not start it; the sentence says why, in words that name the device and
+    /// tell the person what to do about it.
+    NotStarted(String),
 }
 
 /// What came of offering a window to a paired device.

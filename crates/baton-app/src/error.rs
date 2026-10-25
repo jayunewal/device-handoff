@@ -13,6 +13,7 @@ use std::{fmt, path::Path};
 
 use baton_core::{
     Error as Core,
+    streaming::WhyNot,
     transfer::{
         destination::OpenError,
         send::{Error as SendError, Outcome, Why, selection::SelectionError},
@@ -236,6 +237,64 @@ impl Error {
             ),
             other => Self::reaching(other, device),
         }
+    }
+
+    /// A failure while asking the paired device called `device` to start sharing its screen.
+    pub(crate) fn asking(error: &Core, device: &str) -> Self {
+        match error {
+            Core::Busy => Self::new(
+                ErrorKind::Other,
+                "A window or a screen is being shared or shown already. End it first.",
+            ),
+            Core::Unsupported(_) => Self::new(
+                ErrorKind::Declined,
+                format!(
+                    "{device} cannot start sharing its screen when asked. It may need a newer \
+                     version of Baton."
+                ),
+            ),
+            other => Self::reaching(other, device),
+        }
+    }
+
+    /// The device `device` was asked to start sharing its screen and said that it would not, for
+    /// this reason.
+    pub(crate) fn not_started(device: &str, why: WhyNot) -> Self {
+        let message = match why {
+            WhyNot::Unsupported => format!(
+                "{device} cannot start sharing its screen when asked. It may need a newer \
+                 version of Baton."
+            ),
+            WhyNot::NotAllowed => format!(
+                "{device} has not allowed this device to ask for its screen. Someone there can \
+                 allow it in the settings for this device."
+            ),
+            WhyNot::Busy => format!(
+                "{device} is sharing or showing something already. Try again when that is over."
+            ),
+            WhyNot::RateLimited => {
+                format!("This device asked {device} too often. Wait a moment, then try again.")
+            }
+            WhyNot::Invalid => format!(
+                "{device} could not act on that request. Both devices may need a newer version \
+                 of Baton."
+            ),
+            WhyNot::Unavailable => format!(
+                "{device} has no screen to give right now. It may be asleep or locked. Wake and \
+                 unlock it, then try again."
+            ),
+            WhyNot::NeedsPermission => format!(
+                "Baton on {device} is not allowed to record its screen. Someone there has to turn \
+                 it on under Privacy & Security, Screen Recording, in System Settings, and then \
+                 open Baton again."
+            ),
+            WhyNot::Failed => format!("{device} could not give its screen. Try again."),
+            WhyNot::Other => format!(
+                "{device} gave a reason that this version of Baton does not know. Both devices \
+                 may need a newer version."
+            ),
+        };
+        Self::new(ErrorKind::Declined, message)
     }
 
     /// The device `device` answered and did not take the `what` that was sent.
@@ -528,6 +587,67 @@ mod tests {
             "{bad}"
         );
         assert!(!bad.message().contains("window"), "{bad}");
+    }
+
+    #[test]
+    fn a_screen_that_cannot_be_asked_for_is_told_in_words_of_its_own() {
+        let busy = Error::asking(&Core::Busy, "Studio Mac");
+        assert_eq!(busy.kind(), ErrorKind::Other);
+        assert!(busy.message().contains("End it first"), "{busy}");
+
+        let old = Error::asking(&Core::Unsupported("stream.start".to_owned()), "Studio Mac");
+        assert_eq!(old.kind(), ErrorKind::Declined);
+        assert!(old.message().contains("Studio Mac"), "{old}");
+        assert!(old.message().contains("cannot start sharing"), "{old}");
+        assert!(old.message().contains("newer version"), "{old}");
+
+        // The Mac that does not answer in time is one that could not be reached.
+        let slow = Error::asking(&Core::Timeout("the offer"), "Studio Mac");
+        assert_eq!(slow.kind(), ErrorKind::Unreachable);
+        assert!(slow.message().contains("Studio Mac"), "{slow}");
+    }
+
+    #[test]
+    fn each_reason_for_not_starting_a_screen_is_a_sentence_that_names_the_device() {
+        // `not_started` has no wildcard arm, so a reason that a later version adds does not
+        // compile until it has a sentence, and is listed here.
+        let reasons = [
+            (WhyNot::Unsupported, "newer version"),
+            (WhyNot::NotAllowed, "settings for this device"),
+            (WhyNot::Busy, "Try again when that is over"),
+            (WhyNot::RateLimited, "too often"),
+            (WhyNot::Invalid, "newer version"),
+            (
+                WhyNot::Unavailable,
+                "asleep or locked. Wake and unlock it, then try again",
+            ),
+            (
+                WhyNot::NeedsPermission,
+                "Screen Recording, in System Settings, and then open Baton again",
+            ),
+            (WhyNot::Failed, "Try again"),
+            (WhyNot::Other, "newer version"),
+        ];
+        // The longest name that a device can have, and one that is short.
+        for name in ["x".repeat(64), "Studio Mac".to_owned()] {
+            let mut told = Vec::new();
+            for (why, advice) in reasons {
+                let error = Error::not_started(&name, why);
+                let message = error.message();
+                assert_eq!(error.kind(), ErrorKind::Declined, "{why:?}");
+                assert!(message.contains(&name), "{why:?}: {message}");
+                assert!(message.contains(advice), "{why:?}: {message}");
+                assert!(message.ends_with('.'), "{why:?}: {message}");
+                assert!(!message.contains('\n'), "{why:?}: {message}");
+                // Cut at the end, the advice would be what is lost.
+                assert!(!message.contains('…'), "{why:?}: {message}");
+                assert!(message.chars().count() <= MAX_MESSAGE_CHARS, "{why:?}");
+                told.push(message.to_owned());
+            }
+            told.sort();
+            told.dedup();
+            assert_eq!(told.len(), reasons.len(), "two reasons share a sentence");
+        }
     }
 
     #[test]

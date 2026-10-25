@@ -12,10 +12,10 @@ use crate::api::{
     error::{BatonError, ErrorKind},
     model::{
         Device, Event, FileProgress, FilesSent, Me, Network, Offer, OfferOutcome, PairingRequest,
-        Platform, PreviewName, Reach, Received, ReceivedItem, Receiving, Route, SendStage,
-        TransferEnd, TransferRequest, TransferResult, WindowAbilities, WindowButton, WindowEnd,
-        WindowInput, WindowModifiers, WindowNoticeReason, WindowPointer, WindowRequest, WindowRole,
-        WindowSession, WindowShared,
+        Platform, PreviewName, Reach, Received, ReceivedItem, Receiving, Route, ScreenStarted,
+        SendStage, StartAccess, TransferEnd, TransferRequest, TransferResult, WindowAbilities,
+        WindowButton, WindowEnd, WindowInput, WindowModifiers, WindowNoticeReason, WindowPointer,
+        WindowRequest, WindowRole, WindowSession, WindowShared,
     },
 };
 
@@ -212,11 +212,33 @@ impl From<app::WindowAbilities> for WindowAbilities {
             can_show,
             can_share,
             can_control,
+            can_give_screen,
         } = abilities;
         Self {
             can_show,
             can_share,
             can_control,
+            can_give_screen,
+        }
+    }
+}
+
+impl From<app::StartAccess> for StartAccess {
+    fn from(access: app::StartAccess) -> Self {
+        match access {
+            app::StartAccess::Off => Self::Off,
+            app::StartAccess::Look => Self::Look,
+            app::StartAccess::Control => Self::Control,
+        }
+    }
+}
+
+impl From<StartAccess> for app::StartAccess {
+    fn from(access: StartAccess) -> Self {
+        match access {
+            StartAccess::Off => Self::Off,
+            StartAccess::Look => Self::Look,
+            StartAccess::Control => Self::Control,
         }
     }
 }
@@ -513,6 +535,17 @@ impl From<app::WindowNoticeReason> for WindowNoticeReason {
     }
 }
 
+impl From<app::ScreenStarted> for ScreenStarted {
+    fn from(started: app::ScreenStarted) -> Self {
+        match started {
+            app::ScreenStarted::Started(session) => Self::Started {
+                session: session.into(),
+            },
+            app::ScreenStarted::NotStarted(message) => Self::NotStarted { message },
+        }
+    }
+}
+
 impl From<app::WindowShared> for WindowShared {
     fn from(shared: app::WindowShared) -> Self {
         match shared {
@@ -775,14 +808,57 @@ mod tests {
             can_show: true,
             can_share: false,
             can_control: true,
+            can_give_screen: false,
         });
         assert_eq!(
             (
                 converted.can_show,
                 converted.can_share,
-                converted.can_control
+                converted.can_control,
+                converted.can_give_screen
             ),
-            (true, false, true)
+            (true, false, true, false)
+        );
+        let converted = WindowAbilities::from(app::WindowAbilities {
+            can_show: false,
+            can_share: true,
+            can_control: false,
+            can_give_screen: true,
+        });
+        assert_eq!(
+            (
+                converted.can_show,
+                converted.can_share,
+                converted.can_control,
+                converted.can_give_screen
+            ),
+            (false, true, false, true)
+        );
+    }
+
+    #[test]
+    fn what_a_paired_device_may_start_is_carried_over_both_ways() {
+        for (access, shown) in [
+            (app::StartAccess::Off, StartAccess::Off),
+            (app::StartAccess::Look, StartAccess::Look),
+            (app::StartAccess::Control, StartAccess::Control),
+        ] {
+            assert_eq!(StartAccess::from(access), shown);
+            assert_eq!(app::StartAccess::from(shown), access);
+        }
+    }
+
+    #[test]
+    fn what_came_of_asking_for_a_screen_keeps_its_session_and_its_sentence() {
+        assert!(matches!(
+            ScreenStarted::from(app::ScreenStarted::Started(session())),
+            ScreenStarted::Started { session } if session.id == 4
+        ));
+        assert_eq!(
+            ScreenStarted::from(app::ScreenStarted::NotStarted("No.".to_owned())),
+            ScreenStarted::NotStarted {
+                message: "No.".to_owned()
+            }
         );
     }
 

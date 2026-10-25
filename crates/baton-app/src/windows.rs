@@ -192,7 +192,11 @@ pub trait WindowViewer: Send + Sync + 'static {
     /// What the device can show. The same each time.
     fn limits(&self) -> ShowLimits;
 
-    /// The person said yes to `window`: makes the decoder and the screen for it.
+    /// The person said yes to `window`, or asked for a screen and the other device is about to
+    /// offer it: makes the decoder and the screen for it. In the second case `window` is a display
+    /// with no title and no application, its size is not known yet (`width` and `height` are
+    /// nought, and the size of the picture comes with the first picture), and `control` is what
+    /// the person wished for, which the other device may not grant.
     ///
     /// The call returns at once. A platform that has to prepare something first fails here, with
     /// a sentence for the person, and the window is refused. The platform keeps the `link` for

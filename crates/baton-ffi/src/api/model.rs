@@ -328,6 +328,8 @@ pub enum Receiving {
 }
 
 /// What this device does with windows, so that a screen offers only what is possible.
+// Four things a device can do, each of its own: see `baton_app::WindowAbilities`.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowAbilities {
     /// This device shows the windows that paired devices offer.
@@ -336,6 +338,22 @@ pub struct WindowAbilities {
     pub can_share: bool,
     /// The person can let another device control a window that this one shares.
     pub can_control: bool,
+    /// This device can give its screen to a paired device that asks for it, with no picker, if the
+    /// person here allowed that device (`Baton.setStartAccess`). Offer that setting only where
+    /// this is so.
+    pub can_give_screen: bool,
+}
+
+/// What a paired device may do at this one without a person here being asked: ask it to start
+/// sharing its screen. Only the person at this device can change it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartAccess {
+    /// It cannot. Every device that was just paired is here.
+    Off,
+    /// It can ask for the screen to look at.
+    Look,
+    /// It can ask for the screen to look at and control.
+    Control,
 }
 
 /// A window, or a whole display, that a paired device offers to show on this one, for the person
@@ -408,9 +426,11 @@ pub struct WindowSession {
     /// The name of the application the window belongs to, or `null`.
     pub app: Option<String>,
     /// The width of the window in pixels, as it was offered. The picture may differ from it, and
-    /// change while the session runs.
+    /// change while the session runs. It is nought for a screen that this device asked another to
+    /// start sharing: that screen is shown before its size is known, and the size comes with the
+    /// first `Event.windowPicture`.
     pub width: u32,
-    /// The height of the window in pixels, as it was offered.
+    /// The height of the window in pixels, as it was offered; nought in the same case.
     pub height: u32,
     /// Whether the viewer may control the window.
     pub control: bool,
@@ -654,6 +674,24 @@ pub struct FilesSent {
     /// How many things in what was chosen were left out and not offered at all: links inside
     /// a folder, files that could not be read, and the like.
     pub left_out: u32,
+}
+
+/// What came of asking a paired device to start sharing its screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScreenStarted {
+    /// The other device offered its screen and it is shown here, with no one asked. Its end comes
+    /// as `Event.windowEnded`. A screen that was started has no title and no application, and its
+    /// size is not known until the first `Event.windowPicture`.
+    Started {
+        /// The session.
+        session: WindowSession,
+    },
+    /// The other device did not start it.
+    NotStarted {
+        /// One sentence that says why, in words that name the device and tell the person what to
+        /// do about it.
+        message: String,
+    },
 }
 
 /// What came of offering a window to a paired device.

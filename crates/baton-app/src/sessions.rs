@@ -15,8 +15,9 @@ use std::{
 use baton_core::{
     PairedDevice,
     streaming::{
-        DecodeError, Decoder, DecoderState, End, ShareOutcome, SourceHandle, StartSlot, Takes,
-        ViewHandle, Viewing, WindowHandler, WindowOffer, WindowShare, WindowVerdict,
+        DecodeError, Decoder, DecoderState, End, ShareOutcome, SourceHandle, StartOutcome,
+        StartSlot, Takes, ViewHandle, Viewing, Wanted, WindowHandler, WindowOffer, WindowShare,
+        WindowVerdict,
     },
     util::BoxFuture,
 };
@@ -28,8 +29,8 @@ use crate::{
     Error, ErrorKind, Event, Result,
     app::{Questions, locked},
     model::{
-        WindowAbilities, WindowEnd, WindowInput, WindowRequest, WindowRole, WindowSession,
-        WindowShared,
+        ScreenStarted, WindowAbilities, WindowEnd, WindowInput, WindowRequest, WindowRole,
+        WindowSession, WindowShared,
     },
     windows::{PickedWindow, ScreenLink, SharingFailure, WindowSharer, WindowViewer, noun},
 };
@@ -53,6 +54,18 @@ struct Accepted {
     link: ScreenLink,
     /// Tells the screens how large the picture is, once they know the window.
     pictures: Arc<Pictures>,
+}
+
+/// What a window that is to be shown here needs before the node can be asked to take it.
+struct Prepared {
+    /// The number that the user interface draws the screen with.
+    screen: i64,
+    /// Reaches the session of the screen, once the session runs.
+    link: ScreenLink,
+    /// Tells the screens how large the picture is, once they know the window.
+    pictures: Arc<Pictures>,
+    /// What this device takes, and the decoder that shows it.
+    viewing: Viewing,
 }
 
 /// What the source of a window that is shown here says that the screens need: the size of its
@@ -204,6 +217,10 @@ impl Sessions {
             can_show: self.viewer.is_some(),
             can_share: self.sharer.is_some(),
             can_control: self.sharer.as_ref().is_some_and(|sharer| sharer.control()),
+            can_give_screen: self
+                .sharer
+                .as_ref()
+                .is_some_and(|sharer| sharer.can_give_screen()),
         }
     }
 
@@ -332,31 +349,14 @@ impl Sessions {
             });
             WindowVerdict::Refuse
         };
-        let link = ScreenLink::default();
-        let screen = match viewer.open(offer, link.clone()) {
-            Ok(screen) => screen,
-            Err(error) => {
-                tracing::warn!(error = %error, "the platform could not show a window");
-                return failed(error.message());
-            }
-        };
-        let limits = viewer.limits();
-        let pictures = Pictures::new(self.events.clone());
-        let viewing = match Viewing::new(
-            Watching {
-                decoder: screen.decoder,
-                pictures: Arc::clone(&pictures),
-            },
-            limits.max_width,
-            limits.max_height,
-            limits.max_fps,
-            limits.codecs,
-        ) {
-            Ok(viewing) => viewing,
-            Err(error) => {
-                tracing::error!(error = %error, "the platform's limits are not within the protocol");
-                return failed("This device cannot show windows.");
-            }
+        let Prepared {
+            screen,
+            link,
+            pictures,
+            viewing,
+        } = match self.prepare(viewer, offer) {
+            Ok(prepared) => prepared,
+            Err(sentence) => return failed(&sentence),
         };
         *locked(&self.accepted) = Some(Accepted {
             request: WindowRequest {
@@ -370,11 +370,47 @@ impl Sessions {
                 height: offer.height,
                 control: offer.control,
             },
-            screen: screen.id,
+            screen,
             link,
             pictures,
         });
         WindowVerdict::Accept(viewing)
+    }
+
+    /// The platform makes the screen for `offer`, and the node is told what this device takes and
+    /// shows the picture with. The sentence is what the person is told if that cannot be done.
+    fn prepare(
+        &self,
+        viewer: &Arc<dyn WindowViewer>,
+        offer: &WindowOffer,
+    ) -> std::result::Result<Prepared, String> {
+        let link = ScreenLink::default();
+        let screen = viewer.open(offer, link.clone()).map_err(|error| {
+            tracing::warn!(error = %error, "the platform could not show a window");
+            error.message().to_owned()
+        })?;
+        let limits = viewer.limits();
+        let pictures = Pictures::new(self.events.clone());
+        let viewing = Viewing::new(
+            Watching {
+                decoder: screen.decoder,
+                pictures: Arc::clone(&pictures),
+            },
+            limits.max_width,
+            limits.max_height,
+            limits.max_fps,
+            limits.codecs,
+        )
+        .map_err(|error| {
+            tracing::error!(error = %error, "the platform's limits are not within the protocol");
+            "This device cannot show windows.".to_owned()
+        })?;
+        Ok(Prepared {
+            screen: screen.id,
+            link,
+            pictures,
+            viewing,
+        })
     }
 
     /// The session of a window that was accepted runs. The node asks about one window at a time
@@ -409,18 +445,80 @@ impl Sessions {
             control,
             screen: Some(accepted.screen),
         };
+        self.begin_viewing(session, handle, &accepted.link, &accepted.pictures);
+    }
+
+    /// The session `session` of a window that is shown here runs with `handle`.
+    fn begin_viewing(
+        self: &Arc<Self>,
+        session: WindowSession,
+        handle: ViewHandle,
+        link: &ScreenLink,
+        pictures: &Pictures,
+    ) {
         let handle = Arc::new(handle);
-        accepted.link.connect(&handle);
+        link.connect(&handle);
         let ended = {
             let handle = Arc::clone(&handle);
             Box::pin(async move { window_end(handle.ended().await) })
         };
-        self.begin(
-            session,
-            Live::Viewing(handle),
-            ended,
-            Some(&accepted.pictures),
-        );
+        self.begin(session, Live::Viewing(handle), ended, Some(pictures));
+    }
+
+    /// Asks `peer` to start sharing its screen with this device, and shows it if it does. No
+    /// person at `peer` is asked: they allowed this device beforehand, in the settings for it.
+    /// `control` is whether the person here wishes to control the screen; `peer` grants no more
+    /// than the settings for this device allow.
+    pub(crate) async fn start(
+        self: &Arc<Self>,
+        node: &baton_core::Node,
+        peer: &DeviceId,
+        name: &str,
+        control: bool,
+    ) -> Result<ScreenStarted> {
+        let Some(viewer) = &self.viewer else {
+            return Err(Error::new(
+                ErrorKind::Other,
+                "This device cannot show screens.",
+            ));
+        };
+        // The node needs the decoder to ask, and the offer that answers comes after, so the
+        // platform makes the screen for a display of no known size.
+        let Prepared {
+            screen,
+            link,
+            pictures,
+            viewing,
+        } = self
+            .prepare(viewer, &WindowOffer::asked_screen(control))
+            .map_err(|sentence| Error::new(ErrorKind::Other, sentence))?;
+        match node.start(peer, Wanted::Screen, control, viewing).await {
+            Ok(StartOutcome::Started(handle)) => {
+                let session = WindowSession {
+                    id: self.next_id(),
+                    role: WindowRole::Viewing,
+                    device_id: peer.to_string(),
+                    device_name: name.to_owned(),
+                    display: true,
+                    title: None,
+                    app: None,
+                    width: 0,
+                    height: 0,
+                    control: handle.control(),
+                    screen: Some(screen),
+                };
+                self.begin_viewing(session.clone(), handle, &link, &pictures);
+                Ok(ScreenStarted::Started(session))
+            }
+            Ok(StartOutcome::NotStarted(why)) => Ok(ScreenStarted::NotStarted(
+                Error::not_started(name, why).message().to_owned(),
+            )),
+            // An outcome that this version does not know.
+            Ok(_) => Ok(ScreenStarted::NotStarted(format!(
+                "{name} did not start its screen."
+            ))),
+            Err(error) => Err(Error::asking(&error, name)),
+        }
     }
 
     /// Offers the window that the person picked to `peer`, and starts the session if it says yes.

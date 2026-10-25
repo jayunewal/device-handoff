@@ -23,12 +23,16 @@ class _Shown {
 /// Baton has said that the window began (unless [began] is false). Returns when the screen is
 /// there. Without a [renewEvery] the screen renews the hold on the device's screen as often as
 /// it does in the app.
+///
+/// A screen that waits for its first picture shows a bar that moves and never settles, so it is
+/// opened with [settle] false: the page is pumped for a time instead.
 Future<_Shown> _open(
   WidgetTester tester, {
   WindowSession? window,
   bool began = true,
   Size size = const Size(900, 1600),
   Duration? renewEvery,
+  bool settle = true,
 }) async {
   final shown = window ?? sampleWindowSession();
   final session = FakeSession(
@@ -81,7 +85,12 @@ Future<_Shown> _open(
     ),
   );
   await tester.tap(find.text('Home'));
-  await tester.pumpAndSettle();
+  if (settle) {
+    await tester.pumpAndSettle();
+  } else {
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+  }
   return _Shown(session, controller, screen, shown);
 }
 
@@ -748,6 +757,113 @@ void main() {
 
       expect(shown.controller.notes, hasLength(1));
       expect((shown.controller.notes.single as WindowOver).session.id, 2);
+    });
+  });
+
+  group('a screen that this device asked for', () {
+    // It begins before the source has said how large it is.
+    WindowSession asked({String device = 'Anna’s Mac', int? screen}) =>
+        sampleWindowSession(
+          display: true,
+          title: null,
+          app: null,
+          width: 0,
+          height: 0,
+          device: device,
+          screen: screen,
+        );
+
+    double shape(WidgetTester tester) =>
+        tester.widget<AspectRatio>(find.byType(AspectRatio)).aspectRatio;
+
+    testWidgets(
+      'waits for the first picture, and says what may be the matter',
+      (tester) async {
+        await _open(tester, window: asked(), settle: false);
+
+        expect(
+          find.text('Waiting for the screen of Anna’s Mac'),
+          findsOneWidget,
+        );
+        expect(
+          find.text(
+            'A device that is locked or asleep shows nothing. If this goes on, '
+            'wake and unlock it.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.byType(LinearProgressIndicator), findsOneWidget);
+        expect(find.byType(Texture), findsNothing);
+        expect(find.text('This screen cannot be shown here'), findsNothing);
+      },
+    );
+
+    testWidgets('is drawn in the shape of the first picture', (tester) async {
+      final shown = await _open(tester, window: asked(), settle: false);
+
+      shown.session.emit(
+        const Event.windowPicture(id: 1, width: 2560, height: 1600),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.byType(Texture), findsOneWidget);
+      expect(shape(tester), 1.6);
+      expect(find.byType(LinearProgressIndicator), findsNothing);
+      expect(find.textContaining('Waiting for'), findsNothing);
+    });
+
+    testWidgets('can be stopped while it waits', (tester) async {
+      final shown = await _open(tester, window: asked(), settle: false);
+
+      await tester.tap(find.byTooltip('Stop showing'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.text('Stop showing this screen?'), findsOneWidget);
+      await tester.tap(find.text('Stop'));
+      await tester.pumpAndSettle();
+
+      expect(shown.session.windowsEnded, [1]);
+      expect(_onHome(tester), isTrue);
+    });
+
+    testWidgets('names the device as fit to show', (tester) async {
+      await _open(tester, window: asked(device: 'Mac\u202Eexe'), settle: false);
+
+      expect(
+        find.text('Waiting for the screen of Mac\uFFFDexe'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('with no screen to be drawn on says so, and does not wait', (
+      tester,
+    ) async {
+      await _open(
+        tester,
+        window: const WindowSession(
+          id: 1,
+          role: WindowRole.viewing,
+          deviceId: 'b0',
+          deviceName: 'Anna’s Mac',
+          display: true,
+          width: 0,
+          height: 0,
+          control: false,
+        ),
+      );
+
+      expect(find.text('This screen cannot be shown here'), findsOneWidget);
+      expect(find.byType(LinearProgressIndicator), findsNothing);
+    });
+
+    testWidgets('is the only kind of window that waits for a size', (
+      tester,
+    ) async {
+      await _open(tester, window: sampleWindowSession(width: 0, height: 0));
+
+      expect(find.text('This window cannot be shown here'), findsOneWidget);
+      expect(find.byType(LinearProgressIndicator), findsNothing);
     });
   });
 }

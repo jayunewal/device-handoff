@@ -66,10 +66,10 @@ pub use events::{Event, Events};
 pub use files::FileSend;
 pub use model::{
     Device, FileProgress, FilesSent, Me, Network, Offer, OfferOutcome, PairingRequest, Platform,
-    PreviewName, Reach, Received, ReceivedItem, Receiving, Route, SendStage, StartAccess,
-    TransferEnd, TransferRequest, TransferResult, WindowAbilities, WindowButton, WindowEnd,
-    WindowInput, WindowModifiers, WindowNoticeReason, WindowPointer, WindowRequest, WindowRole,
-    WindowSession, WindowShared, web_address,
+    PreviewName, Reach, Received, ReceivedItem, Receiving, Route, ScreenStarted, SendStage,
+    StartAccess, TransferEnd, TransferRequest, TransferResult, WindowAbilities, WindowButton,
+    WindowEnd, WindowInput, WindowModifiers, WindowNoticeReason, WindowPointer, WindowRequest,
+    WindowRole, WindowSession, WindowShared, web_address,
 };
 pub use windows::Windows;
 

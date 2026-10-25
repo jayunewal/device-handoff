@@ -37,7 +37,8 @@ use crate::{
     files::Files,
     model::{
         Device, Me, Network, Offer, OfferOutcome, PairingRequest, Reach, Received, Receiving,
-        StartAccess, TransferRequest, WindowAbilities, WindowInput, WindowRequest, WindowShared,
+        ScreenStarted, StartAccess, TransferRequest, WindowAbilities, WindowInput, WindowRequest,
+        WindowShared,
     },
     sessions::{Handler, Sessions},
     starts::Starts,
@@ -630,6 +631,29 @@ impl App {
         sessions
             .share(node, &peer, &name, picked, control, None)
             .await
+    }
+
+    /// Asks the paired device `id` to start sharing its screen with this one, and shows it when it
+    /// does: [`Event::WindowStarted`] says so, with a session that is shown here. Nobody at the
+    /// other device is asked. The person there allowed this device beforehand, in the settings for
+    /// it ([`set_start_access`](Self::set_start_access)), or the answer is that it did not.
+    ///
+    /// `control` is whether the person here wishes to control the screen. The other device grants
+    /// no more than the settings for this one allow, so look at `WindowSession::control` to see
+    /// what was granted. The call returns when the session runs, or the other device has said no,
+    /// which [`ScreenStarted::NotStarted`] tells in words that name it. Dropping the future takes
+    /// the asking back.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::NotPaired`], [`ErrorKind::Unreachable`] if the device cannot be reached or does
+    /// not offer its screen in time, [`ErrorKind::Declined`] if it does not know how to be asked,
+    /// and [`ErrorKind::Other`] if this device does not show screens or a window or screen is being
+    /// shared or shown already.
+    pub async fn start_screen(&self, id: &str, control: bool) -> Result<ScreenStarted> {
+        let node = self.running()?;
+        let (peer, name) = self.paired(id)?;
+        self.inner.sessions.start(node, &peer, &name, control).await
     }
 
     /// Ends the window `session`, which is shown here or shared from here, and tells the other

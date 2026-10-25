@@ -14,6 +14,7 @@ import 'add_device_screen.dart';
 import 'content_box.dart';
 import 'diagnostics_screen.dart';
 import 'send_screen.dart';
+import 'start_access_dialog.dart';
 
 /// The home screen: this device, and the devices it is paired with.
 class DevicesScreen extends StatefulWidget {
@@ -23,6 +24,8 @@ class DevicesScreen extends StatefulWidget {
     this.scanner = cameraScanner,
     this.chooser = const SystemFileChooser(),
     this.onShareWindow,
+    this.onStartScreen,
+    this.canGiveScreen = false,
     this.controlAccess = const PlatformControlAccess(),
     super.key,
   });
@@ -42,6 +45,15 @@ class DevicesScreen extends StatefulWidget {
   /// controlled as well, or `null` on a device that does not share windows, which then offers no
   /// button for it.
   final void Function(Device device, {required bool control})? onShareWindow;
+
+  /// Asks a device to start sharing its screen with this one, to be looked at or, with [control],
+  /// to be controlled as well, or `null` on a device that shows no screens, which then offers no
+  /// button for it. Only a device that gives its screen when it is asked has the button.
+  final void Function(Device device, {required bool control})? onStartScreen;
+
+  /// Whether this device can give its screen to a device that asks for it, so that the menu of
+  /// each device lets the person say which may.
+  final bool canGiveScreen;
 
   /// What the system says about letting another device control a window or a screen of this one.
   /// Tests give it one of their own.
@@ -84,7 +96,7 @@ class _DevicesScreenState extends State<DevicesScreen>
   }
 
   Future<void> _askAccess() async {
-    if (widget.onShareWindow == null) return;
+    if (widget.onShareWindow == null && !widget.canGiveScreen) return;
     final access = await widget.controlAccess.state();
     if (mounted && access != _access) setState(() => _access = access);
   }
@@ -107,15 +119,46 @@ class _DevicesScreenState extends State<DevicesScreen>
       case ControlAccess.needed:
         await widget.controlAccess.request();
         if (!mounted) return;
-        _tell(
-          'To let ${visibleText(device.name)} control a window or a screen, '
-          'allow Baton to control this computer in System Settings, under '
-          'Privacy & Security, Accessibility. If Baton is in the list already, '
-          'take it out and add it again. Then share it again.',
-        );
+        _tell('${_allowControl(device)} Then share it again.');
       case ControlAccess.unavailable:
         _tell('Controlling a window or a screen needs macOS 15.2 or later.');
     }
+  }
+
+  /// What the person does in the settings of the system to let [device] control a window or a
+  /// screen of this device.
+  String _allowControl(Device device) =>
+      'To let ${visibleText(device.name)} control a window or a screen, allow '
+      'Baton to control this computer in System Settings, under Privacy & '
+      'Security, Accessibility. If Baton is in the list already, take it out '
+      'and add it again.';
+
+  /// Lets the person say whether [device] may ask this device for its screen, with no one here
+  /// asked each time. To let it control the screen needs the consent of the system, which is asked
+  /// about now, as it is for a window that is shared to be controlled.
+  Future<void> _allowScreen(Device device) async {
+    final current = _controller.startAccess(device);
+    if (current == null) return;
+    final chosen = await showDialog<StartAccess>(
+      context: context,
+      builder: (context) => StartAccessDialog(
+        device: device,
+        thisDevice: _controller.me.platform,
+        current: current,
+        canControl: _access != ControlAccess.unavailable,
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    final problem = await _controller.setStartAccess(device, chosen);
+    if (!mounted) return;
+    if (problem != null) {
+      _tell(problem);
+      return;
+    }
+    if (chosen != StartAccess.control) return;
+    if (await widget.controlAccess.state() != ControlAccess.needed) return;
+    await widget.controlAccess.request();
+    if (mounted) _tell(_allowControl(device));
   }
 
   void _tell(String sentence) {
@@ -222,7 +265,9 @@ class _DevicesScreenState extends State<DevicesScreen>
               now: widget.now(),
               onSend: _send,
               onShareWindow: widget.onShareWindow == null ? null : _share,
+              onStartScreen: widget.onStartScreen,
               canControl: _access != ControlAccess.unavailable,
+              onAllowScreen: widget.canGiveScreen ? _allowScreen : null,
               onForget: _forget,
             ),
           ),
@@ -238,7 +283,9 @@ class _Devices extends StatelessWidget {
     required this.now,
     required this.onSend,
     required this.onShareWindow,
+    required this.onStartScreen,
     required this.canControl,
+    required this.onAllowScreen,
     required this.onForget,
   });
 
@@ -246,10 +293,15 @@ class _Devices extends StatelessWidget {
   final DateTime now;
   final void Function(Device device) onSend;
   final void Function(Device device, {required bool control})? onShareWindow;
+  final void Function(Device device, {required bool control})? onStartScreen;
 
   /// Whether a window can be shared to be controlled, now or after the person has said yes to
   /// the system.
   final bool canControl;
+
+  /// Lets the person say whether a device may ask for the screen of this one, or `null` on a
+  /// device that cannot give its screen.
+  final void Function(Device device)? onAllowScreen;
   final void Function(Device device) onForget;
 
   @override
@@ -290,7 +342,9 @@ class _Devices extends StatelessWidget {
               now: now,
               onSend: onSend,
               onShareWindow: onShareWindow,
+              onStartScreen: onStartScreen,
               canControl: canControl,
+              onAllowScreen: onAllowScreen,
               onForget: onForget,
             ),
         ],
@@ -398,7 +452,7 @@ class _NoDevices extends StatelessWidget {
 }
 
 /// What a device's menu offers.
-enum _DeviceAction { forget }
+enum _DeviceAction { allowScreen, forget }
 
 class _DeviceTile extends StatelessWidget {
   const _DeviceTile({
@@ -406,7 +460,9 @@ class _DeviceTile extends StatelessWidget {
     required this.now,
     required this.onSend,
     required this.onShareWindow,
+    required this.onStartScreen,
     required this.canControl,
+    required this.onAllowScreen,
     required this.onForget,
   });
 
@@ -414,7 +470,9 @@ class _DeviceTile extends StatelessWidget {
   final DateTime now;
   final void Function(Device device) onSend;
   final void Function(Device device, {required bool control})? onShareWindow;
+  final void Function(Device device, {required bool control})? onStartScreen;
   final bool canControl;
+  final void Function(Device device)? onAllowScreen;
   final void Function(Device device) onForget;
 
   @override
@@ -457,11 +515,40 @@ class _DeviceTile extends StatelessWidget {
                 icon: const Icon(Icons.screen_share_outlined),
                 onPressed: () => onShareWindow!(device, control: false),
               ),
+            if (onStartScreen != null && givesScreenWhenAsked(device.platform))
+              PopupMenuButton<bool>(
+                tooltip: 'Look at the screen of ${device.name}',
+                icon: const Icon(Icons.visibility_outlined),
+                onSelected: (control) =>
+                    onStartScreen!(device, control: control),
+                itemBuilder: (context) => const [
+                  PopupMenuItem(
+                    value: false,
+                    child: Text('Look at its screen'),
+                  ),
+                  PopupMenuItem(
+                    value: true,
+                    child: Text('Look at its screen and control it'),
+                  ),
+                ],
+              ),
             PopupMenuButton<_DeviceAction>(
               tooltip: 'More about ${device.name}',
-              onSelected: (_) => onForget(device),
-              itemBuilder: (context) => const [
-                PopupMenuItem(
+              onSelected: (action) {
+                switch (action) {
+                  case _DeviceAction.allowScreen:
+                    onAllowScreen?.call(device);
+                  case _DeviceAction.forget:
+                    onForget(device);
+                }
+              },
+              itemBuilder: (context) => [
+                if (onAllowScreen != null)
+                  const PopupMenuItem(
+                    value: _DeviceAction.allowScreen,
+                    child: Text('Let this device ask for the screen…'),
+                  ),
+                const PopupMenuItem(
                   value: _DeviceAction.forget,
                   child: Text('Forget this device'),
                 ),

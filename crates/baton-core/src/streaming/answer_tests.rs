@@ -441,6 +441,17 @@ async fn the_person_is_shown_text_that_is_clean_and_not_the_raw_text() {
     assert!(!shown.contains("totals"), "{shown}");
 }
 
+#[test]
+fn the_offer_that_is_expected_of_a_screen_that_was_asked_for_is_a_display_of_no_known_size() {
+    for control in [false, true] {
+        let expected = WindowOffer::asked_screen(control);
+        assert!(expected.display);
+        assert_eq!((expected.title, expected.app), (None, None));
+        assert_eq!((expected.width, expected.height), (0, 0));
+        assert_eq!(expected.control, control);
+    }
+}
+
 #[tokio::test]
 async fn an_id_seen_before_on_the_connection_is_invalid_and_the_person_is_not_asked_again() {
     let rig = Rig::new(Plan::Refuse).await;

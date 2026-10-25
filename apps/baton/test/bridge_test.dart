@@ -225,6 +225,7 @@ void main() {
       expect(abilities.canShow, isFalse);
       expect(abilities.canShare, isFalse);
       expect(abilities.canControl, isFalse);
+      expect(abilities.canGiveScreen, isFalse);
     }
 
     // Paired devices are told so when one tries: the call fails with a sentence, before the
@@ -247,6 +248,31 @@ void main() {
               .having((e) => e.message, 'message', contains('cannot')),
         ),
       );
+    }
+
+    // Asking the other device for its screen fails the same way: this one cannot show it.
+    for (final control in [false, true]) {
+      await expectLater(
+        a.startScreen(id: b.me().id, control: control),
+        throwsA(
+          isA<BatonError>()
+              .having((e) => e.kind, 'kind', ErrorKind.other)
+              .having((e) => e.message, 'message', contains('cannot')),
+        ),
+      );
+    }
+
+    // What a paired device may ask for is kept all the same, at the device where it was said and
+    // not at the other, and every setting goes over the bridge and comes back as it was.
+    expect(a.startAccess(id: b.me().id), StartAccess.off);
+    for (final access in [
+      StartAccess.look,
+      StartAccess.control,
+      StartAccess.off,
+    ]) {
+      await a.setStartAccess(id: b.me().id, access: access);
+      expect(a.startAccess(id: b.me().id), access);
+      expect(b.startAccess(id: a.me().id), StartAccess.off);
     }
 
     // Nothing waits for an answer or runs, and a number that is no number is no window either.
@@ -303,9 +329,22 @@ void main() {
       }
       a.releaseWindowInput(session: session);
     }
-    // And a device that is not paired is not offered a window.
+    // And a device that is not paired is not offered a window, not asked for its screen, and is
+    // not allowed anything.
     await expectLater(
       a.shareWindow(id: '0' * 64, control: false),
+      throwsA(_batonError(ErrorKind.notPaired)),
+    );
+    await expectLater(
+      a.startScreen(id: '0' * 64, control: false),
+      throwsA(_batonError(ErrorKind.notPaired)),
+    );
+    expect(
+      () => a.startAccess(id: '0' * 64),
+      throwsA(_batonError(ErrorKind.notPaired)),
+    );
+    await expectLater(
+      a.setStartAccess(id: '0' * 64, access: StartAccess.look),
       throwsA(_batonError(ErrorKind.notPaired)),
     );
   });

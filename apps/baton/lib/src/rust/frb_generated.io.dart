@@ -220,7 +220,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Route dco_decode_route(dynamic raw);
 
   @protected
+  ScreenStarted dco_decode_screen_started(dynamic raw);
+
+  @protected
   SendStage dco_decode_send_stage(dynamic raw);
+
+  @protected
+  StartAccess dco_decode_start_access(dynamic raw);
 
   @protected
   TransferEnd dco_decode_transfer_end(dynamic raw);
@@ -484,7 +490,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Route sse_decode_route(SseDeserializer deserializer);
 
   @protected
+  ScreenStarted sse_decode_screen_started(SseDeserializer deserializer);
+
+  @protected
   SendStage sse_decode_send_stage(SseDeserializer deserializer);
+
+  @protected
+  StartAccess sse_decode_start_access(SseDeserializer deserializer);
 
   @protected
   TransferEnd sse_decode_transfer_end(SseDeserializer deserializer);
@@ -795,7 +807,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_route(Route self, SseSerializer serializer);
 
   @protected
+  void sse_encode_screen_started(ScreenStarted self, SseSerializer serializer);
+
+  @protected
   void sse_encode_send_stage(SendStage self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_start_access(StartAccess self, SseSerializer serializer);
 
   @protected
   void sse_encode_transfer_end(TransferEnd self, SseSerializer serializer);

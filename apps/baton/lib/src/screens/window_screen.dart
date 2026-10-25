@@ -339,6 +339,16 @@ class _Picture extends StatelessWidget {
     final screen = session.screen;
     final width = size?.width ?? session.width;
     final height = size?.height ?? session.height;
+    if (screen != null && width <= 0 && height <= 0 && session.display) {
+      // A screen that this device asked for has no size until the first picture comes.
+      return _Message(
+        title: 'Waiting for the screen of ${visibleText(session.deviceName)}',
+        detail:
+            'A device that is locked or asleep shows nothing. If this goes on, '
+            'wake and unlock it.',
+        busy: true,
+      );
+    }
     if (screen == null || width <= 0 || height <= 0) {
       return _Message(
         title:
@@ -440,11 +450,19 @@ class _Over extends StatelessWidget {
 }
 
 class _Message extends StatelessWidget {
-  const _Message({required this.title, this.detail, this.onClose});
+  const _Message({
+    required this.title,
+    this.detail,
+    this.onClose,
+    this.busy = false,
+  });
 
   final String title;
   final String? detail;
   final VoidCallback? onClose;
+
+  /// Whether the message is about something that is going on, and so shows a bar that moves.
+  final bool busy;
 
   @override
   Widget build(BuildContext context) {
@@ -473,6 +491,13 @@ class _Message extends StatelessWidget {
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: Colors.white70,
                 ),
+              ),
+            ],
+            if (busy) ...[
+              const SizedBox(height: 16),
+              SizedBox(
+                width: 200,
+                child: LinearProgressIndicator(semanticsLabel: title),
               ),
             ],
             if (onClose != null) ...[

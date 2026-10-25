@@ -89,6 +89,8 @@ class WindowsController extends ChangeNotifier {
   WindowRequest? _opening;
   Device? _offering;
   bool _offeringControl = false;
+  Device? _asking;
+  bool _askingControl = false;
   final List<WindowSession> _sessions = [];
   final Map<int, PictureSize> _pictures = {};
   final List<WindowNote> _notes = [];
@@ -109,6 +111,13 @@ class WindowsController extends ChangeNotifier {
 
   /// Whether the window that is being offered is offered to be controlled as well as looked at.
   bool get offeringControl => _offeringControl;
+
+  /// The device that this one is asking for its screen, from the moment the person asks until the
+  /// other device has answered, or `null`.
+  Device? get asking => _asking;
+
+  /// Whether the screen that is being asked for is asked for to be controlled as well as looked at.
+  bool get askingControl => _askingControl;
 
   /// The windows that run, shown here or shared from here, oldest first.
   List<WindowSession> get sessions => List.unmodifiable(_sessions);
@@ -238,9 +247,10 @@ class WindowsController extends ChangeNotifier {
 
   /// Lets the person choose a window of this device, and offers it to [device]. Returns when the
   /// other device has answered. What came of it is in [notes], if there was anything to say,
-  /// and in [sessions] and [started] if the window began. Does nothing while an offer is going.
+  /// and in [sessions] and [started] if the window began. Does nothing while an offer is going or
+  /// a screen is being asked for.
   Future<void> share(Device device, {bool control = false}) async {
-    if (_offering != null) return;
+    if (_offering != null || _asking != null) return;
     _offering = device;
     _offeringControl = control;
     notifyListeners();
@@ -259,6 +269,39 @@ class WindowsController extends ChangeNotifier {
         _offering = null;
         _offeringControl = false;
         notifyListeners();
+      }
+    }
+  }
+
+  /// Asks [device] to start sharing its screen with this one, and shows it when it does. Nobody
+  /// at [device] is asked: the person there allowed this device beforehand, in the settings for
+  /// it. Returns when the other device has answered. What came of it is in [notes], if there was
+  /// anything to say, and in [sessions] and [started] if the screen began. Does nothing while a
+  /// window is being offered or another screen is being asked for.
+  ///
+  /// The screen of a phone stays on from the moment the person asks, because Baton on a phone
+  /// works only while it is on the screen.
+  Future<void> startScreen(Device device, {bool control = false}) async {
+    if (_asking != null || _offering != null) return;
+    _asking = device;
+    _askingControl = control;
+    _awake.renew();
+    notifyListeners();
+    try {
+      final started = await _session.startScreen(device.id, control: control);
+      // The session of a screen that began comes as `Event_WindowStarted`, which is the only way
+      // that a window is added: a result that arrived after the screen had ended would bring
+      // back a window that is over.
+      if (!_disposed && started is ScreenStarted_NotStarted) {
+        _note(WindowFailed(started.message));
+      }
+    } on BatonError catch (e) {
+      if (!_disposed) _note(WindowFailed(e.message));
+    } finally {
+      if (!_disposed) {
+        _asking = null;
+        _askingControl = false;
+        _settle();
       }
     }
   }
@@ -326,9 +369,12 @@ class WindowsController extends ChangeNotifier {
     _openingTimer = null;
   }
 
-  /// The screen can turn off again when no offer waits and no window is being opened.
+  /// The screen can turn off again when no offer waits, no window is being opened and no screen
+  /// is being asked for.
   void _settle() {
-    if (_requests.isEmpty && _opening == null) _awake.release();
+    if (_requests.isEmpty && _opening == null && _asking == null) {
+      _awake.release();
+    }
     notifyListeners();
   }
 

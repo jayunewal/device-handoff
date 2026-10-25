@@ -215,6 +215,17 @@ class _RustSession implements Session {
       _baton.shareWindow(id: id, control: control);
 
   @override
+  Future<ScreenStarted> startScreen(String id, {bool control = false}) =>
+      _baton.startScreen(id: id, control: control);
+
+  @override
+  StartAccess startAccess(String id) => _baton.startAccess(id: id);
+
+  @override
+  Future<void> setStartAccess(String id, StartAccess access) =>
+      _baton.setStartAccess(id: id, access: access);
+
+  @override
   bool endWindow(int session) => _baton.endWindow(session: session);
 
   @override

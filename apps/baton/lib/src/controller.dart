@@ -192,6 +192,27 @@ class DevicesController extends ChangeNotifier {
     return null;
   }
 
+  /// What [device] may do at this device without a person here being asked: ask for its screen.
+  /// `null` if it is not paired with this device any more, say because it forgot this one first.
+  StartAccess? startAccess(Device device) {
+    try {
+      return _session.startAccess(device.id);
+    } on BatonError {
+      return null;
+    }
+  }
+
+  /// Lets [device] ask for the screen of this device as [access] says, or does not. Returns what
+  /// to tell the person if that did not work, and `null` if it did.
+  Future<String?> setStartAccess(Device device, StartAccess access) async {
+    try {
+      await _session.setStartAccess(device.id, access);
+      return null;
+    } on BatonError catch (e) {
+      return e.message;
+    }
+  }
+
   Future<void> _readDevices() async {
     if (_readingDevices) {
       // Something changed after the read that is going on began, so read again after it.
