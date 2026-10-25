@@ -114,6 +114,14 @@ impl Pictures {
         let state = locked(&self.state);
         // Under the lock, so that it cannot overtake the window or a size that `began` tells.
         if let Some(id) = state.session {
+            // The sentence on the screen cannot tell every reason apart, and a person who reports
+            // that nothing happened can read the log of this device. The other device sends at most
+            // one notice a second, so this is a line a second at the most.
+            tracing::info!(
+                reason = ?notice.reason,
+                count = notice.count,
+                "the other device did not do some of what was done on the window"
+            );
             // Nobody listening is fine.
             let _ = self.events.send(Event::WindowNotice {
                 id,
@@ -669,6 +677,62 @@ mod tests {
         assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
     }
 
+    /// A place for log lines to go that a test can read.
+    #[derive(Clone, Default)]
+    struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl tracing_subscriber::fmt::MakeWriter<'_> for Captured {
+        type Writer = Self;
+
+        fn make_writer(&self) -> Self {
+            self.clone()
+        }
+    }
+
+    #[test]
+    fn a_notice_is_logged_with_its_reason_and_how_many_events_it_is_about() {
+        let (pictures, _heard) = pictures();
+        pictures.began(3);
+        let captured = Captured::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(captured.clone())
+            .with_ansi(false)
+            .with_target(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            pictures.noticed(notice(Reason::FrameUnknown, 4));
+        });
+        let text = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(text.contains("INFO"), "{text}");
+        assert!(text.contains("reason=FrameUnknown"), "{text}");
+        assert!(text.contains("count=4"), "{text}");
+    }
+
+    #[test]
+    fn a_notice_that_comes_before_the_window_is_known_is_not_logged() {
+        let (pictures, _heard) = pictures();
+        let captured = Captured::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(captured.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            pictures.noticed(notice(Reason::Locked, 2));
+        });
+        assert_eq!(captured.0.lock().unwrap().len(), 0);
+    }
+
     #[test]
     fn a_notice_that_comes_before_the_window_is_known_is_dropped_and_not_told_later() {
         let (pictures, mut heard) = pictures();
@@ -709,7 +773,7 @@ mod tests {
             (Reason::Locked, Shown::Locked),
             (Reason::NotOnScreen, Shown::NotOnScreen),
             (Reason::TooFast, Shown::TooFast),
-            (Reason::FrameUnknown, Shown::OutOfDate),
+            (Reason::FrameUnknown, Shown::PictureUnknown),
             (Reason::PictureOutOfDate, Shown::OutOfDate),
             (Reason::WindowResized, Shown::Resized),
             (Reason::OutsideWindow, Shown::OutsideWindow),

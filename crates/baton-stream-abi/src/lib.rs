@@ -101,6 +101,7 @@ mod fake_sharer;
 #[cfg(test)]
 mod fixture;
 mod input;
+mod journal;
 #[allow(unsafe_code)]
 mod platform;
 mod registry;

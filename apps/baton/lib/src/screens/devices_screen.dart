@@ -109,7 +109,8 @@ class _DevicesScreenState extends State<DevicesScreen>
         _tell(
           'To let ${visibleText(device.name)} control a window, allow Baton to '
           'control this computer in System Settings, under Privacy & Security, '
-          'Accessibility. Then share the window again.',
+          'Accessibility. If Baton is in the list already, take it out and add '
+          'it again. Then share the window again.',
         );
       case ControlAccess.unavailable:
         _tell('Controlling a window needs macOS 15.2 or later.');

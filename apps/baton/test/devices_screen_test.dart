@@ -532,7 +532,8 @@ void main() {
           find.textContaining(
             'To let Phone control a window, allow Baton to control this '
             'computer in System Settings, under Privacy & Security, '
-            'Accessibility. Then share the window again.',
+            'Accessibility. If Baton is in the list already, take it out and '
+            'add it again. Then share the window again.',
           ),
           findsOneWidget,
         );

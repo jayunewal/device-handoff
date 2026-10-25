@@ -43,10 +43,21 @@ use crate::input::{
 };
 
 /// How long a picture may have been out of date when an event names it.
-pub const MAX_STALE: Duration = Duration::from_millis(500);
+///
+/// It was 500 ms as a starting value for R7, and the first try with a Mac and an iPad dropped
+/// taps with it, so it is more forgiving now. A viewer sees a picture some time after the window
+/// drew it, and a person takes a moment to touch what they see; the time between the window
+/// changing and the event arriving is both of those, and a slow path and a Mac that is busy add
+/// to it. What the rule keeps out is an event aimed at content that went away a good while before
+/// the event came. R7 settles the value, now with the log of the source to read it from.
+pub const MAX_STALE: Duration = Duration::from_secs(2);
 
-/// How long the geometry of a frame is kept after its picture went out of date.
-pub const GEOMETRY_KEPT: Duration = Duration::from_secs(1);
+/// How long the geometry of a frame is kept after its picture went out of date. It is longer than
+/// [`MAX_STALE`], so that a picture that is too old is told as that and not as a frame that the
+/// source does not know.
+pub const GEOMETRY_KEPT: Duration = Duration::from_secs(5);
+
+const _: () = assert!(GEOMETRY_KEPT.as_millis() > MAX_STALE.as_millis());
 
 /// Most keys held down at once. A person has ten fingers.
 pub const MAX_HELD_KEYS: usize = 32;
@@ -377,6 +388,22 @@ struct Recorded {
     geometry: Geometry,
 }
 
+/// What the gate knows of the frame that an event names, to tell a log why the event was dropped.
+/// It holds numbers about frames and time and nothing of where the person pointed or what they
+/// typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PictureReport {
+    /// Whether the gate kept the frame. It does not keep one whose layout could not be used, one
+    /// that was never sent, or one whose picture went out of date long ago.
+    pub known: bool,
+    /// For how long the picture of the frame had been out of date, if it had been.
+    pub out_of_date_for: Option<Duration>,
+    /// The number of the newest frame that the gate kept.
+    pub newest: Option<u64>,
+    /// How many frames the gate kept.
+    pub kept: usize,
+}
+
 /// What the gate needs of a key event.
 struct KeyEvent<'a> {
     code: u16,
@@ -605,6 +632,20 @@ impl Gate {
             return Err(Reason::PictureOutOfDate);
         }
         Ok(recorded.geometry)
+    }
+
+    /// What is known at `now` of the frame that an event names, to tell a log why the event was
+    /// dropped. It changes nothing.
+    pub fn picture_report(&self, now: Duration, frame: u64) -> PictureReport {
+        let recorded = self.recorded(frame);
+        PictureReport {
+            known: recorded.is_some(),
+            out_of_date_for: recorded
+                .and_then(|recorded| self.out_of_date_at(recorded.picture))
+                .map(|at| now.saturating_sub(at)),
+            newest: self.frames.back().map(|recorded| recorded.number),
+            kept: self.frames.len(),
+        }
     }
 
     fn recorded(&self, frame: u64) -> Option<&Recorded> {
@@ -1022,13 +1063,13 @@ mod tests {
     }
 
     #[test]
-    fn a_picture_may_have_been_out_of_date_for_half_a_second() {
+    fn a_picture_may_have_been_out_of_date_for_as_long_as_the_limit() {
         let mut gate = gate_with_frame();
         // The window changed at 100 ms: from then on the picture of frame 7 is out of date.
         gate.record_change(100 * MS);
         let event = pointer(7, 0.5, 0.5, PointerAction::Move);
-        let at_limit = context(600 * MS, &[]);
-        let just_past = context(601 * MS, &[]);
+        let at_limit = context(100 * MS + MAX_STALE, &[]);
+        let just_past = context(100 * MS + MAX_STALE + MS, &[]);
         assert!(matches!(gate.handle(&at_limit, &event), Decision::Post(_)));
         assert_eq!(
             dropped(gate.handle(&just_past, &event)),
@@ -1039,6 +1080,30 @@ mod tests {
             gate.handle(&just_past, &key(4, true)),
             Decision::Post(_)
         ));
+    }
+
+    #[test]
+    fn a_tap_on_a_picture_that_a_slow_path_showed_a_second_late_is_not_dropped() {
+        // The first try on a Mac and an iPad dropped taps at 500 ms. A picture that went out of
+        // date a second ago, as it does for a viewer that sees the window a moment late, is
+        // current enough for a tap.
+        assert!(MAX_STALE >= Duration::from_secs(1));
+        let mut gate = gate_with_frame();
+        gate.record_change(100 * MS);
+        for action in [
+            PointerAction::Move,
+            PointerAction::Down(Button::Left),
+            PointerAction::Up(Button::Left),
+        ] {
+            let event = pointer(7, 0.5, 0.5, action);
+            assert!(
+                matches!(
+                    gate.handle(&context(1100 * MS, &[]), &event),
+                    Decision::Post(_)
+                ),
+                "{action:?}"
+            );
+        }
     }
 
     #[test]
@@ -1058,8 +1123,8 @@ mod tests {
             &later,
             &pointer(7, 0.5, 0.5, PointerAction::Up(Button::Left)),
         );
-        let soon = context(600 * 1000 * MS + 500 * MS, &[]);
-        let after = context(600 * 1000 * MS + 551 * MS, &[]);
+        let soon = context(600 * 1000 * MS + 50 * MS + MAX_STALE, &[]);
+        let after = context(600 * 1000 * MS + 50 * MS + MAX_STALE + MS, &[]);
         let event = pointer(7, 0.5, 0.5, PointerAction::Move);
         assert!(matches!(gate.handle(&soon, &event), Decision::Post(_)));
         assert_eq!(
@@ -1075,11 +1140,11 @@ mod tests {
         gate.record_change(100 * MS);
         let event = pointer(7, 0.5, 0.5, PointerAction::Move);
         assert!(matches!(
-            gate.handle(&context(600 * MS, &[]), &event),
+            gate.handle(&context(100 * MS + MAX_STALE, &[]), &event),
             Decision::Post(_)
         ));
         assert_eq!(
-            dropped(gate.handle(&context(601 * MS, &[]), &event)),
+            dropped(gate.handle(&context(100 * MS + MAX_STALE + MS, &[]), &event)),
             Reason::PictureOutOfDate
         );
     }
@@ -1096,7 +1161,7 @@ mod tests {
             let event = pointer(frame, 0.5, 0.5, PointerAction::Move);
             assert!(
                 matches!(
-                    gate.handle(&context(550 * MS, &[]), &event),
+                    gate.handle(&context(100 * MS + MAX_STALE, &[]), &event),
                     Decision::Post(_)
                 ),
                 "frame {frame}"
@@ -1105,7 +1170,7 @@ mod tests {
         for frame in [7, 8] {
             let event = pointer(frame, 0.5, 0.5, PointerAction::Move);
             assert_eq!(
-                dropped(gate.handle(&context(601 * MS, &[]), &event)),
+                dropped(gate.handle(&context(100 * MS + MAX_STALE + MS, &[]), &event)),
                 Reason::PictureOutOfDate,
                 "frame {frame}"
             );
@@ -1113,21 +1178,75 @@ mod tests {
     }
 
     #[test]
-    fn the_geometry_of_a_frame_is_kept_for_a_second_after_its_picture_went_out_of_date() {
+    fn the_geometry_of_a_frame_is_kept_for_a_while_after_its_picture_went_out_of_date() {
         let mut gate = gate_with_frame();
         gate.record_change(100 * MS);
         let event = pointer(7, 0.5, 0.5, PointerAction::Move);
+        // A picture that is too old is told as that for as long as its frame is kept, which is
+        // longer than the picture may be old, and not as a frame that nobody knows.
         assert_eq!(
-            dropped(gate.handle(&context(1100 * MS, &[]), &event)),
+            dropped(gate.handle(&context(100 * MS + MAX_STALE + MS, &[]), &event)),
             Reason::PictureOutOfDate
         );
         assert_eq!(
-            dropped(gate.handle(&context(1101 * MS, &[]), &event)),
+            dropped(gate.handle(&context(100 * MS + GEOMETRY_KEPT, &[]), &event)),
+            Reason::PictureOutOfDate
+        );
+        assert_eq!(
+            dropped(gate.handle(&context(100 * MS + GEOMETRY_KEPT + MS, &[]), &event)),
             Reason::FrameUnknown
         );
         assert!(gate.frames.is_empty());
         // What nothing needs any more is not kept either.
         assert!(gate.changes.is_empty() || gate.changes.len() == 1);
+    }
+
+    #[test]
+    fn the_report_of_a_picture_says_how_old_it_is_and_what_the_gate_keeps() {
+        let mut gate = gate_with_frame();
+        gate.record_frame(8, 50 * MS, geometry());
+
+        // Nothing changed after frame 7 but frame 8: that is when frame 7 went out of date.
+        let report = gate.picture_report(300 * MS, 7);
+        assert!(report.known);
+        assert_eq!(report.out_of_date_for, Some(250 * MS));
+        assert_eq!(report.newest, Some(8));
+        assert_eq!(report.kept, 2);
+
+        // The newest picture is current, however long ago it was captured.
+        let report = gate.picture_report(10_000 * MS, 8);
+        assert!(report.known);
+        assert_eq!(report.out_of_date_for, None);
+
+        gate.record_change(400 * MS);
+        assert_eq!(
+            gate.picture_report(1_000 * MS, 8).out_of_date_for,
+            Some(600 * MS)
+        );
+    }
+
+    #[test]
+    fn the_report_of_a_frame_that_is_not_kept_says_so_and_what_is() {
+        let gate = gate_with_frame();
+        let report = gate.picture_report(10 * MS, 99);
+        assert!(!report.known);
+        assert_eq!(report.out_of_date_for, None);
+        assert_eq!(report.newest, Some(7));
+        assert_eq!(report.kept, 1);
+
+        // A layout that cannot be used leaves nothing to name, which the report shows as no frame
+        // kept at all.
+        let mut gate = Gate::new();
+        let none = Geometry {
+            window: Size::default(),
+            picture: Size::default(),
+            content: Rect::default(),
+        };
+        gate.record_frame(1, Duration::ZERO, none);
+        let report = gate.picture_report(10 * MS, 1);
+        assert!(!report.known);
+        assert_eq!(report.newest, None);
+        assert_eq!(report.kept, 0);
     }
 
     #[test]
@@ -2013,7 +2132,14 @@ mod tests {
             4 => Just(Paint::Frame),
             1 => Just(Paint::Dropped),
         ];
-        let advance = prop_oneof![8 => 1_u64..120, 2 => 400_u64..1500];
+        // Mostly small steps, some that cross the limit of an old picture, and a few that cross the
+        // time that a frame is kept.
+        let advance = prop_oneof![
+            8 => 1_u64..120,
+            2 => 400_u64..1500,
+            2 => 1500_u64..2600,
+            1 => 4500_u64..6000,
+        ];
         // The session is mostly fine: the rules are most interesting when they let things pass.
         let usually = |n: u32| prop_oneof![n => Just(true), 1 => Just(false)];
         (
@@ -2105,7 +2231,7 @@ mod tests {
                 let out_of_date =
                     |picture: Duration| changes.iter().copied().filter(|c| *c > picture).min();
                 let current_enough = |picture: Duration| {
-                    out_of_date(picture).is_none_or(|at| now.saturating_sub(at) <= 500 * MS)
+                    out_of_date(picture).is_none_or(|at| now.saturating_sub(at) <= MAX_STALE)
                 };
                 let same_size = (context.window.size.width - 800.0).abs() <= 0.5
                     && (context.window.size.height - 600.0).abs() <= 0.5;

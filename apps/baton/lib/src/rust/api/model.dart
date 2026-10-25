@@ -1002,6 +1002,10 @@ enum WindowNoticeReason {
   /// The picture that the person touched is too old: the window has changed since.
   outOfDate,
 
+  /// The other device does not know the picture that the person touched, so it cannot tell
+  /// where on the window the touch was.
+  pictureUnknown,
+
   /// The window changed its size since the picture that the person touched.
   resized,
 

@@ -125,8 +125,31 @@ protocol MacActivity: AnyObject {
   var frontmostProcess: Int32? { get }
 
   /// Brings the application of this process to the front, and returns when it is there, or when
-  /// it is clear that it will not be soon.
+  /// it is clear that it will not be soon. It waits for no longer than `ActivationWait.total`.
   func bringToFront(process: Int32)
+}
+
+/// How long the first touch waits for the application of the window to come to the front, in
+/// seconds. The thread that puts the events to the window waits with it, and the rules of the Rust
+/// side judge the events that wait behind it by how long ago their picture went out of date
+/// (`MAX_STALE` in crates/baton-stream/src/gate.rs, 2 s), so the waits together stay well below
+/// that. An application that is not in front yet when they are over is brought on by the system,
+/// and a touch that came too early is the one that is dropped.
+enum ActivationWait {
+  /// For the main thread to carry out the request to activate the application.
+  static let mainThread: TimeInterval = 0.25
+  /// For the application to be in front after that.
+  static let afterActivating: TimeInterval = 0.15
+  /// For the system to open the application, which is the way that is not held to the
+  /// cooperation between applications, when the request was not enough.
+  static let opening: TimeInterval = 0.4
+  /// For the application to be in front after it was opened.
+  static let afterOpening: TimeInterval = 0.2
+
+  /// All of them, as the most that a call can wait.
+  static var total: TimeInterval {
+    mainThread + afterActivating + opening + afterOpening
+  }
 }
 
 /// The layers of the window server that tell what a window is. The numbers are the system's, and a

@@ -844,6 +844,9 @@ pub enum WindowNoticeReason {
     TooFast,
     /// The picture that the person touched is too old: the window has changed since.
     OutOfDate,
+    /// The other device does not know the picture that the person touched, so it cannot tell
+    /// where on the window the touch was.
+    PictureUnknown,
     /// The window changed its size since the picture that the person touched.
     Resized,
     /// The touch was outside the window.
@@ -870,7 +873,8 @@ impl From<Reason> for WindowNoticeReason {
             Reason::Locked => Self::Locked,
             Reason::NotOnScreen => Self::NotOnScreen,
             Reason::TooFast => Self::TooFast,
-            Reason::FrameUnknown | Reason::PictureOutOfDate => Self::OutOfDate,
+            Reason::FrameUnknown => Self::PictureUnknown,
+            Reason::PictureOutOfDate => Self::OutOfDate,
             Reason::WindowResized => Self::Resized,
             Reason::OutsideWindow => Self::OutsideWindow,
             Reason::Covered => Self::Covered,

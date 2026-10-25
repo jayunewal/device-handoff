@@ -109,8 +109,8 @@ final class MacActivityReader: MacActivity {
       MacActivityReader.activate(app)
       asked.signal()
     }
-    guard asked.wait(timeout: .now() + 0.5) == .success else { return }
-    if waitUntilInFront(process, seconds: 0.3) { return }
+    guard asked.wait(timeout: .now() + ActivationWait.mainThread) == .success else { return }
+    if waitUntilInFront(process, seconds: ActivationWait.afterActivating) { return }
     // An application that is not itself in front may not be let to bring another there. The way
     // that the system opens an application is not held to that.
     guard let url = app.bundleURL else { return }
@@ -126,8 +126,8 @@ final class MacActivityReader: MacActivity {
       }
       opened.signal()
     }
-    guard opened.wait(timeout: .now() + 1) == .success else { return }
-    _ = waitUntilInFront(process, seconds: 0.5)
+    guard opened.wait(timeout: .now() + ActivationWait.opening) == .success else { return }
+    _ = waitUntilInFront(process, seconds: ActivationWait.afterOpening)
   }
 
   private static func activate(_ app: NSRunningApplication) {
@@ -162,16 +162,26 @@ func macControlAccess() -> ControlAccess {
   return CGPreflightPostEventAccess() ? .allowed : .needed
 }
 
+/// Where System Settings lists the apps that may control this computer, which is where consent to
+/// hand input events to other applications is given.
+private let controlSettingsAddress =
+  "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+
 /// Asks the system to let the app hand input events to other applications. It shows its own
-/// question, or sends the person to System Settings, and does not wait for the answer: the
-/// person gives it there, and `macControlAccess` says what it came to. It does nothing when the
-/// person has answered already.
+/// question once, and does not wait for the answer: the person gives it in System Settings, and
+/// `macControlAccess` says what it came to. The question is shown once, and the list in System
+/// Settings is hard to find by hand, so the list is opened for the person whenever the answer is
+/// not yes. It is the same list for every build of the app, and an app that was built again and
+/// installed over the old one may have to be taken out of it and put in anew.
 func requestMacControlAccess() {
   guard #available(macOS 15.2, *) else { return }
   // The call is not known to wait for the person, but nothing guarantees it, and the thread of
   // the app's screens is not to be held.
   DispatchQueue.global(qos: .userInitiated).async {
-    _ = CGRequestPostEventAccess()
+    guard !CGRequestPostEventAccess(), let settings = URL(string: controlSettingsAddress) else {
+      return
+    }
+    DispatchQueue.main.async { _ = NSWorkspace.shared.open(settings) }
   }
 }
 
@@ -330,7 +340,14 @@ final class MacEventPoster: EventPoster {
 /// What the Rust side asks of a window that is shared with control, for the window with this
 /// number, which belongs to this process.
 func makeWindowControl(window: UInt32, process: Int32) -> WindowControl {
-  WindowControl(
+  // A line that says that control was set up, and whether this app may post, so that a person who
+  // reads the log of the Mac finds out whether the lines of this app reach it at all.
+  if macControlAccess() == .allowed {
+    NSLog("Baton: control of the shared window is set up, and this app may post input events.")
+  } else {
+    NSLog("Baton: control of the shared window is set up, and this app may not post input events.")
+  }
+  return WindowControl(
     reader: SurroundingsReader(
       window: window, process: process, listing: MacWindowListing(), activity: MacActivityReader(),
       layers: macWindowLayers()),

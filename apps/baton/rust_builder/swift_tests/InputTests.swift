@@ -287,6 +287,24 @@ func testTheApplicationIsBroughtToTheFrontOnceAtTheFirstTouchBeforeTheWindowsInF
   check(activity.brought == [sharedProcess], "\(activity.brought)")
 }
 
+func testTheFirstTouchWaitsForTheApplicationForWellLessThanAPictureMayBeOutOfDate() {
+  // The thread of the input waits with it, and the rules judge what waits behind it by how long ago
+  // its picture went out of date: 2 s in crates/baton-stream/src/gate.rs (`MAX_STALE`).
+  let mostStale: TimeInterval = 2
+  check(ActivationWait.total <= mostStale / 2, "\(ActivationWait.total) s")
+  check(ActivationWait.total > 0)
+  for wait in [
+    ActivationWait.mainThread, ActivationWait.afterActivating, ActivationWait.opening,
+    ActivationWait.afterOpening,
+  ] {
+    check(wait > 0, "a wait of \(wait) s")
+  }
+  check(
+    ActivationWait.total
+      == ActivationWait.mainThread + ActivationWait.afterActivating + ActivationWait.opening
+      + ActivationWait.afterOpening)
+}
+
 func testTheApplicationIsNotBroughtForwardWhenItIsInFrontOrWhenTheMacDoesNotSay() {
   let (inFront, _, activity) = readerOfASharedWindow()
   _ = inFront.read()
