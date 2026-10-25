@@ -379,7 +379,7 @@ impl fmt::Debug for Post {
 /// What to do with an event.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Decision {
-    /// Post this to the process of the shared window.
+    /// Post this, to the shared window or display.
     Post(Post),
     /// Do nothing, and the reason.
     Drop(Reason),

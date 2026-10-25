@@ -2,11 +2,11 @@
 
 // The calls of a Mac that BatonInput.swift needs to let the person at another device steer a window
 // that is shared, or a whole display: what the window server says of windows, what the system says
-// of displays and of the Mac, and the events that are handed to the process of the window, or to
-// the system for a display. What is asked, and what is done with the answers, is in
-// BatonInput.swift and, on the Rust side, in crates/baton-stream/src/gate.rs. This file only talks
-// to the system, so it is built on a Mac and nowhere else, and what it does there is checked on one
-// (docs/adr/0009-window-streaming.md, R6 and R7).
+// of displays and of the Mac, and the events that are handed to the system. What is asked, and what
+// is done with the answers, is in BatonInput.swift and, on the Rust side, in
+// crates/baton-stream/src/gate.rs. This file only talks to the system, so it is built on a Mac and
+// nowhere else, and what it does there is checked on one (docs/adr/0009-window-streaming.md, R6 and
+// R7).
 //
 // The app is sandboxed, and the Accessibility interface is not used: it would say which window of
 // an application has the keyboard, but a sandboxed app is not let to ask. The window server is
@@ -209,32 +209,27 @@ func requestMacControlAccess() {
 
 // MARK: - The events
 
-/// Where the events of the person at the other device go.
-enum EventTarget: Equatable {
-  /// To the process of a shared window, aimed at that window. They are not posted to the system, so
-  /// the pointer of the person at this Mac does not move and the keys that they press are not
-  /// mixed with them: an event of its own state, to one process.
-  case window(UInt32, process: Int32)
-  /// To the system, as if the person at this Mac did it: the pointer moves, and what lies under it
-  /// or has the keyboard takes the event, whichever application that is, and the keys of the system
-  /// work as they do when they are pressed here. A whole display is steered so, since everything on
-  /// it is shared.
-  case system
-}
-
-/// Hands events to a shared window or to the system, as `EventTarget` says.
+/// Hands the events of the person at the other device to the system, as if the person at this Mac
+/// did them: the pointer moves, and what lies under it or has the keyboard takes the event,
+/// whichever application that is. A whole display is steered so, and so is a window; the rules of
+/// the Rust side and of the translator (BatonInput.swift) keep what is put to a window inside it.
+///
+/// Events that were posted to the process of the shared window instead showed a tap on the phone
+/// and did nothing in the window on a Mac, where the same tap handed to the system clicked on a
+/// shared screen (docs/adr/0009-window-streaming.md, R6). Why is inferred: such an event does not
+/// move the pointer, and a button that is pressed looks at where the pointer is, not at where the
+/// event says.
 ///
 /// The system asks the person at this Mac for consent to post events, and a sandboxed app may not
-/// be let to at all (docs/adr/0009-window-streaming.md, R6). Without consent nothing is posted and
-/// the post fails. A post to the system returns nothing to say whether it was taken, so the first
-/// time that the pointer is moved this way the log says whether the pointer followed.
+/// be let to at all (R6). Without consent nothing is posted and the post fails. A post returns
+/// nothing to say whether it was taken, so the first time that the pointer is moved this way the
+/// log says whether the pointer followed.
 ///
 /// It is used by one thread at a time.
 final class MacEventPoster: EventPoster {
   /// How long an answer about consent is used again, in seconds.
   private static let reuse: TimeInterval = 0.25
 
-  private let target: EventTarget
   private let source: CGEventSource?
   private let now: () -> TimeInterval
   private var consent: (given: Bool, at: TimeInterval)?
@@ -246,50 +241,32 @@ final class MacEventPoster: EventPoster {
   /// Where the last mouse event was, for the movement that the next one carries.
   private var previous: CGPoint?
 
-  init(
-    target: EventTarget,
-    now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
-  ) {
-    self.target = target
-    switch target {
-    case .window:
-      // Events for one process have a state of their own.
-      source = CGEventSource(stateID: .privateState)
-    case .system:
-      // Events for the system are those of a keyboard and a mouse that are there, and have the
-      // state of those. The person at this Mac keeps their own pointer and keys: the system would
-      // otherwise ignore them for a moment after each event that is posted, and a person who wants
-      // to stop the sharing could not click while a finger moves at the other device.
-      let hardware = CGEventSource(stateID: .hidSystemState)
-      hardware?.localEventsSuppressionInterval = 0
-      source = hardware
-    }
+  init(now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+    // Events for the system are those of a keyboard and a mouse that are there, and have the state
+    // of those. The person at this Mac keeps their own pointer and keys: the system would
+    // otherwise ignore them for a moment after each event that is posted, and a person who wants
+    // to stop the sharing could not click while a finger moves at the other device.
+    let hardware = CGEventSource(stateID: .hidSystemState)
+    hardware?.localEventsSuppressionInterval = 0
+    source = hardware
     self.now = now
   }
 
   func post(_ event: SyntheticEvent) -> Bool {
     guard consentGiven(), let source, let made = cgEvent(for: event, source) else { return false }
-    switch target {
-    case .window(_, let process): made.postToPid(process)
-    case .system: made.post(tap: .cghidEventTap)
-    }
+    made.post(tap: .cghidEventTap)
     if !posted {
       posted = true
-      switch target {
-      case .window:
-        controlLog.notice("Baton: the first input event was handed to the window's process.")
-      case .system:
-        controlLog.notice("Baton: the first input event was handed to the system.")
-      }
+      controlLog.notice("Baton: the first input event was handed to the system.")
     }
     checkPointer(after: event)
     return true
   }
 
-  /// The first time that the pointer is moved by a post to the system, looks at whether it went
-  /// there. Where it went is not told, only whether it did.
+  /// The first time that the pointer is moved by a post, looks at whether it went there. Where it
+  /// went is not told, only whether it did.
   private func checkPointer(after event: SyntheticEvent) {
-    guard case .system = target, !pointerChecked, case .mouse(let mouse) = event else { return }
+    guard !pointerChecked, case .mouse(let mouse) = event else { return }
     pointerChecked = true
     let wanted = CGPoint(x: mouse.at.x, y: mouse.at.y)
     // The window server takes a moment to move the pointer.
@@ -362,7 +339,6 @@ final class MacEventPoster: EventPoster {
       made.setIntegerValueField(.mouseEventDeltaY, value: Int64((point.y - previous.y).rounded()))
     }
     previous = point
-    aim(made)
     return made
   }
 
@@ -376,7 +352,6 @@ final class MacEventPoster: EventPoster {
     else { return nil }
     made.location = CGPoint(x: scroll.at.x, y: scroll.at.y)
     made.flags = flags(of: scroll.modifiers)
-    aim(made)
     return made
   }
 
@@ -385,7 +360,7 @@ final class MacEventPoster: EventPoster {
       let made = CGEvent(
         keyboardEventSource: source, virtualKey: CGKeyCode(key.virtualKey), keyDown: key.down)
     else { return nil }
-    made.flags = flags(of: key.modifiers)
+    made.flags = flags(of: key.modifiers).union(flags(of: key.keyFlags))
     if let text = key.text, !text.isEmpty {
       text.withUnsafeBufferPointer {
         made.keyboardSetUnicodeString(stringLength: $0.count, unicodeString: $0.baseAddress)
@@ -397,15 +372,6 @@ final class MacEventPoster: EventPoster {
     return made
   }
 
-  /// An event for a shared window is for that window, which the system would otherwise look for
-  /// under the pointer. One for the system goes where the system sends it.
-  private func aim(_ made: CGEvent) {
-    guard case .window(let number, _) = target else { return }
-    made.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(number))
-    made.setIntegerValueField(
-      .mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(number))
-  }
-
   private func flags(of modifiers: InputModifiers) -> CGEventFlags {
     var flags = CGEventFlags()
     if modifiers.contains(.shift) { flags.insert(.maskShift) }
@@ -413,6 +379,14 @@ final class MacEventPoster: EventPoster {
     if modifiers.contains(.option) { flags.insert(.maskAlternate) }
     if modifiers.contains(.command) { flags.insert(.maskCommand) }
     if modifiers.contains(.capsLock) { flags.insert(.maskAlphaShift) }
+    return flags
+  }
+
+  /// What the keyboard of a Mac sets on some keys, which the shortcuts of the system look for.
+  private func flags(of keyFlags: KeyFlags) -> CGEventFlags {
+    var flags = CGEventFlags()
+    if keyFlags.contains(.function) { flags.insert(.maskSecondaryFn) }
+    if keyFlags.contains(.numericPad) { flags.insert(.maskNumericPad) }
     return flags
   }
 }
@@ -428,26 +402,32 @@ private func noteControlSetUp(of what: String) {
 }
 
 /// What the Rust side asks of a window that is shared with control, for the window with this
-/// number, which belongs to this process.
+/// number, which belongs to this process. Its events go to the system, as those of a display do,
+/// but the shortcuts that the system keeps for itself are not let through: they act on the whole
+/// Mac and not on the window.
 func makeWindowControl(window: UInt32, process: Int32) -> WindowControl {
   noteControlSetUp(of: "window")
   return WindowControl(
     reader: SurroundingsReader(
       window: window, process: process, listing: MacWindowListing(), activity: MacActivityReader(),
       layers: macWindowLayers()),
-    translator: InputTranslator(doubleClickInterval: NSEvent.doubleClickInterval),
-    poster: MacEventPoster(target: .window(window, process: process)))
+    translator: InputTranslator(
+      doubleClickInterval: NSEvent.doubleClickInterval, movesPointerToScroll: true,
+      dropsSystemShortcuts: true),
+    poster: MacEventPoster())
 }
 
 /// What the Rust side asks of a whole display that is shared with control, for the display with
-/// this number. Its events go to the system, as if the person at this Mac did them.
+/// this number. Its events go to the system, as if the person at this Mac did them, and so do the
+/// shortcuts that the system keeps for itself.
 func makeDisplayControl(display: UInt32) -> WindowControl {
   noteControlSetUp(of: "screen")
   return WindowControl(
     reader: DisplayReader(
       display: display, listing: MacDisplayListing(), activity: MacActivityReader()),
-    translator: InputTranslator(doubleClickInterval: NSEvent.doubleClickInterval),
-    poster: MacEventPoster(target: .system))
+    translator: InputTranslator(
+      doubleClickInterval: NSEvent.doubleClickInterval, movesPointerToScroll: true),
+    poster: MacEventPoster())
 }
 
 #endif

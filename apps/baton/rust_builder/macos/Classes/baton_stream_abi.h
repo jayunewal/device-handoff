@@ -630,12 +630,13 @@ typedef struct BatonViewerVTable {
  *                the events of that batch, except the release of a press that was put to the
  *                window.
  *   post:        puts one thing that the person did to the window (BatonPost). A failure drops
- *                that event. Every post is for the process that owns the shared window, the
- *                release of a press included: it goes to the process that got the press. A
+ *                that event. A post goes to the system, as if the person at this Mac had done
+ *                it, for a window as for a display, and reaches whatever is at that place or has
+ *                the keyboard, which the Rust side has judged to be the shared window or display
+ *                when it hands the post over. A platform may fail the post of a key that the
+ *                system keeps for itself, which would act on more than the shared window. A
  *                release should not fail, since the Rust side forgets the press whether or not
- *                the release was posted, and does not try again. A display has no process: a
- *                post for one goes to the system, as if the person at this Mac had done it, and
- *                reaches whatever is at that place or has the keyboard.
+ *                the release was posted, and does not try again.
  */
 typedef uint32_t (*BatonControlFn)(void *context);
 typedef int32_t (*BatonPickFn)(void *context, uint64_t request, BatonMessage *message);
