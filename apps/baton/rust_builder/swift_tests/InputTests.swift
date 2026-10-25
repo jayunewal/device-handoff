@@ -1247,6 +1247,17 @@ func testAKeyThatWentThroughIsReleasedWhenItsRepeatBecomesAShortcut() {
   check(translator.events(for: key(tab)) == [syntheticKey(0x30)])
   check(translator.events(for: key(tab, repeating: true)) == [syntheticKey(0x30, autorepeat: true)])
   check(translator.events(for: key(tab, down: false)) == [syntheticKey(0x30, down: false)])
+  // A key that was left out and then went through as a repeat (the Command was let go while it was
+  // held) is a key that went through: when the Command goes down again while it repeats, the
+  // repeat is left out and not marked, and the release goes.
+  check(translator.events(for: key(tab, modifiers: [.command])) == nil, "left out")
+  check(
+    translator.events(for: key(tab, repeating: true)) == [syntheticKey(0x30, autorepeat: true)],
+    "went through as a repeat")
+  check(translator.events(for: key(tab, repeating: true, modifiers: [.command])) == nil, "again")
+  check(
+    translator.events(for: key(tab, down: false)) == [syntheticKey(0x30, down: false)],
+    "released")
   // After its release the key is not remembered as pressed: with the modifiers of a shortcut it is
   // left out again, and so is its release.
   check(translator.events(for: key(tab, modifiers: [.command])) == nil)
