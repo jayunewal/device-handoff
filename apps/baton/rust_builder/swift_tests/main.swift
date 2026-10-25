@@ -581,6 +581,31 @@ tests += [
     "text of more than twenty units of UTF-16 is not typed",
     testTextOfMoreThanTwentyUnitsOfUtf16IsNotTyped
   ),
+  (
+    "the keys that a Mac keyboard gives flags carry them and no other key does",
+    testTheKeysThatAMacKeyboardGivesFlagsCarryThemAndNoOtherKeyDoes
+  ),
+  (
+    "the shortcuts that the system keeps for itself are not let through to a window",
+    testTheShortcutsThatTheSystemKeepsForItselfAreNotLetThroughToAWindow
+  ),
+  (
+    "the keys of the application go through to a window as they do with no rule",
+    testTheKeysOfTheApplicationGoThroughToAWindowAsTheyDoWithNoRule
+  ),
+  (
+    "nothing is left out unless the translator is told to",
+    testNothingIsLeftOutUnlessTheTranslatorIsToldTo
+  ),
+  (
+    "the release of a key that was left out is left out and no other is",
+    testTheReleaseOfAKeyThatWasLeftOutIsLeftOutAndNoOtherIs
+  ),
+  ("text with no key is not a shortcut", testTextWithNoKeyIsNotAShortcut),
+  (
+    "a window does not get a shortcut of the system and counts it as not done",
+    testAWindowDoesNotGetAShortcutOfTheSystemAndCountsItAsNotDone
+  ),
   ("a pointer moves presses drags and releases", testAPointerMovesPressesDragsAndReleases),
   ("the buttons are their own", testTheButtonsAreTheirOwn),
   (
@@ -609,6 +634,18 @@ tests += [
   ),
   ("a scroll is bounded and must be a number", testAScrollIsBoundedAndMustBeANumber),
   (
+    "a scroll for the system is preceded by a move to its place unless the pointer is there",
+    testAScrollForTheSystemIsPrecededByAMoveToItsPlaceUnlessThePointerIsThere
+  ),
+  (
+    "a scroll is never preceded by a move unless the translator is told to",
+    testAScrollIsNeverPrecededByAMoveUnlessTheTranslatorIsToldTo
+  ),
+  (
+    "a scroll that moves nothing does not move the pointer and one with a button down drags",
+    testAScrollThatMovesNothingDoesNotMoveThePointerAndOneWithAButtonDownDrags
+  ),
+  (
     "a window is steered by handing each event to its poster",
     testAWindowIsSteeredByHandingEachEventToItsPoster
   ),
@@ -634,6 +671,14 @@ tests += [
   ),
   (
     "a display that is not there is not on the screen", testADisplayThatIsNotThereIsNotOnTheScreen
+  ),
+  (
+    "a locked Mac is told with the last place that the display had",
+    testALockedMacIsToldWithTheLastPlaceThatTheDisplayHad
+  ),
+  (
+    "a display that is gone is told with the last place that it had",
+    testADisplayThatIsGoneIsToldWithTheLastPlaceThatItHad
   ),
   ("the table has the two functions of input", testTheTableHasTheTwoFunctionsOfInput),
   (

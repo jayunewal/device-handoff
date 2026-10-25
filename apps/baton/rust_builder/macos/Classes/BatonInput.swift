@@ -302,6 +302,10 @@ final class DisplayReader: SurroundingsSource {
   private let display: UInt32
   private let listing: DisplayListing
   private let activity: MacActivity
+  /// Where the display was when the Mac last said. A Mac that is locked, or a display that is
+  /// gone, has no place to say, and a button that is let go of then is let go of at the place that
+  /// the display had, and not in the corner of the main display, where a hot corner may be.
+  private var lastPlace = ScreenRect.zero
 
   init(display: UInt32, listing: DisplayListing, activity: MacActivity) {
     self.display = display
@@ -313,13 +317,14 @@ final class DisplayReader: SurroundingsSource {
     if activity.locked {
       // Nothing is put to a display while the Mac is locked, so there is no need to ask about it.
       return WindowSurroundings(
-        locked: true, onScreen: false, keyboard: .unknown, window: .zero, fronts: [])
+        locked: true, onScreen: false, keyboard: .unknown, window: lastPlace, fronts: [])
     }
     guard let bounds = listing.bounds(ofDisplay: display) else {
       // The display is not there any more: it was unplugged, or the Mac does not show it.
       return WindowSurroundings(
-        locked: false, onScreen: false, keyboard: .unknown, window: .zero, fronts: [])
+        locked: false, onScreen: false, keyboard: .unknown, window: lastPlace, fronts: [])
     }
+    lastPlace = bounds
     return WindowSurroundings(
       locked: false, onScreen: true, keyboard: .shared, window: bounds, fronts: [])
   }
@@ -585,6 +590,17 @@ struct InputModifiers: OptionSet, Equatable {
   static let capsLock = InputModifiers(rawValue: 16)
 }
 
+/// The flags that the keyboard of a Mac sets on some keys besides the modifiers that are down, and
+/// that the shortcuts of the system look for: the function flag on the arrows, the function keys
+/// and the keys above the arrows, and the flag of the numeric keypad on the arrows too (the
+/// documentation of `NSEvent.ModifierFlags` says so of both). Control and an arrow, which opens
+/// Mission Control or changes the Space, is not that shortcut for the system without them.
+struct KeyFlags: OptionSet, Equatable {
+  let rawValue: UInt8
+  static let function = KeyFlags(rawValue: 1)
+  static let numericPad = KeyFlags(rawValue: 2)
+}
+
 struct PointerPost: Equatable {
   /// A place on the screen, in points.
   var at: ScreenPoint
@@ -647,6 +663,8 @@ struct SyntheticKey: Equatable {
   var down: Bool
   var autorepeat: Bool
   var modifiers: InputModifiers
+  /// What the keyboard of a Mac sets on this key besides the modifiers.
+  var keyFlags: KeyFlags = []
   /// The UTF-16 units to type, for an event that has no key.
   var text: [UInt16]?
 }
@@ -702,9 +720,63 @@ func macKey(forUsage usage: UInt32) -> UInt16? {
   macKeysByUsage[usage]
 }
 
+/// The virtual key codes of the four arrows (kVK_LeftArrow, kVK_RightArrow, kVK_DownArrow and
+/// kVK_UpArrow).
+private let arrowKeys: Set<UInt16> = [0x7B, 0x7C, 0x7D, 0x7E]
+
+/// The virtual key codes of the other keys that have the function flag on the keyboard of a Mac:
+/// F1 to F20, and the six keys above the arrows (Help, Home, Page Up, forward delete, End and Page
+/// Down).
+private let functionKeys: Set<UInt16> = [
+  0x7A, 0x78, 0x63, 0x76, 0x60, 0x61, 0x62, 0x64, 0x65, 0x6D, 0x67, 0x6F,
+  0x69, 0x6B, 0x71, 0x6A, 0x40, 0x4F, 0x50, 0x5A,
+  0x72, 0x73, 0x74, 0x75, 0x77, 0x79,
+]
+
+/// What the keyboard of a Mac sets on the key with this virtual key code besides the modifiers
+/// that are down.
+func keyFlags(forVirtualKey key: UInt16) -> KeyFlags {
+  if arrowKeys.contains(key) { return [.function, .numericPad] }
+  return functionKeys.contains(key) ? [.function] : []
+}
+
+/// The shortcuts that a Mac keeps for itself, by the virtual key code and the modifiers that make
+/// them: the system acts on them for the whole Mac before the application in front sees them.
+/// They are the defaults of the system (System Settings, Keyboard, Keyboard Shortcuts, and the
+/// ones that the application switcher, Force Quit and the log-out dialog have), so a Mac whose
+/// shortcuts were changed may react to other keys. A key has the shortcut when it is held with at
+/// least these modifiers.
+private let systemShortcuts: [(key: UInt16, needs: InputModifiers)] = [
+  // Spotlight and the Finder search (Command Space): they take the keyboard without being the
+  // application in front, so what is typed next would go to them.
+  (0x31, .command),
+  // The application switcher (Command Tab, and with Shift the other way).
+  (0x30, .command),
+  // Force Quit (Command Option Escape).
+  (0x35, [.command, .option]),
+  // Lock Screen (Control Command Q), and Log Out (Command Shift Q).
+  (0x0C, [.control, .command]), (0x0C, [.command, .shift]),
+  // Hide or show the Dock (Command Option D), and hide the other applications (Command Option H).
+  (0x02, [.command, .option]), (0x04, [.command, .option]),
+  // The screenshots (Command Shift 3, 4, 5 and 6): they can go to the clipboard, and from there
+  // into the window, with the rest of the screen in them.
+  (0x14, [.command, .shift]), (0x15, [.command, .shift]), (0x17, [.command, .shift]),
+  (0x16, [.command, .shift]),
+  // Mission Control, the windows of the application, and the spaces (Control with an arrow).
+  (0x7B, .control), (0x7C, .control), (0x7D, .control), (0x7E, .control),
+  // Mission Control (F3), Launchpad and Spotlight (F4), Show Desktop (F11), and VoiceOver
+  // (Command F5).
+  (0x63, []), (0x76, []), (0x67, []), (0x60, .command),
+]
+
+/// Whether the key, held with these modifiers, is a shortcut that a Mac keeps for itself.
+func isSystemShortcut(virtualKey key: UInt16, modifiers: InputModifiers) -> Bool {
+  systemShortcuts.contains { $0.key == key && modifiers.isSuperset(of: $0.needs) }
+}
+
 /// Turns what the person did into the events of a Mac, and keeps what it takes to do so: which
-/// buttons are down, how many clicks in a row there were, and the part of a scroll that is less
-/// than a pixel. It is used by one thread at a time.
+/// buttons are down, how many clicks in a row there were, the part of a scroll that is less than a
+/// pixel, and where the pointer was put. It is used by one thread at a time.
 final class InputTranslator {
   /// The most UTF-16 units of text that one event carries, as much as one call of the system keeps.
   static let mostTextUnits = 20
@@ -713,21 +785,35 @@ final class InputTranslator {
 
   private let doubleClickInterval: TimeInterval
   private let clickSlop: Double
+  private let movesPointerToScroll: Bool
+  private let dropsSystemShortcuts: Bool
   private let now: () -> TimeInterval
 
   private var held: [PointerButton] = []
   private var lastPress: (button: PointerButton, time: TimeInterval, at: ScreenPoint, count: Int)?
   private var restAcross = 0.0
   private var restDown = 0.0
+  /// Where the last move or button of the pointer was put, if there was one.
+  private var pointerAt: ScreenPoint?
+  /// The keys whose press was dropped as a shortcut of the system, so that their release is too.
+  private var droppedKeys: Set<UInt16> = []
 
   /// `doubleClickInterval` is the time in which a second press makes a double click, and
-  /// `clickSlop` how far in points it may be from the first. `now` is a clock in seconds.
+  /// `clickSlop` how far in points it may be from the first. `movesPointerToScroll` is for events
+  /// that go to the system: it takes a scroll to the place of the pointer, and not to the place
+  /// that the event names (inferred), so the pointer is moved to the place of a scroll first, if it
+  /// is not there. `dropsSystemShortcuts` is for a window, whose events go to the system as well:
+  /// the shortcuts that the system keeps for the whole Mac are not let through, as they would take
+  /// the person out of the window. `now` is a clock in seconds.
   init(
     doubleClickInterval: TimeInterval = 0.5, clickSlop: Double = 4,
+    movesPointerToScroll: Bool = false, dropsSystemShortcuts: Bool = false,
     now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
   ) {
     self.doubleClickInterval = doubleClickInterval
     self.clickSlop = clickSlop
+    self.movesPointerToScroll = movesPointerToScroll
+    self.dropsSystemShortcuts = dropsSystemShortcuts
     self.now = now
   }
 
@@ -745,6 +831,8 @@ final class InputTranslator {
 
   private func events(for post: PointerPost) -> [SyntheticEvent]? {
     guard post.at.x.isFinite, post.at.y.isFinite else { return nil }
+    // A move or a button puts the pointer where the event is. A scroll is looked at below.
+    if post.action != .scroll { pointerAt = post.at }
     switch post.action {
     case .move:
       // A move with a button down is a drag with that button, and goes on with its click count.
@@ -804,11 +892,15 @@ final class InputTranslator {
     restAcross = across.rest
     restDown = down.rest
     if across.pixels == 0 && down.pixels == 0 { return [] }
-    return [
-      .scroll(
-        SyntheticScroll(
-          at: post.at, dx: across.pixels, dy: down.pixels, modifiers: post.modifiers))
-    ]
+    let scrolled = SyntheticEvent.scroll(
+      SyntheticScroll(at: post.at, dx: across.pixels, dy: down.pixels, modifiers: post.modifiers))
+    guard movesPointerToScroll, pointerAt != post.at else { return [scrolled] }
+    // The pointer is somewhere else, or nowhere that is known: it goes to the scroll first, as it
+    // would for a move at that place.
+    let move = PointerPost(
+      at: post.at, action: .move, button: post.button, dx: 0, dy: 0, modifiers: post.modifiers)
+    guard let moved = events(for: move) else { return nil }
+    return moved + [scrolled]
   }
 
   /// The whole pixels of a distance, and what is left of it.
@@ -828,11 +920,24 @@ final class InputTranslator {
     // A modifier key makes no event of its own.
     if isModifierUsage(post.code) { return [] }
     guard let key = macKey(forUsage: post.code) else { return nil }
+    if dropsSystemShortcuts {
+      if post.down {
+        if isSystemShortcut(virtualKey: key, modifiers: post.modifiers) {
+          droppedKeys.insert(key)
+          return nil
+        }
+        // The key went down again with other modifiers: this press is one that goes through.
+        droppedKeys.remove(key)
+      } else if droppedKeys.remove(key) != nil {
+        // The press of this key was dropped, so there is nothing to release.
+        return []
+      }
+    }
     return [
       .key(
         SyntheticKey(
           virtualKey: key, down: post.down, autorepeat: post.down && post.repeating,
-          modifiers: post.modifiers, text: nil))
+          modifiers: post.modifiers, keyFlags: keyFlags(forVirtualKey: key), text: nil))
     ]
   }
 
@@ -869,8 +974,8 @@ enum ControlAccess: String, Equatable {
 
 // MARK: - A window or a display that is steered
 
-/// Hands events to where the person at the other device steers: the process of one window, or the
-/// system for a whole display (BatonControl.swift has the ones of a Mac).
+/// Hands events to the system, as if the person at the Mac did them (BatonControl.swift has the one
+/// of a Mac).
 protocol EventPoster: AnyObject {
   /// Hands the event over. false if the event could not be made, or the system does not let this
   /// app hand it over.

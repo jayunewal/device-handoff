@@ -846,6 +846,97 @@ void main() {
       expect(find.text('Sharing a screen with Kitchen iPad'), findsOneWidget);
     });
 
+    testWidgets('is offered with control, and says that it can be controlled', (
+      tester,
+    ) async {
+      final (session, _) = await _show(tester);
+
+      await _offer(
+        tester,
+        session,
+        const WindowRequest(
+          id: 8,
+          deviceId: 'd3',
+          deviceName: 'Anna’s Mac',
+          display: true,
+          width: 3024,
+          height: 1964,
+          control: true,
+        ),
+      );
+
+      expect(
+        find.text('Anna’s Mac wants to show you its screen'),
+        findsOneWidget,
+      );
+      expect(
+        find.text(
+          'You will see it live on this screen, and you can control it: what '
+          'you touch and type here is done there.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.textContaining('only look'), findsNothing);
+    });
+
+    testWidgets('says who controls it when it runs', (tester) async {
+      final (session, _) = await _show(tester);
+
+      await _begin(
+        tester,
+        session,
+        sampleWindowSession(
+          id: 1,
+          display: true,
+          title: null,
+          app: null,
+          control: true,
+        ),
+      );
+      await _begin(
+        tester,
+        session,
+        sampleWindowSession(
+          id: 2,
+          role: WindowRole.sharing,
+          device: 'Kitchen iPad',
+          display: true,
+          title: null,
+          app: null,
+          control: true,
+        ),
+      );
+
+      expect(find.text('You can control it.'), findsOneWidget);
+      expect(find.text('Kitchen iPad can control it.'), findsOneWidget);
+    });
+
+    testWidgets('says nothing of control when it is only looked at', (
+      tester,
+    ) async {
+      final (session, _) = await _show(tester);
+
+      await _begin(
+        tester,
+        session,
+        sampleWindowSession(id: 1, display: true, title: null, app: null),
+      );
+      await _begin(
+        tester,
+        session,
+        sampleWindowSession(
+          id: 2,
+          role: WindowRole.sharing,
+          device: 'Kitchen iPad',
+          display: true,
+          title: null,
+          app: null,
+        ),
+      );
+
+      expect(find.textContaining('control it'), findsNothing);
+    });
+
     test('is a screen in what a note says', () {
       final shown = sampleWindowSession(display: true, title: null, app: null);
       final shared = sampleWindowSession(
