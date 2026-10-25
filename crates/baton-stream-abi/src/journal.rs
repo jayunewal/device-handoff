@@ -45,6 +45,8 @@ pub(crate) struct Journal {
     last: Option<Instant>,
     /// Whether the first line was made.
     begun: bool,
+    /// Whether what is shared is a whole screen and not one window, which the line says.
+    screen: bool,
     batches: u32,
     events: u32,
     posted: u32,
@@ -74,6 +76,11 @@ pub(crate) struct Journal {
 }
 
 impl Journal {
+    /// What is shared is a whole screen and not one window: the lines say so.
+    pub(crate) fn of_display(&mut self, display: bool) {
+        self.screen = display;
+    }
+
     /// A batch of `events` was served: it waited `waited` for the thread, and the platform took
     /// `reading` to say what is around the window, which it did if `read` is true.
     pub(crate) fn batch(&mut self, events: usize, waited: Duration, reading: Duration, read: bool) {
@@ -155,12 +162,14 @@ impl Journal {
         *self = Self {
             last: Some(now),
             begun: true,
+            screen: self.screen,
             ..Self::default()
         };
         Some(line)
     }
 
     fn describe(&self) -> String {
+        let noun = if self.screen { "screen" } else { "window" };
         let mut parts = Vec::new();
         if self.batches > 0 {
             parts.push(format!(
@@ -170,7 +179,7 @@ impl Journal {
             ));
         }
         if self.posted > 0 {
-            parts.push(format!("{} put to the window", few(self.posted)));
+            parts.push(format!("{} put to the {noun}", few(self.posted)));
         }
         if self.unfocused > 0 {
             parts.push(format!(
@@ -179,8 +188,15 @@ impl Journal {
             ));
         }
         if self.refused > 0 {
+            // The Mac has not allowed the input, which is the first thing to rule out when a
+            // session is tried, or, for a window, the key is one that the system keeps for itself.
+            let why = if self.screen {
+                "it may not post input"
+            } else {
+                "it may not post input, or the key is one that the system keeps"
+            };
             parts.push(format!(
-                "{} that the Mac would not take",
+                "{} that the Mac would not take ({why})",
                 counted(self.refused, "event", "events")
             ));
         }
@@ -204,15 +220,15 @@ impl Journal {
         }
         if self.unread > 0 {
             parts.push(format!(
-                "the Mac could not say what is around the window for {}",
+                "the Mac could not say what is around the {noun} for {}",
                 counted(self.unread, "batch", "batches")
             ));
         }
-        let mut line = format!("window input: {}", parts.join(", "));
+        let mut line = format!("{noun} input: {}", parts.join(", "));
         if self.batches > 0 {
             line = format!(
                 "{line}; at most {} ms in the queue, {} ms for the Mac to say what is around the \
-                 window and {} ms to post",
+                 {noun} and {} ms to post",
                 self.waited.as_millis(),
                 self.reading.as_millis(),
                 self.posting.as_millis(),
@@ -595,13 +611,59 @@ mod tests {
         let line = journal.line(Instant::now(), false).unwrap();
         for told in [
             ">5 presses that went to a window without the keyboard",
-            ">5 events that the Mac would not take",
+            ">5 events that the Mac would not take (it may not post input, or the key is one that \
+             the system keeps)",
             ">5 events lost because the queue was full",
             ">5 dropped (Locked x5, Covered x>5)",
             "the Mac could not say what is around the window for >5 batches",
         ] {
             assert!(line.contains(told), "{told:?} in {line}");
         }
+    }
+
+    #[test]
+    fn a_screen_is_told_as_a_screen_and_stays_one_in_the_lines_after_the_first() {
+        let mut journal = Journal::default();
+        journal.of_display(true);
+        let start = Instant::now();
+        news(&mut journal, 3);
+        for _ in 0..3 {
+            journal.posted(MS, true);
+        }
+        assert_eq!(
+            journal.line(start, false).unwrap(),
+            "screen input: 3 events in 1 batch, 3 put to the screen; at most 3 ms in the queue, \
+             12 ms for the Mac to say what is around the screen and 1 ms to post"
+        );
+
+        // The next line is about the same screen, and a key that the system keeps is not among
+        // the reasons for an event that the Mac would not take: a screen is not held back by the
+        // list.
+        journal.batch(1, MS, MS, false);
+        journal.posted(MS, false);
+        let line = journal.line(start + 10 * EVERY, false).unwrap();
+        assert!(
+            line.starts_with(
+                "screen input: 1 event in 1 batch, 1 event that the Mac would not take (it may \
+                 not post input), the Mac could not say what is around the screen for 1 batch; "
+            ),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn an_event_that_the_mac_would_not_take_is_told_with_both_things_to_rule_out_for_a_window() {
+        let mut journal = Journal::default();
+        news(&mut journal, 1);
+        journal.posted(MS, false);
+        let line = journal.line(Instant::now(), false).unwrap();
+        assert!(
+            line.starts_with(
+                "window input: 1 event in 1 batch, 1 event that the Mac would not take (it may \
+                 not post input, or the key is one that the system keeps); "
+            ),
+            "{line}"
+        );
     }
 
     #[test]
