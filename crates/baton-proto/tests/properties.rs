@@ -20,7 +20,7 @@ use baton_proto::{
         Link, Outcome, Ping, Request, Response,
     },
     pair::{PairProof, PairRejection, PairRequest, PairResponse, PairSecret},
-    stream::{self, Codec, SourceKind, StopReason, StreamReply, StreamRequest},
+    stream::{self, Codec, SourceKind, StopReason, StreamReply, StreamRequest, Wanted, WhyNot},
     ticket::PairTicket,
     transfer::{
         Accepted, Cancel, Cancelled, Declined, Done, FailReason, Failure, Finish, Offer,
@@ -185,6 +185,18 @@ fn stream_request() -> impl Strategy<Value = StreamRequest> {
             ]
         )
             .prop_map(|(session, reason)| StreamRequest::Stop(stream::Stop { session, reason })),
+        (
+            session_id(),
+            prop_oneof![Just(Wanted::Screen), Just(Wanted::Other)],
+            any::<bool>()
+        )
+            .prop_map(
+                |(session, wanted, control)| StreamRequest::Start(stream::Start {
+                    session,
+                    wanted,
+                    control,
+                })
+            ),
     ]
 }
 
@@ -210,6 +222,24 @@ fn stream_reply() -> impl Strategy<Value = StreamReply> {
             stream::Declined { session, reason }
         )),
         session_id().prop_map(|session| StreamReply::Stopped(stream::Stopped { session })),
+        session_id().prop_map(|session| StreamReply::Starting(stream::Starting { session })),
+        (
+            session_id(),
+            prop_oneof![
+                Just(WhyNot::Unsupported),
+                Just(WhyNot::NotAllowed),
+                Just(WhyNot::Busy),
+                Just(WhyNot::RateLimited),
+                Just(WhyNot::Invalid),
+                Just(WhyNot::Unavailable),
+                Just(WhyNot::NeedsPermission),
+                Just(WhyNot::Failed),
+                Just(WhyNot::Other)
+            ]
+        )
+            .prop_map(
+                |(session, why)| StreamReply::NotStarted(stream::NotStarted { session, why })
+            ),
     ]
 }
 

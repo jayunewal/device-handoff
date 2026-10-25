@@ -28,6 +28,7 @@ use std::{
     time::Duration,
 };
 
+pub use baton_proto::stream::{Wanted, WhyNot};
 use baton_proto::{
     DeviceId, close_code,
     id::SessionId,
@@ -56,6 +57,9 @@ mod offer;
 #[cfg(test)]
 mod offer_tests;
 mod source;
+mod start;
+#[cfg(test)]
+mod start_tests;
 mod view;
 
 /// How many frame streams a viewer takes at once from a source on a connection: six in flight and
@@ -72,12 +76,15 @@ pub(crate) use answer::Viewer;
 pub use answer::{Viewing, WindowHandler, WindowOffer, WindowVerdict};
 
 use offer::Sending;
-pub(crate) use offer::{Offered, SETTLE, Sharer, ask};
+pub(crate) use offer::{Offered, Reservation, SETTLE, Sharer, Withdraw, ask};
 pub use offer::{ShareOutcome, WindowShare};
 
 use source::Source;
 pub use source::{NotSent, Picture, SourceEvents, SourceHandle, SourceStats};
 pub(crate) use source::{SourceParams, SourceSetup};
+use start::Pending;
+pub(crate) use start::Starter;
+pub use start::{StartHandler, StartOutcome, StartRequest, StartSlot, StartVerdict};
 use view::View;
 pub(crate) use view::ViewParams;
 pub use view::{DecodeError, Decoder, DecoderState, ViewHandle, ViewStats};
@@ -168,6 +175,11 @@ impl Session {
         }
     }
 
+    /// Whether this device is the source of the session.
+    fn is_source(&self) -> bool {
+        matches!(self, Self::Source(_))
+    }
+
     /// Ends the session, if it has not ended.
     fn end(&self, how: End) {
         match self {
@@ -191,6 +203,9 @@ struct Table {
     /// The `Stop`s that this device sent and that are not answered yet, by the device they went
     /// to. Each token is cancelled when its `Stop` has been answered or has come to nothing.
     stops: Vec<(DeviceId, CancellationToken)>,
+    /// The one start that this device made as a viewer and whose offer has not come. It holds the
+    /// viewer's place, as an offer that waits for the person does.
+    starting: Option<Pending>,
 }
 
 impl Table {
@@ -359,8 +374,10 @@ impl Streaming {
 
     fn end_where(&self, doomed: impl Fn(&DeviceId) -> bool) {
         let ending: Vec<Session> = {
-            let table = lock(&self.table);
+            let mut table = lock(&self.table);
             table.offers.withdraw_where(&doomed);
+            // The call that made the start hears of it from the sender that is dropped here.
+            table.starting.take_if(|pending| doomed(&pending.peer));
             if let Some(sending) = &table.sending
                 && doomed(&sending.peer)
             {

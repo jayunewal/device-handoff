@@ -42,6 +42,11 @@ pub mod capability {
     pub const STREAM_VIEW: &str = "stream.view";
     /// Takes input from a viewer, in a session where the person at the source granted control.
     pub const STREAM_CONTROL: &str = "stream.control";
+    /// Starts a session when a paired device asks it to: accepts
+    /// [`StreamRequest::Start`](crate::stream::StreamRequest::Start), answers it, and then makes
+    /// the offer, as the source. Only a device that advertises [`STREAM_SHARE`] advertises it
+    /// (section 9 of `docs/protocol.md`).
+    pub const STREAM_START: &str = "stream.start";
 }
 
 /// A message with a defined maximum size and field limits.
@@ -69,8 +74,9 @@ pub enum Request {
     /// Offer files and folders to the peer, or follow up on an offer. Only to a peer that
     /// advertised [`capability::TRANSFER_FILES`].
     Transfer(TransferRequest),
-    /// Offer a window to the peer, or end a session. An offer goes only to a peer that
-    /// advertised [`capability::STREAM_VIEW`], and a stop to the other end of the session.
+    /// Offer a window to the peer, end a session, or ask the peer to start one. An offer goes
+    /// only to a peer that advertised [`capability::STREAM_VIEW`], a start only to one that
+    /// advertised [`capability::STREAM_START`], and a stop to the other end of the session.
     Stream(StreamRequest),
 }
 

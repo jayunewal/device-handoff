@@ -145,7 +145,7 @@ impl App {
         lock(&self.handles).remove(index)
     }
 
-    fn viewing(&self) -> Viewing {
+    pub(super) fn viewing(&self) -> Viewing {
         Viewing::new(
             Recording(self.log.clone()),
             2796,

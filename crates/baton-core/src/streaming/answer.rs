@@ -28,6 +28,7 @@ use baton_proto::{
     message::{DeclineReason, Message, Response},
     stream::{
         Accepted, Codec, Declined, Offer, SourceKind, Stop, Stopped, StreamReply, StreamRequest,
+        WhyNot,
     },
 };
 use iroh::endpoint::Connection;
@@ -158,7 +159,7 @@ impl Viewing {
         }
     }
 
-    fn accepted(&self, session: SessionId) -> Response {
+    pub(super) fn accepted(&self, session: SessionId) -> Response {
         Response::Stream(StreamReply::Accepted(Accepted {
             session,
             max_width: self.takes.max_width,
@@ -351,7 +352,7 @@ impl Streaming {
 
     /// Whether this device takes part in window streaming at all, which is whether it advertises
     /// one of its capabilities.
-    fn takes_part(&self) -> bool {
+    pub(super) fn takes_part(&self) -> bool {
         self.viewer.is_some() || self.sharer.is_some()
     }
 
@@ -366,6 +367,7 @@ impl Streaming {
     ) -> StreamReply {
         match request {
             StreamRequest::Offer(offer) => self.answer_offer(paired, connection, link, offer).await,
+            StreamRequest::Start(start) => self.answer_start(paired, link, start).await,
             StreamRequest::Stop(stop) => {
                 // A device that takes no part has no session to stop, and says so as it does for
                 // an offer.
@@ -407,9 +409,22 @@ impl Streaming {
             if !table.offers.note(link, session) {
                 return declined(DeclineReason::Invalid);
             }
-            // Too many items from the device, another offer that waits for a person, or a window
-            // that is shown already.
-            if !(viewer.charge)(&paired.id) || table.offers.waiting.is_some() || table.has_view() {
+            // The offer that a start of this device asked for is taken without asking a person:
+            // the person asked when they chose to start. It is not charged to the device either,
+            // since this device asked for it.
+            if let Some(pending) = table
+                .starting
+                .take_if(|pending| pending.peer == paired.id && pending.session == session)
+            {
+                return self.take_asked(&mut table, paired, connection, pending, &offer);
+            }
+            // Too many items from the device, another offer that waits for a person, a window
+            // that is shown already, or a start that waits for its own offer.
+            if !(viewer.charge)(&paired.id)
+                || table.offers.waiting.is_some()
+                || table.has_view()
+                || table.starting.is_some()
+            {
                 return declined(DeclineReason::RateLimited);
             }
             table.offers.waiting = Some(Waiting {
@@ -474,12 +489,27 @@ impl Streaming {
         }
     }
 
-    /// Ends the session that `paired` stops, or withdraws its offer, if it has one under that id.
-    /// There is nothing to say if it has not: the answer is the same.
+    /// Ends the session that `paired` stops, or withdraws its offer, or takes its start back, if
+    /// it has one under that id. There is nothing to say if it has not: the answer is the same.
+    ///
+    /// A device that asked this one for an offer and has not had it takes the asking back this
+    /// way, and a source that gives up on an offer it was asked for tells the device this way.
     fn stop(&self, paired: &PairedDevice, stop: &Stop) {
         let session = {
             let mut table = lock(&self.table);
             table.offers.withdraw(&paired.id, stop.session);
+            if let Some(pending) = table
+                .starting
+                .take_if(|pending| pending.peer == paired.id && pending.session == stop.session)
+            {
+                let _ = pending.done.send(Err(WhyNot::Failed));
+            }
+            if let Some(sending) = &table.sending
+                && sending.peer == paired.id
+                && sending.asked == Some(stop.session)
+            {
+                sending.withdraw();
+            }
             table
                 .sessions
                 .get(&stop.session)

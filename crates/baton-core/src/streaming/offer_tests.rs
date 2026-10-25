@@ -34,7 +34,7 @@ use crate::{
 
 /// What the platform of a test makes of what a viewer takes: a picture of 1440 by 900 pixels at
 /// 60 frames a second, as far as the viewer takes it.
-fn fit(takes: &Takes) -> Option<Format> {
+pub(super) fn fit(takes: &Takes) -> Option<Format> {
     takes.codecs.contains(&Codec::H264).then(|| Format {
         epoch: 0,
         codec: Codec::H264,
@@ -44,7 +44,7 @@ fn fit(takes: &Takes) -> Option<Format> {
     })
 }
 
-fn window() -> WindowShare {
+pub(super) fn window() -> WindowShare {
     WindowShare::new("Report.pdf", "Preview", 1440, 900)
 }
 

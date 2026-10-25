@@ -15,6 +15,10 @@
 //! A device has one session as a source at a time in this version, so it makes no offer while
 //! another is waiting for an answer or running.
 //!
+//! The person at the source is not always the one who starts an offer. A paired device that the
+//! person allowed beforehand may ask for one (`start.rs`), and the offer is then made for the
+//! place that the asking took, under the id that the asking chose.
+//!
 //! A viewer has one place too, for an offer that waits for its person or a window that is shown,
 //! and it lets go of it when it answers a `Stop` for it. So a `Stop` that this device sent (when
 //! an offer was given up, when a session was ended here) is waited for, a few seconds at most,
@@ -22,7 +26,14 @@
 //! otherwise meet the viewer's place still taken, and be refused as `RateLimited` by a device
 //! that is not busy.
 
-use std::{fmt, sync::Arc, time::Duration};
+use std::{
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use baton_proto::{
     DeviceId,
@@ -34,7 +45,9 @@ use baton_stream::control::Config;
 use iroh::endpoint::Connection;
 use tokio_util::sync::CancellationToken;
 
-use super::{SourceEvents, SourceHandle, SourceParams, SourceSetup, Streaming, Takes};
+use super::{
+    SourceEvents, SourceHandle, SourceParams, SourceSetup, Streaming, Table, Takes, start::Starter,
+};
 use crate::{
     error::{Error, Result},
     session::{Hold, call},
@@ -55,14 +68,30 @@ pub(crate) struct Sharer {
     /// Whether the device takes input from a viewer in a session where the person granted
     /// control, which is whether it advertises `stream.control`.
     pub(crate) control: bool,
+    /// What it needs to start a session when a paired device asks it to, if it does, which is
+    /// whether it advertises `stream.start`.
+    pub(crate) starter: Option<Starter>,
 }
 
 /// The place of the one session that a device has as a source, from the offer to the session.
 pub(super) struct Sending {
     /// The device the window is offered to.
     pub(super) peer: DeviceId,
-    /// Cancelled when the device is unpaired or the node stops.
+    /// The session that the device asked for, if this place was taken because it asked, and none
+    /// if the person here chose the window.
+    pub(super) asked: Option<SessionId>,
+    /// Cancelled when the device is unpaired or the node stops, or takes its asking back.
     pub(super) cancel: CancellationToken,
+    /// Set before `cancel` is, when the device took its asking back.
+    pub(super) withdrawn: Arc<AtomicBool>,
+}
+
+impl Sending {
+    /// Cancels the offer because the device that asked for it took the asking back.
+    pub(super) fn withdraw(&self) {
+        self.withdrawn.store(true, Ordering::SeqCst);
+        self.cancel.cancel();
+    }
 }
 
 /// The place of the one session that a device has as a source. It is let go of when this is
@@ -71,17 +100,26 @@ pub(super) struct Sending {
 pub(crate) struct Reservation {
     streaming: Arc<Streaming>,
     cancel: CancellationToken,
+    withdrawn: Arc<AtomicBool>,
 }
 
 impl Reservation {
-    /// Whether the device was unpaired, or the node stopped, since the place was taken.
+    /// Whether the device was unpaired, or the node stopped, since the place was taken, or the
+    /// device that asked for the offer took its asking back.
     pub(crate) fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled()
     }
 
-    /// Waits until the device is unpaired or the node stops.
+    /// Waits until the device is unpaired or the node stops, or the device that asked for the
+    /// offer takes its asking back.
     pub(crate) async fn cancelled(&self) {
         self.cancel.cancelled().await;
+    }
+
+    /// Whether the cancellation is the device taking its asking back, and not the device being
+    /// unpaired or the node stopping.
+    pub(crate) fn is_withdrawn(&self) -> bool {
+        self.withdrawn.load(Ordering::SeqCst)
     }
 }
 
@@ -192,6 +230,10 @@ pub enum ShareOutcome {
     /// The other device accepted, but the application found nothing in what it takes that it can
     /// make. The session was ended at once.
     Unmatched,
+    /// The other device had asked for the offer and took its asking back before the offer was
+    /// answered. Nothing is shared. Only an offer that a device asked for ends this way
+    /// ([`Node::share_asked`](crate::Node::share_asked)).
+    Cancelled,
 }
 
 /// An offer that was made and answered.
@@ -242,24 +284,40 @@ impl Streaming {
         window.check()
     }
 
-    /// Takes the place of the one session that a source has, for an offer to `peer`.
+    /// Takes the place of the one session that a source has, for an offer to `peer` that the
+    /// person at this device chose.
     ///
     /// # Errors
     ///
     /// [`Error::Busy`]: another window is being offered or shared.
     pub(crate) fn reserve(self: &Arc<Self>, peer: DeviceId) -> Result<Reservation> {
-        let mut table = lock(&self.table);
+        self.reserve_in(&mut lock(&self.table), peer, None)
+    }
+
+    /// The same, in the hold of the lock of the table that the caller has, so that a check of
+    /// something else is not undone before the place is taken. `asked` is the session that `peer`
+    /// asked for, if it did.
+    pub(super) fn reserve_in(
+        self: &Arc<Self>,
+        table: &mut Table,
+        peer: DeviceId,
+        asked: Option<SessionId>,
+    ) -> Result<Reservation> {
         if table.has_source() {
             return Err(Error::Busy);
         }
         let cancel = CancellationToken::new();
+        let withdrawn = Arc::new(AtomicBool::new(false));
         table.sending = Some(Sending {
             peer,
+            asked,
             cancel: cancel.clone(),
+            withdrawn: Arc::clone(&withdrawn),
         });
         Ok(Reservation {
             streaming: Arc::clone(self),
             cancel,
+            withdrawn,
         })
     }
 
@@ -283,8 +341,8 @@ impl Streaming {
         let accepted = match reply {
             StreamReply::Accepted(accepted) => accepted,
             StreamReply::Declined(declined) => return Ok(ShareOutcome::Declined(declined.reason)),
-            StreamReply::Stopped(_) => {
-                return Err(Error::protocol("a Stopped is not the answer to an offer"));
+            StreamReply::Stopped(_) | StreamReply::Starting(_) | StreamReply::NotStarted(_) => {
+                return Err(Error::protocol("the answer was not one to an offer"));
             }
         };
         let takes = Takes::of(&accepted);
@@ -331,14 +389,7 @@ pub(crate) async fn ask(
     wait: Duration,
 ) -> Result<StreamReply> {
     let session = offer.session;
-    let mut withdraw = Withdraw {
-        streaming: Arc::clone(streaming),
-        runtime: tokio::runtime::Handle::current(),
-        peer,
-        connection: connection.clone(),
-        session,
-        armed: true,
-    };
+    let mut withdraw = Withdraw::new(streaming, peer, connection, session);
     let request = Request::Stream(StreamRequest::Offer(offer));
     let reply = match call(connection, &request, wait).await? {
         Response::Stream(reply) if reply.session() == session => reply,
@@ -348,15 +399,16 @@ pub(crate) async fn ask(
             ));
         }
     };
-    if matches!(reply, StreamReply::Stopped(_)) {
-        return Err(Error::protocol("a Stopped is not the answer to an offer"));
+    if !matches!(reply, StreamReply::Accepted(_) | StreamReply::Declined(_)) {
+        return Err(Error::protocol("the answer was not one to an offer"));
     }
-    withdraw.armed = false;
+    withdraw.disarm();
     Ok(reply)
 }
 
-/// Withdraws an offer that has not been answered, when it is dropped.
-struct Withdraw {
+/// Withdraws an offer that has not been answered, or a start whose offer has not come, when it
+/// is dropped.
+pub(crate) struct Withdraw {
     streaming: Arc<Streaming>,
     /// Sends the `Stop`: whichever thread drops the call, it need not be in the runtime.
     runtime: tokio::runtime::Handle,
@@ -364,6 +416,31 @@ struct Withdraw {
     connection: Connection,
     session: SessionId,
     armed: bool,
+}
+
+impl Withdraw {
+    /// A guard that tells `peer`, on `connection`, that `session` is over, unless it is
+    /// [`disarmed`](Self::disarm) first. Must be made in the runtime of the node.
+    pub(crate) fn new(
+        streaming: &Arc<Streaming>,
+        peer: DeviceId,
+        connection: &Connection,
+        session: SessionId,
+    ) -> Self {
+        Self {
+            streaming: Arc::clone(streaming),
+            runtime: tokio::runtime::Handle::current(),
+            peer,
+            connection: connection.clone(),
+            session,
+            armed: true,
+        }
+    }
+
+    /// There is nothing to withdraw any more: the other device answered, or ended it.
+    pub(crate) fn disarm(&mut self) {
+        self.armed = false;
+    }
 }
 
 impl Drop for Withdraw {
