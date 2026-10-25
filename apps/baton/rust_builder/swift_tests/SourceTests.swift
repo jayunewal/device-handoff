@@ -49,9 +49,15 @@ final class FakeSharedWindow: SharedWindow {
 
 final class FakeSharerPlatform: SharerPlatform {
   var canControl = false
+  var canGiveScreen = false
   var picks: [UInt64] = []
   var cancelled: [UInt64] = []
   var pickFailure: Error?
+  /// What `screen` gives, or the error it throws, and how often it was asked.
+  var screenWindow: SharedWindow?
+  var screenInfo = PickedWindowInfo(width: 3024, height: 1964, title: "", app: "", display: true)
+  var screenFailure: Error?
+  var screens = 0
 
   func pick(request: UInt64) throws {
     picks.append(request)
@@ -59,6 +65,13 @@ final class FakeSharerPlatform: SharerPlatform {
   }
 
   func cancelPick(request: UInt64) { cancelled.append(request) }
+
+  func screen() throws -> (window: SharedWindow, info: PickedWindowInfo) {
+    screens += 1
+    if let screenFailure { throw screenFailure }
+    guard let screenWindow else { throw SharerFailure(sentence: "No screen to give.") }
+    return (screenWindow, screenInfo)
+  }
 }
 
 /// Registers `platform` against the stub and gives the table that the Rust side would hold.
@@ -304,6 +317,162 @@ func testAPickerThatFailedAndAPersonWhoGaveUpAreTold() {
   check(done[0].request == 4 && done[0].chosen == nil && done[0].failure == "Nothing can be shared right now.")
   check(done[1].request == 5 && done[1].chosen == nil && done[1].failure == nil)
   check(done[2].request == 6 && done[2].chosen == nil && done[2].failure == "")
+}
+
+// MARK: - The screen, with no picker
+
+/// A struct for the picked screen the way the Rust side builds it for the call: its size set and
+/// everything else zero.
+func emptyPicked() -> BatonPicked {
+  var picked = BatonPicked()
+  picked.size = UInt32(MemoryLayout<BatonPicked>.size)
+  return picked
+}
+
+func testTheTableHasAScreenCallOnlyWhenThePlatformCanGiveTheScreen() {
+  let without = FakeSharerPlatform()
+  check(registeredSharing(without)?.screen == nil, "a platform that cannot give its screen")
+
+  let with = FakeSharerPlatform()
+  with.canGiveScreen = true
+  guard let table = registeredSharing(with) else { return check(false) }
+  check(table.screen != nil, "a platform that can")
+  check(table.size == UInt32(MemoryLayout<BatonSharerVTable>.size), "size \(table.size)")
+  check(with.screens == 0, "the screen was given before anyone asked")
+}
+
+/// A platform from before the screen could be given: it says nothing of it.
+final class PlatformWithoutAScreen: SharerPlatform {
+  var canControl = false
+  func pick(request: UInt64) throws {}
+  func cancelPick(request: UInt64) {}
+}
+
+func testAPlatformThatSaysNothingOfTheScreenCannotGiveItAndHasNoEntryForIt() {
+  let platform = PlatformWithoutAScreen()
+  check(!platform.canGiveScreen, "a platform that never said it can")
+  do {
+    _ = try platform.screen()
+    check(false, "a screen was given")
+  } catch let failure as SharerFailure {
+    check(!failure.sentence.isEmpty, "a failure with no sentence")
+  } catch {
+    check(false, "another kind of error: \(error)")
+  }
+  check(registeredSharing(platform)?.screen == nil, "an entry for a screen that cannot be given")
+}
+
+func testTheScreenIsGivenAsADisplayThatTheRustSideOwnsAndNeverNamed() {
+  let platform = FakeSharerPlatform()
+  platform.canGiveScreen = true
+  guard let table = registeredSharing(platform), let screen = table.screen,
+    let release = table.release
+  else { return check(false) }
+  weak var weakWindow: FakeSharedWindow?
+  var picked = emptyPicked()
+  do {
+    let window = FakeSharedWindow()
+    weakWindow = window
+    platform.screenWindow = window
+    let result = withMessage { screen(table.context, &picked, $0) }
+    platform.screenWindow = nil
+    check(result.code == 0 && result.sentence == "", "\(result)")
+    check(picked.size == UInt32(MemoryLayout<BatonPicked>.size), "size \(picked.size)")
+    check(picked.width == 3024 && picked.height == 1964, "\(picked)")
+    check(picked.kind == UInt32(BATON_PICKED_DISPLAY), "kind \(picked.kind)")
+    check(picked.context != nil, "no pointer for the screen")
+    check(picked.title.len == 0 && picked.app.len == 0, "a screen that was named: \(picked)")
+    check(platform.screens == 1, "asked \(platform.screens) times")
+    check(window.releasedCalls == 0, "released before the Rust side let go of it")
+    // The Rust side owns the screen now, and gives it back with release.
+    release(picked.context)
+    check(window.releasedCalls == 1, "released \(window.releasedCalls) times")
+  }
+  check(weakWindow == nil, "the screen is still held after the release")
+}
+
+func testTheKindOfTheScreenIsPassedOnAsThePlatformSaysAndNoNameIsWritten() {
+  let platform = FakeSharerPlatform()
+  platform.canGiveScreen = true
+  guard let table = registeredSharing(platform), let screen = table.screen,
+    let release = table.release
+  else { return check(false) }
+  // A platform that names what it gives, and says it is a window, is passed on as it is: the Rust
+  // side is the one that refuses a window where a screen was asked for, and no name is written.
+  let window = FakeSharedWindow()
+  platform.screenWindow = window
+  platform.screenInfo = PickedWindowInfo(width: 640, height: 480, title: "Notes", app: "Text")
+  var picked = emptyPicked()
+  check(withMessage { screen(table.context, &picked, $0) }.code == 0)
+  check(picked.kind == UInt32(BATON_PICKED_WINDOW), "kind \(picked.kind)")
+  check(picked.width == 640 && picked.height == 480, "\(picked)")
+  check(picked.title.len == 0 && picked.app.len == 0 && picked.title.ptr == nil, "\(picked)")
+  release(picked.context)
+  check(window.releasedCalls == 1)
+}
+
+func testAScreenThatCannotBeGivenIsToldByItsCodeAndNothingIsWritten() {
+  let platform = FakeSharerPlatform()
+  platform.canGiveScreen = true
+  guard let table = registeredSharing(platform), let screen = table.screen else {
+    return check(false)
+  }
+  // The codes are the ones the Rust side reads, and none is one of its own failures.
+  check(BATON_SCREEN_NEEDS_PERMISSION == 1 && BATON_SCREEN_UNAVAILABLE == 2)
+  platform.screenWindow = FakeSharedWindow()
+
+  func ask(_ failure: Error) -> (code: Int32, sentence: String, written: Bool) {
+    platform.screenFailure = failure
+    var picked = emptyPicked()
+    let result = withMessage { screen(table.context, &picked, $0) }
+    let written = picked.context != nil || picked.width != 0 || picked.height != 0
+      || picked.kind != 0 || picked.title.len != 0 || picked.app.len != 0
+    return (result.code, result.sentence, written)
+  }
+  var answer = ask(ScreenRefusal.needsPermission)
+  check(answer.code == Int32(BATON_SCREEN_NEEDS_PERMISSION), "code \(answer.code)")
+  check(answer.sentence == "" && !answer.written, "\(answer)")
+  answer = ask(ScreenRefusal.unavailable)
+  check(answer.code == Int32(BATON_SCREEN_UNAVAILABLE), "code \(answer.code)")
+  check(answer.sentence == "" && !answer.written, "\(answer)")
+  answer = ask(SharerFailure(sentence: "Recording is off for Baton."))
+  check(answer.code == Int32(BATON_E_PLATFORM), "code \(answer.code)")
+  check(answer.sentence == "Recording is off for Baton." && !answer.written, "\(answer)")
+  struct Other: Error {}
+  answer = ask(Other())
+  check(answer.code == Int32(BATON_E_PLATFORM), "code \(answer.code)")
+  check(answer.sentence == "The screen could not be given." && !answer.written, "\(answer)")
+  check(platform.screens == 4, "asked \(platform.screens) times")
+}
+
+func testAScreenCallWithStructsThatAreTooShortOrMissingIsRefusedWithoutAskingThePlatform() {
+  let platform = FakeSharerPlatform()
+  platform.canGiveScreen = true
+  guard let table = registeredSharing(platform), let screen = table.screen,
+    let release = table.release
+  else { return check(false) }
+  let window = FakeSharedWindow()
+  platform.screenWindow = window
+  let bad = Int32(BATON_E_ARGUMENT)
+  let arena = Arena()
+  var picked = emptyPicked()
+  var shortPicked = picked
+  shortPicked.size = 8
+  check(withMessage { screen(table.context, &shortPicked, $0) }.code == bad, "a short picked")
+  check(withMessage(size: 8) { screen(table.context, &picked, $0) }.code == bad, "a short message")
+  check(screen(table.context, &picked, nil) == bad, "no message")
+  check(withMessage { screen(table.context, nil, $0) }.code == bad, "no picked")
+  check(withMessage { screen(nil, &picked, $0) }.code == bad, "no context")
+  check(platform.screens == 0, "the platform was asked \(platform.screens) times")
+  check(picked.context == nil && shortPicked.context == nil, "something was written")
+  // Structs that are only as long as they say are read and written no further: the address
+  // sanitizer shows it.
+  let exact = arena.shortStruct(BatonPicked.self, size: MemoryLayout<BatonPicked>.size)
+  let result = withMessage(room: 4) { screen(table.context, exact, $0) }
+  check(result.code == 0, "structs of exactly the size they state: \(result.code)")
+  check(exact.pointee.context != nil && exact.pointee.kind == UInt32(BATON_PICKED_DISPLAY))
+  release(exact.pointee.context)
+  check(window.releasedCalls == 1)
 }
 
 // MARK: - What the Rust side calls about a window

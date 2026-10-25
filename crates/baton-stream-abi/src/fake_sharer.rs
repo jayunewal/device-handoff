@@ -28,7 +28,7 @@ use std::{
     mem::offset_of,
     ptr, slice,
     sync::{
-        Arc, Mutex, MutexGuard, PoisonError, Weak,
+        Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -60,6 +60,8 @@ pub(crate) enum SharerCall {
     CancelPick {
         request: u64,
     },
+    /// The platform was asked for its main display.
+    Screen,
     /// What the other device takes: the widest and the highest picture, the rate and the codecs.
     Prepare {
         takes: (u32, u32, u32, u32),
@@ -89,6 +91,30 @@ pub(crate) enum PickPlan {
         text: Vec<u8>,
         claimed_len: u32,
     },
+}
+
+/// What `screen` does.
+#[derive(Debug, Clone)]
+pub(crate) enum ScreenPlan {
+    /// Gives a display of this size, a new window of the fake.
+    Gives(u32, u32),
+    /// Returns this code, writing `text` as `PickPlan::Fail` does. It gives nothing.
+    Fails {
+        code: i32,
+        text: Vec<u8>,
+        claimed_len: u32,
+    },
+    /// Returns `OK` and writes these numbers as they are, which a platform that is wrong about
+    /// the header may do: what it says it gave, the size, and whether it gave a window of its own
+    /// (a pointer that is not null).
+    Writes {
+        kind: u32,
+        width: u32,
+        height: u32,
+        window: bool,
+    },
+    /// Does not return until the test lets it, and then gives a display of this size.
+    Waits(u32, u32),
 }
 
 /// What `prepare` does.
@@ -209,6 +235,9 @@ struct State {
     complaints: Vec<String>,
     control: u32,
     pick: PickPlan,
+    screen: ScreenPlan,
+    /// Whether a `screen` that waits may go on.
+    screen_open: bool,
     prepare: PreparePlan,
     start: StartPlan,
     around: AroundPlan,
@@ -245,6 +274,8 @@ struct Cell {
 /// The platform of a test that shares windows.
 pub(crate) struct FakeSharer {
     state: Mutex<State>,
+    /// Told when `screen_open` changes.
+    screen_gate: Condvar,
     /// The windows that were given. They stay until the fake is dropped, so a call that comes
     /// after `release` finds the flag and not freed memory.
     cells: Mutex<Vec<Arc<Cell>>>,
@@ -278,11 +309,14 @@ impl FakeSharer {
     /// and a session that is still ending when a test returns must find it where it was.
     pub(crate) fn new() -> Arc<Self> {
         let fake = Arc::new(Self {
+            screen_gate: Condvar::new(),
             state: Mutex::new(State {
                 log: Vec::new(),
                 complaints: Vec::new(),
                 control: 0,
                 pick: PickPlan::Later,
+                screen: ScreenPlan::Gives(crate::fixture::WIDTH, crate::fixture::HEIGHT),
+                screen_open: false,
                 prepare: PreparePlan::Within,
                 start: StartPlan::Works,
                 around: AroundPlan::Says(Around::default()),
@@ -311,16 +345,28 @@ impl FakeSharer {
             release: Some(release),
             surroundings: Some(surroundings),
             post: Some(post),
+            screen: Some(screen),
         }
     }
 
     /// The vtable of a platform that was written before input was carried: it ends at `release`,
-    /// and the library reads the two functions that it lacks as missing.
+    /// and the library reads the three functions that it lacks as missing.
     pub(crate) fn vtable_without_input(self: &Arc<Self>) -> BatonSharerVTable {
         BatonSharerVTable {
             size: u32::try_from(offset_of!(BatonSharerVTable, surroundings)).unwrap(),
             surroundings: None,
             post: None,
+            screen: None,
+            ..self.vtable()
+        }
+    }
+
+    /// The vtable of a platform that was written before it could give its screen: it ends at
+    /// `post`, and the library reads the function that it lacks as missing.
+    pub(crate) fn vtable_without_screen(self: &Arc<Self>) -> BatonSharerVTable {
+        BatonSharerVTable {
+            size: u32::try_from(offset_of!(BatonSharerVTable, screen)).unwrap(),
+            screen: None,
             ..self.vtable()
         }
     }
@@ -370,6 +416,16 @@ impl FakeSharer {
 
     pub(crate) fn plan_pick(&self, plan: PickPlan) {
         self.state().pick = plan;
+    }
+
+    pub(crate) fn plan_screen(&self, plan: ScreenPlan) {
+        self.state().screen = plan;
+    }
+
+    /// Lets a `screen` that waits go on, now and for the calls after it.
+    pub(crate) fn open_screen(&self) {
+        self.state().screen_open = true;
+        self.screen_gate.notify_all();
     }
 
     pub(crate) fn plan_prepare(&self, plan: PreparePlan) {
@@ -612,6 +668,21 @@ unsafe fn fake_of<'a>(context: *mut c_void) -> &'a FakeSharer {
     unsafe { &*context.cast_const().cast::<FakeSharer>() }
 }
 
+/// A strong reference to the fake behind a `context`.
+///
+/// # Safety
+///
+/// As for [`fake_of`].
+unsafe fn arc_of(context: *mut c_void) -> Arc<FakeSharer> {
+    let fake = context.cast_const().cast::<FakeSharer>();
+    // SAFETY: the pointer is the one that `Arc::as_ptr` gave in `vtable`, of an `Arc` that is alive
+    // for the whole test (`KEPT` holds it), so one more strong count can be taken and handed out.
+    unsafe {
+        Arc::increment_strong_count(fake);
+        Arc::from_raw(fake)
+    }
+}
+
 /// The window behind a pointer that an answer gave, and the fake it belongs to.
 ///
 /// # Safety
@@ -754,6 +825,83 @@ unsafe extern "C" fn cancel_pick(context: *mut c_void, request: u64) {
         ));
     }
     fake.heard(0, &SharerCall::CancelPick { request });
+}
+
+unsafe extern "C" fn screen(
+    context: *mut c_void,
+    picked: *mut BatonPicked,
+    message: *mut BatonMessage,
+) -> i32 {
+    // SAFETY: the context is the one `vtable` gave.
+    let fake = unsafe { fake_of(context) };
+    if picked.is_null() || message.is_null() {
+        fake.complain("screen: a null pointer");
+        return -1;
+    }
+    // SAFETY: not null, and the Rust side gives structs of the interface.
+    let (given, room) = unsafe { (*picked, *message) };
+    check_message(fake, "screen", room);
+    if given.size != size_of_u32::<BatonPicked>()
+        || (given.width, given.height, given.kind) != (0, 0, 0)
+        || !given.context.is_null()
+        || given.title.len != 0
+        || given.app.len != 0
+    {
+        fake.complain(format!("screen: the display is not empty: {given:?}"));
+    }
+    fake.heard(0, &SharerCall::Screen);
+    let plan = {
+        let mut state = fake.state();
+        let plan = state.screen.clone();
+        if matches!(plan, ScreenPlan::Waits(..)) {
+            while !state.screen_open {
+                state = fake
+                    .screen_gate
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+        }
+        plan
+    };
+    let (kind, width, height, window) = match plan {
+        ScreenPlan::Gives(width, height) | ScreenPlan::Waits(width, height) => {
+            (PICKED_DISPLAY, width, height, true)
+        }
+        ScreenPlan::Writes {
+            kind,
+            width,
+            height,
+            window,
+        } => (kind, width, height, window),
+        ScreenPlan::Fails {
+            code,
+            text,
+            claimed_len,
+        } => {
+            // SAFETY: `message` is not null and its struct is the platform's to write.
+            unsafe { write_failure(message, &text, claimed_len) };
+            return code;
+        }
+    };
+    let window = if window {
+        // SAFETY: the context is the one `vtable` gave.
+        unsafe { arc_of(context) }.new_window()
+    } else {
+        ptr::null_mut()
+    };
+    // SAFETY: not null, and the struct is the platform's to write.
+    unsafe {
+        picked.write(BatonPicked {
+            size: given.size,
+            width,
+            height,
+            kind,
+            context: window,
+            title: BatonBytes::of(b""),
+            app: BatonBytes::of(b""),
+        });
+    }
+    OK
 }
 
 unsafe extern "C" fn prepare(

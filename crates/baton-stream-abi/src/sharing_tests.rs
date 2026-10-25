@@ -23,36 +23,49 @@ use std::{
 };
 
 use baton_app::{
-    Event, Events, WindowButton, WindowEnd, WindowInput, WindowModifiers, WindowNoticeReason,
-    WindowPointer, WindowRequest, WindowRole, WindowSession, WindowShared, Windows,
-    windows::{PickedWindow, PlatformError, ScreenLink, SharingFailure, WindowSharer},
+    Event, Events, StartAccess, WindowButton, WindowEnd, WindowInput, WindowModifiers,
+    WindowNoticeReason, WindowPointer, WindowRequest, WindowRole, WindowSession, WindowShared,
+    Windows,
+    windows::{PickedWindow, PlatformError, ScreenError, ScreenLink, SharingFailure, WindowSharer},
 };
 use baton_core::{
-    streaming::{SourceEvents, SourceHandle, Takes},
+    Config as NodeConfig, Identity, Node, TrustStore,
+    streaming::{
+        DecodeError, Decoder, DecoderState, SourceEvents, SourceHandle, StartOutcome, Takes,
+        Viewing, Wanted,
+    },
     util::BoxFuture,
 };
-use baton_proto::limits::MAX_PICTURE_BYTES;
+use baton_proto::{
+    DeviceId,
+    limits::{MAX_PICTURE_BYTES, MAX_WINDOW_EDGE},
+    stream::Codec,
+    ticket::PairTicket,
+};
 use baton_stream::{
-    control::Config as Format,
+    control::{Config as Format, SourceMessage, Thermal},
     gate::MAX_STALE,
+    header::FrameHeader,
     input::{NO_KEY, PointerAction},
 };
+use tempfile::TempDir;
 use tokio::task::JoinHandle;
 
 use crate::{
     Error, Registry,
     abi::{
         BEGIN_DELTA, BEGIN_KEY, BEGIN_NOT_NOW, BatonBytes, BatonFormat, BatonFront, BatonGeometry,
-        BatonPicked, BatonPicture, BatonRect, CODEC_H264, FRAME_KEY, FRAME_RECOVERY,
+        BatonPicked, BatonPicture, BatonRect, CODEC_H264, E_PLATFORM, FRAME_KEY, FRAME_RECOVERY,
         FRAME_REFERENCED, KEYBOARD_ELSEWHERE, PAUSE_HIDDEN, PAUSE_LOCKED, PAUSE_OTHER,
-        PICKED_WINDOW, SENT, SENT_OVER, SENT_STALE, SENT_TOO_LARGE, SOURCE_CONFIG, SOURCE_PAUSE,
-        SOURCE_RESUME, size_of_u32,
+        PICKED_DISPLAY, PICKED_WINDOW, SCREEN_NEEDS_PERMISSION, SCREEN_UNAVAILABLE, SENT,
+        SENT_OVER, SENT_STALE, SENT_TOO_LARGE, SOURCE_CONFIG, SOURCE_PAUSE, SOURCE_RESUME,
+        size_of_u32,
     },
     fake::{Call, Decoded, Fake, Watchdog},
     fake_sharer::{
-        self, Around, FakeSharer, Pic, PickPlan, PreparePlan, SharerCall, StartPlan, begin, cancel,
-        changed, clock, end, key_post, left_down, left_up, new_epoch, new_epoch_raw, pause,
-        pointer_post, recovery_pending, resume, sent, sent_sized, sent_with,
+        self, Around, FakeSharer, Pic, PickPlan, PreparePlan, ScreenPlan, SharerCall, StartPlan,
+        begin, cancel, changed, clock, end, key_post, left_down, left_up, new_epoch, new_epoch_raw,
+        pause, pointer_post, recovery_pending, resume, sent, sent_sized, sent_with,
     },
     fixture::{HEIGHT, PPS, SPS, WIDTH, pictures, sps},
     input::Timing,
@@ -1506,6 +1519,14 @@ fn asked_to_prepare() -> SharerCall {
     }
 }
 
+/// The call that asks the platform to prepare for a viewer that takes pictures of up to this size
+/// and rate, in H.264.
+fn asked_to_prepare_within(width: u32, height: u32, fps: u32) -> SharerCall {
+    SharerCall::Prepare {
+        takes: (width, height, fps, CODEC_H264),
+    }
+}
+
 /// A start that fails with this text, which it claims to be this long.
 fn start_fails(text: &[u8], claimed_len: u32) -> StartPlan {
     StartPlan::Fail {
@@ -2139,14 +2160,20 @@ async fn the_platform_cannot_call_back_while_the_library_is_calling_it() {
     assert_eq!(rig.sharing_end().await, WindowEnd::ThisDevice);
     rig.nothing_is_left().await;
 
+    // A screen that is given without a picker, and let go of: Screen, on the thread that waits for
+    // the system, and the Release of the display that follows. It is the second window.
+    drop(rig.registry.sharer().unwrap().screen().await.unwrap());
+    rig.nothing_is_left().await;
+    assert_eq!(rig.platform.calls(2), [SharerCall::Release]);
+
     let answers = answers.lock().unwrap();
     let kinds: HashSet<_> = answers
         .iter()
         .map(|(call, ..)| mem::discriminant(call))
         .collect();
-    assert_eq!(kinds.len(), 9, "every kind of call of the library");
+    assert_eq!(kinds.len(), 10, "every kind of call of the library");
     // Every function was tried inside every call, and none was let in.
-    assert!(answers.len() >= 9 * 12, "{} answers", answers.len());
+    assert!(answers.len() >= 10 * 12, "{} answers", answers.len());
     for (call, name, answer) in answers.iter() {
         assert_eq!(*answer, Err(Error::Reentrant), "{name} inside {call:?}");
     }
@@ -3048,4 +3075,402 @@ async fn a_picture_does_not_go_out_before_the_gate_can_have_its_frame() {
 
     assert!(rig.sharing.app.end_window(shown.sharing.id));
     rig.nothing_is_left().await;
+}
+
+// The screen without a picker (ADR 0010).
+
+/// A platform behind a registry of its own, as the sharer of the app sees it.
+fn sharer_of(platform: &Arc<FakeSharer>) -> Arc<dyn WindowSharer> {
+    let registry = Registry::new();
+    platform.register_in(&registry).unwrap();
+    registry.sharer().unwrap()
+}
+
+/// What the app is told when it asks for the screen and does not get it.
+async fn screen_error(sharer: &Arc<dyn WindowSharer>) -> ScreenError {
+    match sharer.screen().await {
+        Err(error) => error,
+        Ok(_) => panic!("the platform gave a screen that it should not have given"),
+    }
+}
+
+#[tokio::test]
+async fn a_platform_that_gives_its_screen_is_asked_for_it_and_the_display_is_released_once() {
+    let platform = FakeSharer::new();
+    let sharer = sharer_of(&platform);
+    assert!(sharer.can_give_screen());
+
+    let picked = sharer.screen().await.unwrap();
+    // A whole display of the size the platform said, with no name, no application and no picker.
+    assert!(picked.display());
+    assert_eq!(picked.size(), (WIDTH, HEIGHT));
+    assert_eq!(
+        (picked.title(), picked.app()),
+        (String::new(), String::new())
+    );
+    assert_eq!(platform.log(), [(0, SharerCall::Screen)]);
+    assert_eq!(platform.live_windows(), 1);
+
+    // It is let go of when nobody needs it any more, without ever being started.
+    drop(picked);
+    assert_eq!(platform.live_windows(), 0);
+    assert_eq!(platform.calls(1), [SharerCall::Release]);
+    platform.assert_no_complaints();
+}
+
+#[tokio::test]
+async fn a_platform_that_cannot_give_its_screen_is_not_asked_for_it() {
+    // A table that ends at `post` is a platform from before the screen could be given without a
+    // picker, and one that ends at `release` is older still: the function they lack reads as
+    // missing, and the platform says that it cannot.
+    for table in [
+        FakeSharer::vtable_without_screen as fn(&Arc<FakeSharer>) -> _,
+        FakeSharer::vtable_without_input,
+    ] {
+        let platform = FakeSharer::new();
+        let registry = Registry::new();
+        fake_sharer::register_table(&registry, &table(&platform)).unwrap();
+        let sharer = registry.sharer().unwrap();
+        assert!(!sharer.can_give_screen());
+        assert_eq!(screen_error(&sharer).await, ScreenError::Unsupported);
+        assert_eq!(platform.log(), []);
+    }
+}
+
+#[tokio::test]
+async fn why_the_platform_gave_no_screen_is_what_the_app_is_told() {
+    let platform = FakeSharer::new();
+    let sharer = sharer_of(&platform);
+    let fails = |code, text: &[u8], claimed_len| ScreenPlan::Fails {
+        code,
+        text: text.to_vec(),
+        claimed_len,
+    };
+    for (plan, told) in [
+        // The two reasons with a number of their own, whatever the platform wrote.
+        (
+            fails(SCREEN_NEEDS_PERMISSION, b"Not for the log.", 16),
+            ScreenError::NeedsPermission,
+        ),
+        (fails(SCREEN_UNAVAILABLE, b"", 0), ScreenError::Unavailable),
+        // Any other number is a failure, with the sentence the platform could write.
+        (
+            fails(E_PLATFORM, b"No display is on.", 17),
+            ScreenError::Failed(PlatformError::new("No display is on.")),
+        ),
+        (
+            fails(3, b"The system said no.", 19),
+            ScreenError::Failed(PlatformError::new("The system said no.")),
+        ),
+        // A length that claims more than the platform wrote is read as far as the text goes.
+        (
+            fails(E_PLATFORM, b"No display is on.", 9999),
+            ScreenError::Failed(PlatformError::new("No display is on.")),
+        ),
+        (
+            fails(-1, b"", 0),
+            ScreenError::Failed(PlatformError::new("This device could not give its screen.")),
+        ),
+    ] {
+        platform.plan_screen(plan.clone());
+        assert_eq!(screen_error(&sharer).await, told, "{plan:?}");
+    }
+    // Nothing was given, so nothing is left to release.
+    assert_eq!(platform.count(|call| *call == SharerCall::Screen), 6);
+    assert_eq!(platform.windows_made(), 0);
+    platform.assert_no_complaints();
+}
+
+#[tokio::test]
+async fn an_answer_that_is_not_a_display_is_released_and_is_a_failure() {
+    let platform = FakeSharer::new();
+    let sharer = sharer_of(&platform);
+    let not_whole = |kind, width, height, window| ScreenPlan::Writes {
+        kind,
+        width,
+        height,
+        window,
+    };
+    let mut made = 0;
+    for (what, plan, given) in [
+        ("a window", not_whole(PICKED_WINDOW, 800, 600, true), true),
+        ("a kind of its own", not_whole(7, 800, 600, true), true),
+        (
+            "a display with no width",
+            not_whole(PICKED_DISPLAY, 0, 600, true),
+            true,
+        ),
+        (
+            "a display with no height",
+            not_whole(PICKED_DISPLAY, 800, 0, true),
+            true,
+        ),
+        (
+            "a display with no pointer",
+            not_whole(PICKED_DISPLAY, 800, 600, false),
+            false,
+        ),
+    ] {
+        platform.plan_screen(plan);
+        assert_eq!(
+            screen_error(&sharer).await,
+            ScreenError::Failed(PlatformError::new("This device could not give its screen.")),
+            "{what}"
+        );
+        // What the platform gave is the platform's until the library has it, and the library does
+        // not lose it: it is released at once, and never called.
+        if given {
+            made += 1;
+            assert_eq!(platform.calls(made), [SharerCall::Release], "{what}");
+        }
+        assert_eq!(
+            platform.windows_made(),
+            usize::try_from(made).unwrap(),
+            "{what}"
+        );
+        assert_eq!(platform.live_windows(), 0, "{what}");
+    }
+    platform.assert_no_complaints();
+}
+
+#[tokio::test]
+async fn a_display_larger_than_the_protocol_allows_reads_as_the_largest() {
+    let platform = FakeSharer::new();
+    let sharer = sharer_of(&platform);
+    // Each edge is held to the largest on its own.
+    for (given, read) in [
+        ((100_000, 5), (MAX_WINDOW_EDGE, 5)),
+        ((5, 100_000), (5, MAX_WINDOW_EDGE)),
+    ] {
+        platform.plan_screen(ScreenPlan::Gives(given.0, given.1));
+        let picked = sharer.screen().await.unwrap();
+        assert_eq!(picked.size(), read, "a display of {given:?}");
+    }
+}
+
+/// Opens the gate of a platform that waits when the test ends, also by a failure, so that the
+/// thread that waits for it can end.
+struct OpensAtTheEnd(Arc<FakeSharer>);
+
+impl Drop for OpensAtTheEnd {
+    fn drop(&mut self) {
+        self.0.open_screen();
+    }
+}
+
+#[tokio::test]
+async fn a_screen_that_nobody_waits_for_any_more_is_released_when_the_platform_gives_it() {
+    let platform = FakeSharer::new();
+    let _opens = OpensAtTheEnd(Arc::clone(&platform));
+    platform.plan_screen(ScreenPlan::Waits(WIDTH, HEIGHT));
+    let sharer = sharer_of(&platform);
+
+    // The app asks, the platform takes its time, and the app stops waiting.
+    let asking = tokio::spawn(sharer.screen());
+    until("the platform to be asked", || {
+        platform.count(|call| *call == SharerCall::Screen) == 1
+    })
+    .await;
+    asking.abort();
+    let _ = asking.await;
+    assert_eq!(platform.windows_made(), 0);
+
+    // The platform gives the display after all, and the library lets go of it.
+    platform.open_screen();
+    until("the platform's display to be released", || {
+        platform.windows_made() == 1 && platform.live_windows() == 0
+    })
+    .await;
+    assert_eq!(platform.calls(1), [SharerCall::Release]);
+    platform.assert_no_complaints();
+}
+
+/// A decoder that counts the pictures it is given.
+struct Counting(Arc<AtomicU64>);
+
+impl Decoder for Counting {
+    fn decode(&mut self, _frame: &FrameHeader, _picture: Vec<u8>) -> Result<(), DecodeError> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn show(&mut self, _number: u64) {}
+
+    fn source(&mut self, _message: SourceMessage) {}
+
+    fn state(&self) -> DecoderState {
+        DecoderState {
+            decode_us: 1000,
+            thermal: Thermal::Nominal,
+        }
+    }
+
+    fn ended(&mut self) {}
+}
+
+/// A phone, as far as these tests need one: a node that shows the screen of another device and can
+/// ask for it. The app has no call for the asking yet, so the asking is the node's own.
+struct Phone {
+    node: Arc<Node>,
+    id: DeviceId,
+    /// How many pictures its decoder was given.
+    decoded: Arc<AtomicU64>,
+    _dir: TempDir,
+}
+
+impl Phone {
+    async fn start(name: &str) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = Identity::generate();
+        let trust = TrustStore::load(dir.path().join("devices.json")).unwrap();
+        let config = NodeConfig::from_toml(&format!(
+            "device_name = \"{name}\"\n\n[network]\nrelay = \"disabled\"\nlan_discovery = \
+             false\nport_mapping = false\n"
+        ))
+        .unwrap();
+        let node = Node::builder(&identity, trust, config)
+            .window_handler(Refusing)
+            .bind()
+            .await
+            .unwrap();
+        Self {
+            node: Arc::new(node),
+            id: identity.device_id(),
+            decoded: Arc::new(AtomicU64::new(0)),
+            _dir: dir,
+        }
+    }
+
+    /// Asks `mac` to start sharing its screen.
+    async fn asks(&self, mac: &Dev, control: bool) -> baton_core::Result<StartOutcome> {
+        let mac: DeviceId = mac.id().parse().unwrap();
+        let viewing = Viewing::new(
+            Counting(Arc::clone(&self.decoded)),
+            1920,
+            1200,
+            60,
+            vec![Codec::H264],
+        )
+        .unwrap();
+        self.node
+            .start(&mac, Wanted::Screen, control, viewing)
+            .await
+    }
+}
+
+/// Turns down every offer that reaches the person.
+struct Refusing;
+
+impl baton_core::streaming::WindowHandler for Refusing {
+    fn offered<'a>(
+        &'a self,
+        _from: &'a baton_core::PairedDevice,
+        _offer: &'a baton_core::streaming::WindowOffer,
+    ) -> BoxFuture<'a, baton_core::streaming::WindowVerdict> {
+        Box::pin(std::future::ready(
+            baton_core::streaming::WindowVerdict::Refuse,
+        ))
+    }
+
+    fn started(
+        &self,
+        _from: &baton_core::PairedDevice,
+        _handle: baton_core::streaming::ViewHandle,
+    ) {
+    }
+}
+
+/// Pairs the phone with the Mac the way two people would: the Mac shows a ticket, the phone enters
+/// it, and the Mac says yes.
+async fn pair_phone(mac: &Dev, phone: &Phone) {
+    let mut events = mac.app.events();
+    let offer = mac.app.offer_pairing().await.unwrap();
+    let ticket: PairTicket = offer.ticket.parse().unwrap();
+    let node = Arc::clone(&phone.node);
+    let task = tokio::spawn(async move { node.join_pairing(&ticket, |_| {}).await });
+    let request = next_matching(&mut events, |event| match event {
+        Event::PairingRequested(request) => Some(request),
+        _ => None,
+    })
+    .await;
+    assert!(mac.app.answer_pairing(request.id, true));
+    task.await.unwrap().unwrap();
+    next_matching(&mut events, |event| match event {
+        Event::OfferEnded(_) => Some(()),
+        _ => None,
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_phone_that_the_person_allowed_gets_the_screen_of_the_platform_through_the_interface() {
+    let rig = Rig::new().await;
+    let phone = Phone::start("Pocket Phone").await;
+    pair_phone(&rig.sharing, &phone).await;
+
+    // What the platform was asked, but for what the app asks whenever it likes: whether the
+    // person can let another device control a window.
+    let asked = || {
+        rig.platform
+            .log()
+            .into_iter()
+            .filter(|(_, call)| *call != SharerCall::Control)
+            .collect::<Vec<_>>()
+    };
+
+    // A device is allowed nothing until the person says so, and the platform is not asked.
+    let refused = phone.asks(&rig.sharing, false).await.unwrap();
+    assert!(
+        matches!(
+            refused,
+            StartOutcome::NotStarted(baton_core::streaming::WhyNot::NotAllowed)
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(asked(), []);
+
+    rig.sharing
+        .app
+        .set_start_access(&phone.id.to_string(), StartAccess::Look)
+        .unwrap();
+    let StartOutcome::Started(handle) = phone.asks(&rig.sharing, false).await.unwrap() else {
+        panic!("the screen was not started");
+    };
+
+    // The platform was asked for the screen and never for a picker, then prepared within what the
+    // phone takes, and started with a link of its own.
+    until("the platform to be started", || {
+        rig.platform
+            .calls(1)
+            .iter()
+            .any(|call| matches!(call, SharerCall::Start { .. }))
+    })
+    .await;
+    assert_eq!(asked()[0], (0, SharerCall::Screen));
+    assert_eq!(
+        rig.platform
+            .count(|call| matches!(call, SharerCall::Pick { .. })),
+        0
+    );
+    assert_eq!(
+        rig.platform.calls(1)[0],
+        asked_to_prepare_within(1920, 1200, 60)
+    );
+    let link = rig.platform.link(1);
+
+    // A picture goes the whole way to the decoder of the phone.
+    assert_eq!(rig.send(link, 0).await, (BEGIN_KEY, SENT, 0));
+    until("the phone to be given the picture", || {
+        phone.decoded.load(Ordering::Relaxed) == 1
+    })
+    .await;
+    assert!(!handle.control());
+
+    // The phone ends it, and everything is let go: the link is closed, the platform is told that
+    // it is over, and the display is released.
+    handle.end();
+    rig.nothing_is_left().await;
+    let calls = rig.platform.calls(1);
+    assert_eq!(calls.last(), Some(&SharerCall::Release));
+    assert!(calls.contains(&SharerCall::Ended));
 }

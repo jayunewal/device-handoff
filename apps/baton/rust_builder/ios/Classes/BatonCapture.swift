@@ -11,6 +11,10 @@
 // is given one by the picker needs no permission to record the screen, which an app that builds for
 // a free Apple ID would lose again with every build.
 //
+// The one case with no picker is a paired device that the person allowed beforehand to look at the
+// main screen of this Mac and asked for it (ADR 0010): nobody is here to choose, so the screen is
+// taken without the picker, and that is where the permission to record the screen is needed.
+//
 // A window or a whole screen can be steered by the person at the other device too
 // (BatonInput.swift, and BatonControl.swift for the calls of the system).
 //
@@ -37,6 +41,35 @@ private enum PickedTarget {
   case display(UInt32)
 }
 
+/// What the system answers when it is asked which screens there are, handed from the thread it
+/// answers on to the one that waits.
+@available(macOS 12.3, *)
+private final class ShareableContentAnswer: @unchecked Sendable {
+  private let lock = NSLock()
+  private let arrived = DispatchSemaphore(value: 0)
+  private var content: SCShareableContent?
+  private var failure: (any Error)?
+
+  func give(_ content: SCShareableContent?, _ failure: (any Error)?) {
+    lock.lock()
+    self.content = content
+    self.failure = failure
+    lock.unlock()
+    arrived.signal()
+  }
+
+  /// nil if the system did not answer within `seconds`. An answer that comes later is dropped.
+  func wait(seconds: Double) -> (content: SCShareableContent?, failure: (any Error)?)? {
+    guard arrived.wait(timeout: .now() + seconds) == .success else { return nil }
+    lock.lock()
+    defer { lock.unlock() }
+    return (content, failure)
+  }
+}
+
+/// How long the system is waited for when it is asked which screens there are.
+private let screenListingSeconds = 5.0
+
 /// The picker of the system, as the sharer of this Mac. There is one for the life of the process.
 @available(macOS 14.0, *)
 final class MacSharer: NSObject, SharerPlatform, SCContentSharingPickerObserver {
@@ -45,11 +78,17 @@ final class MacSharer: NSObject, SharerPlatform, SCContentSharingPickerObserver 
   /// may let the app in System Settings at any time.
   var canControl: Bool { macControlAccess() == .allowed }
 
+  /// The main screen can be given with no picker, if the person has let this app record the screen
+  /// (`screen` says when they have not).
+  var canGiveScreen: Bool { true }
+
   private let lock = NSLock()
   /// The request that the picker is up for.
   private var request: UInt64?
   /// Whether this is an observer of the picker already. Only the main thread touches it.
   private var observing = false
+  /// Whether the system was asked, in this run of the app, to let it record the screen.
+  private var askedToRecordTheScreen = false
 
   func pick(request: UInt64) throws {
     lock.lock()
@@ -88,6 +127,67 @@ final class MacSharer: NSObject, SharerPlatform, SCContentSharingPickerObserver 
       // What the person picks at a picker that is still up is not wanted: nobody asked for it.
       DispatchQueue.main.async { SCContentSharingPicker.shared.isActive = false }
     }
+  }
+
+  // MARK: - The main screen, with no picker
+
+  func screen() throws -> (window: SharedWindow, info: PickedWindowInfo) {
+    // A window or a screen that the person picked is captured with no permission to record the
+    // screen. One that nobody picked is not: the system wants that permission, and the person at
+    // this Mac gives it in System Settings. The call does not wait for them, and the permission
+    // takes effect when the app is opened again.
+    guard CGPreflightScreenCaptureAccess() else {
+      askToRecordTheScreen()
+      throw ScreenRefusal.needsPermission
+    }
+    let display = try mainDisplay()
+    let filter = SCContentFilter(display: display, excludingWindows: [])
+    guard let size = MacSharer.pixelSize(of: filter) else {
+      throw SharerFailure(sentence: "The screen has no size to share.")
+    }
+    // A screen that is given this way is not named: Rust reads no title and no application.
+    let info = PickedWindowInfo(
+      width: size.width, height: size.height, title: "", app: "", display: true)
+    return (MacSharedWindow(filter: filter, info: info, target: .display(display.displayID)), info)
+  }
+
+  /// Asks the system to show its question about recording the screen. It shows its own question
+  /// once, and does not wait for the person, so it is asked once in each run of the app, and not
+  /// from the thread that waits for `screen`.
+  private func askToRecordTheScreen() {
+    lock.lock()
+    let first = !askedToRecordTheScreen
+    askedToRecordTheScreen = true
+    lock.unlock()
+    guard first else { return }
+    DispatchQueue.main.async { _ = CGRequestScreenCaptureAccess() }
+  }
+
+  /// The display that has the menu bar. The system is waited for a few seconds at most.
+  private func mainDisplay() throws -> SCDisplay {
+    let answer = ShareableContentAnswer()
+    SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: true) {
+      content, failure in
+      answer.give(content, failure)
+    }
+    guard let answered = answer.wait(seconds: screenListingSeconds) else {
+      throw SharerFailure(sentence: "This Mac did not say which screens it has.")
+    }
+    if let failure = answered.failure {
+      let error = failure as NSError
+      // The person may have taken the permission back since it was looked at.
+      if error.domain.hasSuffix("SCStreamErrorDomain"), error.code == CaptureErrorCode.userDeclined {
+        throw ScreenRefusal.needsPermission
+      }
+      NSLog("Baton: the screens could not be listed (%@, %ld).", error.domain, error.code)
+      throw SharerFailure(sentence: "This Mac did not say which screens it has.")
+    }
+    // A display that is not in the list is not on: the Mac is asleep, or has none connected.
+    let main = CGMainDisplayID()
+    guard let display = answered.content?.displays.first(where: { $0.displayID == main }) else {
+      throw ScreenRefusal.unavailable
+    }
+    return display
   }
 
   // MARK: - The answers of the picker
@@ -131,10 +231,7 @@ final class MacSharer: NSObject, SharerPlatform, SCContentSharingPickerObserver 
     case .display: display = true
     default: return .failed("Choose a window or a screen.")
     }
-    let scale = Double(filter.pointPixelScale)
-    let width = (Double(filter.contentRect.width) * scale).rounded()
-    let height = (Double(filter.contentRect.height) * scale).rounded()
-    guard width >= 1, height >= 1, width < 100_000, height < 100_000 else {
+    guard let size = pixelSize(of: filter) else {
       return .failed("The \(display ? "screen" : "window") has no size to share.")
     }
     var title = ""
@@ -156,8 +253,18 @@ final class MacSharer: NSObject, SharerPlatform, SCContentSharingPickerObserver 
       }
     }
     let info = PickedWindowInfo(
-      width: UInt32(width), height: UInt32(height), title: title, app: app, display: display)
+      width: size.width, height: size.height, title: title, app: app, display: display)
     return .chose(MacSharedWindow(filter: filter, info: info, target: target), info)
+  }
+
+  /// The size in pixels of what the filter lets through, or nil if it has none that a picture can
+  /// have.
+  private static func pixelSize(of filter: SCContentFilter) -> (width: UInt32, height: UInt32)? {
+    let scale = Double(filter.pointPixelScale)
+    let width = (Double(filter.contentRect.width) * scale).rounded()
+    let height = (Double(filter.contentRect.height) * scale).rounded()
+    guard width >= 1, height >= 1, width < 100_000, height < 100_000 else { return nil }
+    return (UInt32(width), UInt32(height))
   }
 }
 

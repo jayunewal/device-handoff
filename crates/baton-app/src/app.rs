@@ -37,9 +37,10 @@ use crate::{
     files::Files,
     model::{
         Device, Me, Network, Offer, OfferOutcome, PairingRequest, Reach, Received, Receiving,
-        TransferRequest, WindowAbilities, WindowInput, WindowRequest, WindowShared,
+        StartAccess, TransferRequest, WindowAbilities, WindowInput, WindowRequest, WindowShared,
     },
     sessions::{Handler, Sessions},
+    starts::Starts,
     windows::Windows,
 };
 
@@ -240,6 +241,16 @@ impl App {
         if let Some(sharer) = sessions.sharer() {
             builder = builder.share_windows(sharer.control());
         }
+        // A device that can give its screen without the person picking it lets the devices it is
+        // paired with ask for it, if the person allowed them to; a device that cannot says nothing
+        // of the kind.
+        let starts = sessions
+            .sharer()
+            .is_some_and(|sharer| sharer.can_give_screen())
+            .then(|| Starts::new(Arc::clone(&sessions)));
+        if let Some(starts) = &starts {
+            builder = builder.start_handler(Arc::clone(starts));
+        }
         // The folder is opened once for the run: opening it again would remove what the transfers
         // that are going on hold. A folder that cannot be used leaves the app running, and
         // `receiving` says why it takes no files.
@@ -258,7 +269,10 @@ impl App {
                 }
             },
         };
-        let node = builder.bind().await.map_err(starting)?;
+        let node = Arc::new(builder.bind().await.map_err(starting)?);
+        if let Some(starts) = &starts {
+            starts.serve(&node);
+        }
 
         tracing::info!(device = %identity.device_id().short(), "Baton started");
         tokio::spawn(forward_arrivals(arrivals, events.clone(), stopped.clone()));
@@ -270,7 +284,7 @@ impl App {
 
         Ok(Self {
             inner: Arc::new(Inner {
-                node: Arc::new(node),
+                node,
                 id: identity.device_id(),
                 name: config.device_name(),
                 trust,
@@ -526,6 +540,46 @@ impl App {
         self.inner.sessions.abilities()
     }
 
+    /// What the paired device `id` may do at this device without a person here being asked: ask
+    /// it to start sharing its screen with that device (`docs/adr/0010`). [`StartAccess::Off`]
+    /// for a device that was just paired.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::NotPaired`] if `id` is not a paired device.
+    pub fn start_access(&self, id: &str) -> Result<StartAccess> {
+        let (peer, _) = self.paired(id)?;
+        let device = self.inner.trust.get(&peer).ok_or_else(Error::not_paired)?;
+        Ok(device.policy.start.into())
+    }
+
+    /// Lets the paired device `id` ask this device to start sharing its screen with it, to look at
+    /// it or to look at it and control it, or does not ([`StartAccess::Off`]). Only the person at
+    /// this device can say so: nothing a paired device sends changes it.
+    ///
+    /// The device can ask only if this one can give its screen without the person picking it
+    /// ([`WindowSharer::can_give_screen`](crate::windows::WindowSharer::can_give_screen)); the
+    /// setting is kept all the same. A session that runs is not ended by turning this off, and an
+    /// offer that is on its way is still made.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::NotPaired`] if `id` is not a paired device, and [`ErrorKind::Storage`] if the
+    /// setting could not be kept.
+    pub fn set_start_access(&self, id: &str, access: StartAccess) -> Result<()> {
+        let (peer, _) = self.paired(id)?;
+        let kept = self
+            .inner
+            .trust
+            .update(&peer, |device| device.policy.start = access.into())
+            .map_err(|e| Error::local(&e))?;
+        if kept {
+            Ok(())
+        } else {
+            Err(Error::not_paired())
+        }
+    }
+
     /// Answers a [`WindowRequest`]. Returns `false` if it is not waiting any more, because it was
     /// answered already or the other device gave up.
     ///
@@ -573,7 +627,9 @@ impl App {
             return Ok(WindowShared::NothingChosen);
         };
         self.running()?;
-        sessions.share(node, &peer, &name, picked, control).await
+        sessions
+            .share(node, &peer, &name, picked, control, None)
+            .await
     }
 
     /// Ends the window `session`, which is shown here or shared from here, and tells the other

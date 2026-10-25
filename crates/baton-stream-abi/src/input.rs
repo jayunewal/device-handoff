@@ -395,6 +395,7 @@ impl Worker {
     /// platform says lies in front of it or has the keyboard ([`Surroundings::of_display`]).
     pub(crate) fn of_display(mut self, display: bool) -> Self {
         self.display = display;
+        self.journal.of_display(display);
         self
     }
 
@@ -1587,7 +1588,24 @@ mod tests {
         wait_for("the batch to be logged", || !served.lines().is_empty());
         let line = served.lines().remove(0);
         assert!(
-            line.starts_with("window input: 2 events in 1 batch, 2 put to the window; "),
+            line.starts_with("screen input: 2 events in 1 batch, 2 put to the screen; "),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn a_post_on_a_display_that_the_mac_would_not_take_is_logged_as_a_screen() {
+        let mut served = Served::of_display(TIMING, |_| {});
+        served.knows_a_frame();
+        served.platform.plan_post(-1);
+        served.hears(vec![pointer(7, (0.5, 0.5), PointerAction::Move)]);
+        wait_for("the batch to be logged", || !served.lines().is_empty());
+        let line = served.lines().remove(0);
+        assert!(
+            line.starts_with(
+                "screen input: 1 event in 1 batch, 1 event that the Mac would not take (it may \
+                 not post input)"
+            ),
             "{line}"
         );
     }

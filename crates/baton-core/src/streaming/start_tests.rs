@@ -200,6 +200,18 @@ impl Rig {
         tuning: Tuning,
         configure: impl FnOnce(&mut Config),
     ) -> Self {
+        Self::taking(plan, allowed, tuning, true, configure).await
+    }
+
+    /// The same, with a Mac that takes input from a viewer if `takes_input`, and does not
+    /// otherwise.
+    async fn taking(
+        plan: Plan,
+        allowed: StartPolicy,
+        tuning: Tuning,
+        takes_input: bool,
+        configure: impl FnOnce(&mut Config),
+    ) -> Self {
         let app = App::new(plan);
         let (prepares, requests) = Prepares::new(Ready::Yes);
         let phone = TestNode::with(|builder| {
@@ -211,7 +223,7 @@ impl Rig {
         let mac = TestNode::configured(configure, |builder| {
             builder
                 .tuning(tuning)
-                .share_windows(true)
+                .share_windows(takes_input)
                 .start_handler(Arc::clone(&prepares))
         })
         .await;
@@ -307,6 +319,11 @@ impl Rig {
             .starting
             .as_ref()
             .map(|pending| pending.session)
+    }
+
+    /// Whether the Mac keeps the place of a session that it is to start or offer.
+    fn mac_holds_a_place(&self) -> bool {
+        lock(&self.mac.node.streaming().table).sending.is_some()
     }
 
     /// The session that runs on the Mac, if one does.
@@ -458,6 +475,24 @@ async fn the_control_a_start_may_have_is_what_the_person_allowed_and_the_viewer_
         assert_eq!(request.wanted, Wanted::Screen);
         assert_eq!(request.slot.peer(), rig.phone.id);
     }
+}
+
+#[tokio::test]
+async fn a_source_that_takes_no_input_grants_no_control_whatever_the_person_allowed() {
+    // Without a bound, a start that cannot be offered would wait out the thirty seconds.
+    let tuning = Tuning {
+        start_wait: Duration::from_secs(5),
+        ..Tuning::default()
+    };
+    let rig = Rig::taking(Plan::Refuse, StartPolicy::Control, tuning, false, |_| {}).await;
+    let (outcome, shared, _) = rig.started(true).await;
+    let viewing = viewing_of(outcome);
+    let _source = source_of(shared);
+    // The application was not told that the viewer may control, so the offer it made was not
+    // refused for asking for what the node cannot take, and the viewer was shown a screen to look
+    // at.
+    assert_eq!(rig.prepares.asked(), [(Wanted::Screen, false)]);
+    assert!(!viewing.control());
 }
 
 #[tokio::test]
@@ -1032,6 +1067,34 @@ async fn giving_up_a_start_tells_the_source_to_give_up_the_offer() {
 }
 
 #[tokio::test]
+async fn a_start_that_is_taken_back_while_the_application_gets_ready_lets_go_of_the_place_at_once()
+{
+    let rig = Rig::new(Plan::Refuse, StartPolicy::Look).await;
+    // The application of the Mac waits, like one that waits for a permission.
+    rig.prepares.ready(Ready::Hang);
+    let mut waiting = Box::pin(rig.start(false));
+    tokio::select! {
+        outcome = &mut waiting => panic!("the start was answered: {outcome:?}"),
+        () = rig.until("the application to be asked", |rig| !rig.prepares.asked().is_empty()) => {}
+    }
+    assert!(rig.mac_holds_a_place());
+
+    // The person at the phone gives up. The Mac hears it, and does not leave the place to an
+    // application that gets ready for nobody.
+    drop(waiting);
+    rig.until("the Mac to let go of the place", |rig| {
+        !rig.mac_holds_a_place()
+    })
+    .await;
+
+    // So the person can ask again at once, and is not told that the Mac is busy.
+    rig.prepares.ready(Ready::Yes);
+    let (outcome, shared, _) = rig.started(false).await;
+    let _viewing = viewing_of(outcome);
+    let _source = source_of(shared);
+}
+
+#[tokio::test]
 async fn a_start_straight_after_one_that_was_given_up_waits_for_the_source_to_let_go() {
     let tuning = Tuning {
         start_wait: Duration::from_millis(300),
@@ -1162,13 +1225,21 @@ async fn a_session_the_viewer_started_gives_back_its_places_when_it_ends() {
 
 #[tokio::test]
 async fn unpairing_the_source_or_stopping_the_node_gives_up_a_start_that_waits() {
+    // Without the line that drops a start that waits, the call would wait out this time.
+    let tuning = Tuning {
+        start_wait: Duration::from_secs(5),
+        ..Tuning::default()
+    };
     for stopping in [false, true] {
-        let rig = Rig::new(Plan::Refuse, StartPolicy::Look).await;
+        let rig = Rig::with(Plan::Refuse, StartPolicy::Look, tuning.clone(), |_| {}).await;
         // The source says that it will offer, and does not.
         let waiting = rig.start(false);
         tokio::pin!(waiting);
         let ending = async {
             let _request = rig.next_request().await;
+            // The phone has the answer, and waits for the offer, before the source goes away.
+            // Before that the call fails as the connection closes, and says nothing of the wait.
+            tokio::time::sleep(QUIET).await;
             if stopping {
                 rig.phone.node.shutdown().await;
             } else {

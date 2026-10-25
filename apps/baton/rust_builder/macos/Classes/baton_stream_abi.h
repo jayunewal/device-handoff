@@ -29,9 +29,9 @@
  *   The Rust side calls the functions of the vtables that the platform registered:
  *     viewer: limits and open (about the device), and decode, show, source, state, ended and
  *       release (about one screen, with the pointer that open gave);
- *     sharer: control, pick and cancel_pick (about the device), and prepare, start, surroundings,
- *       post, ended and release (about one window, with the pointer that baton_stream_pick_done
- *       gave).
+ *     sharer: control, pick, cancel_pick and screen (about the device), and prepare, start,
+ *       surroundings, post, ended and release (about one window, with the pointer that
+ *       baton_stream_pick_done or screen gave).
  *
  * Rules that hold for every call.
  *
@@ -108,6 +108,14 @@ extern "C" {
 /* What the person picked, as BatonPicked.kind says. */
 #define BATON_PICKED_WINDOW 0u
 #define BATON_PICKED_DISPLAY 1u
+
+/*
+ * What screen returns when it did not give the display, besides BATON_OK: the system has not let
+ * the program capture the screen, or there is no display to give now. Any other value is a
+ * failure, with the sentence in message if the platform wrote one.
+ */
+#define BATON_SCREEN_NEEDS_PERMISSION 1
+#define BATON_SCREEN_UNAVAILABLE 2
 
 /* The flags of a frame. */
 #define BATON_FRAME_KEY 1u
@@ -576,9 +584,9 @@ typedef struct BatonViewerVTable {
 } BatonViewerVTable;
 
 /*
- * The functions of the platform that shares windows. All of them are mandatory but the last two.
- * The first three are about the device and take the context of the table; the others are about
- * one window, and take the pointer that baton_stream_pick_done gave. BatonEndedFn and
+ * The functions of the platform that shares windows. All of them are mandatory but the last
+ * three. The first three are about the device and take the context of the table; the others are
+ * about one window, and take the pointer that baton_stream_pick_done gave. BatonEndedFn and
  * BatonReleaseFn are the types of ended and release above, with the pointer of the window in
  * place of the one of the screen.
  *
@@ -637,6 +645,29 @@ typedef struct BatonViewerVTable {
  *                system keeps for itself, which would act on more than the shared window. A
  *                release should not fail, since the Rust side forgets the press whether or not
  *                the release was posted, and does not try again.
+ *
+ * The last one is about the device again, and takes the context of the table. A platform that
+ * cannot give its screen without a picker leaves it NULL (a table that ends at post is accepted),
+ * and the device does not tell the devices it is paired with that they can ask for its screen.
+ *
+ *   screen:      a device that the person at this one allowed beforehand asked to see this
+ *                screen, so the person is not asked. Gives the main display, as the answer to a
+ *                pick would, but now and from the same call: fills in picked and returns
+ *                BATON_OK, with nobody choosing anything. picked comes with its size set and
+ *                everything else zero. The platform writes width, height, kind
+ *                (BATON_PICKED_DISPLAY) and context, as baton_stream_pick_done is given them,
+ *                and leaves title and app empty: a display given this way is not named, and the
+ *                Rust side reads no bytes of the platform's. The display is released once, with
+ *                release, like a window, also when it is never used. An answer that is not whole
+ *                (a kind that is not a display, a size of zero) is released the same way, and
+ *                counts as a failure. The call may wait for the system, for a few seconds at
+ *                most, and is made from a thread of the Rust side that nothing else waits for.
+ *                It returns BATON_SCREEN_NEEDS_PERMISSION if the system has not let the program
+ *                capture the screen (the person has to allow it, and may have to open the
+ *                program again), BATON_SCREEN_UNAVAILABLE if there is no display to give now
+ *                (the Mac has none on), or another value for a failure, with the sentence in
+ *                message if the platform can write one. Nothing is given then, and nothing is
+ *                released.
  */
 typedef uint32_t (*BatonControlFn)(void *context);
 typedef int32_t (*BatonPickFn)(void *context, uint64_t request, BatonMessage *message);
@@ -645,11 +676,13 @@ typedef int32_t (*BatonPrepareFn)(void *picked, const BatonTakes *takes, BatonFo
 typedef int32_t (*BatonStartFn)(void *picked, uint64_t link, BatonMessage *message);
 typedef int32_t (*BatonSurroundingsFn)(void *picked, BatonSurroundings *surroundings);
 typedef int32_t (*BatonPostFn)(void *picked, const BatonPost *post);
+typedef int32_t (*BatonScreenFn)(void *context, BatonPicked *picked, BatonMessage *message);
 
 /*
  * What the platform registers to share windows, as the table above does to show them. A table of
- * the size it had before input was carried (72 bytes, ending at release) is accepted: the two
- * functions it lacks read as NULL.
+ * the size it had before input was carried (72 bytes, ending at release) is accepted: the three
+ * functions it lacks read as NULL. So is one of the size it had before the screen could be given
+ * without a picker (88 bytes, ending at post): the function it lacks reads as NULL.
  */
 typedef struct BatonSharerVTable {
     uint32_t version;
@@ -664,6 +697,7 @@ typedef struct BatonSharerVTable {
     BatonReleaseFn release;
     BatonSurroundingsFn surroundings;
     BatonPostFn post;
+    BatonScreenFn screen;
 } BatonSharerVTable;
 
 /* The version of the interface that the library was built with, for the platform to compare. */
@@ -999,7 +1033,7 @@ BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, state) == 56, "BatonViewerVTable
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, ended) == 64, "BatonViewerVTable.ended");
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, release) == 72, "BatonViewerVTable.release");
 
-BATON_STATIC_ASSERT(sizeof(BatonSharerVTable) == 88, "BatonSharerVTable");
+BATON_STATIC_ASSERT(sizeof(BatonSharerVTable) == 96, "BatonSharerVTable");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, version) == 0, "BatonSharerVTable.version");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, size) == 4, "BatonSharerVTable.size");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, context) == 8, "BatonSharerVTable.context");
@@ -1014,6 +1048,7 @@ BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, release) == 64, "BatonSharerVTab
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, surroundings) == 72,
                     "BatonSharerVTable.surroundings");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, post) == 80, "BatonSharerVTable.post");
+BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, screen) == 88, "BatonSharerVTable.screen");
 
 #ifdef __cplusplus
 }

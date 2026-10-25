@@ -15,8 +15,8 @@ use std::{
 use baton_core::{
     PairedDevice,
     streaming::{
-        DecodeError, Decoder, DecoderState, End, ShareOutcome, SourceHandle, Takes, ViewHandle,
-        Viewing, WindowHandler, WindowOffer, WindowShare, WindowVerdict,
+        DecodeError, Decoder, DecoderState, End, ShareOutcome, SourceHandle, StartSlot, Takes,
+        ViewHandle, Viewing, WindowHandler, WindowOffer, WindowShare, WindowVerdict,
     },
     util::BoxFuture,
 };
@@ -424,6 +424,8 @@ impl Sessions {
     }
 
     /// Offers the window that the person picked to `peer`, and starts the session if it says yes.
+    /// `asked` is the place of the session when `peer` asked this device to start it: the offer is
+    /// then made under the id that `peer` chose, and `control` is no more than the slot allows.
     pub(crate) async fn share(
         self: &Arc<Self>,
         node: &baton_core::Node,
@@ -431,6 +433,7 @@ impl Sessions {
         name: &str,
         mut picked: Box<dyn PickedWindow>,
         control: bool,
+        asked: Option<StartSlot>,
     ) -> Result<WindowShared> {
         let (width, height) = picked.size();
         let (title, app) = (picked.title(), picked.app());
@@ -452,7 +455,11 @@ impl Sessions {
                 .as_mut()
                 .and_then(|picked| picked.prepare(takes))
         };
-        match node.share(peer, window, events, choose).await {
+        let outcome = match asked {
+            None => node.share(peer, window, events, choose).await,
+            Some(slot) => node.share_asked(slot, window, events, choose).await,
+        };
+        match outcome {
             Ok(ShareOutcome::Started(handle)) => {
                 let Some(picked) = locked(&picked).take() else {
                     return Err(Error::new(ErrorKind::Other, "The window was lost."));
