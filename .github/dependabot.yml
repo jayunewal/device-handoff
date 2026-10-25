@@ -7,6 +7,11 @@ updates:
     groups:
       rust-minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # Newer libc takes `in6_ifreq` away from iOS, and `netdev` needs it there. Lift this
+      # together with the bound on libc in Cargo.toml.
+      - dependency-name: libc
+        versions: [">=0.2.190"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
