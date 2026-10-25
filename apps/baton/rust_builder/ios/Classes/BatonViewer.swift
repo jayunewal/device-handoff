@@ -26,9 +26,11 @@ struct ViewerLimits: Equatable {
   var codecs: UInt32
 }
 
-/// The window that another device offered and the person said yes to. Its title and the name of
-/// its application are not carried: they name a document, a person or a page, and nothing in the
-/// platform needs them.
+/// The window that another device offered and the person said yes to, or the screen that this
+/// device asked another one to start sharing. The screen is made before it is offered, so its size
+/// is not known: `width` and `height` are 0, and `control` is what the person wished for. The
+/// title and the name of the application are not carried: they name a document, a person or a
+/// page, and nothing in the platform needs them.
 struct WindowInfo: Equatable {
   var width: UInt32
   var height: UInt32

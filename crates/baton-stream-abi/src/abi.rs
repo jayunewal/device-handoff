@@ -225,15 +225,18 @@ pub struct BatonLimits {
     pub reserved: u32,
 }
 
-/// The window that the person said yes to.
+/// The window that the person said yes to, or the screen that this device asked another to start
+/// sharing. The second is made before the other device offers it, so its size is not known:
+/// `width` and `height` are nought, `control` is what the person wished for, and there is no title
+/// and no application.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct BatonWindow {
     /// The bytes of this struct.
     pub size: u32,
-    /// The width of the window in pixels.
+    /// The width of the window in pixels; nought for a screen that this device asked for.
     pub width: u32,
-    /// The height of the window in pixels.
+    /// The height of the window in pixels; nought for a screen that this device asked for.
     pub height: u32,
     /// 1 if this device may control the window.
     pub control: u32,

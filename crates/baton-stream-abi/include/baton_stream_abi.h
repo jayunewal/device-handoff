@@ -242,10 +242,16 @@ typedef struct BatonLimits {
     uint32_t reserved;
 } BatonLimits;
 
-/* The window that another device offered and the person said yes to. */
+/*
+ * The window that another device offered and the person said yes to, or the screen that this
+ * device asked another one to start sharing. The second is made before the other device offers
+ * it, so its size is not known: width and height are 0, control is what the person wished for
+ * (the other device may not grant it), and title and app are empty. The size of the picture comes
+ * with the first picture.
+ */
 typedef struct BatonWindow {
     uint32_t size;
-    uint32_t width;       /* the size of the window in pixels */
+    uint32_t width;       /* the size of the window in pixels; 0 for a screen asked for */
     uint32_t height;
     uint32_t control;     /* 1 if the person at the other device lets this device control it */
     BatonBytes title;     /* may be empty. It names a document, a person or a page: do not log it */
