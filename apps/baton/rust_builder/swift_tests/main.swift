@@ -601,6 +601,10 @@ tests += [
     "the release of a key that was left out is left out and no other is",
     testTheReleaseOfAKeyThatWasLeftOutIsLeftOutAndNoOtherIs
   ),
+  (
+    "a key that went through is released when its repeat becomes a shortcut",
+    testAKeyThatWentThroughIsReleasedWhenItsRepeatBecomesAShortcut
+  ),
   ("text with no key is not a shortcut", testTextWithNoKeyIsNotAShortcut),
   (
     "a window does not get a shortcut of the system and counts it as not done",
@@ -634,8 +638,8 @@ tests += [
   ),
   ("a scroll is bounded and must be a number", testAScrollIsBoundedAndMustBeANumber),
   (
-    "a scroll for the system is preceded by a move to its place unless the pointer is there",
-    testAScrollForTheSystemIsPrecededByAMoveToItsPlaceUnlessThePointerIsThere
+    "a scroll for the system is preceded by a move to its place",
+    testAScrollForTheSystemIsPrecededByAMoveToItsPlace
   ),
   (
     "a scroll is never preceded by a move unless the translator is told to",

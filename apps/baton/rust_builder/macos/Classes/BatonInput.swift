@@ -594,7 +594,8 @@ struct InputModifiers: OptionSet, Equatable {
 /// that the shortcuts of the system look for: the function flag on the arrows, the function keys
 /// and the keys above the arrows, and the flag of the numeric keypad on the arrows too (the
 /// documentation of `NSEvent.ModifierFlags` says so of both). Control and an arrow, which opens
-/// Mission Control or changes the Space, is not that shortcut for the system without them.
+/// Mission Control or changes the Space, is probably not that shortcut for the system without
+/// them (inferred, R6 checks it).
 struct KeyFlags: OptionSet, Equatable {
   let rawValue: UInt8
   static let function = KeyFlags(rawValue: 1)
@@ -764,6 +765,13 @@ private let systemShortcuts: [(key: UInt16, needs: InputModifiers)] = [
   (0x16, [.command, .shift]),
   // Mission Control, the windows of the application, and the spaces (Control with an arrow).
   (0x7B, .control), (0x7C, .control), (0x7D, .control), (0x7E, .control),
+  // Keyboard navigation (Control with F1 to F8): it turns keyboard access on or off (F1, F7) and
+  // takes the keys to the menu bar (F2), the Dock (F3), the next window (F4), the toolbar (F5),
+  // the next panel (F6) and the menus of the status items (F8), where what is typed next acts on
+  // the whole Mac, such as the Apple menu with its Lock Screen and Shut Down. F3 and F4 are listed
+  // here as well, so that they stay if the entries for those keys alone are narrowed.
+  (0x7A, .control), (0x78, .control), (0x63, .control), (0x76, .control),
+  (0x60, .control), (0x61, .control), (0x62, .control), (0x64, .control),
   // Mission Control (F3), Launchpad and Spotlight (F4), Show Desktop (F11), and VoiceOver
   // (Command F5).
   (0x63, []), (0x76, []), (0x67, []), (0x60, .command),
@@ -793,16 +801,19 @@ final class InputTranslator {
   private var lastPress: (button: PointerButton, time: TimeInterval, at: ScreenPoint, count: Int)?
   private var restAcross = 0.0
   private var restDown = 0.0
-  /// Where the last move or button of the pointer was put, if there was one.
-  private var pointerAt: ScreenPoint?
   /// The keys whose press was dropped as a shortcut of the system, so that their release is too.
   private var droppedKeys: Set<UInt16> = []
+  /// The keys whose press was posted and that are not let go of yet. A repeat of one of them that
+  /// comes with the modifiers of a shortcut is left out, and its release is not, since the press
+  /// went to the Mac.
+  private var pressedKeys: Set<UInt16> = []
 
   /// `doubleClickInterval` is the time in which a second press makes a double click, and
   /// `clickSlop` how far in points it may be from the first. `movesPointerToScroll` is for events
   /// that go to the system: it takes a scroll to the place of the pointer, and not to the place
-  /// that the event names (inferred), so the pointer is moved to the place of a scroll first, if it
-  /// is not there. `dropsSystemShortcuts` is for a window, whose events go to the system as well:
+  /// that the event names (inferred), so the pointer is moved to the place of every scroll first
+  /// (where it is cannot be known: the person at this Mac has a pointer of their own, and a post
+  /// can fail). `dropsSystemShortcuts` is for a window, whose events go to the system as well:
   /// the shortcuts that the system keeps for the whole Mac are not let through, as they would take
   /// the person out of the window. `now` is a clock in seconds.
   init(
@@ -831,8 +842,6 @@ final class InputTranslator {
 
   private func events(for post: PointerPost) -> [SyntheticEvent]? {
     guard post.at.x.isFinite, post.at.y.isFinite else { return nil }
-    // A move or a button puts the pointer where the event is. A scroll is looked at below.
-    if post.action != .scroll { pointerAt = post.at }
     switch post.action {
     case .move:
       // A move with a button down is a drag with that button, and goes on with its click count.
@@ -894,9 +903,8 @@ final class InputTranslator {
     if across.pixels == 0 && down.pixels == 0 { return [] }
     let scrolled = SyntheticEvent.scroll(
       SyntheticScroll(at: post.at, dx: across.pixels, dy: down.pixels, modifiers: post.modifiers))
-    guard movesPointerToScroll, pointerAt != post.at else { return [scrolled] }
-    // The pointer is somewhere else, or nowhere that is known: it goes to the scroll first, as it
-    // would for a move at that place.
+    guard movesPointerToScroll else { return [scrolled] }
+    // The pointer goes to the scroll first, as it would for a move at that place.
     let move = PointerPost(
       at: post.at, action: .move, button: post.button, dx: 0, dy: 0, modifiers: post.modifiers)
     guard let moved = events(for: move) else { return nil }
@@ -923,14 +931,19 @@ final class InputTranslator {
     if dropsSystemShortcuts {
       if post.down {
         if isSystemShortcut(virtualKey: key, modifiers: post.modifiers) {
-          droppedKeys.insert(key)
+          // A key that went through and is held on, with a modifier going down while it repeats,
+          // is released when it is let go of: only a press that did not go through is marked.
+          if !pressedKeys.contains(key) { droppedKeys.insert(key) }
           return nil
         }
         // The key went down again with other modifiers: this press is one that goes through.
         droppedKeys.remove(key)
+        pressedKeys.insert(key)
       } else if droppedKeys.remove(key) != nil {
         // The press of this key was dropped, so there is nothing to release.
         return []
+      } else {
+        pressedKeys.remove(key)
       }
     }
     return [

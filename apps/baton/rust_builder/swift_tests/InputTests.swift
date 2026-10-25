@@ -1038,7 +1038,8 @@ func translatorThatDropsSystemShortcuts() -> InputTranslator {
 /// The shortcuts of the system, by the usage of the key, which the table of virtual key codes
 /// turns into the key. They are the defaults of a Mac: Spotlight and the Finder search, the
 /// application switcher, Force Quit, Lock Screen and Log Out, the Dock and Hide Others, the
-/// screenshots, Mission Control and the spaces, and the function keys of the system.
+/// screenshots, Mission Control and the spaces, the keyboard navigation (Control with F1 to F8),
+/// and the function keys of the system.
 let shortcutsOfTheSystem: [(name: String, usage: UInt32, modifiers: InputModifiers)] = [
   ("Command Space", 0x2C, [.command]),
   ("Command Option Space", 0x2C, [.command, .option]),
@@ -1060,6 +1061,16 @@ let shortcutsOfTheSystem: [(name: String, usage: UInt32, modifiers: InputModifie
   ("Control Left", 0x50, [.control]),
   ("Control Right", 0x4F, [.control]),
   ("Control Shift Left", 0x50, [.control, .shift]),
+  ("Control F1", 0x3A, [.control]),
+  ("Control F2", 0x3B, [.control]),
+  ("Control F3", 0x3C, [.control]),
+  ("Control F4", 0x3D, [.control]),
+  ("Control F5", 0x3E, [.control]),
+  ("Control F6", 0x3F, [.control]),
+  ("Control F7", 0x40, [.control]),
+  ("Control F8", 0x41, [.control]),
+  ("Control Shift F6", 0x3F, [.control, .shift]),
+  ("Control Option F2", 0x3B, [.control, .option]),
   ("F3", 0x3C, []),
   ("F4", 0x3D, []),
   ("F11", 0x44, []),
@@ -1109,6 +1120,14 @@ let shortcutsOfTheApplication: [(name: String, usage: UInt32, modifiers: InputMo
   ("Option F5", 0x3E, [.option]),
   ("F12", 0x45, []),
   ("Command F12", 0x45, [.command]),
+  ("F6", 0x3F, []),
+  ("F7", 0x40, []),
+  ("F8", 0x41, []),
+  ("F9", 0x42, []),
+  ("F10", 0x43, []),
+  ("Control F9", 0x42, [.control]),
+  ("Control F10", 0x43, [.control]),
+  ("Control F12", 0x45, [.control]),
 ]
 
 func testTheShortcutsThatTheSystemKeepsForItselfAreNotLetThroughToAWindow() {
@@ -1194,6 +1213,44 @@ func testTheReleaseOfAKeyThatWasLeftOutIsLeftOutAndNoOtherIs() {
   check(translator.events(for: key(tab)) == [syntheticKey(0x30)])
   check(translator.events(for: key(0x2C, down: false)) == [])
   check(translator.events(for: key(tab, down: false)) == [syntheticKey(0x30, down: false)])
+}
+
+func testAKeyThatWentThroughIsReleasedWhenItsRepeatBecomesAShortcut() {
+  let translator = translatorThatDropsSystemShortcuts()
+  let tab: UInt32 = 0x2B
+  let left: UInt32 = 0x50
+  let arrow: KeyFlags = [.function, .numericPad]
+  // Tab goes down and is held, and Command goes down while it repeats. The repeats are left out,
+  // and the release is not, since the press went to the Mac.
+  check(translator.events(for: key(tab)) == [syntheticKey(0x30)])
+  check(translator.events(for: key(tab, repeating: true, modifiers: [.command])) == nil)
+  check(translator.events(for: key(tab, repeating: true, modifiers: [.command])) == nil, "again")
+  check(
+    translator.events(for: key(tab, down: false, modifiers: [.command]))
+      == [syntheticKey(0x30, down: false, modifiers: [.command])])
+  // So it is for an arrow, which has its flags, and for Control going down.
+  check(translator.events(for: key(left)) == [syntheticKey(0x7B, keyFlags: arrow)])
+  check(translator.events(for: key(left, repeating: true, modifiers: [.control])) == nil)
+  check(
+    translator.events(for: key(left, down: false))
+      == [syntheticKey(0x7B, down: false, keyFlags: arrow)])
+  // A press with the modifiers of a shortcut that comes while the key is held on (the viewer does
+  // not say that it repeats, or the release was lost) is left out as well, and the release goes.
+  check(translator.events(for: key(tab)) == [syntheticKey(0x30)])
+  check(translator.events(for: key(tab, modifiers: [.command])) == nil, "not said to repeat")
+  check(translator.events(for: key(tab, down: false)) == [syntheticKey(0x30, down: false)])
+  // A press that is a shortcut when it goes down is left out with its release, as before.
+  check(translator.events(for: key(tab, modifiers: [.command])) == nil)
+  check(translator.events(for: key(tab, repeating: true, modifiers: [.command])) == nil)
+  check(translator.events(for: key(tab, down: false)) == [])
+  // A key that went through twice, by a press and by a repeat, is released once.
+  check(translator.events(for: key(tab)) == [syntheticKey(0x30)])
+  check(translator.events(for: key(tab, repeating: true)) == [syntheticKey(0x30, autorepeat: true)])
+  check(translator.events(for: key(tab, down: false)) == [syntheticKey(0x30, down: false)])
+  // After its release the key is not remembered as pressed: with the modifiers of a shortcut it is
+  // left out again, and so is its release.
+  check(translator.events(for: key(tab, modifiers: [.command])) == nil)
+  check(translator.events(for: key(tab, down: false)) == [])
 }
 
 func testTextWithNoKeyIsNotAShortcut() {
@@ -1465,34 +1522,28 @@ func translatorThatMovesThePointerToAScroll() -> InputTranslator {
     doubleClickInterval: 0.5, clickSlop: 4, movesPointerToScroll: true, now: { clock.seconds })
 }
 
-func testAScrollForTheSystemIsPrecededByAMoveToItsPlaceUnlessThePointerIsThere() {
+func testAScrollForTheSystemIsPrecededByAMoveToItsPlace() {
   let translator = translatorThatMovesThePointerToAScroll()
-  // Nothing is known of the pointer, so it is moved to the scroll first.
   check(
     translator.events(for: pointer(.scroll, at: (50, 60), dy: 3))
       == [mouse(.moved, at: (50, 60), count: 0, pressure: 0), scrolled((50, 60), dx: 0, dy: 3)])
-  // It is there now, so the next scroll at that place is only a scroll.
+  // Where the pointer is cannot be known (the person at the Mac has a pointer of their own, and
+  // a post can fail), so the next scroll at the same place is preceded by a move as well.
   check(
     translator.events(for: pointer(.scroll, at: (50, 60), dx: 2, dy: 3))
-      == [scrolled((50, 60), dx: 2, dy: 3)])
-  // A press takes the pointer elsewhere, and so does a release and a move.
+      == [mouse(.moved, at: (50, 60), count: 0, pressure: 0), scrolled((50, 60), dx: 2, dy: 3)])
+  // A press, a release and a move put the pointer somewhere, and the scroll still moves it.
   _ = translator.events(for: pointer(.down, at: (300, 200)))
   _ = translator.events(for: pointer(.up, at: (310, 210)))
   check(
     translator.events(for: pointer(.scroll, at: (310, 210), dy: 3))
-      == [scrolled((310, 210), dx: 0, dy: 3)], "where the release was")
-  check(
-    translator.events(for: pointer(.scroll, at: (300, 200), dy: 3))
-      == [mouse(.moved, at: (300, 200), count: 0, pressure: 0), scrolled((300, 200), dx: 0, dy: 3)],
-    "where the press was, which the release left")
+      == [mouse(.moved, at: (310, 210), count: 0, pressure: 0), scrolled((310, 210), dx: 0, dy: 3)],
+    "where the release was")
   _ = translator.events(for: pointer(.move, at: (70, 80)))
   check(
     translator.events(for: pointer(.scroll, at: (70, 80), dy: 1))
-      == [scrolled((70, 80), dx: 0, dy: 1)], "where the move was")
-  // The places are compared as they are, with no allowance: half a point away is somewhere else.
-  check(
-    translator.events(for: pointer(.scroll, at: (70, 80.5), dy: 1))
-      == [mouse(.moved, at: (70, 80.5), count: 0, pressure: 0), scrolled((70, 80.5), dx: 0, dy: 1)])
+      == [mouse(.moved, at: (70, 80), count: 0, pressure: 0), scrolled((70, 80), dx: 0, dy: 1)],
+    "where the move was")
   // The modifiers that are down go with the move.
   check(
     translator.events(for: pointer(.scroll, at: (9, 8), dy: 1, modifiers: [.option]))
@@ -1526,7 +1577,7 @@ func testAScrollThatMovesNothingDoesNotMoveThePointerAndOneWithAButtonDownDrags(
   check(translator.events(for: pointer(.scroll, at: (.nan, 80), dy: 1)) == nil)
   check(
     translator.events(for: pointer(.scroll, at: (50, 60), dy: 1))
-      == [scrolled((50, 60), dx: 0, dy: 1)])
+      == [mouse(.moved, at: (50, 60), count: 0, pressure: 0), scrolled((50, 60), dx: 0, dy: 1)])
   // With a button down, the pointer goes to the scroll as a drag does.
   _ = translator.events(for: pointer(.down, at: (10, 10)))
   check(
