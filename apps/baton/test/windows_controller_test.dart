@@ -16,6 +16,15 @@ const _ipad = Device(
   lastSeenAt: 1760529600,
 );
 
+const _mac = Device(
+  id: 'b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0',
+  name: 'Anna’s Mac',
+  platform: Platform.macOs,
+  fingerprint: 'mnop-qrst-uvwx-yzab-cdef',
+  pairedAt: 1760000000,
+  lastSeenAt: 1760529600,
+);
+
 FakeSession _session() => FakeSession(
   me: const Me(
     id: 'f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0',
@@ -1214,6 +1223,239 @@ void main() {
     );
   });
 
+  group('asking a device for its screen', () {
+    test(
+      'asks Baton to start it, and is asking until the device has answered',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        session.holdStart();
+
+        final done = controller.startScreen(_mac);
+        await pumpEventQueue();
+
+        expect(session.screensAsked, [(id: _mac.id, control: false)]);
+        expect(controller.asking, _mac);
+        expect(controller.askingControl, isFalse);
+
+        session.releaseStart();
+        await done;
+
+        expect(controller.asking, isNull);
+        expect(controller.askingControl, isFalse);
+        expect(controller.notes, isEmpty);
+      },
+    );
+
+    test('passes on that the person wishes to control the screen', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      session.holdStart();
+
+      final done = controller.startScreen(_mac, control: true);
+      await pumpEventQueue();
+
+      expect(controller.askingControl, isTrue);
+
+      session.releaseStart();
+      await done;
+
+      expect(session.screensAsked, [(id: _mac.id, control: true)]);
+      expect(controller.askingControl, isFalse);
+    });
+
+    test('is one at a time, and not while a window is being offered', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      session.holdStart();
+
+      final first = controller.startScreen(_mac);
+      await pumpEventQueue();
+      await controller.startScreen(_mac);
+      await controller.share(_ipad);
+
+      expect(session.screensAsked, hasLength(1));
+      expect(session.windowsShared, isEmpty);
+
+      session.releaseStart();
+      await first;
+      session.holdShare();
+      final offer = controller.share(_ipad);
+      await pumpEventQueue();
+      await controller.startScreen(_mac);
+
+      expect(session.screensAsked, hasLength(1));
+      expect(controller.asking, isNull);
+
+      session.releaseShare();
+      await offer;
+    });
+
+    test('can be done again after an answer', () async {
+      final session = _session();
+      final controller = await _controller(session);
+
+      await controller.startScreen(_mac);
+      await controller.startScreen(_mac);
+
+      expect(session.screensAsked, hasLength(2));
+    });
+
+    test(
+      'keeps the screen of the phone on from the moment the person asks',
+      () async {
+        final session = _session();
+        final screen = FakeScreen();
+        final controller = await _controller(session, screen: screen);
+        session.holdStart();
+
+        final done = controller.startScreen(_mac);
+        await pumpEventQueue();
+
+        expect(screen.asked, ['keepOn']);
+
+        session.releaseStart();
+        await done;
+
+        expect(screen.asked, ['keepOn', 'letTurnOff']);
+      },
+    );
+
+    test('keeps the screen of the phone on while it waits, whatever else is answered', () async {
+      final session = _session();
+      final screen = FakeScreen();
+      final controller = await _controller(session, screen: screen);
+      session.holdStart();
+
+      final done = controller.startScreen(_mac);
+      // Another device offers a window meanwhile, and the person says no to it. The Mac has not
+      // answered yet, and the phone has to stay awake for it.
+      await _offer(session, sampleWindowRequest);
+      expect(controller.answer(sampleWindowRequest, accept: false), isTrue);
+      await pumpEventQueue();
+
+      expect(controller.asking, _mac);
+      expect(screen.on, isTrue);
+
+      session.releaseStart();
+      await done;
+
+      expect(screen.on, isFalse);
+    });
+
+    test('leaves the screen to its event when it began', () async {
+      final session = _session();
+      final controller = await _controller(session);
+
+      await controller.startScreen(_mac);
+
+      // The session comes as an event, and a result that arrives after the screen ended would
+      // bring back a screen that is over.
+      expect(controller.sessions, isEmpty);
+      expect(controller.notes, isEmpty);
+    });
+
+    test(
+      'shows the screen that began, with no size yet, as any other window',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        final shown = <WindowSession>[];
+        final heard = controller.started.listen(shown.add);
+        addTearDown(heard.cancel);
+        session.holdStart();
+
+        final done = controller.startScreen(_mac);
+        await pumpEventQueue();
+        final screen = sampleWindowSession(
+          display: true,
+          title: null,
+          app: null,
+          width: 0,
+          height: 0,
+        );
+        await _begin(session, screen);
+
+        expect(shown, [screen]);
+        expect(controller.sessions, [screen]);
+        expect(controller.pictureOf(screen), isNull);
+        expect(
+          controller.asking,
+          _mac,
+          reason: 'the device has not answered yet',
+        );
+
+        session.releaseStart();
+        await done;
+        session.emit(
+          Event.windowPicture(id: screen.id, width: 2560, height: 1600),
+        );
+        await pumpEventQueue();
+
+        expect(controller.pictureOf(screen), (width: 2560, height: 1600));
+        expect(controller.asking, isNull);
+      },
+    );
+
+    test('tells the person why a device did not start it', () async {
+      final session = _session()
+        ..screenStart = const ScreenStarted.notStarted(
+          message:
+              'Anna’s Mac has not allowed this device to ask for its screen.',
+        );
+      final controller = await _controller(session);
+
+      await controller.startScreen(_mac);
+
+      expect(controller.notes, hasLength(1));
+      expect(
+        (controller.notes.single as WindowFailed).message,
+        'Anna’s Mac has not allowed this device to ask for its screen.',
+      );
+      expect(controller.asking, isNull);
+      expect(controller.sessions, isEmpty);
+    });
+
+    test('tells the person why it failed', () async {
+      final session = _session()
+        ..startFailure = const BatonError(
+          kind: ErrorKind.unreachable,
+          message: 'Anna’s Mac did not answer.',
+        );
+      final screen = FakeScreen();
+      final controller = await _controller(session, screen: screen);
+
+      await controller.startScreen(_mac);
+
+      expect(
+        (controller.notes.single as WindowFailed).message,
+        'Anna’s Mac did not answer.',
+      );
+      expect(controller.asking, isNull);
+      expect(screen.asked, ['keepOn', 'letTurnOff']);
+    });
+
+    test(
+      'is let go of when the controller is, and what comes after is not told',
+      () async {
+        final session = _session();
+        final controller = WindowsController(session, screen: FakeScreen());
+        await controller.start();
+        session.holdStart();
+        final done = controller.startScreen(_mac);
+        await pumpEventQueue();
+        var told = 0;
+        controller.addListener(() => told++);
+
+        controller.dispose();
+        session.releaseStart();
+        await done;
+
+        expect(told, 0);
+      },
+    );
+  });
+
   group('the notes', () {
     test('are the last few, newest first', () async {
       final session = _session();
@@ -1433,12 +1675,18 @@ void main() {
         canShow: true,
         canShare: false,
         canControl: false,
+        canGiveScreen: true,
       );
     final controller = await _controller(session);
 
     expect(
       controller.abilities,
-      const WindowAbilities(canShow: true, canShare: false, canControl: false),
+      const WindowAbilities(
+        canShow: true,
+        canShare: false,
+        canControl: false,
+        canGiveScreen: true,
+      ),
     );
     expect(controller.abilities, session.windowAbilities());
   });

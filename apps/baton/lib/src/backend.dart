@@ -55,7 +55,11 @@ export 'rust/api/model.dart'
         Receiving_On,
         Receiving_Unusable,
         Route,
+        ScreenStarted,
+        ScreenStarted_NotStarted,
+        ScreenStarted_Started,
         SendStage,
+        StartAccess,
         TransferEnd,
         TransferRequest,
         TransferResult,
@@ -204,6 +208,29 @@ abstract interface class Session {
   /// `notPaired`, `unreachable`, `declined` if the device does not show windows, or `other` if
   /// this device does not share windows or a window is shared or shown already.
   Future<WindowShared> shareWindow(String id, {bool control = false});
+
+  /// Asks the paired device [id] to start sharing its screen with this one, and shows it when it
+  /// does: `Event_WindowStarted` says so, with a session that is shown here. Nobody at the other
+  /// device is asked: the person there allowed this device beforehand ([setStartAccess]), or the
+  /// answer is `ScreenStarted_NotStarted`, with a sentence that says why. [control] is whether the
+  /// person here wishes to control the screen; the other device grants no more than the settings
+  /// for this one allow, so look at `WindowSession.control` to see what was granted. It returns
+  /// when the screen is shown or the answer is no. Throws a `BatonError` of kind `notPaired`,
+  /// `unreachable`, `declined` if the device does not know how to be asked, or `other` if this
+  /// device does not show screens or a window or screen is shared or shown already.
+  Future<ScreenStarted> startScreen(String id, {bool control = false});
+
+  /// What the paired device [id] may do at this device without a person here being asked: ask it
+  /// to start sharing its screen with that device. `StartAccess.off` for a device that was just
+  /// paired. Throws a `BatonError` of kind `notPaired`.
+  StartAccess startAccess(String id);
+
+  /// Lets the paired device [id] ask this device to start sharing its screen with it, to look at
+  /// or to look at and control, or does not (`StartAccess.off`). Only the person at this device
+  /// can say so. The device can ask only if [windowAbilities] says that this device
+  /// `canGiveScreen`. A screen that is shared is not stopped by turning this off. Throws a
+  /// `BatonError` of kind `notPaired`, or `storage` if the setting could not be kept.
+  Future<void> setStartAccess(String id, StartAccess access);
 
   /// Ends the window [session], which is shown here or shared from here, and tells the other
   /// device. `Event_WindowEnded` follows. Returns whether there was such a window.

@@ -10,7 +10,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'model.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// A device that is paired with this one.
 class Device {
@@ -657,6 +657,26 @@ enum Route {
   unknown,
 }
 
+@freezed
+sealed class ScreenStarted with _$ScreenStarted {
+  const ScreenStarted._();
+
+  /// The other device offered its screen and it is shown here, with no one asked. Its end comes
+  /// as `Event.windowEnded`. A screen that was started has no title and no application, and its
+  /// size is not known until the first `Event.windowPicture`.
+  const factory ScreenStarted.started({
+    /// The session.
+    required WindowSession session,
+  }) = ScreenStarted_Started;
+
+  /// The other device did not start it.
+  const factory ScreenStarted.notStarted({
+    /// One sentence that says why, in words that name the device and tell the person what to
+    /// do about it.
+    required String message,
+  }) = ScreenStarted_NotStarted;
+}
+
 /// What a transfer that is being sent is doing.
 enum SendStage {
   /// Making a connection to the other device.
@@ -677,6 +697,19 @@ enum SendStage {
 
   /// The transfer is over, whichever way it ended.
   over,
+}
+
+/// What a paired device may do at this one without a person here being asked: ask it to start
+/// sharing its screen. Only the person at this device can change it.
+enum StartAccess {
+  /// It cannot. Every device that was just paired is here.
+  off,
+
+  /// It can ask for the screen to look at.
+  look,
+
+  /// It can ask for the screen to look at and control.
+  control,
 }
 
 /// How a transfer that this device took has ended.
@@ -842,15 +875,24 @@ class WindowAbilities {
   /// The person can let another device control a window that this one shares.
   final bool canControl;
 
+  /// This device can give its screen to a paired device that asks for it, with no picker, if the
+  /// person here allowed that device (`Baton.setStartAccess`). Offer that setting only where
+  /// this is so.
+  final bool canGiveScreen;
+
   const WindowAbilities({
     required this.canShow,
     required this.canShare,
     required this.canControl,
+    required this.canGiveScreen,
   });
 
   @override
   int get hashCode =>
-      canShow.hashCode ^ canShare.hashCode ^ canControl.hashCode;
+      canShow.hashCode ^
+      canShare.hashCode ^
+      canControl.hashCode ^
+      canGiveScreen.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -859,7 +901,8 @@ class WindowAbilities {
           runtimeType == other.runtimeType &&
           canShow == other.canShow &&
           canShare == other.canShare &&
-          canControl == other.canControl;
+          canControl == other.canControl &&
+          canGiveScreen == other.canGiveScreen;
 }
 
 /// A button of a pointer on the picture of a window. A finger is the left one.
@@ -1169,10 +1212,12 @@ class WindowSession {
   final String? app;
 
   /// The width of the window in pixels, as it was offered. The picture may differ from it, and
-  /// change while the session runs.
+  /// change while the session runs. It is nought for a screen that this device asked another to
+  /// start sharing: that screen is shown before its size is known, and the size comes with the
+  /// first `Event.windowPicture`.
   final int width;
 
-  /// The height of the window in pixels, as it was offered.
+  /// The height of the window in pixels, as it was offered; nought in the same case.
   final int height;
 
   /// Whether the viewer may control the window.

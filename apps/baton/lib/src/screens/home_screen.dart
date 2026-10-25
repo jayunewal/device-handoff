@@ -224,6 +224,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 ? (device, {required control}) =>
                       unawaited(_windows.share(device, control: control))
                 : null,
+            onStartScreen: _windows.abilities.canShow
+                ? (device, {required control}) =>
+                      unawaited(_windows.startScreen(device, control: control))
+                : null,
+            canGiveScreen: _windows.abilities.canGiveScreen,
           ),
           InboxScreen(
             controller: _inbox,

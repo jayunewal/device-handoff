@@ -28,6 +28,10 @@ IconData platformIcon(Platform platform) => switch (platform) {
   Platform.other => Icons.devices_other,
 };
 
+/// Whether a device that runs this system gives its screen when it is asked to, so that it is
+/// worth offering to ask it. A Mac does. The others have no way to yet.
+bool givesScreenWhenAsked(Platform platform) => platform == Platform.macOs;
+
 const _months = [
   'Jan',
   'Feb',

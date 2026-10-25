@@ -2672,6 +2672,305 @@ as String,
 }
 
 /// @nodoc
+mixin _$ScreenStarted {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is ScreenStarted);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'ScreenStarted()';
+}
+
+
+}
+
+/// @nodoc
+class $ScreenStartedCopyWith<$Res>  {
+$ScreenStartedCopyWith(ScreenStarted _, $Res Function(ScreenStarted) __);
+}
+
+
+/// Adds pattern-matching-related methods to [ScreenStarted].
+extension ScreenStartedPatterns on ScreenStarted {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( ScreenStarted_Started value)?  started,TResult Function( ScreenStarted_NotStarted value)?  notStarted,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case ScreenStarted_Started() when started != null:
+return started(_that);case ScreenStarted_NotStarted() when notStarted != null:
+return notStarted(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( ScreenStarted_Started value)  started,required TResult Function( ScreenStarted_NotStarted value)  notStarted,}){
+final _that = this;
+switch (_that) {
+case ScreenStarted_Started():
+return started(_that);case ScreenStarted_NotStarted():
+return notStarted(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( ScreenStarted_Started value)?  started,TResult? Function( ScreenStarted_NotStarted value)?  notStarted,}){
+final _that = this;
+switch (_that) {
+case ScreenStarted_Started() when started != null:
+return started(_that);case ScreenStarted_NotStarted() when notStarted != null:
+return notStarted(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( WindowSession session)?  started,TResult Function( String message)?  notStarted,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case ScreenStarted_Started() when started != null:
+return started(_that.session);case ScreenStarted_NotStarted() when notStarted != null:
+return notStarted(_that.message);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( WindowSession session)  started,required TResult Function( String message)  notStarted,}) {final _that = this;
+switch (_that) {
+case ScreenStarted_Started():
+return started(_that.session);case ScreenStarted_NotStarted():
+return notStarted(_that.message);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( WindowSession session)?  started,TResult? Function( String message)?  notStarted,}) {final _that = this;
+switch (_that) {
+case ScreenStarted_Started() when started != null:
+return started(_that.session);case ScreenStarted_NotStarted() when notStarted != null:
+return notStarted(_that.message);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class ScreenStarted_Started extends ScreenStarted {
+  const ScreenStarted_Started({required this.session}): super._();
+  
+
+/// The session.
+ final  WindowSession session;
+
+/// Create a copy of ScreenStarted
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$ScreenStarted_StartedCopyWith<ScreenStarted_Started> get copyWith => _$ScreenStarted_StartedCopyWithImpl<ScreenStarted_Started>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is ScreenStarted_Started&&(identical(other.session, session) || other.session == session));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,session);
+}
+
+@override
+String toString() {
+    return 'ScreenStarted.started(session: $session)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $ScreenStarted_StartedCopyWith<$Res> implements $ScreenStartedCopyWith<$Res> {
+  factory $ScreenStarted_StartedCopyWith(ScreenStarted_Started value, $Res Function(ScreenStarted_Started) _then) = _$ScreenStarted_StartedCopyWithImpl;
+@useResult
+$Res call({
+ WindowSession session
+});
+
+
+
+
+}
+/// @nodoc
+class _$ScreenStarted_StartedCopyWithImpl<$Res>
+    implements $ScreenStarted_StartedCopyWith<$Res> {
+  _$ScreenStarted_StartedCopyWithImpl(this._self, this._then);
+
+  final ScreenStarted_Started _self;
+  final $Res Function(ScreenStarted_Started) _then;
+
+/// Create a copy of ScreenStarted
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? session = null,}) {
+  return _then(ScreenStarted_Started(
+session: null == session ? _self.session : session // ignore: cast_nullable_to_non_nullable
+as WindowSession,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class ScreenStarted_NotStarted extends ScreenStarted {
+  const ScreenStarted_NotStarted({required this.message}): super._();
+  
+
+/// One sentence that says why, in words that name the device and tell the person what to
+/// do about it.
+ final  String message;
+
+/// Create a copy of ScreenStarted
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$ScreenStarted_NotStartedCopyWith<ScreenStarted_NotStarted> get copyWith => _$ScreenStarted_NotStartedCopyWithImpl<ScreenStarted_NotStarted>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is ScreenStarted_NotStarted&&(identical(other.message, message) || other.message == message));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,message);
+}
+
+@override
+String toString() {
+    return 'ScreenStarted.notStarted(message: $message)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $ScreenStarted_NotStartedCopyWith<$Res> implements $ScreenStartedCopyWith<$Res> {
+  factory $ScreenStarted_NotStartedCopyWith(ScreenStarted_NotStarted value, $Res Function(ScreenStarted_NotStarted) _then) = _$ScreenStarted_NotStartedCopyWithImpl;
+@useResult
+$Res call({
+ String message
+});
+
+
+
+
+}
+/// @nodoc
+class _$ScreenStarted_NotStartedCopyWithImpl<$Res>
+    implements $ScreenStarted_NotStartedCopyWith<$Res> {
+  _$ScreenStarted_NotStartedCopyWithImpl(this._self, this._then);
+
+  final ScreenStarted_NotStarted _self;
+  final $Res Function(ScreenStarted_NotStarted) _then;
+
+/// Create a copy of ScreenStarted
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? message = null,}) {
+  return _then(ScreenStarted_NotStarted(
+message: null == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
 mixin _$TransferResult {
 
 

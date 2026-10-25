@@ -8,8 +8,8 @@ import '../windows_controller.dart';
 
 /// The windows and screens, at the bottom of the home screen where both places can show it: the
 /// offers for the person to answer, the one that is being opened, the offer that this device is
-/// making, the ones that run, and how the last ones ended. It takes no room when there is nothing
-/// to show.
+/// making, the screen that it is asking for, the ones that run, and how the last ones ended. It
+/// takes no room when there is nothing to show.
 class WindowsPanel extends StatelessWidget {
   const WindowsPanel({
     required this.controller,
@@ -29,6 +29,7 @@ class WindowsPanel extends StatelessWidget {
       builder: (context, _) {
         final opening = controller.opening;
         final offering = controller.offering;
+        final asking = controller.asking;
         final cards = <Widget>[
           for (final request in controller.requests)
             _RequestCard(
@@ -41,6 +42,8 @@ class WindowsPanel extends StatelessWidget {
               device: offering,
               control: controller.offeringControl,
             ),
+          if (asking != null)
+            _AskingCard(device: asking, control: controller.askingControl),
           for (final session in controller.sessions)
             _SessionCard(
               session: session,
@@ -226,6 +229,53 @@ class _OfferingCard extends StatelessWidget {
               semanticsLabel: control
                   ? 'Sharing a window or screen to look at and control'
                   : 'Sharing a window or screen',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// This device is asking [device] for its screen. Nobody there is asked: the person at [device]
+/// allowed this device beforehand. The screen opens by itself when it begins. What is asked for
+/// with [control] can be controlled as well as looked at.
+class _AskingCard extends StatelessWidget {
+  const _AskingCard({required this.device, required this.control});
+
+  final Device device;
+  final bool control;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final name = visibleText(device.name);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Semantics(
+              liveRegion: true,
+              child: Text(
+                control
+                    ? 'Asking $name for its screen, to look at and control'
+                    : 'Asking $name for its screen',
+                style: theme.textTheme.titleSmall,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'It starts by itself if the person at $name allowed this '
+              'device to ask.',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            LinearProgressIndicator(
+              semanticsLabel: control
+                  ? 'Asking for a screen to look at and control'
+                  : 'Asking for a screen',
             ),
           ],
         ),
