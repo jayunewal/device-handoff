@@ -161,6 +161,8 @@ async fn the_app_is_started_with_the_viewer_and_the_sharer_that_the_platform_reg
         release: Some(release),
         surroundings: Some(surroundings),
         post: Some(post),
+        // This platform cannot give its screen without a picker.
+        screen: None,
     };
     // SAFETY: a vtable that is whole, with functions that keep to the header.
     assert_eq!(

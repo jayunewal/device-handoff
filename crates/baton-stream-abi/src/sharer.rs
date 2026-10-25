@@ -33,7 +33,7 @@ use std::{
     time::Duration,
 };
 
-use baton_app::windows::{PickedWindow, PlatformError, SharingFailure, WindowSharer};
+use baton_app::windows::{PickedWindow, PlatformError, ScreenError, SharingFailure, WindowSharer};
 use baton_core::{
     streaming::{NotSent, Picture, SourceEvents, SourceHandle, Takes},
     util::BoxFuture,
@@ -57,7 +57,7 @@ use crate::{
         PAUSE_LOCKED, PAUSE_OTHER, SENT, SENT_OVER, SENT_STALE, SENT_TOO_LARGE,
     },
     input::{Closing, Dropped, Forward, Input, Timing, Worker},
-    platform::{Chosen, Failure, PickedHandle, SharerCalls, Takes as WhatItTakes},
+    platform::{Chosen, Failure, PickedHandle, ScreenFailure, SharerCalls, Takes as WhatItTakes},
     registry::{Links, lock},
 };
 
@@ -72,6 +72,9 @@ const NO_ANSWER: &str = "The choice of a window was lost.";
 
 /// What the person is told when the platform could not start to capture and gave no reason.
 const NOT_STARTED: &str = "This device could not start sharing the window.";
+
+/// What is said when the platform could not give its screen and gave no reason.
+const NO_SCREEN: &str = "This device could not give its screen.";
 
 /// What the platform shares with the windows that it picks.
 pub(crate) struct Shared {
@@ -233,6 +236,43 @@ impl WindowSharer for AbiSharer {
                 Err(_) => Err(PlatformError::new(NO_ANSWER)),
             }
         })
+    }
+
+    fn can_give_screen(&self) -> bool {
+        self.shared.calls.can_screen()
+    }
+
+    /// Has the platform give its main display. The call may wait for the system, so a thread that
+    /// the runtime keeps for such calls makes it, and takes the display in the same breath: a
+    /// display that nobody waits for any more is released by that thread when it is dropped there.
+    fn screen(&self) -> BoxFuture<'static, Result<Box<dyn PickedWindow>, ScreenError>> {
+        let shared = Arc::clone(&self.shared);
+        Box::pin(async move {
+            let made = tokio::task::spawn_blocking(move || {
+                shared
+                    .calls
+                    .screen()
+                    .map(|given| AbiPicked::of(given, &shared))
+            })
+            .await;
+            match made {
+                Ok(Ok(picked)) => Ok(Box::new(picked) as Box<dyn PickedWindow>),
+                Ok(Err(failure)) => Err(screen_error(failure)),
+                Err(_) => Err(ScreenError::Failed(PlatformError::new(NO_SCREEN))),
+            }
+        })
+    }
+}
+
+/// Why the platform gave no screen, as the app is told.
+fn screen_error(failure: ScreenFailure) -> ScreenError {
+    match failure {
+        ScreenFailure::Unsupported => ScreenError::Unsupported,
+        ScreenFailure::NeedsPermission => ScreenError::NeedsPermission,
+        ScreenFailure::Unavailable => ScreenError::Unavailable,
+        ScreenFailure::Failed(Failure(sentence)) => ScreenError::Failed(PlatformError::new(
+            sentence.unwrap_or_else(|| NO_SCREEN.to_owned()),
+        )),
     }
 }
 

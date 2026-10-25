@@ -35,7 +35,7 @@ use baton_stream_abi::{
         BatonLimits, BatonMessage, BatonPicked, BatonPicture, BatonPost, BatonRect, BatonScreen,
         BatonSharerVTable, BatonSourceMessage, BatonSurroundings, BatonTakes, BatonViewerVTable,
         BatonWindow, CancelPickFn, ControlFn, DecodeFn, EndedFn, LimitsFn, OpenFn, PickFn, PostFn,
-        PrepareFn, ReleaseFn, ShowFn, SourceFn, StartFn, StateFn, SurroundingsFn,
+        PrepareFn, ReleaseFn, ScreenFn, ShowFn, SourceFn, StartFn, StateFn, SurroundingsFn,
     },
     exports::{
         baton_stream_abi_version, baton_stream_link_decode_failed, baton_stream_pick_done,
@@ -661,6 +661,7 @@ fn tables_of_functions() -> Vec<RustStruct> {
             release: Option<ReleaseFn> = "BatonReleaseFn",
             surroundings: Option<SurroundingsFn> = "BatonSurroundingsFn",
             post: Option<PostFn> = "BatonPostFn",
+            screen: Option<ScreenFn> = "BatonScreenFn",
         }),
     ]
 }
@@ -732,6 +733,9 @@ fn rust_fn_types() -> Vec<CFunction> {
             is unsafe extern "C" fn(*mut c_void, *mut BatonSurroundings) -> i32),
         rust_fn_type!(PostFn as "BatonPostFn": "int32_t" ["void *", "const BatonPost *"]
             is unsafe extern "C" fn(*mut c_void, *const BatonPost) -> i32),
+        rust_fn_type!(ScreenFn as "BatonScreenFn": "int32_t"
+            ["void *", "BatonPicked *", "BatonMessage *"]
+            is unsafe extern "C" fn(*mut c_void, *mut BatonPicked, *mut BatonMessage) -> i32),
     ]
 }
 
@@ -846,6 +850,8 @@ fn rust_numbers() -> Vec<(String, i64)> {
         CODEC_H264,
         PICKED_WINDOW,
         PICKED_DISPLAY,
+        SCREEN_NEEDS_PERMISSION,
+        SCREEN_UNAVAILABLE,
         FRAME_KEY,
         FRAME_RECOVERY,
         FRAME_REFERENCED,
@@ -1266,6 +1272,24 @@ static int32_t post_input(void *picked, const BatonPost *post) {
     return BATON_E_ARGUMENT;
 }
 
+static int32_t screen(void *context, BatonPicked *picked, BatonMessage *message) {
+    (void)context;
+    if (picked->size < sizeof *picked || picked->title.len != 0 || message->cap == 0) {
+        return BATON_E_ARGUMENT;
+    }
+    if (picked->width == 7) {
+        return BATON_SCREEN_NEEDS_PERMISSION;
+    }
+    if (picked->width == 8) {
+        return BATON_SCREEN_UNAVAILABLE;
+    }
+    picked->width = 3024;
+    picked->height = 1964;
+    picked->kind = BATON_PICKED_DISPLAY;
+    picked->context = picked;
+    return BATON_OK;
+}
+
 static void window_ended(void *picked) { (void)picked; }
 
 static void window_released(void *picked) { (void)picked; }
@@ -1284,6 +1308,7 @@ static int32_t register_sharer(void) {
     table.release = window_released;
     table.surroundings = surroundings;
     table.post = post_input;
+    table.screen = screen;
     return baton_stream_register_sharer(&table);
 }
 
@@ -1570,6 +1595,14 @@ fn a_compiler_refuses_a_header_whose_numbers_are_wrong() {
         (
             "offsetof(BatonSharerVTable, post) == 80",
             "offsetof(BatonSharerVTable, post) == 72",
+        ),
+        (
+            "offsetof(BatonSharerVTable, screen) == 88",
+            "offsetof(BatonSharerVTable, screen) == 80",
+        ),
+        (
+            "sizeof(BatonSharerVTable) == 96",
+            "sizeof(BatonSharerVTable) == 88",
         ),
     ] {
         assert_eq!(text.matches(right).count(), 1, "the header has `{right}`");

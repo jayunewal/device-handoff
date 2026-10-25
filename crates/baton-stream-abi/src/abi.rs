@@ -34,6 +34,11 @@ pub const PICKED_WINDOW: u32 = 0;
 /// What the person picked is a whole display, with every window on it.
 pub const PICKED_DISPLAY: u32 = 1;
 
+/// What `screen` returns when the system has not let the program capture the screen.
+pub const SCREEN_NEEDS_PERMISSION: i32 = 1;
+/// What `screen` returns when there is no display to give now, for example because none is on.
+pub const SCREEN_UNAVAILABLE: i32 = 2;
+
 /// A key frame.
 pub const FRAME_KEY: u32 = 1;
 /// A recovery frame.
@@ -586,11 +591,18 @@ pub type SurroundingsFn =
     unsafe extern "C" fn(picked: *mut c_void, surroundings: *mut BatonSurroundings) -> i32;
 /// Puts one thing that the person did to the window.
 pub type PostFn = unsafe extern "C" fn(picked: *mut c_void, post: *const BatonPost) -> i32;
+/// Gives the main display, without the person choosing it.
+pub type ScreenFn = unsafe extern "C" fn(
+    context: *mut c_void,
+    picked: *mut BatonPicked,
+    message: *mut BatonMessage,
+) -> i32;
 
 /// What the platform registers to share windows. A function that is `None` here is a registration
 /// that is refused, except `surroundings` and `post`, which a platform that cannot post input
-/// leaves out. `ended` and `release` are called with the pointer of the window, where the
-/// viewer's are called with the pointer of a screen.
+/// leaves out, and `screen`, which a platform that cannot give its screen without a picker leaves
+/// out. `ended` and `release` are called with the pointer of the window, where the viewer's are
+/// called with the pointer of a screen.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct BatonSharerVTable {
@@ -598,7 +610,7 @@ pub struct BatonSharerVTable {
     pub version: u32,
     /// The bytes of this struct as the platform knows it.
     pub size: u32,
-    /// The first argument of `control`, `pick` and `cancel_pick`.
+    /// The first argument of `control`, `pick`, `cancel_pick` and `screen`.
     pub context: *mut c_void,
     /// See [`ControlFn`].
     pub control: Option<ControlFn>,
@@ -618,4 +630,6 @@ pub struct BatonSharerVTable {
     pub surroundings: Option<SurroundingsFn>,
     /// See [`PostFn`].
     pub post: Option<PostFn>,
+    /// See [`ScreenFn`]. A platform that cannot give its screen without a picker leaves it out.
+    pub screen: Option<ScreenFn>,
 }

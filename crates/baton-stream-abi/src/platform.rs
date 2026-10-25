@@ -20,7 +20,8 @@
 //!   ([`SharerCalls::adopt`]) and which is released once, when the handle is dropped. A window
 //!   that is shared with control also asks the platform what the Mac is doing around it
 //!   ([`PickedHandle::surroundings`]) and has it put what the person did there
-//!   ([`PickedHandle::post`]).
+//!   ([`PickedHandle::post`]). A platform that can give its main display without a picker also
+//!   has `screen` ([`SharerCalls::screen`]), whose answer is a window of the same kind.
 //!
 //! Every call is made inside [`within`], which marks the thread. The functions of the interface
 //! that the platform calls refuse to run on a thread that is inside a call into the platform,
@@ -33,6 +34,7 @@ use std::{
     ptr::{self, NonNull},
 };
 
+use baton_proto::limits::MAX_WINDOW_EDGE;
 use baton_stream::{
     gate::{Front, Geometry, Keyboard, Post, Rect, Size},
     input::{Button, PointerAction},
@@ -42,15 +44,17 @@ use crate::{
     Error,
     abi::{
         ABI_VERSION, BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT, BatonBytes, BatonDecoderState,
-        BatonFormat, BatonFrame, BatonFront, BatonGeometry, BatonLimits, BatonMessage, BatonPost,
-        BatonRect, BatonScreen, BatonSharerVTable, BatonSourceMessage, BatonSurroundings,
-        BatonTakes, BatonViewerVTable, BatonWindow, CancelPickFn, ControlFn, DecodeFn, EndedFn,
-        FRONT_MENU, FRONT_SAME_APPLICATION, FRONTS_MAX, KEYBOARD_ELSEWHERE, KEYBOARD_SHARED,
-        KEYBOARD_UNKNOWN, LimitsFn, MESSAGE_MAX, OK, OpenFn, POINTER_DOWN, POINTER_MOVE,
-        POINTER_SCROLL, POINTER_UP, POST_KEY, POST_POINTER, PickFn, PostFn, PrepareFn, ReleaseFn,
+        BatonFormat, BatonFrame, BatonFront, BatonGeometry, BatonLimits, BatonMessage, BatonPicked,
+        BatonPost, BatonRect, BatonScreen, BatonSharerVTable, BatonSourceMessage,
+        BatonSurroundings, BatonTakes, BatonViewerVTable, BatonWindow, CancelPickFn, ControlFn,
+        DecodeFn, EndedFn, FRONT_MENU, FRONT_SAME_APPLICATION, FRONTS_MAX, KEYBOARD_ELSEWHERE,
+        KEYBOARD_SHARED, KEYBOARD_UNKNOWN, LimitsFn, MESSAGE_MAX, OK, OpenFn, PICKED_DISPLAY,
+        POINTER_DOWN, POINTER_MOVE, POINTER_SCROLL, POINTER_UP, POST_KEY, POST_POINTER, PickFn,
+        PostFn, PrepareFn, ReleaseFn, SCREEN_NEEDS_PERMISSION, SCREEN_UNAVAILABLE, ScreenFn,
         ShowFn, SourceFn, StartFn, StateFn, SurroundingsFn, size_of_u32,
     },
     registry::Registry,
+    sharer::Given,
 };
 
 thread_local! {
@@ -313,6 +317,20 @@ pub(crate) struct Opened {
 #[derive(Debug)]
 pub(crate) struct Failure(pub(crate) Option<String>);
 
+/// Why the platform gave no display without a picker.
+#[derive(Debug)]
+pub(crate) enum ScreenFailure {
+    /// The platform gave no function for it.
+    Unsupported,
+    /// The system has not let the program capture the screen.
+    NeedsPermission,
+    /// There is no display to give now.
+    Unavailable,
+    /// The platform could not, or what it gave was not whole: the sentence it wrote, if it wrote
+    /// one.
+    Failed(Failure),
+}
+
 /// A frame to decode.
 pub(crate) struct Frame<'a> {
     pub(crate) flags: u32,
@@ -416,9 +434,10 @@ impl Drop for ScreenHandle {
     }
 }
 
-/// Makes a call that may write the sentence of a failure, and gives the failure if the call
-/// fails. The platform is given room for the sentence, which is read as far as it fits.
-fn with_message(call: impl FnOnce(*mut BatonMessage) -> i32) -> Result<(), Failure> {
+/// Makes a call that may write the sentence of a failure, and gives what the call returned and
+/// the sentence it wrote, if it did. The platform is given room for the sentence, which is read
+/// as far as it fits.
+fn with_message_code(call: impl FnOnce(*mut BatonMessage) -> i32) -> (i32, Option<String>) {
     let mut text = [0_u8; MESSAGE_MAX as usize];
     let mut message = BatonMessage {
         size: size_of_u32::<BatonMessage>(),
@@ -427,10 +446,16 @@ fn with_message(call: impl FnOnce(*mut BatonMessage) -> i32) -> Result<(), Failu
         reserved: 0,
         text: text.as_mut_ptr(),
     };
-    if call(&raw mut message) == OK {
-        Ok(())
-    } else {
-        Err(Failure(sentence(&text, message.len)))
+    let code = call(&raw mut message);
+    (code, sentence(&text, message.len))
+}
+
+/// Makes a call that may write the sentence of a failure, and gives the failure if the call
+/// fails.
+fn with_message(call: impl FnOnce(*mut BatonMessage) -> i32) -> Result<(), Failure> {
+    match with_message_code(call) {
+        (OK, _) => Ok(()),
+        (_, sentence) => Err(Failure(sentence)),
     }
 }
 
@@ -452,7 +477,7 @@ pub(crate) struct Chosen {
 }
 
 /// The functions that the platform registered to share windows, and the pointer that `control`,
-/// `pick` and `cancel_pick` take.
+/// `pick`, `cancel_pick` and `screen` take.
 #[derive(Clone, Copy)]
 pub(crate) struct SharerCalls {
     context: *mut c_void,
@@ -466,12 +491,14 @@ pub(crate) struct SharerCalls {
     /// `surroundings` and `post`, which a platform that cannot post input leaves out: both or
     /// neither.
     input: Option<(SurroundingsFn, PostFn)>,
+    /// `screen`, which a platform that cannot give its screen without a picker leaves out.
+    screen: Option<ScreenFn>,
 }
 
 // SAFETY: a `SharerCalls` exists only for a vtable that the platform registered, and the header's
-// rules for that are the platform's promise: `control`, `pick` and `cancel_pick` may be called
-// from any thread, at any time, also at the same time, and `context` stays valid for as long as
-// the process runs. Rust never reads through `context`.
+// rules for that are the platform's promise: `control`, `pick`, `cancel_pick` and `screen` may be
+// called from any thread, at any time, also at the same time, and `context` stays valid for as
+// long as the process runs. Rust never reads through `context`.
 unsafe impl Send for SharerCalls {}
 // SAFETY: as above; `SharerCalls` has no interior mutability and is only read.
 unsafe impl Sync for SharerCalls {}
@@ -522,6 +549,7 @@ impl SharerCalls {
                 ended,
                 release,
                 input: table.surroundings.zip(table.post),
+                screen: table.screen,
             }),
             _ => Err(Error::Argument),
         }
@@ -553,6 +581,76 @@ impl SharerCalls {
     pub(crate) fn cancel_pick(&self, request: u64) {
         // SAFETY: the function is the platform's, called as the header says.
         within(|| unsafe { (self.cancel_pick)(self.context, request) });
+    }
+
+    /// Whether the platform gave the function that gives its screen without a picker.
+    pub(crate) fn can_screen(&self) -> bool {
+        self.screen.is_some()
+    }
+
+    /// Has the platform give its main display, without the person choosing it. The call may wait
+    /// for the system, so it is not made on a thread that other work waits for.
+    ///
+    /// A display that the platform gave is the platform's until it is taken ([`adopt`]); an
+    /// answer that is not whole is taken and released here, so that it is not lost.
+    ///
+    /// # Errors
+    ///
+    /// The platform gave no function for it, or could not give the display: it says why, with
+    /// the number it returns, and a sentence if it can; or what it gave is not a display that
+    /// can be shared.
+    ///
+    /// [`adopt`]: Self::adopt
+    pub(crate) fn screen(&self) -> Result<Given, ScreenFailure> {
+        let Some(screen) = self.screen else {
+            return Err(ScreenFailure::Unsupported);
+        };
+        // What the platform fills in. Its title and its application stay empty: a display given
+        // without a picker is not named, and nothing here reads bytes that the platform owns.
+        let mut picked = BatonPicked {
+            size: size_of_u32::<BatonPicked>(),
+            width: 0,
+            height: 0,
+            kind: 0,
+            context: ptr::null_mut(),
+            title: BatonBytes {
+                ptr: ptr::null(),
+                len: 0,
+            },
+            app: BatonBytes {
+                ptr: ptr::null(),
+                len: 0,
+            },
+        };
+        // SAFETY: the structs and the buffer behind the message live until the call returns; the
+        // function is the platform's, called as the header says.
+        let (code, text) = with_message_code(|message| {
+            within(|| unsafe { screen(self.context, &raw mut picked, message) })
+        });
+        match code {
+            OK => {}
+            SCREEN_NEEDS_PERMISSION => return Err(ScreenFailure::NeedsPermission),
+            SCREEN_UNAVAILABLE => return Err(ScreenFailure::Unavailable),
+            _ => return Err(ScreenFailure::Failed(Failure(text))),
+        }
+        // From here on the platform has given a display, which is released once by whoever
+        // ends up with it, also when it is not whole.
+        let whole = picked.kind == PICKED_DISPLAY && picked.width != 0 && picked.height != 0;
+        match (NonNull::new(picked.context), whole) {
+            (Some(context), true) => Ok(Given {
+                context,
+                display: true,
+                title: String::new(),
+                app: String::new(),
+                width: picked.width.min(MAX_WINDOW_EDGE),
+                height: picked.height.min(MAX_WINDOW_EDGE),
+            }),
+            (Some(context), false) => {
+                drop(self.adopt(context));
+                Err(ScreenFailure::Failed(Failure(None)))
+            }
+            (None, _) => Err(ScreenFailure::Failed(Failure(None))),
+        }
     }
 
     /// Takes the window that the platform gave with its answer to a pick. The pointer is the
