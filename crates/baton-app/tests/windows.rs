@@ -196,7 +196,9 @@ struct Chosen {
 }
 
 struct Sharer {
-    control: bool,
+    /// Whether the platform can post input. It can change while the app runs, as it does when the
+    /// person takes back the consent to control the computer.
+    control: AtomicBool,
     /// What the next pick gives; `None` is a person who gave up.
     next: Mutex<Option<Chosen>>,
     /// If set, the pick fails with this.
@@ -256,7 +258,7 @@ impl Sharer {
 
     fn building(control: bool, next: Option<Chosen>, gives_screen: bool) -> Arc<Self> {
         Arc::new(Self {
-            control,
+            control: AtomicBool::new(control),
             next: Mutex::new(next),
             fail: Mutex::new(None),
             gate: Mutex::new(None),
@@ -329,7 +331,7 @@ fn whole_display() -> Chosen {
 
 impl WindowSharer for Sharer {
     fn control(&self) -> bool {
-        self.control
+        self.control.load(Ordering::Relaxed)
     }
 
     fn pick(&self) -> BoxFuture<'static, Result<Option<Box<dyn PickedWindow>>, PlatformError>> {
@@ -2364,6 +2366,45 @@ async fn control_is_the_least_of_what_the_phone_wished_the_person_allowed_and_th
              can post input: {platform}"
         );
     }
+}
+
+#[tokio::test]
+async fn control_is_not_granted_when_the_platform_can_no_longer_post_input() {
+    // The app was started when the platform could post input, so the node takes it. The person
+    // takes back the consent to control the computer while the app runs, and the platform says so
+    // from then on: a phone that asks afterwards, and was allowed, gets no control.
+    let screens = Screens::new(true).await;
+    screens.allow(StartAccess::Control);
+    screens.sharer.control.store(false, Ordering::Relaxed);
+    let mut events = screens.mac.app.events();
+
+    let handle = screens.started(true).await;
+    let shared = started_at(&mut events).await;
+
+    assert_eq!((handle.control(), shared.control), (false, false));
+}
+
+/// A platform written before the screen could be asked for: it picks windows and says nothing
+/// about its screen.
+struct Silent;
+
+impl WindowSharer for Silent {
+    fn control(&self) -> bool {
+        false
+    }
+
+    fn pick(&self) -> BoxFuture<'static, Result<Option<Box<dyn PickedWindow>>, PlatformError>> {
+        Box::pin(std::future::ready(Ok(None)))
+    }
+}
+
+#[tokio::test]
+async fn a_platform_that_says_nothing_of_the_screen_cannot_give_it() {
+    assert!(!Silent.can_give_screen());
+    assert!(matches!(
+        Silent.screen().await,
+        Err(ScreenError::Unsupported)
+    ));
 }
 
 #[tokio::test]

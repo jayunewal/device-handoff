@@ -100,14 +100,15 @@ impl StartHandler for Starts {
                 }
             };
             // The paired device gets no more control than it asked for and the settings allow
-            // (the slot), and none if the platform cannot post input.
+            // (the slot), and none if the platform cannot post input now: the node was set up when
+            // it could, and the person may have taken the consent back since.
             let control = control && sharer.control();
             tracing::info!(%device, control, "a paired device started a screen");
             let sessions = Arc::clone(&self.sessions);
             let (peer, name) = (slot.peer(), from.display_name().to_owned());
-            // The offer waits for the answer of the other device, which this answer has to reach
-            // first, so it is made on a task of its own. The slot is let go of if the task never
-            // runs.
+            // The offer is made on a task of its own. Made here, the answer to the start would wait
+            // until the session began, and the time that the application has to get ready would
+            // have to cover that as well. The slot is let go of if the task never runs.
             tokio::spawn(async move {
                 match sessions
                     .share(&node, &peer, &name, picked, control, Some(slot))

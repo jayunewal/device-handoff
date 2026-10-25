@@ -513,7 +513,9 @@ impl SharerCalls {
     /// is smaller than the part of the struct that ends at `release` (a larger one is accepted:
     /// the end of it belongs to a newer version), or one of the functions up to `release` is
     /// missing. `surroundings` and `post` may be missing; a table that has only one of them has
-    /// neither.
+    /// neither. `screen` may be missing too: a platform without it cannot give its screen, and a
+    /// table that ends before it, as the tables of platforms older than the call do, reads as one
+    /// without it.
     ///
     /// # Safety
     ///
