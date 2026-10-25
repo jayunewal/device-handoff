@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Window streaming: the requests that offer a window and end the session.
+//! Window streaming: the requests that offer a window, start a session and end it.
 //!
-//! The design is recorded in `docs/adr/0009-window-streaming.md` and specified in section 9 of
+//! The design is recorded in `docs/adr/0009-window-streaming.md` and
+//! `docs/adr/0010-sessions-that-the-viewer-starts.md` and specified in section 9 of
 //! `docs/protocol.md`. This module holds the messages that travel on ordinary request streams:
 //! the source, which is the device whose window it is, makes an [`Offer`]; the viewer, or the
-//! person using it, answers once; and either side later ends the session with [`Stop`]. What
-//! travels after a yes, the frames of video and the control messages, is not here.
+//! person using it, answers once; and either side later ends the session with [`Stop`]. A viewer
+//! may also ask a source to make the offer, with a [`Start`], when the person at the source has
+//! allowed that beforehand. What travels after a yes, the frames of video and the control
+//! messages, is not here.
 
 use std::fmt;
 
@@ -24,13 +27,18 @@ use crate::{
 /// A request about a streaming session.
 ///
 /// It travels on a bidirectional stream like any other request. An [`Offer`] goes only to a
-/// device that advertised [`capability::STREAM_VIEW`](crate::message::capability::STREAM_VIEW).
+/// device that advertised [`capability::STREAM_VIEW`](crate::message::capability::STREAM_VIEW),
+/// and a [`Start`] only to one that advertised
+/// [`capability::STREAM_START`](crate::message::capability::STREAM_START).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StreamRequest {
     /// Ask whether the receiver will show a window.
     Offer(Offer),
-    /// End the session, or withdraw an offer that has not been answered.
+    /// End the session, or withdraw an offer that has not been answered, or take back a start
+    /// whose offer has not been made.
     Stop(Stop),
+    /// Ask the receiver to make an offer of something of its own to the sender.
+    Start(Start),
 }
 
 impl StreamRequest {
@@ -39,6 +47,7 @@ impl StreamRequest {
         match self {
             Self::Offer(offer) => offer.session,
             Self::Stop(stop) => stop.session,
+            Self::Start(start) => start.session,
         }
     }
 }
@@ -54,6 +63,10 @@ pub enum StreamReply {
     Declined(Declined),
     /// Answers [`StreamRequest::Stop`].
     Stopped(Stopped),
+    /// Answers [`StreamRequest::Start`]: the receiver will make the offer.
+    Starting(Starting),
+    /// Answers [`StreamRequest::Start`]: the receiver will not.
+    NotStarted(NotStarted),
 }
 
 impl StreamReply {
@@ -63,6 +76,8 @@ impl StreamReply {
             Self::Accepted(accepted) => accepted.session,
             Self::Declined(declined) => declined.session,
             Self::Stopped(stopped) => stopped.session,
+            Self::Starting(starting) => starting.session,
+            Self::NotStarted(not_started) => not_started.session,
         }
     }
 }
@@ -187,6 +202,84 @@ pub struct Stopped {
     pub session: SessionId,
 }
 
+/// What a viewer wants the source to show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Wanted {
+    /// The main display of the source, with every window on it: the screen that the person at the
+    /// source is looking at. The source chooses which display that is.
+    Screen,
+    /// Anything this version does not know about. A source answers it with
+    /// [`Unsupported`](WhyNot::Unsupported).
+    #[serde(other)]
+    Other,
+}
+
+/// The viewer asks the source to make an offer, so that the person at the viewer does not have to
+/// go to the source to share something. The source does so only for a device that the person at
+/// the source allowed it for beforehand; there is no question to a person then.
+///
+/// What the viewer wants to see is all this says. The offer that answers it is made under the same
+/// session, and says what is shared and whether the viewer may control it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Start {
+    /// Chosen at random by the viewer for each start and never used again. The source makes its
+    /// offer under this id.
+    pub session: SessionId,
+    /// What the viewer wants to see.
+    pub wanted: Wanted,
+    /// Whether the viewer would like to control what it sees. It is a wish and no more: the
+    /// person at the source decided beforehand whether this device may, and the offer says what
+    /// was granted. Left out when it is not wished.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub control: bool,
+}
+
+/// The source will make the offer for a start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Starting {
+    /// The session of the start this answers.
+    pub session: SessionId,
+}
+
+/// The source will not make an offer for a start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotStarted {
+    /// The session of the start this answers.
+    pub session: SessionId,
+    /// Why not.
+    pub why: WhyNot,
+}
+
+/// Why a source did not start a session when it was asked to.
+///
+/// Each is something a person can be told, and most of them something that the person at the
+/// source has to put right.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WhyNot {
+    /// This device cannot start a session, or not for what was asked.
+    Unsupported,
+    /// The settings at the source do not let this device start a session. Only the person at the
+    /// source can change that.
+    NotAllowed,
+    /// The source is offering or sharing something already. It shares one thing at a time.
+    Busy,
+    /// The viewer asked too often.
+    RateLimited,
+    /// The request is not one a source can act on, for example the id was used before.
+    Invalid,
+    /// There is nothing to show now, for example the source has no display on.
+    Unavailable,
+    /// The operating system of the source has not allowed its program to capture the screen, and
+    /// the person at the source has to allow it.
+    NeedsPermission,
+    /// Something went wrong at the source that the viewer did not cause, or it did not get ready
+    /// in time.
+    Failed,
+    /// Any reason this version does not know about.
+    #[serde(other)]
+    Other,
+}
+
 /// For `skip_serializing_if`: a field that has its default (`false`) is left out of the
 /// message, and a reader that finds it absent takes the same value.
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
@@ -242,7 +335,7 @@ impl StreamRequest {
     pub(crate) fn validate(&self) -> Result<(), LimitError> {
         match self {
             Self::Offer(offer) => offer.validate(),
-            Self::Stop(_) => Ok(()),
+            Self::Stop(_) | Self::Start(_) => Ok(()),
         }
     }
 }
@@ -251,7 +344,9 @@ impl StreamReply {
     pub(crate) fn validate(&self) -> Result<(), LimitError> {
         match self {
             Self::Accepted(accepted) => accepted.validate(),
-            Self::Declined(_) | Self::Stopped(_) => Ok(()),
+            Self::Declined(_) | Self::Stopped(_) | Self::Starting(_) | Self::NotStarted(_) => {
+                Ok(())
+            }
         }
     }
 }
@@ -290,6 +385,14 @@ mod tests {
         }
     }
 
+    fn start() -> Start {
+        Start {
+            session: session(),
+            wanted: Wanted::Screen,
+            control: true,
+        }
+    }
+
     fn hex(bytes: &[u8]) -> String {
         use std::fmt::Write;
         bytes.iter().fold(String::new(), |mut out, b| {
@@ -310,6 +413,11 @@ mod tests {
                 session: session(),
                 reason: StopReason::WindowClosed,
             }),
+            StreamRequest::Start(start()),
+            StreamRequest::Start(Start {
+                control: false,
+                ..start()
+            }),
         ];
         for request in requests {
             let sent = Request::Stream(request);
@@ -323,6 +431,11 @@ mod tests {
                 reason: DeclineReason::Refused,
             }),
             StreamReply::Stopped(Stopped { session: session() }),
+            StreamReply::Starting(Starting { session: session() }),
+            StreamReply::NotStarted(NotStarted {
+                session: session(),
+                why: WhyNot::NotAllowed,
+            }),
         ];
         for reply in replies {
             let sent = Response::Stream(reply);
@@ -387,6 +500,71 @@ mod tests {
     }
 
     #[test]
+    fn the_vectors_of_a_start_are_what_the_code_writes() {
+        let wished = frame::encode(&Request::Stream(StreamRequest::Start(start()))).unwrap();
+        assert_eq!(
+            hex(&wished),
+            concat!(
+                "00000040",                           // the frame: 64 bytes follow
+                "a16653747265616d",                   // {"Stream":
+                "a1655374617274",                     //   {"Start":
+                "a3",                                 //     map of 3
+                "6773657373696f6e",                   //     "session":
+                "50a0a1a2a3a4a5a6a7a8a9aaabacadaeaf", //       16 bytes
+                "6677616e746564",                     //     "wanted":
+                "6653637265656e",                     //       "Screen",
+                "67636f6e74726f6c",                   //     "control":
+                "f5",                                 //       true
+            )
+        );
+
+        // Without the wish for control the key is left out, which is nine bytes less.
+        let looking = frame::encode(&Request::Stream(StreamRequest::Start(Start {
+            control: false,
+            ..start()
+        })))
+        .unwrap();
+        assert_eq!(looking.len(), wished.len() - 9);
+        assert_eq!(looking.get(..4), Some(&[0, 0, 0, 0x37][..]));
+        assert_eq!(looking.get(19..20), Some(&[0xa2][..]), "a map of 2");
+
+        let starting = frame::encode(&Response::Stream(StreamReply::Starting(Starting {
+            session: session(),
+        })))
+        .unwrap();
+        assert_eq!(
+            hex(&starting),
+            concat!(
+                "0000002c",                           // the frame: 44 bytes follow
+                "a16653747265616d",                   // {"Stream":
+                "a1685374617274696e67",               //   {"Starting":
+                "a1",                                 //     map of 1
+                "6773657373696f6e",                   //     "session":
+                "50a0a1a2a3a4a5a6a7a8a9aaabacadaeaf", //       16 bytes
+            )
+        );
+
+        let not_started = frame::encode(&Response::Stream(StreamReply::NotStarted(NotStarted {
+            session: session(),
+            why: WhyNot::NotAllowed,
+        })))
+        .unwrap();
+        assert_eq!(
+            hex(&not_started),
+            concat!(
+                "0000003d",                           // the frame: 61 bytes follow
+                "a16653747265616d",                   // {"Stream":
+                "a16a4e6f7453746172746564",           //   {"NotStarted":
+                "a2",                                 //     map of 2
+                "6773657373696f6e",                   //     "session":
+                "50a0a1a2a3a4a5a6a7a8a9aaabacadaeaf", //       16 bytes
+                "63776879",                           //     "why":
+                "6a4e6f74416c6c6f776564",             //       "NotAllowed"
+            )
+        );
+    }
+
+    #[test]
     fn the_session_of_a_request_and_of_a_reply_is_the_one_they_name() {
         let other = SessionId::from_bytes([9; 16]);
         assert_eq!(StreamRequest::Offer(offer()).session(), session());
@@ -410,6 +588,53 @@ mod tests {
         assert_eq!(
             StreamReply::Stopped(Stopped { session: other }).session(),
             other
+        );
+        assert_eq!(
+            StreamRequest::Start(Start {
+                session: other,
+                ..start()
+            })
+            .session(),
+            other
+        );
+        assert_eq!(
+            StreamReply::Starting(Starting { session: other }).session(),
+            other
+        );
+        assert_eq!(
+            StreamReply::NotStarted(NotStarted {
+                session: other,
+                why: WhyNot::Busy
+            })
+            .session(),
+            other
+        );
+    }
+
+    #[test]
+    fn a_start_and_what_answers_it_have_no_limits_to_break() {
+        // There is no text in them, and the numbers have no range.
+        for wanted in [Wanted::Screen, Wanted::Other] {
+            for control in [false, true] {
+                let start = Start {
+                    wanted,
+                    control,
+                    ..start()
+                };
+                assert_eq!(StreamRequest::Start(start).validate(), Ok(()));
+            }
+        }
+        assert_eq!(
+            StreamReply::Starting(Starting { session: session() }).validate(),
+            Ok(())
+        );
+        assert_eq!(
+            StreamReply::NotStarted(NotStarted {
+                session: session(),
+                why: WhyNot::Other
+            })
+            .validate(),
+            Ok(())
         );
     }
 

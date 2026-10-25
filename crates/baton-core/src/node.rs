@@ -50,6 +50,7 @@ use baton_proto::{
     id::SessionId,
     message::{Handoff, Item, Message, Outcome, Ping, Request, Response, capability},
     pair::{ConfirmationCode, PairSecret},
+    stream::{Start, StreamReply, StreamRequest},
     ticket::{MAX_ADDRS, MAX_RELAY_BYTES, PairTicket},
 };
 use iroh::{
@@ -78,8 +79,9 @@ use crate::{
     shared::Shared,
     slots::{MAX_PAIRING_CONNECTIONS, PairSlots},
     streaming::{
-        CONTROL_STREAMS, FRAME_STREAMS, Offered, SETTLE, ShareOutcome, Sharer, SourceEvents,
-        Streaming, Takes, Viewer, WindowHandler, WindowShare, ask,
+        CONTROL_STREAMS, FRAME_STREAMS, Offered, Reservation, SETTLE, ShareOutcome, Sharer,
+        SourceEvents, StartHandler, StartOutcome, StartSlot, Starter, Streaming, Takes, Viewer,
+        Viewing, Wanted, WhyNot, WindowHandler, WindowShare, Withdraw, ask,
     },
     transfer::{
         incoming::{FINISH_WAIT, Incoming, LANE_STREAMS, TransferHandler},
@@ -125,6 +127,7 @@ fn take_streams(
     incoming: Option<&Incoming>,
     windows: Option<Arc<dyn WindowHandler>>,
     sharer: Option<Sharer>,
+    starts: Option<Arc<dyn StartHandler>>,
     intake: &Intake,
     tuning: &Tuning,
 ) -> (Sinks, Arc<Streaming>) {
@@ -138,6 +141,11 @@ fn take_streams(
     };
     let viewer =
         windows.map(|handler| Viewer::new(handler, intake.item_charge(), tuning.approval_timeout));
+    let sharer = sharer.map(|sharer| Sharer {
+        starter: starts
+            .map(|handler| Starter::new(handler, intake.item_charge(), tuning.start_prepare)),
+        ..sharer
+    });
     let streaming = Streaming::taking_part(viewer, sharer);
     let sinks = if streaming.views() {
         sinks.install(Kind::Video, FRAME_STREAMS, streaming.clone())
@@ -169,6 +177,13 @@ pub struct Tuning {
     pub connect_timeout: Duration,
     /// How long a person has to approve a pairing request, and to answer the offer of a window.
     pub approval_timeout: Duration,
+    /// How long a device that was asked to start a session has to get ready before it must
+    /// answer. The device that asked waits [`reply_deadline`](Self::reply_deadline) for the
+    /// answer, so this is shorter.
+    pub start_prepare: Duration,
+    /// How long a device that asked another to start a session waits for the offer, once the
+    /// other has said that it will make one.
+    pub start_wait: Duration,
     /// How long a refused pairing request is held before the refusal is sent.
     pub invalid_delay: Duration,
     /// How long an unused connection to a paired device is kept open.
@@ -188,6 +203,8 @@ impl Default for Tuning {
             reply_deadline: Duration::from_secs(30),
             connect_timeout: Duration::from_secs(20),
             approval_timeout: Duration::from_mins(2),
+            start_prepare: Duration::from_secs(20),
+            start_wait: Duration::from_secs(30),
             invalid_delay: Duration::from_millis(250),
             idle_connection: Duration::from_mins(2),
             finish_wait: FINISH_WAIT,
@@ -227,6 +244,9 @@ pub struct NodeBuilder {
     windows: Option<Arc<dyn WindowHandler>>,
     /// Whether this device shows its own windows to others, and takes input if it does.
     sharing: Option<Sharer>,
+    /// What the application does when a paired device asks this one to start a session, if it
+    /// starts them.
+    starts: Option<Arc<dyn StartHandler>>,
     /// What other devices may be holding for this one, if the application keeps it.
     holds: Option<Holds>,
     clock: Arc<dyn Clock>,
@@ -257,6 +277,7 @@ impl NodeBuilder {
             transfers: None,
             windows: None,
             sharing: None,
+            starts: None,
             holds: None,
             clock: Arc::new(SystemClock),
             tuning: Tuning::default(),
@@ -303,7 +324,23 @@ impl NodeBuilder {
     /// person at this device granted control, and advertises `stream.control`.
     #[must_use]
     pub fn share_windows(mut self, control: bool) -> Self {
-        self.sharing = Some(Sharer { control });
+        self.sharing = Some(Sharer {
+            control,
+            starter: None,
+        });
+        self
+    }
+
+    /// Has this device start a session when a paired device that the person here allowed asks it
+    /// to, asking `handler` to get ready each time. The person is not asked: they decided when they
+    /// allowed the device ([`StartPolicy`](crate::StartPolicy)).
+    ///
+    /// It needs [`share_windows`](Self::share_windows), and [`bind`](Self::bind) fails without it.
+    /// Without a handler, a device starts no session and says nothing about it. With one, it
+    /// advertises `stream.start`.
+    #[must_use]
+    pub fn start_handler(mut self, handler: impl StartHandler) -> Self {
+        self.starts = Some(Arc::new(handler));
         self
     }
 
@@ -386,6 +423,7 @@ impl NodeBuilder {
             transfers,
             windows,
             sharing,
+            starts,
             holds,
             clock,
             tuning,
@@ -395,6 +433,11 @@ impl NodeBuilder {
             before_registering,
         } = self;
         config.validate()?;
+        if starts.is_some() && sharing.is_none() {
+            return Err(Error::Config(
+                "a handler for starting sessions needs the device to share its windows".to_owned(),
+            ));
+        }
         let holds = holds.unwrap_or_else(Holds::memory);
 
         let id = DeviceId::from_bytes(*secret.public().as_bytes());
@@ -403,8 +446,15 @@ impl NodeBuilder {
         let stop = CancellationToken::new();
         let intake = Intake::new(&config.handoff);
         let incoming = incoming_table(transfers, &intake, &tuning);
-        let (sinks, streaming) =
-            take_streams(sinks, incoming.as_ref(), windows, sharing, &intake, &tuning);
+        let (sinks, streaming) = take_streams(
+            sinks,
+            incoming.as_ref(),
+            windows,
+            sharing,
+            starts,
+            &intake,
+            &tuning,
+        );
         let uni = Arc::new(Uni::new(sinks, &trust, &stop, tuning.request_deadline));
         let shared = Arc::new(Shared {
             id,
@@ -437,33 +487,7 @@ impl NodeBuilder {
         let endpoint = bind_endpoint(secret, &config, gate, tweak).await?;
         let lan_discovery = config.network.lan_discovery && start_lan_discovery(&endpoint);
 
-        // Subscribe before the first connection can arrive, so no unpairing is missed.
-        let trust_events = trust.subscribe();
-        let admission = Arc::new(Admission::new(trust.clone()));
-        let router = Router::builder(endpoint.clone())
-            .accept(
-                ALPN_SESSION,
-                SessionServer {
-                    shared: Arc::clone(&shared),
-                },
-            )
-            .accept(
-                ALPN_PAIR,
-                PairServer {
-                    shared: Arc::clone(&shared),
-                },
-            )
-            .incoming_filter(Arc::new(move |incoming| admission.judge(incoming)))
-            .spawn();
-
-        let pool = Arc::new(Pool::default());
-        tokio::spawn(watch_trust(
-            Arc::clone(&shared),
-            Arc::clone(&pool),
-            trust_events,
-        ));
-        tokio::spawn(reap_idle(Arc::clone(&shared), Arc::clone(&pool)));
-        tokio::spawn(start_release(&shared, &endpoint, &holds));
+        let (router, pool) = serve(&shared, &endpoint, &holds);
 
         tracing::info!(device = %id.short(), lan_discovery, relay = relay_enabled, "Baton is listening");
         Ok(Node {
@@ -477,6 +501,41 @@ impl NodeBuilder {
             holds,
         })
     }
+}
+
+/// Starts serving: the router that takes the connections of both protocols, and the tasks that act
+/// on a device being unpaired, close the connections that went idle and tell the devices that hold
+/// transfers for this one to let go of them. Returns the router and the pool of outgoing
+/// connections.
+fn serve(shared: &Arc<Shared>, endpoint: &Endpoint, holds: &Holds) -> (Router, Arc<Pool>) {
+    // Subscribe before the first connection can arrive, so no unpairing is missed.
+    let trust_events = shared.trust.subscribe();
+    let admission = Arc::new(Admission::new(shared.trust.clone()));
+    let router = Router::builder(endpoint.clone())
+        .accept(
+            ALPN_SESSION,
+            SessionServer {
+                shared: Arc::clone(shared),
+            },
+        )
+        .accept(
+            ALPN_PAIR,
+            PairServer {
+                shared: Arc::clone(shared),
+            },
+        )
+        .incoming_filter(Arc::new(move |incoming| admission.judge(incoming)))
+        .spawn();
+
+    let pool = Arc::new(Pool::default());
+    tokio::spawn(watch_trust(
+        Arc::clone(shared),
+        Arc::clone(&pool),
+        trust_events,
+    ));
+    tokio::spawn(reap_idle(Arc::clone(shared), Arc::clone(&pool)));
+    tokio::spawn(start_release(shared, endpoint, holds));
+    (router, pool)
 }
 
 /// Tells the devices that may hold transfers that this device left behind to let go of them, from
@@ -890,26 +949,94 @@ impl Node {
         // may still hold the place of what was stopped, and refuse this offer as busy.
         streaming.settled(&paired.id, SETTLE).await;
         let reservation = streaming.reserve(paired.id)?;
+        self.offer_window(reservation, &paired, None, window, events, choose)
+            .await
+    }
+
+    /// Offers a window of this device to the paired device that asked for one
+    /// ([`StartHandler`]), and, if it accepts, starts sending its picture. The device accepts at
+    /// once, since its person asked when they started it, and nobody is asked.
+    ///
+    /// This is [`share`](Self::share) for the place and the session id that `slot` holds: the
+    /// offer is made under the id that the device chose, and the place was taken when it asked,
+    /// so nothing else can have been offered meanwhile. `window` may grant control only if the
+    /// slot does ([`StartSlot::control`]); it may grant less.
+    ///
+    /// A device that takes its asking back while this waits ends it with
+    /// [`ShareOutcome::Cancelled`], and nothing is shared.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`share`](Self::share), and [`Error::Config`] when `window` grants control
+    /// that the slot does not. The place is let go of when this fails.
+    pub async fn share_asked(
+        &self,
+        slot: StartSlot,
+        window: WindowShare,
+        events: impl SourceEvents,
+        choose: impl FnOnce(&Takes) -> Option<baton_stream::control::Config> + Send,
+    ) -> Result<ShareOutcome> {
+        let StartSlot {
+            reservation,
+            session,
+            peer,
+            control,
+        } = slot;
+        let paired = self.shared.trust.get(&peer).ok_or(Error::NotPaired(peer))?;
+        self.shared.streaming.can_offer(&window)?;
+        if window.control() && !control {
+            return Err(Error::Config(
+                "control of the window was granted, but the device that asked is not allowed it"
+                    .to_owned(),
+            ));
+        }
+        self.offer_window(reservation, &paired, Some(session), window, events, choose)
+            .await
+    }
+
+    /// Makes the offer of `window` to `paired`, for the place that `reservation` holds, and
+    /// starts the session if the answer is a yes. `asked` is the session id that the device chose,
+    /// if it asked for the offer.
+    async fn offer_window(
+        &self,
+        reservation: Reservation,
+        paired: &PairedDevice,
+        asked: Option<SessionId>,
+        window: WindowShare,
+        events: impl SourceEvents,
+        choose: impl FnOnce(&Takes) -> Option<baton_stream::control::Config> + Send,
+    ) -> Result<ShareOutcome> {
+        let streaming = &self.shared.streaming;
         let wait = self.shared.tuning.offer_reply_deadline();
         let mut attempt = 0;
         let (session, hold, id, reply) = loop {
             attempt += 1;
             let (session, reused) = self
                 .pool
-                .session(&self.endpoint, &self.shared, &paired)
+                .session(&self.endpoint, &self.shared, paired)
                 .await?;
             if !session.peer.supports(capability::STREAM_VIEW) {
                 return Err(Error::Unsupported(capability::STREAM_VIEW.to_owned()));
             }
             // The pool sees a request only when it starts, and the person has minutes to answer.
             let hold = session.hold();
-            // Nothing is repeated under a session id, so a second attempt has an id of its own.
-            let id = SessionId::from_bytes(random_bytes()?);
-            let asked = tokio::select! {
-                () = reservation.cancelled() => return Err(self.cancelled(&paired.id)),
-                asked = ask(streaming, paired.id, &session.connection, window.offer(id), wait) => asked,
+            // Nothing is repeated under a session id on a connection, so a second attempt on a
+            // new connection has an id of its own, unless the other device chose it: it waits for
+            // that one.
+            let id = match asked {
+                Some(id) => id,
+                None => SessionId::from_bytes(random_bytes()?),
             };
-            match asked {
+            // A device that asked for the offer may have taken its asking back since the place was
+            // taken, while the application got ready. Then nothing is offered, and the person
+            // there is not asked about an offer that nobody wants: the cancellation is looked at
+            // first.
+            let offered = tokio::select! {
+                biased;
+                () = reservation.cancelled() => return self.cancelled_offer(&paired.id, &reservation),
+                offered = ask(streaming, paired.id, &session.connection, window.offer(id), wait) => offered,
+            };
+            match offered {
                 Ok(reply) => break (session, hold, id, reply),
                 // A connection that sat idle may have been closed. An offer that nobody answered
                 // is not repeated: the person there may be deciding.
@@ -928,10 +1055,10 @@ impl Node {
             }
         };
         if reservation.is_cancelled() {
-            return Err(self.cancelled(&paired.id));
+            return self.cancelled_offer(&paired.id, &reservation);
         }
         let offered = Offered {
-            peer: &paired,
+            peer: paired,
             connection: &session.connection,
             hold,
             session: id,
@@ -940,12 +1067,134 @@ impl Node {
         streaming.begin(offered, reply, events, choose).await
     }
 
-    /// Why an offer that waited was cancelled.
-    fn cancelled(&self, peer: &DeviceId) -> Error {
+    /// What came of an offer that waited and was cancelled: the device took its asking back, or
+    /// it was unpaired, or this node stopped.
+    fn cancelled_offer(&self, peer: &DeviceId, reservation: &Reservation) -> Result<ShareOutcome> {
         if self.shared.stop.is_cancelled() {
-            Error::Stopped
+            Err(Error::Stopped)
+        } else if reservation.is_withdrawn() {
+            Ok(ShareOutcome::Cancelled)
         } else {
-            Error::NotPaired(*peer)
+            Err(Error::NotPaired(*peer))
+        }
+    }
+
+    /// Asks a paired device to start sharing its screen with this one, and shows it when it does.
+    ///
+    /// The person at the other device has to have allowed this device beforehand, once, in the
+    /// settings for it ([`StartPolicy`](crate::StartPolicy)); nothing sent from here can. If they
+    /// did, the other device makes an offer under the id that this call chose, and this device
+    /// takes it without asking a person: the person here asked when they started. An offer of any
+    /// other kind, from any other device, or under any other id, is not taken that way. `viewing`
+    /// is what this device takes and shows the picture with, and `control` whether the person
+    /// wishes to control what they see; the offer says what was granted, which is never more.
+    ///
+    /// The call is done when the session runs ([`StartOutcome::Started`]) or the other device
+    /// says no ([`StartOutcome::NotStarted`], with a reason a person can be told). The window
+    /// handler is not told of a session started this way: the handle is in the outcome. Dropping
+    /// the future before it is done takes the asking back, and the other device gives up the
+    /// offer.
+    ///
+    /// A device shows one window at a time, so this fails while one is shown, or an offer waits
+    /// for the person, or another start waits.
+    ///
+    /// # Errors
+    ///
+    /// If this device was not set up to show the windows of others ([`Error::Config`]) or what is
+    /// wanted is not something to ask for ([`Error::BadItem`]); if the device is not paired,
+    /// cannot be reached, does not advertise `stream.start` or breaks the protocol; if a window is
+    /// shown or offered already ([`Error::Busy`]); if the device is unpaired or this node stops
+    /// while the start waits; or if the other device says that it will make an offer and does not
+    /// in [`Tuning::start_wait`], when it is told to give up.
+    pub async fn start(
+        &self,
+        peer: &DeviceId,
+        wanted: Wanted,
+        control: bool,
+        viewing: Viewing,
+    ) -> Result<StartOutcome> {
+        let paired = self.shared.trust.get(peer).ok_or(Error::NotPaired(*peer))?;
+        let streaming = &self.shared.streaming;
+        // A `Stop` that this device sent a moment ago may not be answered yet, and the other
+        // device may still hold the place of what it stopped.
+        streaming.settled(&paired.id, SETTLE).await;
+        let session = SessionId::from_bytes(random_bytes()?);
+        let mut expecting = streaming.expect_start(paired.id, session, wanted, control, viewing)?;
+        let request = Request::Stream(StreamRequest::Start(Start {
+            session,
+            wanted,
+            control,
+        }));
+        let mut attempt = 0;
+        let (mut withdraw, reply) = loop {
+            attempt += 1;
+            let (via, reused) = self
+                .pool
+                .session(&self.endpoint, &self.shared, &paired)
+                .await?;
+            if !via.peer.supports(capability::STREAM_START) {
+                return Err(Error::Unsupported(capability::STREAM_START.to_owned()));
+            }
+            // From here the other device may have the start, so it is told to give it up if this
+            // call is dropped or fails.
+            let mut withdraw = Withdraw::new(streaming, paired.id, &via.connection, session);
+            match call(&via.connection, &request, self.shared.tuning.reply_deadline).await {
+                Ok(Response::Stream(reply)) if reply.session() == session => {
+                    break (withdraw, reply);
+                }
+                Ok(_) => {
+                    return Err(Error::protocol(
+                        "the answer to a start was not for that start",
+                    ));
+                }
+                // A connection that sat idle may have been closed. The start is made again under
+                // the same id on a new connection, which the other device answers as it answered
+                // the first if that arrived, so there is nothing to take back.
+                Err(e) if reused && attempt == 1 && worth_retrying(&e) => {
+                    tracing::debug!(error = %e, "retrying on a new connection");
+                    withdraw.disarm();
+                    via.connection
+                        .close(VarInt::from_u32(close_code::NORMAL), b"stale");
+                }
+                Err(e) => return Err(self.explain(&paired.id, e)),
+            }
+        };
+        match reply {
+            StreamReply::Starting(_) => {}
+            StreamReply::NotStarted(refusal) => {
+                withdraw.disarm();
+                return Ok(StartOutcome::NotStarted(refusal.why));
+            }
+            // A device that takes no part in window streaming answers every request this way.
+            StreamReply::Declined(_) => {
+                withdraw.disarm();
+                return Ok(StartOutcome::NotStarted(WhyNot::Unsupported));
+            }
+            StreamReply::Accepted(_) | StreamReply::Stopped(_) => {
+                return Err(Error::protocol(
+                    "the answer to a start was not one to a start",
+                ));
+            }
+        }
+        match tokio::time::timeout(self.shared.tuning.start_wait, &mut expecting.offer).await {
+            Ok(Ok(Ok(handle))) => {
+                withdraw.disarm();
+                Ok(StartOutcome::Started(handle))
+            }
+            // The other device ended it, or did not offer what it said it would.
+            Ok(Ok(Err(why))) => {
+                withdraw.disarm();
+                Ok(StartOutcome::NotStarted(why))
+            }
+            // The device was unpaired or this node stopped while the start waited.
+            Ok(Err(_dropped)) => Err(self.explain(
+                &paired.id,
+                Error::Internal("the start was dropped while it waited".to_owned()),
+            )),
+            // `withdraw` is armed, and tells the other device to give up the offer.
+            Err(_elapsed) => Err(Error::Timeout(
+                "waiting for the other device to offer its screen",
+            )),
         }
     }
 

@@ -17,7 +17,7 @@ use baton_proto::{
     Platform, SessionId, TransferId, frame,
     message::{DeclineReason, ErrorCode, Hello, Outcome, Ping, Request, Response, capability},
     pair::{PairRejection, PairRequest, PairResponse},
-    stream::{Codec, SourceKind, StopReason, StreamReply, StreamRequest},
+    stream::{Codec, SourceKind, StopReason, StreamReply, StreamRequest, Wanted, WhyNot},
     transfer::{FailReason, TransferReply, TransferRequest, list::ListChunk},
 };
 use ciborium::{Value, cbor};
@@ -353,6 +353,8 @@ fn a_device_that_takes_part_in_window_streaming_says_so_in_its_capabilities() {
     assert_eq!(capability::STREAM_SHARE, "stream.share");
     assert_eq!(capability::STREAM_VIEW, "stream.view");
     assert_eq!(capability::STREAM_CONTROL, "stream.control");
+    // And a source that starts a session when a paired device asks it to.
+    assert_eq!(capability::STREAM_START, "stream.start");
 }
 
 #[test]
@@ -482,6 +484,53 @@ fn unknown_keys_are_ignored_in_the_messages_of_a_stream() {
 }
 
 #[test]
+fn unknown_keys_are_ignored_in_the_messages_that_start_a_session() {
+    // The start, with a key from a later version and without `control`, which means false.
+    let start = encode(
+        &cbor!({
+            "Stream" => {
+                "Start" => { "later" => [1, 2], "session" => session_id(), "wanted" => "Screen" },
+            },
+        })
+        .unwrap(),
+    );
+    let Request::Stream(StreamRequest::Start(start)) =
+        frame::decode_payload::<Request>(&start).unwrap()
+    else {
+        panic!("not a start");
+    };
+    assert_eq!(start.session, SessionId::from_bytes([0x5a; 16]));
+    assert_eq!(start.wanted, Wanted::Screen);
+    assert!(!start.control);
+
+    // And the two answers to it.
+    let starting = encode(
+        &cbor!({ "Stream" => { "Starting" => { "later" => 1, "session" => session_id() } } })
+            .unwrap(),
+    );
+    let Response::Stream(StreamReply::Starting(starting)) =
+        frame::decode_payload::<Response>(&starting).unwrap()
+    else {
+        panic!("not a reply to a start");
+    };
+    assert_eq!(starting.session, SessionId::from_bytes([0x5a; 16]));
+    let not_started = encode(
+        &cbor!({
+            "Stream" => {
+                "NotStarted" => { "later" => 1, "session" => session_id(), "why" => "Busy" },
+            },
+        })
+        .unwrap(),
+    );
+    let Response::Stream(StreamReply::NotStarted(not_started)) =
+        frame::decode_payload::<Response>(&not_started).unwrap()
+    else {
+        panic!("not a refusal of a start");
+    };
+    assert_eq!(not_started.why, WhyNot::Busy);
+}
+
+#[test]
 fn a_kind_a_stream_does_not_know_is_other_and_one_with_data_is_an_error() {
     let offer = |source: Value| {
         encode(
@@ -524,6 +573,23 @@ fn a_kind_a_stream_does_not_know_is_other_and_one_with_data_is_an_error() {
         )
     };
 
+    let start = |wanted: Value| {
+        encode(
+            &cbor!({
+                "Stream" => { "Start" => { "session" => session_id(), "wanted" => wanted } },
+            })
+            .unwrap(),
+        )
+    };
+    let not_started = |why: Value| {
+        encode(
+            &cbor!({
+                "Stream" => { "NotStarted" => { "session" => session_id(), "why" => why } },
+            })
+            .unwrap(),
+        )
+    };
+
     // What a later version adds is a unit variant, and this one reads it as Other: a source it
     // does not know is declined as unsupported, a codec is one that it will not choose.
     let Request::Stream(StreamRequest::Offer(other)) =
@@ -550,6 +616,20 @@ fn a_kind_a_stream_does_not_know_is_other_and_one_with_data_is_an_error() {
         panic!("not a decline");
     };
     assert_eq!(other.reason, DeclineReason::Other);
+    // What a viewer wants that this version does not know is something it can say no to, and a
+    // reason for a no that it does not know is one it can still show as a no.
+    let Request::Stream(StreamRequest::Start(other)) =
+        frame::decode_payload::<Request>(&start(Value::Text("Window".into()))).unwrap()
+    else {
+        panic!("not a start");
+    };
+    assert_eq!(other.wanted, Wanted::Other);
+    let Response::Stream(StreamReply::NotStarted(other)) =
+        frame::decode_payload::<Response>(&not_started(Value::Text("Asleep".into()))).unwrap()
+    else {
+        panic!("not a refusal of a start");
+    };
+    assert_eq!(other.why, WhyNot::Other);
 
     // One that carries data cannot be read at all, which is why new ones must not.
     let data = || cbor!({ "Window" => { "id" => 1 } }).unwrap();
@@ -557,6 +637,8 @@ fn a_kind_a_stream_does_not_know_is_other_and_one_with_data_is_an_error() {
     assert!(frame::decode_payload::<Response>(&accepted(data())).is_err());
     assert!(frame::decode_payload::<Request>(&stop(data())).is_err());
     assert!(frame::decode_payload::<Response>(&declined(data())).is_err());
+    assert!(frame::decode_payload::<Request>(&start(data())).is_err());
+    assert!(frame::decode_payload::<Response>(&not_started(data())).is_err());
 }
 
 #[test]
