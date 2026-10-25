@@ -13,3 +13,4 @@ Short notes on decisions that are expensive to reverse, written when the decisio
 | [0007](0007-quic-windows-and-connection-memory.md) | QUIC flow-control windows, and how much a peer can make a device hold |
 | [0008](0008-file-transfer.md) | File transfer: one offer, lanes of their own, hashing while sending |
 | [0009](0009-window-streaming.md) | Window streaming: the Mac offers, late frames are dropped, input stays in the window |
+| [0010](0010-sessions-that-the-viewer-starts.md) | Sessions that the viewer starts: allowed once at the Mac, asked for from the phone |
