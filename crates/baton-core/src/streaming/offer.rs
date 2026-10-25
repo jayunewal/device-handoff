@@ -116,6 +116,11 @@ impl Reservation {
         self.cancel.cancelled().await;
     }
 
+    /// The same cancellation, to wait on while the reservation is held by something else.
+    pub(crate) fn cancellation(&self) -> CancellationToken {
+        self.cancel.clone()
+    }
+
     /// Whether the cancellation is the device taking its asking back, and not the device being
     /// unpaired or the node stopping.
     pub(crate) fn is_withdrawn(&self) -> bool {

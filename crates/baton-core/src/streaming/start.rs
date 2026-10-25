@@ -266,8 +266,10 @@ impl Streaming {
         if !allowed.allows_start() {
             return not_started(WhyNot::NotAllowed);
         }
-        // Control is granted only if the viewer wished for it and the person here allowed it.
-        let control = start.control && allowed.allows_control();
+        // Control is granted only if the viewer wished for it, the person here allowed it, and this
+        // device takes input at all: a source that does not must not set `control` (section 9),
+        // and an application that offered it would fail to make the offer.
+        let control = start.control && allowed.allows_control() && self.takes_control();
 
         let slot = {
             let mut table = lock(&self.table);
@@ -303,18 +305,27 @@ impl Streaming {
             control,
             "a paired device that is allowed to asked this device to start a session"
         );
+        let taken_back = slot.reservation.cancellation();
         let request = StartRequest {
             wanted: start.wanted,
             control,
             slot,
         };
-        // The slot is in the request, which is in the call. When the time is up, or the device
-        // that asked goes away and this answer is dropped, the call is dropped with it, and the
-        // place is let go of.
-        match tokio::time::timeout(starter.prepare, starter.handler.start(paired, request)).await {
-            Ok(StartVerdict::Starting) => StreamReply::Starting(Starting { session }),
-            Ok(StartVerdict::NotStarted(why)) => not_started(why),
-            Err(_elapsed) => not_started(WhyNot::Failed),
+        // The slot is in the request, which is in the call. When the time is up, when the device
+        // takes its asking back (or is unpaired, or this node stops), or when it goes away and
+        // this answer is dropped, the call is dropped, and the place is let go of. An application
+        // that is still getting ready is not left to do it for nobody, and the device can ask
+        // again at once. The device that took its asking back does not read the answer.
+        let prepared =
+            tokio::time::timeout(starter.prepare, starter.handler.start(paired, request));
+        tokio::select! {
+            biased;
+            () = taken_back.cancelled() => not_started(WhyNot::Failed),
+            verdict = prepared => match verdict {
+                Ok(StartVerdict::Starting) => StreamReply::Starting(Starting { session }),
+                Ok(StartVerdict::NotStarted(why)) => not_started(why),
+                Err(_elapsed) => not_started(WhyNot::Failed),
+            },
         }
     }
 
