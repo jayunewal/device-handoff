@@ -473,6 +473,11 @@ typedef struct BatonFront {
  *                and takes no keys.
  *   front_count: how many of them the platform wrote, at most front_cap. A platform that has
  *                more fails the call.
+ *
+ * For a whole display (BATON_PICKED_DISPLAY) window is the display's own rectangle on the screen,
+ * in points, and on_screen is 1 while the display is there. Everything on a display is part of
+ * it, so the Rust side takes no notice of keyboard and fronts for one: the keys go to whatever has
+ * the keyboard, and nothing lies in front.
  */
 typedef struct BatonSurroundings {
     uint32_t size;
@@ -577,11 +582,11 @@ typedef struct BatonViewerVTable {
  * BatonReleaseFn are the types of ended and release above, with the pointer of the window in
  * place of the one of the screen.
  *
- *   control:     whether the person can let another device control a window that they share, 1
- *                or 0. A platform that cannot post input says 0, and no window is offered with
- *                control; the same holds for a platform that gave no surroundings and post,
- *                whatever control says. A whole display is not offered with control either.
- *                Called each time the app asks what the device can do.
+ *   control:     whether the person can let another device control a window, or a whole display,
+ *                that they share, 1 or 0. A platform that cannot post input says 0, and nothing
+ *                is offered with control; the same holds for a platform that gave no surroundings
+ *                and post, whatever control says. Called each time the app asks what the device
+ *                can do.
  *   pick:        the person wants to share a window or a whole display: shows the picker of the
  *                system. request is the number that baton_stream_pick_done is given when the
  *                person has chosen, or given up, or the picker failed. Does not wait for the
@@ -628,7 +633,9 @@ typedef struct BatonViewerVTable {
  *                that event. Every post is for the process that owns the shared window, the
  *                release of a press included: it goes to the process that got the press. A
  *                release should not fail, since the Rust side forgets the press whether or not
- *                the release was posted, and does not try again.
+ *                the release was posted, and does not try again. A display has no process: a
+ *                post for one goes to the system, as if the person at this Mac had done it, and
+ *                reaches whatever is at that place or has the keyboard.
  */
 typedef uint32_t (*BatonControlFn)(void *context);
 typedef int32_t (*BatonPickFn)(void *context, uint64_t request, BatonMessage *message);

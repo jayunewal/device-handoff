@@ -42,10 +42,11 @@ use tokio::task::JoinHandle;
 use crate::{
     Error, Registry,
     abi::{
-        BEGIN_DELTA, BEGIN_KEY, BEGIN_NOT_NOW, BatonBytes, BatonFormat, BatonGeometry, BatonPicked,
-        BatonPicture, BatonRect, CODEC_H264, FRAME_KEY, FRAME_RECOVERY, FRAME_REFERENCED,
-        PAUSE_HIDDEN, PAUSE_LOCKED, PAUSE_OTHER, PICKED_WINDOW, SENT, SENT_OVER, SENT_STALE,
-        SENT_TOO_LARGE, SOURCE_CONFIG, SOURCE_PAUSE, SOURCE_RESUME, size_of_u32,
+        BEGIN_DELTA, BEGIN_KEY, BEGIN_NOT_NOW, BatonBytes, BatonFormat, BatonFront, BatonGeometry,
+        BatonPicked, BatonPicture, BatonRect, CODEC_H264, FRAME_KEY, FRAME_RECOVERY,
+        FRAME_REFERENCED, KEYBOARD_ELSEWHERE, PAUSE_HIDDEN, PAUSE_LOCKED, PAUSE_OTHER,
+        PICKED_WINDOW, SENT, SENT_OVER, SENT_STALE, SENT_TOO_LARGE, SOURCE_CONFIG, SOURCE_PAUSE,
+        SOURCE_RESUME, size_of_u32,
     },
     fake::{Call, Decoded, Fake, Watchdog},
     fake_sharer::{
@@ -262,14 +263,37 @@ impl Rig {
             .unwrap();
     }
 
+    /// The person picks a whole display, which is 3024 by 1964 and has no title.
+    async fn pick_display(&mut self) {
+        let request = self.next_pick().await;
+        self.windows += 1;
+        self.platform
+            .choose_display(&self.registry, request, b"", (3024, 1964))
+            .unwrap();
+    }
+
     /// Offers the window and has the person at the other device answer.
     async fn offer(
         &mut self,
         control: bool,
         accept: bool,
     ) -> (baton_app::Result<WindowShared>, WindowRequest) {
+        self.offer_of(false, control, accept).await
+    }
+
+    /// As `offer`, for a whole display if `display` and for a window if not.
+    async fn offer_of(
+        &mut self,
+        display: bool,
+        control: bool,
+        accept: bool,
+    ) -> (baton_app::Result<WindowShared>, WindowRequest) {
         let share = self.begin_share(control);
-        self.pick_report().await;
+        if display {
+            self.pick_display().await;
+        } else {
+            self.pick_report().await;
+        }
         let request = next_matching(&mut self.viewing_events, |event| match event {
             Event::WindowRequested(request) => Some(request),
             _ => None,
@@ -281,7 +305,12 @@ impl Rig {
 
     /// Shares the window, and gives both sessions once the platform has been started.
     async fn share(&mut self, control: bool) -> Shown {
-        let (shared, request) = self.offer(control, true).await;
+        self.share_of(false, control).await
+    }
+
+    /// As `share`, for a whole display if `display` and for a window if not.
+    async fn share_of(&mut self, display: bool, control: bool) -> Shown {
+        let (shared, request) = self.offer_of(display, control, true).await;
         let Ok(WindowShared::Started(sharing)) = shared else {
             panic!("the window was not shared: {shared:?}");
         };
@@ -2421,6 +2450,25 @@ fn touch(x: f32, y: f32, action: WindowPointer) -> WindowInput {
     }
 }
 
+/// A window of another application lies over the middle of the picture, and another window has
+/// the keyboard.
+fn covered_without_the_keyboard() -> Around {
+    Around {
+        fronts: vec![BatonFront {
+            rect: BatonRect {
+                x: 250.0,
+                y: 150.0,
+                width: 100.0,
+                height: 100.0,
+            },
+            flags: 0,
+            reserved: 0,
+        }],
+        keyboard: KEYBOARD_ELSEWHERE,
+        ..Around::default()
+    }
+}
+
 /// A key, or text with no key, as the app is given it.
 fn typed(code: u16, down: bool, text: Option<&str>) -> WindowInput {
     WindowInput::Key {
@@ -2453,7 +2501,12 @@ impl Rig {
     /// Shares a window with control, hands over its key frame with the layout of `window_layout`,
     /// and waits until the other device shows it. From here on the person can touch it.
     async fn shown_with_control(&mut self) -> Shown {
-        let shown = self.share(true).await;
+        self.shown_with_control_of(false).await
+    }
+
+    /// As `shown_with_control`, for a whole display if `display` and for a window if not.
+    async fn shown_with_control_of(&mut self, display: bool) -> Shown {
+        let shown = self.share_of(display, true).await;
         assert_eq!(
             self.send_laid_out(shown.link, 0, window_layout()).await,
             (BEGIN_KEY, SENT, 0)
@@ -2517,6 +2570,45 @@ async fn what_the_person_does_on_the_picture_is_done_to_the_window_where_they_di
 
     assert!(app.end_window(id));
     rig.nothing_is_left().await;
+}
+
+#[tokio::test]
+async fn a_whole_display_is_judged_as_one_piece_and_a_window_by_what_lies_over_it() {
+    // The Mac says that a window of another application lies over the middle of what the person
+    // touches, and that another window has the keyboard.
+    for display in [false, true] {
+        let mut rig = Rig::controlled().await;
+        let shown = rig.shown_with_control_of(display).await;
+        let (app, id) = (rig.viewing.app.clone(), shown.viewing.id);
+        assert_eq!(
+            (shown.request.display, shown.request.control),
+            (display, true)
+        );
+        rig.platform.set_around(covered_without_the_keyboard());
+        assert!(app.window_input(id, touch(0.5, 0.5, WindowPointer::Down(WindowButton::Left))));
+
+        if display {
+            // What lies over a display is part of what is controlled, and a key goes to whatever
+            // has the keyboard.
+            assert!(app.window_input(id, typed(0x04, true, Some("a"))));
+            until("both to be done to the display", || {
+                rig.platform.posts(shown.window).len() == 2
+            })
+            .await;
+            assert_eq!(
+                rig.platform.posts(shown.window),
+                [left_down(300.0, 200.0), key_post(0x04, true, Some("a"))]
+            );
+        } else {
+            // The window is judged by what lies over it: the touch is not put to it, and the
+            // person is told why.
+            assert_eq!(rig.notice().await, (id, WindowNoticeReason::Covered, 1));
+            assert_eq!(rig.platform.posts(shown.window), []);
+        }
+
+        assert!(app.end_window(id));
+        rig.nothing_is_left().await;
+    }
 }
 
 #[tokio::test]

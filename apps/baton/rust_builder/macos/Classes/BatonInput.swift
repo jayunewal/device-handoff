@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // What a Mac needs, apart from the calls of the system, to let the person at another device steer
-// a window that it shares: the surroundings of the window, which the Rust side asks for before it
-// puts an event to the window; the translation of what the person did into events of the Mac; the
-// geometry of a picture; and the watch that pauses a session while the window cannot be seen.
+// a window that it shares, or a whole display: the surroundings of the window or the display, which
+// the Rust side asks for before it puts an event to it; the translation of what the person did into
+// events of the Mac; the geometry of a picture; and the watch that pauses a session while the window
+// cannot be seen.
 // crates/baton-stream/src/gate.rs has the rules that the Rust side applies to what is answered
 // here, and docs/adr/0009-window-streaming.md says why they are what they are.
 //
@@ -165,6 +166,12 @@ struct WindowLayers: Equatable {
 
 // MARK: - The surroundings of a window
 
+/// Where the surroundings of what is shared come from: a window, or a whole display.
+protocol SurroundingsSource: AnyObject {
+  /// nil if the system could not be asked.
+  func read() -> WindowSurroundings?
+}
+
 /// Reads the surroundings of one window from the window server and from the system.
 ///
 /// The system's Accessibility interface would say which window of an application has the
@@ -172,7 +179,7 @@ struct WindowLayers: Equatable {
 /// judged from what the window server lists: the application is in front, no window of it that
 /// can hold the focus lies in front of the shared one, and no open menu of another application
 /// takes the keys. It is a judgement, and it errs on the side of not typing.
-final class SurroundingsReader {
+final class SurroundingsReader: SurroundingsSource {
   /// The most windows in front that are given at once. A Mac with more says nothing, and what is
   /// put to the window is dropped.
   static let mostFronts = 128
@@ -275,6 +282,46 @@ final class SurroundingsReader {
     brought = true
     guard let front = activity.frontmostProcess, front != process else { return }
     activity.bringToFront(process: process)
+  }
+}
+
+// MARK: - The surroundings of a whole display
+
+protocol DisplayListing: AnyObject {
+  /// Where the display with this number is, in points, if it is online and the system says.
+  func bounds(ofDisplay id: UInt32) -> ScreenRect?
+}
+
+/// Reads the surroundings of a whole display. Everything on a display is shared, so no window lies
+/// in front of it and none has the keyboard apart from it: a pointer reaches what the person at the
+/// Mac would reach there, and a key goes to whatever has the keyboard. The rules on the Rust side
+/// take that view of a display whatever is said here (`Surroundings::of_display` in
+/// crates/baton-stream-abi/src/platform.rs); this says what the Mac is doing, which is whether it is
+/// locked and where the display is.
+final class DisplayReader: SurroundingsSource {
+  private let display: UInt32
+  private let listing: DisplayListing
+  private let activity: MacActivity
+
+  init(display: UInt32, listing: DisplayListing, activity: MacActivity) {
+    self.display = display
+    self.listing = listing
+    self.activity = activity
+  }
+
+  func read() -> WindowSurroundings? {
+    if activity.locked {
+      // Nothing is put to a display while the Mac is locked, so there is no need to ask about it.
+      return WindowSurroundings(
+        locked: true, onScreen: false, keyboard: .unknown, window: .zero, fronts: [])
+    }
+    guard let bounds = listing.bounds(ofDisplay: display) else {
+      // The display is not there any more: it was unplugged, or the Mac does not show it.
+      return WindowSurroundings(
+        locked: false, onScreen: false, keyboard: .unknown, window: .zero, fronts: [])
+    }
+    return WindowSurroundings(
+      locked: false, onScreen: true, keyboard: .shared, window: bounds, fronts: [])
   }
 }
 
@@ -398,37 +445,55 @@ enum LayoutSource: Equatable {
   case none
 }
 
-/// Works out the geometry of each image that the capture of a window makes: the size of the window
-/// on the screen comes from the window server, and where the capture put the window in the picture
-/// from what the capture says of the image. What it says is believed only when it fits what the
-/// capture is set up to do (`pictureGeometry`). When it says nothing, or something that does not
-/// fit, a window that has the shape of the picture is taken to fill it, since that is what scaling
-/// it to fit does. Anything else has no geometry.
+/// Works out the geometry of each image that the capture of a window, or of a whole display, makes:
+/// the size of the window on the screen comes from the window server, and of the display from the
+/// system, and where the capture put it in the picture from what the capture says of the image.
+/// What it says is believed only when it fits what the capture is set up to do
+/// (`pictureGeometry`). When it says nothing, or something that does not fit, what has the shape of
+/// the picture is taken to fill it, since that is what scaling it to fit does. Anything else has no
+/// geometry.
 ///
 /// It is used by one thread, the one that the images arrive on.
 final class CaptureLayout {
-  /// How long a reading of the window server is used again, in seconds: one reading serves the
-  /// many images of a window that is being drawn on.
+  /// How long a reading of the system is used again, in seconds: one reading serves the many
+  /// images of a window that is being drawn on.
   static let reuse: TimeInterval = 0.05
 
-  private let window: UInt32
-  private let listing: WindowListing
+  private let noun: String
+  private let bounds: () -> ScreenRect?
   private let now: () -> TimeInterval
   private let note: (String) -> Void
-  private var reading: (at: TimeInterval, window: ScreenRect?)?
+  private var reading: (at: TimeInterval, bounds: ScreenRect?)?
   private var found: LayoutSource?
 
+  /// `bounds` says where what is shared is on the screen, in points, and nil if it cannot say.
   /// `note` is told, with a sentence that holds sizes and nothing else, whenever the way the layout
-  /// was found changes, and the first time.
+  /// was found changes, and the first time; `noun` is what the sentence calls what is shared.
   init(
+    noun: String, bounds: @escaping () -> ScreenRect?,
+    now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+    note: @escaping (String) -> Void
+  ) {
+    self.noun = noun
+    self.bounds = bounds
+    self.now = now
+    self.note = note
+  }
+
+  /// The layout of the images of a window, which the window server says the place of.
+  convenience init(
     window: UInt32, listing: WindowListing,
     now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
     note: @escaping (String) -> Void
   ) {
-    self.window = window
-    self.listing = listing
-    self.now = now
-    self.note = note
+    self.init(
+      noun: "window",
+      bounds: {
+        switch listing.describe(window: window) {
+        case .window(let listed): return listed.bounds
+        case .gone, .unavailable: return nil
+        }
+      }, now: now, note: note)
   }
 
   /// The geometry of an image of `pictureWidth` by `pictureHeight` pixels, where `reported` is the
@@ -436,7 +501,7 @@ final class CaptureLayout {
   func geometry(pictureWidth: UInt32, pictureHeight: UInt32, reported: ScreenRect?)
     -> PictureGeometry?
   {
-    let size = windowRect()
+    let size = sharedRect()
     let source: LayoutSource
     let geometry: PictureGeometry?
     if let said = pictureGeometry(
@@ -455,22 +520,18 @@ final class CaptureLayout {
     if source != found {
       found = source
       note(
-        "the layout of the images is \(source) (window \(describe(size)) points, picture "
+        "the layout of the images is \(source) (\(noun) \(describe(size)) points, picture "
           + "\(pictureWidth)x\(pictureHeight) pixels, capture says \(describe(reported)))")
     }
     return geometry
   }
 
-  private func windowRect() -> ScreenRect? {
+  private func sharedRect() -> ScreenRect? {
     let time = now()
     if let reading, time >= reading.at, time - reading.at < CaptureLayout.reuse {
-      return reading.window
+      return reading.bounds
     }
-    let rect: ScreenRect?
-    switch listing.describe(window: window) {
-    case .window(let listed): rect = listed.bounds
-    case .gone, .unavailable: rect = nil
-    }
+    let rect = bounds()
     reading = (time, rect)
     return rect
   }
@@ -790,45 +851,43 @@ final class InputTranslator {
   }
 }
 
-// MARK: - The consent to steer a window
+// MARK: - The consent to steer a window or a display
 
-/// Whether this Mac lets the app hand input events to the windows of other applications, which a
-/// window needs to be shared with control. The person gives the consent once, in the settings of
-/// the system, and can take it back at any time. The raw values are the answers that the app's
-/// screens read (apps/baton/lib/src/control_access.dart).
+/// Whether this Mac lets the app hand input events to the windows of other applications and to the
+/// system, which a window or a screen needs to be shared with control. The person gives the consent
+/// once, in the settings of the system, and can take it back at any time. The raw values are the
+/// answers that the app's screens read (apps/baton/lib/src/control_access.dart).
 enum ControlAccess: String, Equatable {
   /// The person has let the app.
   case allowed
   /// The system could let the app, and the person has not.
   case needed
-  /// This Mac cannot have a window steered: its system is too old to say which window the person
-  /// picked, or it shares no window at all.
+  /// This Mac cannot have a window or a screen steered: its system is too old to say which the
+  /// person picked, or it shares nothing at all.
   case unavailable
 }
 
-// MARK: - A window that is steered
+// MARK: - A window or a display that is steered
 
+/// Hands events to where the person at the other device steers: the process of one window, or the
+/// system for a whole display (BatonControl.swift has the ones of a Mac).
 protocol EventPoster: AnyObject {
-  /// Hands the event to the process that owns the window. false if the event could not be made, or
-  /// the system does not let this app hand it over.
-  func post(_ event: SyntheticEvent, toProcess process: Int32) -> Bool
+  /// Hands the event over. false if the event could not be made, or the system does not let this
+  /// app hand it over.
+  func post(_ event: SyntheticEvent) -> Bool
 }
 
-/// What the Rust side asks of a window that is shared with control: its surroundings, and to have
-/// something that the person did put to it.
+/// What the Rust side asks of a window, or a whole display, that is shared with control: its
+/// surroundings, and to have something that the person did put to it.
 final class WindowControl {
-  private let reader: SurroundingsReader
+  private let reader: SurroundingsSource
   private let translator: InputTranslator
   private let poster: EventPoster
-  private let process: Int32
 
-  init(
-    reader: SurroundingsReader, translator: InputTranslator, poster: EventPoster, process: Int32
-  ) {
+  init(reader: SurroundingsSource, translator: InputTranslator, poster: EventPoster) {
     self.reader = reader
     self.translator = translator
     self.poster = poster
-    self.process = process
   }
 
   func surroundings() -> WindowSurroundings? {
@@ -838,7 +897,7 @@ final class WindowControl {
   /// false if nothing could be put to the window, or only some of it.
   func post(_ post: InputPost) -> Bool {
     guard let events = translator.events(for: post) else { return false }
-    for event in events where !poster.post(event, toProcess: process) {
+    for event in events where !poster.post(event) {
       return false
     }
     return true

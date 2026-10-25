@@ -439,7 +439,7 @@ void main() {
 
   group('a window that this device offers to be controlled', () {
     testWidgets(
-      'says that a window is chosen, and that a screen is looked at',
+      'says that a window or a screen is chosen, and that it can be controlled',
       (tester) async {
         final (session, controller) = await _show(tester);
         session.holdShare();
@@ -450,14 +450,15 @@ void main() {
         expect(controller.offeringControl, isTrue);
         expect(
           find.text(
-            'Sharing a window with Kitchen iPad, to look at and control',
+            'Sharing a window or screen with Kitchen iPad, to look at and '
+            'control',
           ),
           findsOneWidget,
         );
         expect(
           find.text(
-            'Choose a window. A screen can only be looked at. Kitchen iPad is '
-            'then asked whether to show it.',
+            'Choose a window or a screen. Kitchen iPad is then asked whether '
+            'to show it, and can control it.',
           ),
           findsOneWidget,
         );
@@ -471,7 +472,7 @@ void main() {
                 find.byType(LinearProgressIndicator),
               )
               .semanticsLabel,
-          'Sharing a window to look at and control',
+          'Sharing a window or screen to look at and control',
         );
 
         session.releaseShare();

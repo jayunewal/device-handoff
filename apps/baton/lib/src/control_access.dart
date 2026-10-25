@@ -3,9 +3,9 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-/// Whether this device may let another device control a window that it shares.
+/// Whether this device may let another device control a window or a screen that it shares.
 enum ControlAccess {
-  /// The person has let Baton control windows of this device, so a window can be shared with
+  /// The person has let Baton control this device, so a window or a screen can be shared with
   /// control.
   allowed,
 
@@ -13,8 +13,8 @@ enum ControlAccess {
   /// place where they say yes, when [ControlAccessKeeper.request] is called.
   needed,
 
-  /// This device cannot share a window with control: its system is too old for it, or it shares
-  /// nothing.
+  /// This device cannot share a window or a screen with control: its system is too old for it, or
+  /// it shares nothing.
   unavailable,
 }
 

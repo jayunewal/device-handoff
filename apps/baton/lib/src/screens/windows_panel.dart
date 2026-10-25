@@ -185,8 +185,7 @@ class _OpeningCard extends StatelessWidget {
 }
 
 /// This device is offering a window or a screen to [device]: the person chooses it, and the device
-/// is asked. A window offered with [control] can be controlled, and a screen cannot: it is only
-/// looked at.
+/// is asked. What is offered with [control] can be controlled, a window or a screen alike.
 class _OfferingCard extends StatelessWidget {
   const _OfferingCard({required this.device, required this.control});
 
@@ -207,7 +206,8 @@ class _OfferingCard extends StatelessWidget {
               liveRegion: true,
               child: Text(
                 control
-                    ? 'Sharing a window with $name, to look at and control'
+                    ? 'Sharing a window or screen with $name, to look at and '
+                          'control'
                     : 'Sharing a window or screen with $name',
                 style: theme.textTheme.titleSmall,
               ),
@@ -215,8 +215,8 @@ class _OfferingCard extends StatelessWidget {
             const SizedBox(height: 4),
             Text(
               control
-                  ? 'Choose a window. A screen can only be looked at. $name is '
-                        'then asked whether to show it.'
+                  ? 'Choose a window or a screen. $name is then asked whether '
+                        'to show it, and can control it.'
                   : 'Choose a window or a screen. $name is then asked whether '
                         'to show it.',
               style: theme.textTheme.bodySmall,
@@ -224,7 +224,7 @@ class _OfferingCard extends StatelessWidget {
             const SizedBox(height: 12),
             LinearProgressIndicator(
               semanticsLabel: control
-                  ? 'Sharing a window to look at and control'
+                  ? 'Sharing a window or screen to look at and control'
                   : 'Sharing a window or screen',
             ),
           ],

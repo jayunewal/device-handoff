@@ -197,9 +197,9 @@ abstract interface class Session {
   /// show it: `Event_WindowStarted` says so, and `Event_WindowRequestEnded` says why not.
   bool answerWindow(int request, {required bool accept});
 
-  /// Lets the person pick a window of this device, and offers it to the paired device [id]. It
-  /// returns when the person at the other device has answered, which can take as long as a
-  /// person takes to decide. [control] lets the other device control the window, if
+  /// Lets the person pick a window or a screen of this device, and offers it to the paired device
+  /// [id]. It returns when the person at the other device has answered, which can take as long as
+  /// a person takes to decide. [control] lets the other device control it, if
   /// [windowAbilities] says that this device can grant it. Throws a `BatonError` of kind
   /// `notPaired`, `unreachable`, `declined` if the device does not show windows, or `other` if
   /// this device does not share windows or a window is shared or shown already.

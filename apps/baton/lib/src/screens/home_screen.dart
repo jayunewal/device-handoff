@@ -58,8 +58,8 @@ class HomeScreen extends StatefulWidget {
   /// their own.
   final ScreenKeeper screen;
 
-  /// What the system says about letting another device control a window of this one. Tests give
-  /// it one of their own.
+  /// What the system says about letting another device control a window or a screen of this one.
+  /// Tests give it one of their own.
   final ControlAccessKeeper controlAccess;
 
   @override

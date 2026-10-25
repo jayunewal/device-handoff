@@ -38,13 +38,13 @@ class DevicesScreen extends StatefulWidget {
   /// Lets the person choose files and folders to send. Tests give it one of their own.
   final FileChooser chooser;
 
-  /// Starts sharing a window with a device, to be looked at or, with [control], to be controlled
-  /// as well, or `null` on a device that does not share windows, which then offers no button for
-  /// it.
+  /// Starts sharing a window or a screen with a device, to be looked at or, with [control], to be
+  /// controlled as well, or `null` on a device that does not share windows, which then offers no
+  /// button for it.
   final void Function(Device device, {required bool control})? onShareWindow;
 
-  /// What the system says about letting another device control a window of this one. Tests give
-  /// it one of their own.
+  /// What the system says about letting another device control a window or a screen of this one.
+  /// Tests give it one of their own.
   final ControlAccessKeeper controlAccess;
 
   @override
@@ -89,8 +89,9 @@ class _DevicesScreenState extends State<DevicesScreen>
     if (mounted && access != _access) setState(() => _access = access);
   }
 
-  /// Shares a window with [device]. A window to be controlled needs the consent of the system,
-  /// which is asked about now: it may have been given or taken back since the screen was shown.
+  /// Shares a window or a screen with [device]. What is to be controlled needs the consent of the
+  /// system, which is asked about now: it may have been given or taken back since the screen was
+  /// shown.
   Future<void> _share(Device device, {required bool control}) async {
     final share = widget.onShareWindow;
     if (share == null) return;
@@ -107,13 +108,13 @@ class _DevicesScreenState extends State<DevicesScreen>
         await widget.controlAccess.request();
         if (!mounted) return;
         _tell(
-          'To let ${visibleText(device.name)} control a window, allow Baton to '
-          'control this computer in System Settings, under Privacy & Security, '
-          'Accessibility. If Baton is in the list already, take it out and add '
-          'it again. Then share the window again.',
+          'To let ${visibleText(device.name)} control a window or a screen, '
+          'allow Baton to control this computer in System Settings, under '
+          'Privacy & Security, Accessibility. If Baton is in the list already, '
+          'take it out and add it again. Then share it again.',
         );
       case ControlAccess.unavailable:
-        _tell('Controlling a window needs macOS 15.2 or later.');
+        _tell('Controlling a window or a screen needs macOS 15.2 or later.');
     }
   }
 
@@ -444,7 +445,9 @@ class _DeviceTile extends StatelessWidget {
                   PopupMenuItem(value: false, child: Text('Share to look at')),
                   PopupMenuItem(
                     value: true,
-                    child: Text('Share a window to look at and control'),
+                    child: Text(
+                      'Share a window or screen to look at and control',
+                    ),
                   ),
                 ],
               )

@@ -35,8 +35,9 @@
 //! with the lock of the session held, takes the queue's lock only.
 //!
 //! What the thread logs is how the events went (see [`crate::journal`]): how many, which rule dropped
-//! them, how old the picture was and how long the Mac took to answer. Nothing here logs what a
-//! person types or where they tap: that is theirs.
+//! them, how old the picture was, whether the window had the keyboard when a press came, how many
+//! events were lost and how long the Mac took to answer. Nothing here logs what a person types or
+//! where they tap: that is theirs.
 //!
 //! [`SourceLink::sent`]: crate::sharer::SourceLink::sent
 
@@ -54,8 +55,8 @@ use std::{
 use baton_core::streaming::SourceEvents;
 use baton_stream::{
     control::{InputBatch, Report, Want},
-    gate::{Context, Decision, Gate, Reason, Rect},
-    input::Event,
+    gate::{Context, Decision, Gate, Keyboard, Post, Reason, Rect},
+    input::{Event, PointerAction},
     sender::LtrToken,
 };
 
@@ -371,6 +372,8 @@ pub(crate) struct Worker {
     dropped: Dropped,
     /// Where the window was when the platform last said.
     at: Rect,
+    /// Whether what is shared is a whole display, which the rules judge as one piece.
+    display: bool,
     journal: Journal,
     log: Told,
 }
@@ -382,9 +385,17 @@ impl Worker {
             window,
             dropped,
             at: Rect::default(),
+            display: false,
             journal: Journal::default(),
             log: Box::new(|line| tracing::info!("{line}")),
         }
+    }
+
+    /// What is shared is a whole display and not one window: the rules take no notice of what the
+    /// platform says lies in front of it or has the keyboard ([`Surroundings::of_display`]).
+    pub(crate) fn of_display(mut self, display: bool) -> Self {
+        self.display = display;
+        self
     }
 
     /// The lines about how the events went go to `log`, and not to the log of the library.
@@ -441,7 +452,13 @@ impl Worker {
         // What the Mac could not say is not known to be fine: the window is not known to be on
         // the screen, so nothing is put to it but the release of what it was given.
         let known = around.is_some();
-        let around = around.unwrap_or_else(Surroundings::unknown);
+        let around = around.map_or_else(Surroundings::unknown, |around| {
+            if self.display {
+                around.of_display()
+            } else {
+                around
+            }
+        });
         if known {
             self.at = around.window;
         }
@@ -464,7 +481,9 @@ impl Worker {
                     let posting = Instant::now();
                     let taken = self.window.post(&post);
                     self.journal.posted(posting.elapsed(), taken);
-                    if !taken {
+                    if taken {
+                        self.pressed(now, event, &post, around.keyboard);
+                    } else {
                         // The platform took it for something it could not do. The viewer is told
                         // as for a rule that this version does not know.
                         (self.dropped)(Reason::Other);
@@ -495,6 +514,28 @@ impl Worker {
         })
     }
 
+    /// Tells the journal that a button went down on the window, if `post` is that: whether the
+    /// window had the keyboard, and for how long the picture that the person pressed on had been
+    /// out of date.
+    fn pressed(&mut self, now: Duration, event: &Event, post: &Post, keyboard: Keyboard) {
+        let (
+            Event::Pointer { frame, .. },
+            Post::Pointer {
+                action: PointerAction::Down(_),
+                ..
+            },
+        ) = (event, post)
+        else {
+            return;
+        };
+        let old = self
+            .input
+            .gate()
+            .picture_report(now, *frame)
+            .out_of_date_for;
+        self.journal.pressed(keyboard == Keyboard::Shared, old);
+    }
+
     /// Logs the line about how the events went, if there is one.
     fn tell(&mut self, end: bool) {
         if let Some(line) = self.journal.line(Instant::now(), end) {
@@ -509,6 +550,8 @@ impl Worker {
         for _ in 0..lost.min(MOST_LOST_TOLD) {
             (self.dropped)(Reason::TooFast);
         }
+        self.journal.lost(lost);
+        self.tell(false);
     }
 
     /// Nothing arrived. If something is held down, whether it still may be is looked at again.
@@ -571,7 +614,10 @@ mod tests {
     use super::*;
     use crate::{
         abi::{BatonRect, CODEC_H264, KEYBOARD_ELSEWHERE},
-        fake_sharer::{Around, AroundPlan, FakeSharer, SharerCall, StartPlan, left_down, left_up},
+        fake_sharer::{
+            Around, AroundPlan, FakeSharer, SharerCall, StartPlan, key_post, left_down, left_up,
+        },
+        journal::EVERY,
         platform::Takes,
         session_tests::{QUIET, WAIT},
     };
@@ -790,9 +836,24 @@ mod tests {
             Self::after(timing, Duration::ZERO, setup)
         }
 
+        /// As `with`, for a whole display and not a window.
+        fn of_display(timing: Timing, setup: impl FnOnce(&Arc<FakeSharer>)) -> Self {
+            Self::shared(timing, Duration::ZERO, true, setup)
+        }
+
         /// As `with`, with `delay` between the making of the rules, which is when the person picks
         /// the window, and the start of the window, which is when the other person has said yes.
         fn after(timing: Timing, delay: Duration, setup: impl FnOnce(&Arc<FakeSharer>)) -> Self {
+            Self::shared(timing, delay, false, setup)
+        }
+
+        /// As `after`, for a window or, if `display` is true, for a whole display.
+        fn shared(
+            timing: Timing,
+            delay: Duration,
+            display: bool,
+            setup: impl FnOnce(&Arc<FakeSharer>),
+        ) -> Self {
             let platform = FakeSharer::new();
             setup(&platform);
             let mut window = platform
@@ -819,6 +880,7 @@ mod tests {
                 window,
                 Box::new(move |reason| lock(&sink).push(reason)),
             )
+            .of_display(display)
             .telling(Box::new(move |line| {
                 if seen
                     .log()
@@ -1080,7 +1142,7 @@ mod tests {
     }
 
     #[test]
-    fn a_platform_that_cannot_say_what_is_around_the_window_is_logged_and_so_is_one_that_refuses() {
+    fn a_platform_that_cannot_say_what_is_around_the_window_is_logged() {
         let mut served = Served::new(TIMING);
         served.knows_a_frame();
         served.platform.plan_around(AroundPlan::Fails(-1));
@@ -1342,6 +1404,122 @@ mod tests {
         );
     }
 
+    /// A window of another application lies over the middle of the window of the fake platform,
+    /// and another window has the keyboard.
+    fn covered_without_the_keyboard() -> Around {
+        Around {
+            fronts: vec![crate::abi::BatonFront {
+                rect: BatonRect {
+                    x: 250.0,
+                    y: 150.0,
+                    width: 100.0,
+                    height: 100.0,
+                },
+                flags: 0,
+                reserved: 0,
+            }],
+            keyboard: KEYBOARD_ELSEWHERE,
+            ..Around::default()
+        }
+    }
+
+    #[test]
+    fn a_window_that_is_covered_and_does_not_have_the_keyboard_is_judged_so() {
+        let mut served = Served::with(TIMING, |platform| {
+            platform.set_around(covered_without_the_keyboard());
+        });
+        served.knows_a_frame();
+        served.hears(vec![
+            pointer(7, (0.5, 0.5), PointerAction::Down(Button::Left)),
+            key(0x04, true, Some("a")),
+        ]);
+        wait_for("both events to be told", || served.told().len() >= 2);
+        assert_eq!(served.told(), [Reason::Covered, Reason::NoKeyboard]);
+        assert_eq!(served.posts(), []);
+    }
+
+    #[test]
+    fn what_lies_in_front_of_a_display_and_who_has_the_keyboard_are_not_judged() {
+        // The same surroundings as for the window above: on a display the windows in front are
+        // part of what is controlled, and a key goes to whatever has the keyboard.
+        let mut served = Served::of_display(TIMING, |platform| {
+            platform.set_around(covered_without_the_keyboard());
+        });
+        served.knows_a_frame();
+        served.hears(vec![
+            pointer(7, (0.5, 0.5), PointerAction::Down(Button::Left)),
+            pointer(7, (0.5, 0.5), PointerAction::Up(Button::Left)),
+            key(0x04, true, Some("a")),
+            key(0x04, false, None),
+        ]);
+        served.wait_for_posts(4);
+        assert_eq!(
+            served.posts(),
+            [
+                left_down(300.0, 200.0),
+                left_up(300.0, 200.0),
+                key_post(0x04, true, Some("a")),
+                key_post(0x04, false, None),
+            ]
+        );
+        assert_eq!(served.told(), []);
+    }
+
+    #[test]
+    fn a_tap_on_a_display_to_the_left_of_the_main_one_is_put_at_negative_places() {
+        let mut served = Served::of_display(TIMING, |platform| {
+            platform.set_around(Around {
+                window: BatonRect {
+                    x: -400.0,
+                    y: 0.0,
+                    width: 400.0,
+                    height: 300.0,
+                },
+                ..Around::default()
+            });
+        });
+        served.knows_a_frame();
+        served.hears(vec![
+            pointer(7, (0.5, 0.5), PointerAction::Down(Button::Left)),
+            pointer(7, (0.5, 0.5), PointerAction::Up(Button::Left)),
+        ]);
+        served.wait_for_posts(2);
+        assert_eq!(
+            served.posts(),
+            [left_down(-200.0, 150.0), left_up(-200.0, 150.0)]
+        );
+        assert_eq!(served.told(), []);
+    }
+
+    #[test]
+    fn a_display_is_put_nothing_while_the_mac_is_locked_or_the_display_is_not_there() {
+        let mut served = Served::of_display(LONG, |platform| {
+            platform.set_around(Around {
+                locked: true,
+                ..Around::default()
+            });
+        });
+        served.knows_a_frame();
+        served.hears(vec![pointer(
+            7,
+            (0.5, 0.5),
+            PointerAction::Down(Button::Left),
+        )]);
+        wait_for("the press to be told", || !served.told().is_empty());
+        served.platform.set_around(Around {
+            on_screen: false,
+            ..Around::default()
+        });
+        served.hears(vec![pointer(
+            7,
+            (0.5, 0.5),
+            PointerAction::Down(Button::Left),
+        )]);
+        wait_for("the second press to be told", || served.told().len() >= 2);
+        assert_eq!(served.told(), [Reason::Locked, Reason::NotOnScreen]);
+        assert_eq!(served.posts(), []);
+    }
+
     #[test]
     fn a_post_that_the_platform_cannot_do_is_told_as_a_rule_that_is_not_known() {
         let mut served = Served::new(TIMING);
@@ -1352,6 +1530,142 @@ mod tests {
         assert_eq!(served.told(), [Reason::Other]);
         // The platform was asked, and it said no.
         assert_eq!(served.posts().len(), 1);
+
+        // The log says so as well: the event was refused, and it was not put to the window.
+        wait_for("the batch to be logged", || !served.lines().is_empty());
+        let line = served.lines().remove(0);
+        assert!(
+            line.starts_with(
+                "window input: 1 event in 1 batch, 1 event that the Mac would not take"
+            ),
+            "{line}"
+        );
+        assert!(!line.contains("put to the window"), "{line}");
+    }
+
+    #[test]
+    fn a_press_on_a_window_that_does_not_have_the_keyboard_is_logged_and_one_on_a_display_is_not() {
+        let nothing_to_type_in = Around {
+            keyboard: KEYBOARD_ELSEWHERE,
+            ..Around::default()
+        };
+        let tap = || {
+            vec![
+                pointer(7, (0.5, 0.5), PointerAction::Down(Button::Left)),
+                pointer(7, (0.5, 0.5), PointerAction::Up(Button::Left)),
+            ]
+        };
+
+        // The press goes to the window, since a press does not need the keyboard, and the log says
+        // that the window did not have it: that is where a click may do no more than bring the
+        // window forward. The release is not a press.
+        let mut served = Served::with(TIMING, |platform| {
+            platform.set_around(nothing_to_type_in.clone());
+        });
+        served.knows_a_frame();
+        served.hears(tap());
+        served.wait_for_posts(2);
+        wait_for("the batch to be logged", || !served.lines().is_empty());
+        let line = served.lines().remove(0);
+        assert!(
+            line.starts_with(
+                "window input: 2 events in 1 batch, 2 put to the window, 1 press that went to a \
+                 window without the keyboard; "
+            ),
+            "{line}"
+        );
+        assert_eq!(served.told(), []);
+
+        // A whole display is judged as one piece, and what the platform says of the keyboard on it
+        // is not believed.
+        let mut served = Served::of_display(TIMING, |platform| {
+            platform.set_around(nothing_to_type_in.clone());
+        });
+        served.knows_a_frame();
+        served.hears(tap());
+        served.wait_for_posts(2);
+        wait_for("the batch to be logged", || !served.lines().is_empty());
+        let line = served.lines().remove(0);
+        assert!(
+            line.starts_with("window input: 2 events in 1 batch, 2 put to the window; "),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn a_release_is_no_press_for_the_line_about_the_keyboard() {
+        let mut served = Served::with(TIMING, |platform| {
+            platform.set_around(Around {
+                keyboard: KEYBOARD_ELSEWHERE,
+                ..Around::default()
+            });
+        });
+        served.knows_a_frame();
+        // Two presses and one release: the line counts the presses.
+        served.hears(vec![
+            pointer(7, (0.5, 0.5), PointerAction::Down(Button::Left)),
+            pointer(7, (0.5, 0.5), PointerAction::Up(Button::Left)),
+            pointer(7, (0.5, 0.5), PointerAction::Down(Button::Left)),
+        ]);
+        served.wait_for_posts(3);
+        wait_for("the batch to be logged", || !served.lines().is_empty());
+        let line = served.lines().remove(0);
+        assert!(
+            line.starts_with(
+                "window input: 3 events in 1 batch, 3 put to the window, 2 presses that went to a \
+                 window without the keyboard; "
+            ),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn a_press_that_went_through_on_an_old_picture_is_logged_with_how_old_it_was() {
+        let mut served = Served::new(TIMING);
+        served.knows_a_frame();
+        // The window changed at 30 ms, after the picture of frame 7, and the tap arrives well
+        // after that and not after the limit.
+        served.input.gate().record_change(Duration::from_millis(30));
+        let arrived = Duration::from_millis(1_230);
+        assert!(arrived < MAX_STALE);
+        served.hears_at(
+            vec![
+                pointer(7, (0.5, 0.5), PointerAction::Down(Button::Left)),
+                pointer(7, (0.5, 0.5), PointerAction::Up(Button::Left)),
+            ],
+            arrived,
+        );
+        served.wait_for_posts(2);
+        wait_for("the batch to be logged", || !served.lines().is_empty());
+        assert_eq!(served.told(), []);
+
+        let line = served.lines().remove(0);
+        assert!(!line.contains("dropped"), "{line}");
+        let millis = milliseconds_after(
+            &line,
+            "a press went through on a picture that had been out of date for ",
+        );
+        let lower = arrived.as_millis() - 30;
+        assert!(
+            (lower..lower + 5_000).contains(&millis),
+            "{millis} ms in {line}"
+        );
+    }
+
+    #[test]
+    fn a_move_that_went_through_says_nothing_of_the_picture_it_went_through_on() {
+        let mut served = Served::new(TIMING);
+        served.knows_a_frame();
+        served.input.gate().record_change(Duration::from_millis(30));
+        served.hears_at(
+            vec![pointer(7, (0.5, 0.5), PointerAction::Move)],
+            Duration::from_millis(1_230),
+        );
+        served.wait_for_posts(1);
+        wait_for("the batch to be logged", || !served.lines().is_empty());
+        let line = served.lines().remove(0);
+        assert!(!line.contains("a press went through"), "{line}");
+        assert!(!line.contains("without the keyboard"), "{line}");
     }
 
     #[test]
@@ -2091,5 +2405,50 @@ mod tests {
         });
         thread::sleep(QUIET);
         assert_eq!(served.told(), vec![Reason::TooFast; MOST_LOST_TOLD]);
+
+        // The log says that events were lost, and not how many: a number above a few is not told.
+        served.close();
+        let lines = served.lines();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains(">5 events lost because the queue was full")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn events_that_were_lost_are_logged_when_the_thread_finds_them_lost_and_not_at_the_end() {
+        let mut served = Served::new(TIMING);
+        served.knows_a_frame();
+        let a_move = pointer(7, (0.5, 0.5), PointerAction::Move);
+        served.hears_at(vec![a_move.clone()], Duration::from_millis(100));
+        wait_for("the first batch to be logged", || {
+            !served.lines().is_empty()
+        });
+        // A line about trouble comes no sooner than this after the one before it.
+        thread::sleep(EVERY);
+
+        // The platform stops answering while the thread has a batch, and the queue fills; one
+        // event does not fit.
+        let stall = Stall::new(&served.platform);
+        served.hears_at(vec![a_move.clone()], Duration::from_millis(200));
+        stall.wait_until_stuck();
+        for step in 0..QUEUE_BATCHES {
+            let arrived = Duration::from_millis(300 + 5 * step as u64);
+            served.hears_at(vec![a_move.clone()], arrived);
+        }
+        served.hears_at(vec![a_move.clone()], Duration::from_secs(3));
+        assert_eq!(served.input.queued(), QUEUE_BATCHES + 1);
+        stall.let_go();
+
+        // The window is still served when the line is there.
+        wait_for("the loss to be logged", || {
+            served
+                .lines()
+                .iter()
+                .any(|line| line.contains(", 1 event lost because the queue was full"))
+        });
+        assert_eq!(served.told(), [Reason::TooFast]);
     }
 }

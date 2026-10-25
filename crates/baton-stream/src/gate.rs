@@ -45,11 +45,16 @@ use crate::input::{
 /// How long a picture may have been out of date when an event names it.
 ///
 /// It was 500 ms as a starting value for R7, and the first try with a Mac and an iPad dropped
-/// taps with it, so it is more forgiving now. A viewer sees a picture some time after the window
-/// drew it, and a person takes a moment to touch what they see; the time between the window
-/// changing and the event arriving is both of those, and a slow path and a Mac that is busy add
-/// to it. What the rule keeps out is an event aimed at content that went away a good while before
-/// the event came. R7 settles the value, now with the log of the source to read it from.
+/// taps with it, so it is more forgiving now. A picture is out of date from the moment the window
+/// changes, and the viewer goes on showing it until the next picture has reached it, so a tap on
+/// what the person sees is aged by the way of that next picture to the viewer, by the way of the
+/// event back, and by a Mac that is busy or a thread that has events waiting. How long the person
+/// took to decide is not in it: they decided while the picture was current. What the rule keeps
+/// out is an event aimed at content that went away a good while before the event came. R7 settles
+/// the value, now with the log of the source to read it from.
+///
+/// The Swift side repeats this number in `InputTests.swift` (`mostStale`), to check that the first
+/// touch does not wait for the application for most of it.
 pub const MAX_STALE: Duration = Duration::from_secs(2);
 
 /// How long the geometry of a frame is kept after its picture went out of date. It is longer than
@@ -1080,6 +1085,13 @@ mod tests {
             gate.handle(&just_past, &key(4, true)),
             Decision::Post(_)
         ));
+    }
+
+    #[test]
+    fn the_limit_for_an_old_picture_is_two_seconds_as_the_swift_tests_have_it() {
+        // `mostStale` in apps/baton/rust_builder/swift_tests/InputTests.swift is this number, and
+        // so is the sentence in `ActivationWait`. A change here is a change there.
+        assert_eq!(MAX_STALE, Duration::from_secs(2));
     }
 
     #[test]

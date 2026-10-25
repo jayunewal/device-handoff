@@ -716,6 +716,17 @@ impl Surroundings {
             fronts: Vec::new(),
         }
     }
+
+    /// How the rules see a whole display. Everything on a display is part of what is shared, so
+    /// no window lies in front of it and the keyboard is the shared one, whatever the platform
+    /// said of either: a pointer reaches whatever the person at the Mac would reach there, and a
+    /// key goes to whatever has the keyboard. What the platform says of the Mac being locked, and
+    /// of the display being there, is believed as it is.
+    pub(crate) fn of_display(mut self) -> Self {
+        self.fronts.clear();
+        self.keyboard = Keyboard::Shared;
+        self
+    }
 }
 
 pub(crate) fn rect_of(rect: &BatonRect) -> Rect {

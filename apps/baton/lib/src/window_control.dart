@@ -211,7 +211,11 @@ class WindowControl extends ChangeNotifier {
 
   void _told(WindowDropped dropped) {
     if (dropped.session.id != session.id) return;
-    _notice = describeDropped(dropped.reason, session.deviceName);
+    _notice = describeDropped(
+      dropped.reason,
+      session.deviceName,
+      display: session.display,
+    );
     _noticeTimer?.cancel();
     _noticeTimer = Timer(noticeFor, () {
       _notice = null;
@@ -221,17 +225,25 @@ class WindowControl extends ChangeNotifier {
   }
 }
 
-/// What the other device did not do of what the person did on a window, in a sentence for the
-/// person. [device] is the name of the other device, which came from it.
-String describeDropped(WindowNoticeReason reason, String device) {
+/// What the other device did not do of what the person did on a window, or on a whole screen when
+/// [display], in a sentence for the person. [device] is the name of the other device, which came
+/// from it.
+String describeDropped(
+  WindowNoticeReason reason,
+  String device, {
+  bool display = false,
+}) {
   final name = visibleText(device);
+  final noun = display ? 'screen' : 'window';
   return switch (reason) {
     WindowNoticeReason.controlOff =>
-      '$name has not let this device control the window.',
-    WindowNoticeReason.paused => 'The window is paused on $name.',
+      '$name has not let this device control the $noun.',
+    WindowNoticeReason.paused => 'The $noun is paused on $name.',
     WindowNoticeReason.locked => '$name is locked.',
     WindowNoticeReason.notOnScreen =>
-      'The window is not on the screen of $name.',
+      display
+          ? 'The screen is gone from $name.'
+          : 'The window is not on the screen of $name.',
     WindowNoticeReason.tooFast => 'That was faster than $name takes.',
     WindowNoticeReason.outOfDate =>
       'The picture was out of date, so that was not done. Try again.',
@@ -239,8 +251,8 @@ String describeDropped(WindowNoticeReason reason, String device) {
       '$name does not know the picture that you touched, so that was not '
           'done. Try again.',
     WindowNoticeReason.resized =>
-      'The window changed its size, so that was not done.',
-    WindowNoticeReason.outsideWindow => 'That was outside the window.',
+      'The $noun changed its size, so that was not done.',
+    WindowNoticeReason.outsideWindow => 'That was outside the $noun.',
     WindowNoticeReason.covered =>
       'Another window is in front of that place on $name.',
     WindowNoticeReason.noKeyboard =>

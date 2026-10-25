@@ -529,6 +529,26 @@ tests += [
     "the window server is asked once for many images", testTheWindowServerIsAskedOnceForManyImages
   ),
   (
+    "the layout of an image of a display is the display and what the capture says of it",
+    testTheLayoutOfAnImageOfADisplayIsTheDisplayAndWhatTheCaptureSaysOfIt
+  ),
+  (
+    "when the capture says nothing a display of the shape of the picture fills it",
+    testWhenTheCaptureSaysNothingADisplayOfTheShapeOfThePictureFillsIt
+  ),
+  (
+    "the layout of a display is told as a screen with the numbers and nothing more",
+    testTheLayoutOfADisplayIsToldAsAScreenWithTheNumbersAndNothingMore
+  ),
+  (
+    "a display that the system does not have has no layout until it comes back",
+    testADisplayThatTheSystemDoesNotHaveHasNoLayoutUntilItComesBack
+  ),
+  (
+    "the system is asked once for many images of a display",
+    testTheSystemIsAskedOnceForManyImagesOfADisplay
+  ),
+  (
     "every key of a US keyboard has the code of its position on a Mac",
     testEveryKeyOfAUsKeyboardHasTheCodeOfItsPositionOnAMac
   ),
@@ -589,12 +609,31 @@ tests += [
   ),
   ("a scroll is bounded and must be a number", testAScrollIsBoundedAndMustBeANumber),
   (
-    "a window is steered by handing each event to its process",
-    testAWindowIsSteeredByHandingEachEventToItsProcess
+    "a window is steered by handing each event to its poster",
+    testAWindowIsSteeredByHandingEachEventToItsPoster
   ),
   (
     "an event that cannot be handed over is a failure and the rest of the post is not tried",
     testAnEventThatCannotBeHandedOverIsAFailureAndTheRestOfThePostIsNotTried
+  ),
+  (
+    "a display is steered by asking the display and handing each event to its poster",
+    testADisplayIsSteeredByAskingTheDisplayAndHandingEachEventToItsPoster
+  ),
+  (
+    "the surroundings of a display are its place with the keyboard and nothing in front",
+    testTheSurroundingsOfADisplayAreItsPlaceWithTheKeyboardAndNothingInFront
+  ),
+  (
+    "a display left of the main one keeps its place below zero",
+    testADisplayLeftOfTheMainOneKeepsItsPlaceBelowZero
+  ),
+  (
+    "a locked Mac is told without asking for the display",
+    testALockedMacIsToldWithoutAskingForTheDisplay
+  ),
+  (
+    "a display that is not there is not on the screen", testADisplayThatIsNotThereIsNotOnTheScreen
   ),
   ("the table has the two functions of input", testTheTableHasTheTwoFunctionsOfInput),
   (
