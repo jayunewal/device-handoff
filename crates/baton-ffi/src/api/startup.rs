@@ -24,7 +24,9 @@ pub fn init_app() {
     static SET_UP: OnceLock<()> = OnceLock::new();
     SET_UP.get_or_init(|| {
         let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-            tracing_subscriber::EnvFilter::new("warn,baton_app=info,baton_core=info")
+            tracing_subscriber::EnvFilter::new(
+                "warn,baton_app=info,baton_core=info,baton_stream_abi=info",
+            )
         });
         // Logging that something else has set up already is left as it is, and then so is the
         // way panics are shown.
@@ -81,6 +83,29 @@ mod tests {
             .filter(|line| line.contains("after the second start"))
             .collect();
         assert_eq!(after.len(), 1, "{after:?}");
+    }
+
+    #[test]
+    fn the_lines_of_the_thread_that_puts_events_to_a_window_are_in_the_log_the_app_shows() {
+        init_app();
+
+        tracing::info!(target: "baton_stream_abi::input", "a line of the window input for the test");
+        tracing::info!(target: "iroh::endpoint", "a line of the network for the test");
+
+        let lines = recent_log();
+        assert!(
+            lines.iter().any(|line| line.ends_with(
+                "INFO baton_stream_abi::input: a line of the window input for the test"
+            )),
+            "{lines:?}"
+        );
+        // What the network library says at that level stays out of the log.
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.contains("a line of the network for the test")),
+            "{lines:?}"
+        );
     }
 
     #[test]

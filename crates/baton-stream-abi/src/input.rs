@@ -34,7 +34,9 @@
 //! while it calls the platform or tells the session what was dropped; and [`Forward`], which runs
 //! with the lock of the session held, takes the queue's lock only.
 //!
-//! Nothing here logs: what a person types and where they tap is theirs.
+//! What the thread logs is how the events went (see [`crate::journal`]): how many, which rule dropped
+//! them, how old the picture was and how long the Mac took to answer. Nothing here logs what a
+//! person types or where they tap: that is theirs.
 //!
 //! [`SourceLink::sent`]: crate::sharer::SourceLink::sent
 
@@ -53,10 +55,12 @@ use baton_core::streaming::SourceEvents;
 use baton_stream::{
     control::{InputBatch, Report, Want},
     gate::{Context, Decision, Gate, Reason, Rect},
+    input::Event,
     sender::LtrToken,
 };
 
 use crate::{
+    journal::{Journal, Named},
     platform::{Failure, PickedHandle, Surroundings},
     registry::{Links, lock},
 };
@@ -357,6 +361,9 @@ impl Drop for Closing {
 /// Tells the session that an event was dropped, and why. Called with no lock of the crate held.
 pub(crate) type Dropped = Box<dyn Fn(Reason) + Send>;
 
+/// Takes a line about how the events went. Called with no lock of the crate held.
+pub(crate) type Told = Box<dyn Fn(&str) + Send>;
+
 /// The thread that puts the events to the window, and calls it from `start` to `release`.
 pub(crate) struct Worker {
     input: Arc<Input>,
@@ -364,6 +371,8 @@ pub(crate) struct Worker {
     dropped: Dropped,
     /// Where the window was when the platform last said.
     at: Rect,
+    journal: Journal,
+    log: Told,
 }
 
 impl Worker {
@@ -373,7 +382,16 @@ impl Worker {
             window,
             dropped,
             at: Rect::default(),
+            journal: Journal::default(),
+            log: Box::new(|line| tracing::info!("{line}")),
         }
+    }
+
+    /// The lines about how the events went go to `log`, and not to the log of the library.
+    #[cfg(test)]
+    pub(crate) fn telling(mut self, log: Told) -> Self {
+        self.log = log;
+        self
     }
 
     /// Starts the window with `link`, tells `started` how that went, and if it went well serves the
@@ -391,10 +409,15 @@ impl Worker {
             match self.input.next() {
                 Step::Batch(batch, arrived, queued) => self.batch(&batch, arrived, queued),
                 Step::Lost(lost) => self.lost(lost),
-                Step::Over => self.release_held(),
+                Step::Over => {
+                    self.release_held();
+                    self.tell(true);
+                }
                 Step::Look => self.look(),
                 Step::Close => {
                     self.release_held();
+                    // Before the platform is told, which may take its time to stop its threads.
+                    self.tell(true);
                     self.window.ended();
                     return;
                 }
@@ -409,9 +432,12 @@ impl Worker {
     /// up by the platform does not put an event to a window that changed while it waited as if it
     /// had not.
     fn batch(&mut self, batch: &InputBatch, arrived: Duration, queued: Instant) {
-        let now = arrived.saturating_add(queued.elapsed());
+        let waited = queued.elapsed();
+        let now = arrived.saturating_add(waited);
         let paused = self.input.paused.load(Ordering::SeqCst);
+        let asked = Instant::now();
         let around = self.window.surroundings();
+        let reading = asked.elapsed();
         // What the Mac could not say is not known to be fine: the window is not known to be on
         // the screen, so nothing is put to it but the release of what it was given.
         let known = around.is_some();
@@ -419,6 +445,8 @@ impl Worker {
         if known {
             self.at = around.window;
         }
+        self.journal
+            .batch(batch.events.len(), waited, reading, known);
         let context = Context {
             now,
             control: true,
@@ -433,17 +461,44 @@ impl Worker {
             let decision = self.input.gate().handle(&context, event);
             match decision {
                 Decision::Post(post) => {
-                    if !self.window.post(&post) {
+                    let posting = Instant::now();
+                    let taken = self.window.post(&post);
+                    self.journal.posted(posting.elapsed(), taken);
+                    if !taken {
                         // The platform took it for something it could not do. The viewer is told
                         // as for a rule that this version does not know.
                         (self.dropped)(Reason::Other);
                     }
                 }
-                Decision::Drop(reason) => (self.dropped)(reason),
+                Decision::Drop(reason) => {
+                    let named = self.named(now, reason, event);
+                    self.journal.dropped(reason, named);
+                    (self.dropped)(reason);
+                }
             }
         }
         if paused || around.locked || !around.on_screen {
             self.release();
+        }
+        self.tell(false);
+    }
+
+    /// What the gate knows of the frame that a dropped event named, for the two rules that are
+    /// about the frame.
+    fn named(&self, now: Duration, reason: Reason, event: &Event) -> Option<Named> {
+        let Event::Pointer { frame, .. } = event else {
+            return None;
+        };
+        matches!(reason, Reason::FrameUnknown | Reason::PictureOutOfDate).then(|| Named {
+            frame: *frame,
+            report: self.input.gate().picture_report(now, *frame),
+        })
+    }
+
+    /// Logs the line about how the events went, if there is one.
+    fn tell(&mut self, end: bool) {
+        if let Some(line) = self.journal.line(Instant::now(), end) {
+            (self.log)(&line);
         }
     }
 
@@ -509,7 +564,7 @@ mod tests {
 
     use baton_stream::{
         control::Thermal,
-        gate::{Geometry, Keyboard, Point, Post, Size},
+        gate::{Geometry, Keyboard, MAX_STALE, Point, Post, Size},
         input::{Button, Event, MAX_BATCH, Modifiers, NO_KEY, PointerAction},
     };
 
@@ -641,11 +696,16 @@ mod tests {
 
     impl Stall {
         fn new(platform: &FakeSharer) -> Self {
+            Self::on(platform, |call| matches!(call, SharerCall::Surroundings))
+        }
+
+        /// The platform stops answering the calls that `stops` is true of.
+        fn on(platform: &FakeSharer, stops: fn(&SharerCall) -> bool) -> Self {
             let entered = Arc::new(AtomicBool::new(false));
             let open = Arc::new((Mutex::new(false), Condvar::new()));
             let (seen, gate) = (Arc::clone(&entered), Arc::clone(&open));
             platform.on_call(move |_, call| {
-                if matches!(call, SharerCall::Surroundings) {
+                if stops(call) {
                     seen.store(true, Ordering::SeqCst);
                     let (open, changed) = &*gate;
                     let mut open = lock(open);
@@ -713,6 +773,10 @@ mod tests {
         forward: Forward,
         /// What the session was told was dropped.
         dropped: Arc<Mutex<Vec<Reason>>>,
+        /// The lines that the thread logged about how the events went.
+        lines: Arc<Mutex<Vec<String>>>,
+        /// Whether a line was logged after the platform was told that the window ended.
+        late: Arc<AtomicBool>,
         thread: Option<JoinHandle<()>>,
     }
 
@@ -746,11 +810,25 @@ mod tests {
             thread::sleep(delay);
             let dropped = Arc::new(Mutex::new(Vec::new()));
             let sink = Arc::clone(&dropped);
+            let lines = Arc::new(Mutex::new(Vec::new()));
+            let log = Arc::clone(&lines);
+            let late = Arc::new(AtomicBool::new(false));
+            let (flag, seen) = (Arc::clone(&late), Arc::clone(&platform));
             let worker = Worker::new(
                 Arc::clone(&input),
                 window,
                 Box::new(move |reason| lock(&sink).push(reason)),
-            );
+            )
+            .telling(Box::new(move |line| {
+                if seen
+                    .log()
+                    .iter()
+                    .any(|(_, call)| matches!(call, SharerCall::Ended))
+                {
+                    flag.store(true, Ordering::SeqCst);
+                }
+                lock(&log).push(line.to_owned());
+            }));
             let (told, started) = mpsc::sync_channel(1);
             let thread = thread::spawn(move || worker.run(1, &told));
             let started = started
@@ -761,6 +839,8 @@ mod tests {
                 forward: Forward::new(Arc::clone(&input)),
                 input,
                 dropped,
+                lines,
+                late,
                 thread: started.is_ok().then_some(thread),
             }
         }
@@ -788,6 +868,11 @@ mod tests {
 
         fn told(&self) -> Vec<Reason> {
             lock(&self.dropped).clone()
+        }
+
+        /// The lines that the thread logged so far.
+        fn lines(&self) -> Vec<String> {
+            lock(&self.lines).clone()
         }
 
         fn wait_for_posts(&self, count: usize) {
@@ -898,6 +983,235 @@ mod tests {
         wait_for("the key to be told", || served.told().len() >= 3);
         assert_eq!(served.told()[2], Reason::NoKeyboard);
         assert_eq!(served.posts(), []);
+    }
+
+    #[test]
+    fn the_first_batch_is_logged_with_what_became_of_it_and_nothing_of_where_it_was() {
+        let mut served = Served::new(TIMING);
+        served.knows_a_frame();
+        served.hears(vec![
+            pointer(7, (0.25, 0.75), PointerAction::Down(Button::Left)),
+            pointer(7, (0.25, 0.75), PointerAction::Up(Button::Left)),
+        ]);
+        wait_for("the batch to be logged", || !served.lines().is_empty());
+
+        let lines = served.lines();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0]
+                .starts_with("window input: 2 events in 1 batch, 2 put to the window; at most "),
+            "{}",
+            lines[0]
+        );
+        // Counts, rules and milliseconds, and nothing that says where the person pointed.
+        for secret in ["0.25", "0.75", "300", "Left"] {
+            assert!(!lines[0].contains(secret), "{secret} in {}", lines[0]);
+        }
+    }
+
+    #[test]
+    fn a_press_on_a_frame_that_is_not_kept_is_logged_with_what_the_gate_has() {
+        let mut served = Served::new(TIMING);
+        served.knows_a_frame();
+        served.hears(vec![
+            pointer(99, (0.5, 0.5), PointerAction::Down(Button::Left)),
+            pointer(99, (0.5, 0.5), PointerAction::Up(Button::Left)),
+        ]);
+        wait_for("the batch to be logged", || !served.lines().is_empty());
+
+        let line = served.lines().remove(0);
+        assert!(
+            line.contains("2 dropped (FrameUnknown x1, NotPressed x1)"),
+            "{line}"
+        );
+        assert!(
+            line.contains("frame 99 was named and is not kept (newest kept: 7, 1 kept)"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn a_press_on_an_old_picture_is_logged_with_how_long_it_had_been_out_of_date() {
+        let mut served = Served::new(TIMING);
+        served.knows_a_frame();
+        // The window changed at 30 ms, after the picture of frame 7, and the tap arrives well
+        // after the limit.
+        served.input.gate().record_change(Duration::from_millis(30));
+        let arrived = MAX_STALE + Duration::from_secs(3);
+        served.hears_at(
+            vec![pointer(7, (0.5, 0.5), PointerAction::Down(Button::Left))],
+            arrived,
+        );
+        wait_for("the batch to be logged", || !served.lines().is_empty());
+        assert_eq!(served.told(), [Reason::PictureOutOfDate]);
+
+        let line = served.lines().remove(0);
+        assert!(line.contains("1 dropped (PictureOutOfDate x1)"), "{line}");
+        let millis = milliseconds_after(&line, "had been out of date for ");
+        let lower = arrived.as_millis() - 30;
+        assert!(
+            (lower..lower + 5_000).contains(&millis),
+            "{millis} ms in {line}"
+        );
+    }
+
+    #[test]
+    fn an_event_that_a_lock_dropped_says_nothing_of_how_old_its_picture_was() {
+        let mut served = Served::new(TIMING);
+        served.knows_a_frame();
+        // The picture is old, and the Mac is locked: the rule that dropped the event is the lock,
+        // and the log does not blame the picture.
+        served.input.gate().record_change(Duration::from_millis(30));
+        served.platform.set_around(Around {
+            locked: true,
+            ..Around::default()
+        });
+        served.hears_at(
+            vec![pointer(7, (0.5, 0.5), PointerAction::Move)],
+            MAX_STALE + Duration::from_secs(3),
+        );
+        wait_for("the batch to be logged", || !served.lines().is_empty());
+        assert_eq!(served.told(), [Reason::Locked]);
+
+        let line = served.lines().remove(0);
+        assert!(line.contains("1 dropped (Locked x1)"), "{line}");
+        assert!(!line.contains("out of date"), "{line}");
+        assert!(!line.contains("not kept"), "{line}");
+    }
+
+    #[test]
+    fn a_platform_that_cannot_say_what_is_around_the_window_is_logged_and_so_is_one_that_refuses() {
+        let mut served = Served::new(TIMING);
+        served.knows_a_frame();
+        served.platform.plan_around(AroundPlan::Fails(-1));
+        served.hears(vec![pointer(7, (0.5, 0.5), PointerAction::Move)]);
+        wait_for("the batch to be logged", || !served.lines().is_empty());
+        let line = served.lines().remove(0);
+        assert!(line.contains("1 dropped (NotOnScreen x1)"), "{line}");
+        assert!(
+            line.contains("the Mac could not say what is around the window for 1 batch"),
+            "{line}"
+        );
+    }
+
+    /// The number of milliseconds that a line tells right after `what`.
+    fn milliseconds_after(line: &str, what: &str) -> u128 {
+        let (_, after) = line
+            .split_once(what)
+            .unwrap_or_else(|| panic!("{what:?} in {line}"));
+        after
+            .split(|c: char| !c.is_ascii_digit())
+            .next()
+            .and_then(|digits| digits.parse().ok())
+            .unwrap_or_else(|| panic!("a number after {what:?} in {line}"))
+    }
+
+    /// The number of milliseconds that a line tells right before `what`.
+    fn milliseconds_before(line: &str, what: &str) -> u128 {
+        let (before, _) = line
+            .split_once(what)
+            .unwrap_or_else(|| panic!("{what:?} in {line}"));
+        before
+            .rsplit(|c: char| !c.is_ascii_digit())
+            .next()
+            .and_then(|digits| digits.parse().ok())
+            .unwrap_or_else(|| panic!("a number before {what:?} in {line}"))
+    }
+
+    #[test]
+    fn how_long_the_mac_took_to_say_what_is_around_the_window_is_logged() {
+        let mut served = Served::new(TIMING);
+        served.knows_a_frame();
+        let stall = Stall::new(&served.platform);
+        served.hears(vec![pointer(7, (0.5, 0.5), PointerAction::Move)]);
+        stall.wait_until_stuck();
+        thread::sleep(Duration::from_millis(300));
+        stall.let_go();
+        wait_for("the batch to be logged", || !served.lines().is_empty());
+
+        let line = served.lines().remove(0);
+        let reading =
+            milliseconds_before(&line, " ms for the Mac to say what is around the window");
+        // The thread was held for 300 ms. A sleep can come back a little early on some systems, so
+        // the lower bound leaves room, and the call that was not held is compared with the one
+        // that was and not with a number, since a busy machine can slow down any call.
+        assert!((250..5_000).contains(&reading), "{line}");
+        assert!(
+            milliseconds_before(&line, " ms to post") < reading,
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn how_long_the_mac_took_to_post_an_event_is_logged() {
+        let mut served = Served::new(TIMING);
+        served.knows_a_frame();
+        let stall = Stall::on(&served.platform, |call| matches!(call, SharerCall::Post(_)));
+        served.hears(vec![pointer(7, (0.5, 0.5), PointerAction::Move)]);
+        stall.wait_until_stuck();
+        thread::sleep(Duration::from_millis(300));
+        stall.let_go();
+        wait_for("the batch to be logged", || !served.lines().is_empty());
+
+        let line = served.lines().remove(0);
+        // The thread was held for 300 ms. A sleep can come back a little early on some systems, so
+        // the lower bound leaves room, and the call that was not held is compared with the one
+        // that was and not with a number, since a busy machine can slow down any call.
+        let posting = milliseconds_before(&line, " ms to post");
+        assert!((250..5_000).contains(&posting), "{line}");
+        assert!(
+            milliseconds_before(&line, " ms for the Mac to say what is around the window")
+                < posting,
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn what_was_not_logged_yet_is_logged_when_the_session_is_over() {
+        let mut served = Served::new(TIMING);
+        served.knows_a_frame();
+        served.hears(vec![pointer(7, (0.5, 0.5), PointerAction::Move)]);
+        wait_for("the first batch to be logged", || {
+            !served.lines().is_empty()
+        });
+        served.hears(vec![pointer(7, (0.6, 0.5), PointerAction::Move)]);
+        served.wait_for_posts(2);
+        assert_eq!(served.lines().len(), 1);
+
+        // The other device went away. The window is let go of later, by the task of the session.
+        served.forward.ended();
+        wait_for("the rest to be logged", || served.lines().len() == 2);
+        let line = served.lines().remove(1);
+        assert!(
+            line.starts_with("window input: 1 event in 1 batch, 1 put to the window"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn what_was_not_logged_yet_is_logged_when_the_session_ends() {
+        let mut served = Served::new(TIMING);
+        served.knows_a_frame();
+        served.hears(vec![pointer(7, (0.5, 0.5), PointerAction::Move)]);
+        wait_for("the first batch to be logged", || {
+            !served.lines().is_empty()
+        });
+        // A batch that goes well after the first is not logged by itself.
+        served.hears(vec![pointer(7, (0.6, 0.5), PointerAction::Move)]);
+        served.wait_for_posts(2);
+        assert_eq!(served.lines().len(), 1);
+
+        served.close();
+        let lines = served.lines();
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[1].starts_with("window input: 1 event in 1 batch, 1 put to the window"),
+            "{}",
+            lines[1]
+        );
+        // The line comes before the platform is told that the window ended, since the platform
+        // may take its time to stop its threads there.
+        assert!(!served.late.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -1302,14 +1616,27 @@ mod tests {
         served.hears(vec![pointer(7, (0.5, 0.5), PointerAction::Move)]);
         served.input.gate().record_change(Duration::from_millis(30));
         // The thread is held up for longer than the picture may be out of date, and then goes on.
-        thread::sleep(Duration::from_millis(700));
+        thread::sleep(MAX_STALE + Duration::from_millis(200));
         stall.let_go();
         wait_for("the tap to be told", || !served.told().is_empty());
 
-        // The tap was put to the window when 700 ms had passed since the change, and not when it
-        // arrived, which was before the change: it is dropped.
+        // The tap was put to the window when more than `MAX_STALE` had passed since the change,
+        // and not when it arrived, which was before the change: it is dropped.
         assert_eq!(served.told(), [Reason::PictureOutOfDate]);
         assert_eq!(served.posts().len(), 1);
+
+        // The log says that the tap waited for the thread for as long as that, and that the picture
+        // had been out of date for longer than the limit when the tap was put to the window.
+        wait_for("the second line", || served.lines().len() >= 2);
+        let line = served.lines().remove(1);
+        assert!(
+            milliseconds_before(&line, " ms in the queue") >= MAX_STALE.as_millis(),
+            "{line}"
+        );
+        assert!(
+            milliseconds_after(&line, "had been out of date for ") > MAX_STALE.as_millis(),
+            "{line}"
+        );
     }
 
     #[test]

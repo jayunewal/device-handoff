@@ -34,6 +34,7 @@ use baton_core::{
 use baton_proto::limits::MAX_PICTURE_BYTES;
 use baton_stream::{
     control::Config as Format,
+    gate::MAX_STALE,
     input::{NO_KEY, PointerAction},
 };
 use tokio::task::JoinHandle;
@@ -2697,7 +2698,7 @@ async fn a_tap_on_a_picture_that_the_window_has_changed_since_is_dropped_once_th
     let (app, id) = (rig.viewing.app.clone(), shown.viewing.id);
 
     // The picture is old by now, but the window did not change after it: a tap is right.
-    tokio::time::sleep(Duration::from_millis(700)).await;
+    tokio::time::sleep(MAX_STALE + Duration::from_millis(200)).await;
     assert!(app.window_input(id, touch(0.5, 0.5, WindowPointer::Move)));
     until("the window to be done to", || {
         rig.platform.posts(shown.window).len() == 1
@@ -2767,7 +2768,7 @@ async fn pictures_with_no_layout_of_the_window_cannot_be_touched() {
         assert!(app.window_input(id, touch(0.5, 0.5, WindowPointer::Move)));
         assert_eq!(
             rig.notice().await,
-            (id, WindowNoticeReason::OutOfDate, 1),
+            (id, WindowNoticeReason::PictureUnknown, 1),
             "cut: {cut}"
         );
         assert_eq!(rig.platform.posts(shown.window), [], "cut: {cut}");
@@ -2820,7 +2821,7 @@ async fn the_capture_times_of_pictures_and_of_changes_are_in_microseconds() {
     );
     rig.until_shown(0).await;
     let (app, id) = (rig.viewing.app.clone(), shown.viewing.id);
-    tokio::time::sleep(Duration::from_millis(700)).await;
+    tokio::time::sleep(MAX_STALE + Duration::from_millis(200)).await;
 
     // The window changed at 15 ms, before the picture: it is of no matter to it.
     assert_eq!(changed(&rig.registry, shown.link, 15_000), Ok(()));
@@ -2845,7 +2846,7 @@ async fn a_picture_that_did_not_go_out_still_shows_that_the_window_changed() {
     let mut rig = Rig::controlled().await;
     let shown = rig.shown_with_control().await;
     let (app, id) = (rig.viewing.app.clone(), shown.viewing.id);
-    tokio::time::sleep(Duration::from_millis(700)).await;
+    tokio::time::sleep(MAX_STALE + Duration::from_millis(200)).await;
     assert!(app.window_input(id, touch(0.5, 0.5, WindowPointer::Move)));
     until("the window to be done to", || {
         rig.platform.posts(shown.window).len() == 1

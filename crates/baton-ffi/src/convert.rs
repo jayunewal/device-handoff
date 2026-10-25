@@ -500,6 +500,7 @@ impl From<app::WindowNoticeReason> for WindowNoticeReason {
             app::WindowNoticeReason::NotOnScreen => Self::NotOnScreen,
             app::WindowNoticeReason::TooFast => Self::TooFast,
             app::WindowNoticeReason::OutOfDate => Self::OutOfDate,
+            app::WindowNoticeReason::PictureUnknown => Self::PictureUnknown,
             app::WindowNoticeReason::Resized => Self::Resized,
             app::WindowNoticeReason::OutsideWindow => Self::OutsideWindow,
             app::WindowNoticeReason::Covered => Self::Covered,
@@ -1003,6 +1004,10 @@ mod tests {
             (
                 app::WindowNoticeReason::OutOfDate,
                 WindowNoticeReason::OutOfDate,
+            ),
+            (
+                app::WindowNoticeReason::PictureUnknown,
+                WindowNoticeReason::PictureUnknown,
             ),
             (
                 app::WindowNoticeReason::Resized,

@@ -235,6 +235,9 @@ String describeDropped(WindowNoticeReason reason, String device) {
     WindowNoticeReason.tooFast => 'That was faster than $name takes.',
     WindowNoticeReason.outOfDate =>
       'The picture was out of date, so that was not done. Try again.',
+    WindowNoticeReason.pictureUnknown =>
+      '$name does not know the picture that you touched, so that was not '
+          'done. Try again.',
     WindowNoticeReason.resized =>
       'The window changed its size, so that was not done.',
     WindowNoticeReason.outsideWindow => 'That was outside the window.',

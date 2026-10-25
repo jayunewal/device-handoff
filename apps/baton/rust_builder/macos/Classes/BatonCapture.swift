@@ -23,6 +23,12 @@ import CoreMedia
 import CoreVideo
 import Foundation
 import ScreenCaptureKit
+import os
+
+/// The log of the system, for the sizes that decide whether a touch can be placed in a picture.
+/// They are public so that `log show` has them whole: a line made with `NSLog` and a string
+/// argument may be shown as `<private>`.
+private let layoutLog = Logger(subsystem: "io.github.jayunewal.baton", category: "layout")
 
 /// The window that was picked, as far as the system says: its number and the process that owns
 /// it. Only a window has them, and the system tells them from macOS 15.2 on.
@@ -198,7 +204,9 @@ final class MacSharedWindow: SharedWindow {
     let made = Capture(
       session: LibrarySourceSession(link: link), encoder: encoder, format: format,
       layout: window.map { id in
-        CaptureLayout(window: id, listing: listing, note: { NSLog("Baton: %@", $0) })
+        CaptureLayout(
+          window: id, listing: listing,
+          note: { text in layoutLog.notice("Baton: \(text, privacy: .public)") })
       },
       look: { watchedState(window: window, listing: listing, activity: activity) })
     if let target {

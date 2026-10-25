@@ -1742,6 +1742,11 @@ void main() {
         'The picture was out of date, so that was not done. Try again.',
       );
       expect(
+        describeDropped(WindowNoticeReason.pictureUnknown, 'Anna’s Mac'),
+        'Anna’s Mac does not know the picture that you touched, so that was '
+        'not done. Try again.',
+      );
+      expect(
         describeDropped(WindowNoticeReason.resized, 'Anna’s Mac'),
         'The window changed its size, so that was not done.',
       );

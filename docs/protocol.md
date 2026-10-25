@@ -697,7 +697,7 @@ The reasons of a `Notice` are the rules that drop an event:
 | `NotOnScreen` | the shared window is not on screen |
 | `TooFast` | the viewer sent more events in a second than it may: 240, and one batch of 64 more for events that a stall on the way bunched |
 | `FrameUnknown` | the frame that the event names is not one that the source kept |
-| `PictureOutOfDate` | the picture of that frame went out of date more than 500 ms before the event arrived |
+| `PictureOutOfDate` | the picture of that frame went out of date more than 2 seconds before the event arrived |
 | `WindowResized` | the window has changed its size since that frame |
 | `OutsideWindow` | the point is outside the window |
 | `Covered` | another window is in front of the window at that point |

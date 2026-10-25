@@ -466,6 +466,10 @@ tests += [
     testTheApplicationIsBroughtToTheFrontOnceAtTheFirstTouchBeforeTheWindowsInFrontAreRead
   ),
   (
+    "the first touch waits for the application for well less than a picture may be out of date",
+    testTheFirstTouchWaitsForTheApplicationForWellLessThanAPictureMayBeOutOfDate
+  ),
+  (
     "the application is not brought forward when it is in front or when the Mac does not say",
     testTheApplicationIsNotBroughtForwardWhenItIsInFrontOrWhenTheMacDoesNotSay
   ),

@@ -114,6 +114,14 @@ impl Pictures {
         let state = locked(&self.state);
         // Under the lock, so that it cannot overtake the window or a size that `began` tells.
         if let Some(id) = state.session {
+            // The sentence on the screen cannot tell every reason apart, and a person who reports
+            // that nothing happened can read the log of this device. The other device sends at most
+            // one notice a second, so this is a line a second at the most.
+            tracing::info!(
+                reason = ?notice.reason,
+                count = notice.count,
+                "the other device did not do some of what was done on the window"
+            );
             // Nobody listening is fine.
             let _ = self.events.send(Event::WindowNotice {
                 id,
@@ -602,6 +610,7 @@ mod tests {
     }
 
     fn pictures() -> (Arc<Pictures>, broadcast::Receiver<Event>) {
+        logging();
         let (events, heard) = broadcast::channel(8);
         (Pictures::new(events), heard)
     }
@@ -669,6 +678,84 @@ mod tests {
         assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
     }
 
+    /// What the logger of the tests wrote, whichever test it was for.
+    static LOGGED: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+
+    /// Where the logger of the tests writes: a place that a test can read.
+    #[derive(Clone, Copy)]
+    struct Captured;
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            LOGGED.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl tracing_subscriber::fmt::MakeWriter<'_> for Captured {
+        type Writer = Self;
+
+        fn make_writer(&self) -> Self {
+            *self
+        }
+    }
+
+    /// Puts the logger of the tests in place, once for all of them, and it is in place before
+    /// any test runs the line that logs (`pictures` calls this). A logger that only the thread
+    /// of one test has can miss the line of that test: the first thread that runs the line with
+    /// no logger of its own makes the logging library decide, for every thread, that nobody
+    /// listens to that line, and the test then waits for a line that is never written.
+    fn logging() {
+        static IN_PLACE: std::sync::Once = std::sync::Once::new();
+        IN_PLACE.call_once(|| {
+            tracing::subscriber::set_global_default(
+                tracing_subscriber::fmt()
+                    .with_writer(Captured)
+                    .with_ansi(false)
+                    .with_target(false)
+                    .with_thread_names(true)
+                    .finish(),
+            )
+            .expect("no other test puts a logger in place");
+        });
+    }
+
+    /// The lines that the logger of the tests wrote for the test that calls this: the lines that
+    /// were written on its thread, which is named after the test. (So no test has a name that
+    /// is the start of the name of another.)
+    fn logged() -> Vec<String> {
+        let thread = std::thread::current();
+        let name = thread.name().expect("the thread of a test has its name");
+        let text = String::from_utf8(LOGGED.lock().unwrap().clone()).unwrap();
+        text.lines()
+            .filter(|line| line.contains(name))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn a_notice_is_logged_with_its_reason_and_how_many_events_it_is_about() {
+        let (pictures, _heard) = pictures();
+        pictures.began(3);
+        pictures.noticed(notice(Reason::FrameUnknown, 4));
+        let lines = logged();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("INFO"), "{lines:?}");
+        assert!(lines[0].contains("reason=FrameUnknown"), "{lines:?}");
+        assert!(lines[0].contains("count=4"), "{lines:?}");
+    }
+
+    #[test]
+    fn a_notice_that_comes_before_the_window_is_known_is_not_logged() {
+        let (pictures, _heard) = pictures();
+        pictures.noticed(notice(Reason::Locked, 2));
+        assert_eq!(logged(), Vec::<String>::new());
+    }
+
     #[test]
     fn a_notice_that_comes_before_the_window_is_known_is_dropped_and_not_told_later() {
         let (pictures, mut heard) = pictures();
@@ -709,7 +796,7 @@ mod tests {
             (Reason::Locked, Shown::Locked),
             (Reason::NotOnScreen, Shown::NotOnScreen),
             (Reason::TooFast, Shown::TooFast),
-            (Reason::FrameUnknown, Shown::OutOfDate),
+            (Reason::FrameUnknown, Shown::PictureUnknown),
             (Reason::PictureOutOfDate, Shown::OutOfDate),
             (Reason::WindowResized, Shown::Resized),
             (Reason::OutsideWindow, Shown::OutsideWindow),
