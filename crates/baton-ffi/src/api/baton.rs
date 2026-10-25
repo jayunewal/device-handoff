@@ -18,7 +18,7 @@ use super::{
     error::BatonError,
     model::{
         Device, Event, FileProgress, FilesSent, JoinProgress, Me, Network, Offer, Reach, Received,
-        Receiving, WindowAbilities, WindowInput, WindowShared,
+        Receiving, ScreenStarted, StartAccess, WindowAbilities, WindowInput, WindowShared,
     },
 };
 use crate::convert::signed;
@@ -202,6 +202,42 @@ impl Baton {
         control: bool,
     ) -> Result<WindowShared, BatonError> {
         Ok(self.app.share_window(&id, control).await?.into())
+    }
+
+    /// Asks the paired device `id` to start sharing its screen with this one, and shows it when it
+    /// does: `Event.windowStarted` says so, with a session that is shown here. Nobody at the other
+    /// device is asked: the person there allowed this device beforehand (`setStartAccess`), or the
+    /// answer is `ScreenStarted.notStarted`, with a sentence that says why. `control` is whether
+    /// the person here wishes to control the screen; the other device grants no more than the
+    /// settings for this one allow, so look at `WindowSession.control` to see what was granted.
+    /// The call returns when the screen is shown or the answer is no. Throws `ErrorKind.notPaired`,
+    /// `ErrorKind.unreachable`, `ErrorKind.declined` if the device does not know how to be asked,
+    /// and `ErrorKind.other` if this device does not show screens or a window or screen is shared
+    /// or shown already.
+    pub async fn start_screen(
+        &self,
+        id: String,
+        control: bool,
+    ) -> Result<ScreenStarted, BatonError> {
+        Ok(self.app.start_screen(&id, control).await?.into())
+    }
+
+    /// What the paired device `id` may do at this device without a person here being asked: ask
+    /// it to start sharing its screen with that device. `StartAccess.off` for a device that was
+    /// just paired. Throws `ErrorKind.notPaired`.
+    #[frb(sync)]
+    pub fn start_access(&self, id: String) -> Result<StartAccess, BatonError> {
+        Ok(self.app.start_access(&id)?.into())
+    }
+
+    /// Lets the paired device `id` ask this device to start sharing its screen with it, to look at
+    /// or to look at and control, or does not (`StartAccess.off`). Only the person at this device
+    /// can say so: nothing a paired device sends changes it. The device can ask only if
+    /// `windowAbilities().canGiveScreen` says that this device can give its screen; the setting is
+    /// kept all the same. A screen that is shared is not stopped by turning this off. Throws
+    /// `ErrorKind.notPaired`, and `ErrorKind.storage` if the setting could not be kept.
+    pub fn set_start_access(&self, id: String, access: StartAccess) -> Result<(), BatonError> {
+        Ok(self.app.set_start_access(&id, access.into())?)
     }
 
     /// Ends the window `session`, which is shown here or shared from here, and tells the other
