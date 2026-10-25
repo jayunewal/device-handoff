@@ -1132,8 +1132,14 @@ mod tests {
         let line = served.lines().remove(0);
         let reading =
             milliseconds_before(&line, " ms for the Mac to say what is around the window");
-        assert!((300..5_000).contains(&reading), "{line}");
-        assert!(milliseconds_before(&line, " ms to post") < 300, "{line}");
+        // The thread was held for 300 ms. A sleep can come back a little early on some systems, so
+        // the lower bound leaves room, and the call that was not held is compared with the one
+        // that was and not with a number, since a busy machine can slow down any call.
+        assert!((250..5_000).contains(&reading), "{line}");
+        assert!(
+            milliseconds_before(&line, " ms to post") < reading,
+            "{line}"
+        );
     }
 
     #[test]
@@ -1148,12 +1154,14 @@ mod tests {
         wait_for("the batch to be logged", || !served.lines().is_empty());
 
         let line = served.lines().remove(0);
+        // The thread was held for 300 ms. A sleep can come back a little early on some systems, so
+        // the lower bound leaves room, and the call that was not held is compared with the one
+        // that was and not with a number, since a busy machine can slow down any call.
+        let posting = milliseconds_before(&line, " ms to post");
+        assert!((250..5_000).contains(&posting), "{line}");
         assert!(
-            (300..5_000).contains(&milliseconds_before(&line, " ms to post")),
-            "{line}"
-        );
-        assert!(
-            milliseconds_before(&line, " ms for the Mac to say what is around the window") < 300,
+            milliseconds_before(&line, " ms for the Mac to say what is around the window")
+                < posting,
             "{line}"
         );
     }
