@@ -43,6 +43,7 @@ private enum PickedTarget {
 
 /// What the system answers when it is asked which screens there are, handed from the thread it
 /// answers on to the one that waits.
+@available(macOS 12.3, *)
 private final class ShareableContentAnswer: @unchecked Sendable {
   private let lock = NSLock()
   private let arrived = DispatchSemaphore(value: 0)
