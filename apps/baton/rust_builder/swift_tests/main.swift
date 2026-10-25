@@ -251,6 +251,30 @@ var tests: [(String, () -> Void)] = [
     testAPickerThatFailedAndAPersonWhoGaveUpAreTold
   ),
   (
+    "the table has a screen call only when the platform can give the screen",
+    testTheTableHasAScreenCallOnlyWhenThePlatformCanGiveTheScreen
+  ),
+  (
+    "a platform that says nothing of the screen cannot give it and has no entry for it",
+    testAPlatformThatSaysNothingOfTheScreenCannotGiveItAndHasNoEntryForIt
+  ),
+  (
+    "the screen is given as a display that the Rust side owns and never named",
+    testTheScreenIsGivenAsADisplayThatTheRustSideOwnsAndNeverNamed
+  ),
+  (
+    "the kind of the screen is passed on as the platform says and no name is written",
+    testTheKindOfTheScreenIsPassedOnAsThePlatformSaysAndNoNameIsWritten
+  ),
+  (
+    "a screen that cannot be given is told by its code and nothing is written",
+    testAScreenThatCannotBeGivenIsToldByItsCodeAndNothingIsWritten
+  ),
+  (
+    "a screen call with structs that are too short or missing is refused without asking the platform",
+    testAScreenCallWithStructsThatAreTooShortOrMissingIsRefusedWithoutAskingThePlatform
+  ),
+  (
     "a window is prepared within what the other device takes",
     testAWindowIsPreparedWithinWhatTheOtherDeviceTakes
   ),
@@ -802,6 +826,15 @@ tests += [
       "the pump makes pictures of images with the encoder of the system",
       testThePumpMakesPicturesOfImagesWithTheEncoderOfTheSystem
     ),
+  ]
+#endif
+
+#if os(macOS)
+  tests += [
+    (
+      "the Mac gives its main screen or says why it cannot",
+      testTheMacGivesItsMainScreenOrSaysWhyItCannot
+    )
   ]
 #endif
 

@@ -57,10 +57,25 @@ struct SharerFailure: Error, Equatable {
   var sentence: String
 }
 
+/// Why the screen was not given without a picker, when the person has something to do about it or
+/// there is nothing to give. Any other reason is a `SharerFailure`, with a sentence.
+enum ScreenRefusal: Error, Equatable {
+  /// The system has not let the app capture the screen. The person at this device has to allow it,
+  /// and may have to open the app again after that.
+  case needsPermission
+  /// There is no screen to give now, for example because none is on.
+  case unavailable
+}
+
 /// The part of the platform that shares windows: one for the life of the process.
 protocol SharerPlatform: AnyObject {
   /// Whether the person can let another device control a window or a screen that they share.
   var canControl: Bool { get }
+
+  /// Whether the main screen can be given with no picker (`screen`). It is asked once, when the
+  /// platform is registered: a device that can tells the devices it is paired with that they can
+  /// ask for its screen, and one that cannot says nothing of it.
+  var canGiveScreen: Bool { get }
 
   /// Shows the picker of the system. It does not wait for the person: the answer is given to
   /// `answerPick`, once for each request, from any thread but not from inside this call. Throws
@@ -70,6 +85,22 @@ protocol SharerPlatform: AnyObject {
   /// Nobody waits for the answer to `request` any more: take the picker down if it is up. An
   /// answer that comes anyway is refused, and the window it names stays with the platform.
   func cancelPick(request: UInt64)
+
+  /// The main screen, now, with nobody choosing it: a device that the person at this one allowed
+  /// beforehand asked for it. It may wait for the system for a few seconds, and is not called from
+  /// the main thread. Throws `ScreenRefusal` when the system has not let the app capture the
+  /// screen or there is none to give, and `SharerFailure` with a sentence for any other reason.
+  /// What it gives is let go of like a picked window, with `released`, also if it is never used.
+  /// Only the size and the kind of the info are read: a screen given this way is not named.
+  func screen() throws -> (window: SharedWindow, info: PickedWindowInfo)
+}
+
+extension SharerPlatform {
+  var canGiveScreen: Bool { false }
+
+  func screen() throws -> (window: SharedWindow, info: PickedWindowInfo) {
+    throw SharerFailure(sentence: "This device cannot give its screen without asking.")
+  }
 }
 
 /// A window that the person picked, and everything that the platform keeps for it. The Rust side
@@ -218,6 +249,37 @@ private func sharerPick(
 
 private func sharerCancelPick(_ context: UnsafeMutableRawPointer?, _ request: UInt64) {
   sharerOf(context)?.cancelPick(request: request)
+}
+
+/// The main screen, as the answer to a pick would give it, but now and from the same call.
+private func sharerScreen(
+  _ context: UnsafeMutableRawPointer?, _ picked: UnsafeMutablePointer<BatonPicked>?,
+  _ message: UnsafeMutablePointer<BatonMessage>?
+) -> Int32 {
+  guard let platform = sharerOf(context), let picked, let message,
+    picked.pointee.size >= UInt32(MemoryLayout<BatonPicked>.size),
+    message.pointee.size >= UInt32(MemoryLayout<BatonMessage>.size)
+  else { return badArgument }
+  do {
+    let given = try platform.screen()
+    // The Rust side owns the screen from here, and gives it back with `release`. The title and the
+    // application stay empty, as they came: a screen given this way is not named.
+    picked.pointee.width = given.info.width
+    picked.pointee.height = given.info.height
+    picked.pointee.kind = given.info.display ? BATON_PICKED_DISPLAY : BATON_PICKED_WINDOW
+    picked.pointee.context = Unmanaged.passRetained(WindowBox(given.window)).toOpaque()
+    return ok
+  } catch ScreenRefusal.needsPermission {
+    return Int32(BATON_SCREEN_NEEDS_PERMISSION)
+  } catch ScreenRefusal.unavailable {
+    return Int32(BATON_SCREEN_UNAVAILABLE)
+  } catch let failure as SharerFailure {
+    write(failure.sentence, to: message)
+    return platformFailure
+  } catch {
+    write("The screen could not be given.", to: message)
+    return platformFailure
+  }
 }
 
 private func sharerPrepare(
@@ -384,7 +446,13 @@ func registerSharer(_ platform: SharerPlatform) -> Int32 {
     ended: sharerEnded,
     release: sharerRelease,
     surroundings: sharerSurroundings,
-    post: sharerPost)
+    post: sharerPost,
+    screen: nil)
+  // A device that cannot give its screen leaves the entry out, and its paired devices are not told
+  // that they can ask for it.
+  if platform.canGiveScreen {
+    table.screen = sharerScreen
+  }
   let code = baton_stream_register_sharer(&table)
   if code != ok {
     context.release()
