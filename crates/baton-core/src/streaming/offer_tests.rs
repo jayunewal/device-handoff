@@ -856,10 +856,9 @@ async fn a_window_beyond_a_limit_is_not_offered() {
 }
 
 #[tokio::test]
-async fn a_whole_display_is_not_offered_with_control() {
-    // Section 9: a source MUST NOT set `control` on an offer of a display in this version, and a
-    // node that was asked to refuses, whichever way round the two were asked for.
-    let rig = Rig::new(Plan::Accept).await;
+async fn a_whole_display_is_offered_with_control_as_a_window_is() {
+    // Section 9: a source may set `control` on an offer of a display, whichever way round the two
+    // were asked for, and the person at the viewer is asked about a display that is controlled.
     for display in [
         WindowShare::new("Studio Display", "", 3024, 1964)
             .whole_display()
@@ -868,18 +867,17 @@ async fn a_whole_display_is_not_offered_with_control() {
             .with_control()
             .whole_display(),
     ] {
+        let rig = Rig::new(Plan::Accept).await;
         let (outcome, _) = rig.share(display).await;
-        assert!(matches!(outcome, Err(Error::BadItem(_))), "{outcome:?}");
+        assert!(
+            matches!(outcome, Ok(ShareOutcome::Started(_))),
+            "{outcome:?}"
+        );
+        let asked = rig.app.asked();
+        assert_eq!(asked.len(), 1);
+        assert!(asked[0].display);
+        assert!(asked[0].control);
     }
-    tokio::time::sleep(QUIET).await;
-    assert_eq!(rig.app.asked().len(), 0);
-    // The place is free, and a window is still offered with control.
-    let (outcome, _) = rig.share(window().with_control()).await;
-    assert!(
-        matches!(outcome, Ok(ShareOutcome::Started(_))),
-        "{outcome:?}"
-    );
-    assert!(rig.app.asked()[0].control);
 }
 
 // When the viewer takes nothing the platform can make.

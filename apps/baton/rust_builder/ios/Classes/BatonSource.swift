@@ -59,7 +59,7 @@ struct SharerFailure: Error, Equatable {
 
 /// The part of the platform that shares windows: one for the life of the process.
 protocol SharerPlatform: AnyObject {
-  /// Whether the person can let another device control a window that they share.
+  /// Whether the person can let another device control a window or a screen that they share.
   var canControl: Bool { get }
 
   /// Shows the picker of the system. It does not wait for the person: the answer is given to

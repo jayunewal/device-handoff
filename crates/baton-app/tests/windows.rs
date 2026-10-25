@@ -715,7 +715,7 @@ async fn a_whole_display_is_offered_shown_and_shared_as_a_display() {
 }
 
 #[tokio::test]
-async fn a_whole_display_is_never_offered_with_control() {
+async fn a_whole_display_is_offered_with_control_when_the_person_asked_for_it() {
     // The platform can grant control, and the person asked for it.
     let pair = Pair::new(true).await;
     *pair.sharer.next.lock().unwrap() = Some(whole_display());
@@ -727,12 +727,12 @@ async fn a_whole_display_is_never_offered_with_control() {
 
     let request = pair.requested(&mut viewing_events).await;
     assert!(request.display);
-    assert!(!request.control, "a display was offered with control");
+    assert!(request.control, "a display was not offered with control");
     assert!(pair.viewing.app.answer_window(request.id, true));
     let WindowShared::Started(shared) = offer.await.unwrap().unwrap() else {
         panic!("the display was not shared");
     };
-    assert!(!shared.control);
+    assert!(shared.control);
 }
 
 #[tokio::test]

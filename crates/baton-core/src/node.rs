@@ -870,12 +870,11 @@ impl Node {
     /// # Errors
     ///
     /// If this device was not set up to show its windows, or not to take input when `window`
-    /// grants control, or `window` breaks a limit or is a whole display with control
-    /// ([`Error::BadItem`]); if the device is not paired, cannot be reached, does not advertise
-    /// `stream.view` or breaks the protocol; if a window is being offered or shared already
-    /// ([`Error::Busy`]); or if the device is unpaired or this node stops while the offer waits.
-    /// A device that is reached but does not take the window is not an error: the
-    /// [`ShareOutcome`] says so.
+    /// grants control, or `window` breaks a limit ([`Error::BadItem`]); if the device is not
+    /// paired, cannot be reached, does not advertise `stream.view` or breaks the protocol; if a
+    /// window is being offered or shared already ([`Error::Busy`]); or if the device is unpaired
+    /// or this node stops while the offer waits. A device that is reached but does not take the
+    /// window is not an error: the [`ShareOutcome`] says so.
     pub async fn share(
         &self,
         peer: &DeviceId,

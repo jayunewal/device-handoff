@@ -331,6 +331,7 @@ impl PickedWindow for AbiPicked {
         let Self {
             window,
             shared,
+            display,
             input,
             prepared,
             ..
@@ -369,7 +370,7 @@ impl PickedWindow for AbiPicked {
         // The thread starts the window, so that a thread that cannot be made leaves a window that
         // was never started, and the answer comes back here.
         let (told, answer) = mpsc::sync_channel(1);
-        let worker = Worker::new(Arc::clone(&input), window, dropped);
+        let worker = Worker::new(Arc::clone(&input), window, dropped).of_display(display);
         let started = thread::Builder::new()
             .name("baton-input".to_owned())
             .spawn(move || worker.run(number, &told))

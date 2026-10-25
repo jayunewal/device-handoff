@@ -5,9 +5,14 @@
 //!
 //! A person whose tap did nothing reads one sentence on the other device, and the Mac that did not
 //! act on it has to be able to say more than that: whether the picture was old or not known at
-//! all, and whether the Mac was slow. The line holds counts, the names of the rules and times in
-//! milliseconds. It never says which events they were, where on the window, or what was typed: that
-//! is the person's, and the log is pasted into public reports.
+//! all, whether the window had the keyboard when the press came, and whether the Mac was slow. The
+//! line holds counts, the names of the rules and times in milliseconds. It never says which events
+//! they were, where on the window, or what was typed: that is the person's, and the log is pasted
+//! into public reports.
+//!
+//! A count above [`EXACT`] is told as "more than that" for the same reason. A key goes down and
+//! comes up as two events, and a password is typed one key at a time, so the exact number of
+//! events, of the batches they came in or of the drops among them could be its length.
 //!
 //! The first batch of a session makes a line, so that a log shows that events arrive at all, and
 //! after that a batch that dropped something does, but not more often than [`EVERY`]. What is not
@@ -22,6 +27,9 @@ use baton_stream::gate::{PictureReport, Reason};
 
 /// The least time between two lines about trouble.
 pub(crate) const EVERY: Duration = Duration::from_secs(2);
+
+/// The most that a count is told as it is. Five events are two keys at most.
+const EXACT: u32 = 5;
 
 /// A frame that an event named and the source did not accept, and what the gate knew of it.
 #[derive(Debug, Clone, Copy)]
@@ -42,6 +50,12 @@ pub(crate) struct Journal {
     posted: u32,
     /// Events that the rules let through and the platform did not take.
     refused: u32,
+    /// Presses that went to a window that did not have the keyboard. An application may take the
+    /// first press on such a window for the one that brings it forward, and not for the one that
+    /// does something.
+    unfocused: u32,
+    /// Events that were refused because the thread did not keep up.
+    lost: u32,
     /// Batches for which the platform could not say what is around the window.
     unread: u32,
     dropped: BTreeMap<Reason, u32>,
@@ -51,8 +65,10 @@ pub(crate) struct Journal {
     reading: Duration,
     /// The longest the platform took to post an event.
     posting: Duration,
-    /// The longest a picture that was named had been out of date.
+    /// The longest a picture that a dropped event named had been out of date.
     stale_for: Option<Duration>,
+    /// The longest a picture that a press went through on had been out of date.
+    pressed_on_old: Option<Duration>,
     /// The last frame that was named and is not kept.
     unknown: Option<Named>,
 }
@@ -83,6 +99,25 @@ impl Journal {
         }
     }
 
+    /// A button went down on the window, and the platform took it. `keyboard` is whether the window
+    /// had the keyboard, and `old` how long the picture that the press named had been out of date,
+    /// if it had been.
+    pub(crate) fn pressed(&mut self, keyboard: bool, old: Option<Duration>) {
+        if !keyboard {
+            self.unfocused = self.unfocused.saturating_add(1);
+        }
+        if let Some(old) = old {
+            self.pressed_on_old = Some(self.pressed_on_old.map_or(old, |most| most.max(old)));
+        }
+    }
+
+    /// `events` were refused because the queue was full.
+    pub(crate) fn lost(&mut self, events: usize) {
+        self.lost = self
+            .lost
+            .saturating_add(u32::try_from(events).unwrap_or(u32::MAX));
+    }
+
     /// An event was dropped for `reason`. `named` is what the gate knew of the frame that it
     /// named, for the two reasons that are about the frame.
     pub(crate) fn dropped(&mut self, reason: Reason, named: Option<Named>) {
@@ -101,10 +136,15 @@ impl Journal {
     /// The line to log now, if there is one. A `force` is the end of the session, which tells what
     /// is left whether or not anything went wrong.
     pub(crate) fn line(&mut self, now: Instant, force: bool) -> Option<String> {
-        if self.batches == 0 {
+        // What was lost is all there is to tell if the line before it was made after the last batch.
+        if self.batches == 0 && self.lost == 0 {
             return None;
         }
-        let trouble = !self.dropped.is_empty() || self.refused > 0 || self.unread > 0;
+        let trouble = !self.dropped.is_empty()
+            || self.refused > 0
+            || self.unread > 0
+            || self.unfocused > 0
+            || self.lost > 0;
         let spaced = self
             .last
             .is_none_or(|last| now.saturating_duration_since(last) >= EVERY);
@@ -121,18 +161,33 @@ impl Journal {
     }
 
     fn describe(&self) -> String {
-        let mut parts = vec![format!(
-            "{} in {}",
-            counted(self.events, "event", "events"),
-            counted(self.batches, "batch", "batches")
-        )];
+        let mut parts = Vec::new();
+        if self.batches > 0 {
+            parts.push(format!(
+                "{} in {}",
+                counted(self.events, "event", "events"),
+                counted(self.batches, "batch", "batches")
+            ));
+        }
         if self.posted > 0 {
-            parts.push(format!("{} put to the window", self.posted));
+            parts.push(format!("{} put to the window", few(self.posted)));
+        }
+        if self.unfocused > 0 {
+            parts.push(format!(
+                "{} that went to a window without the keyboard",
+                counted(self.unfocused, "press", "presses")
+            ));
         }
         if self.refused > 0 {
             parts.push(format!(
                 "{} that the Mac would not take",
                 counted(self.refused, "event", "events")
+            ));
+        }
+        if self.lost > 0 {
+            parts.push(format!(
+                "{} lost because the queue was full",
+                counted(self.lost, "event", "events")
             ));
         }
         if !self.dropped.is_empty() {
@@ -143,9 +198,9 @@ impl Journal {
             let reasons: Vec<String> = self
                 .dropped
                 .iter()
-                .map(|(reason, count)| format!("{reason:?} x{count}"))
+                .map(|(reason, count)| format!("{reason:?} x{}", few(*count)))
                 .collect();
-            parts.push(format!("{total} dropped ({})", reasons.join(", ")));
+            parts.push(format!("{} dropped ({})", few(total), reasons.join(", ")));
         }
         if self.unread > 0 {
             parts.push(format!(
@@ -153,17 +208,25 @@ impl Journal {
                 counted(self.unread, "batch", "batches")
             ));
         }
-        let mut line = format!(
-            "window input: {}; at most {} ms in the queue, {} ms for the Mac to say what is around \
-             the window and {} ms to post",
-            parts.join(", "),
-            self.waited.as_millis(),
-            self.reading.as_millis(),
-            self.posting.as_millis(),
-        );
+        let mut line = format!("window input: {}", parts.join(", "));
+        if self.batches > 0 {
+            line = format!(
+                "{line}; at most {} ms in the queue, {} ms for the Mac to say what is around the \
+                 window and {} ms to post",
+                self.waited.as_millis(),
+                self.reading.as_millis(),
+                self.posting.as_millis(),
+            );
+        }
         if let Some(old) = self.stale_for {
             line = format!(
                 "{line}; a picture that was named had been out of date for {} ms",
+                old.as_millis()
+            );
+        }
+        if let Some(old) = self.pressed_on_old {
+            line = format!(
+                "{line}; a press went through on a picture that had been out of date for {} ms",
                 old.as_millis()
             );
         }
@@ -180,9 +243,18 @@ impl Journal {
     }
 }
 
-/// `1 event`, `2 events`.
+/// A count as the log tells it: as it is up to [`EXACT`], and as `>5` above it.
+fn few(count: u32) -> String {
+    if count > EXACT {
+        format!(">{EXACT}")
+    } else {
+        count.to_string()
+    }
+}
+
+/// `1 event`, `2 events`, `>5 events`.
 fn counted(count: u32, one: &str, many: &str) -> String {
-    format!("{count} {}", if count == 1 { one } else { many })
+    format!("{} {}", few(count), if count == 1 { one } else { many })
 }
 
 #[cfg(test)]
@@ -380,6 +452,186 @@ mod tests {
             "{line}"
         );
         assert!(!line.contains("dropped"), "{line}");
+    }
+
+    #[test]
+    fn a_press_that_went_to_a_window_without_the_keyboard_is_trouble_by_itself() {
+        let mut journal = Journal::default();
+        let start = Instant::now();
+        news(&mut journal, 1);
+        journal.posted(MS, true);
+        assert!(journal.line(start, false).is_some());
+
+        // Of two presses, only the one that went to a window without the keyboard is told.
+        news(&mut journal, 2);
+        journal.posted(MS, true);
+        journal.pressed(false, None);
+        journal.posted(MS, true);
+        journal.pressed(true, None);
+        assert_eq!(journal.line(start + EVERY / 2, false), None);
+        assert_eq!(
+            journal.line(start + EVERY, false).unwrap(),
+            "window input: 2 events in 1 batch, 2 put to the window, 1 press that went to a window \
+             without the keyboard; at most 3 ms in the queue, 12 ms for the Mac to say what is \
+             around the window and 1 ms to post"
+        );
+    }
+
+    #[test]
+    fn a_press_that_went_through_on_an_old_picture_is_told_with_the_oldest_and_is_no_trouble() {
+        let mut journal = Journal::default();
+        let start = Instant::now();
+        news(&mut journal, 1);
+        assert!(journal.line(start, false).is_some());
+
+        // The longest is told, and it is neither the first nor the last.
+        news(&mut journal, 3);
+        for old in [310, 640, 90] {
+            journal.posted(MS, true);
+            journal.pressed(true, Some(Duration::from_millis(old)));
+        }
+        // A press that went through is nothing to tell by itself.
+        assert_eq!(journal.line(start + 10 * EVERY, false), None);
+        assert_eq!(
+            journal.line(start + 10 * EVERY, true).unwrap(),
+            "window input: 3 events in 1 batch, 3 put to the window; at most 3 ms in the queue, \
+             12 ms for the Mac to say what is around the window and 1 ms to post; a press went \
+             through on a picture that had been out of date for 640 ms"
+        );
+    }
+
+    #[test]
+    fn the_age_of_the_pictures_comes_before_the_frame_that_is_not_kept() {
+        let mut journal = Journal::default();
+        news(&mut journal, 3);
+        journal.posted(MS, true);
+        journal.pressed(true, Some(Duration::from_millis(1_900)));
+        journal.dropped(Reason::PictureOutOfDate, Some(stale(2_500)));
+        journal.dropped(Reason::FrameUnknown, Some(unknown()));
+        let line = journal.line(Instant::now(), false).unwrap();
+        assert!(
+            line.ends_with(
+                "; a picture that was named had been out of date for 2500 ms; a press went \
+                 through on a picture that had been out of date for 1900 ms; frame 9 was named \
+                 and is not kept (newest kept: none, 0 kept)"
+            ),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn events_that_were_lost_are_trouble_by_themselves() {
+        let mut journal = Journal::default();
+        let start = Instant::now();
+        news(&mut journal, 1);
+        journal.posted(MS, true);
+        assert!(journal.line(start, false).is_some());
+
+        news(&mut journal, 1);
+        journal.posted(MS, true);
+        journal.lost(3);
+        assert_eq!(journal.line(start + EVERY / 2, false), None);
+        assert_eq!(
+            journal.line(start + EVERY, false).unwrap(),
+            "window input: 1 event in 1 batch, 1 put to the window, 3 events lost because the \
+             queue was full; at most 3 ms in the queue, 12 ms for the Mac to say what is around \
+             the window and 1 ms to post"
+        );
+    }
+
+    #[test]
+    fn what_was_lost_after_the_last_line_is_told_at_the_end_with_no_batch_to_go_with_it() {
+        let mut journal = Journal::default();
+        let start = Instant::now();
+        news(&mut journal, 1);
+        assert!(journal.line(start, false).is_some());
+
+        journal.lost(1);
+        assert_eq!(
+            journal.line(start + MS, true).unwrap(),
+            "window input: 1 event lost because the queue was full"
+        );
+        assert_eq!(journal.line(start + 2 * MS, true), None);
+    }
+
+    #[test]
+    fn five_events_are_told_as_they_are_and_six_as_more_than_five() {
+        let line = |count: u32| {
+            let mut journal = Journal::default();
+            for _ in 0..count {
+                news(&mut journal, 1);
+                journal.posted(MS, true);
+            }
+            journal.line(Instant::now(), true).unwrap()
+        };
+        assert!(
+            line(5).starts_with("window input: 5 events in 5 batches, 5 put to the window; "),
+            "{}",
+            line(5)
+        );
+        assert!(
+            line(6).starts_with("window input: >5 events in >5 batches, >5 put to the window; "),
+            "{}",
+            line(6)
+        );
+    }
+
+    #[test]
+    fn what_was_dropped_refused_or_lost_is_told_the_same_way() {
+        let mut journal = Journal::default();
+        news(&mut journal, 1);
+        for _ in 0..6 {
+            journal.dropped(Reason::Covered, None);
+            journal.posted(MS, false);
+            journal.pressed(false, None);
+        }
+        for _ in 0..5 {
+            journal.dropped(Reason::Locked, None);
+        }
+        journal.lost(6);
+        for _ in 0..6 {
+            journal.batch(1, MS, MS, false);
+        }
+        let line = journal.line(Instant::now(), false).unwrap();
+        for told in [
+            ">5 presses that went to a window without the keyboard",
+            ">5 events that the Mac would not take",
+            ">5 events lost because the queue was full",
+            ">5 dropped (Locked x5, Covered x>5)",
+            "the Mac could not say what is around the window for >5 batches",
+        ] {
+            assert!(line.contains(told), "{told:?} in {line}");
+        }
+    }
+
+    #[test]
+    fn what_was_lost_in_several_goes_is_told_as_the_sum() {
+        let mut journal = Journal::default();
+        journal.lost(2);
+        journal.lost(3);
+        assert_eq!(
+            journal.line(Instant::now(), true).unwrap(),
+            "window input: 5 events lost because the queue was full"
+        );
+
+        // Neither go is more than five, and together they are.
+        let mut journal = Journal::default();
+        journal.lost(4);
+        journal.lost(4);
+        assert_eq!(
+            journal.line(Instant::now(), true).unwrap(),
+            "window input: >5 events lost because the queue was full"
+        );
+    }
+
+    #[test]
+    fn what_was_lost_is_told_as_more_than_five_whatever_the_number() {
+        let mut journal = Journal::default();
+        journal.lost(usize::MAX);
+        assert_eq!(
+            journal.line(Instant::now(), true).unwrap(),
+            "window input: >5 events lost because the queue was full"
+        );
     }
 
     #[test]

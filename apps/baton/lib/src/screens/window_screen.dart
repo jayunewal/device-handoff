@@ -238,8 +238,11 @@ class _WindowScreenState extends State<WindowScreen> {
                         showCheckmark: false,
                         selected: _control.on,
                         tooltip: _control.on
-                            ? 'Stop controlling the window'
-                            : 'Control the window from this device',
+                            ? 'Stop controlling the '
+                                  '${windowNoun(display: session.display)}'
+                            : 'Control the '
+                                  '${windowNoun(display: session.display)} '
+                                  'from this device',
                         onSelected: _setControl,
                       ),
                     ),

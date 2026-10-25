@@ -541,9 +541,8 @@ impl App {
     /// which can take as long as a person takes to decide. Dropping the future withdraws the
     /// offer.
     ///
-    /// `control` lets the other device control the window, if this device can grant it
-    /// ([`window_abilities`](Self::window_abilities)). A whole screen is only looked at, whatever
-    /// `control` says.
+    /// `control` lets the other device control the window or the screen, if this device can grant
+    /// it ([`window_abilities`](Self::window_abilities)).
     ///
     /// # Errors
     ///

@@ -4174,11 +4174,10 @@ class BatonImpl extends RustOpaque implements Baton {
   /// Lets the person pick a window or a whole screen of this device, and offers it to the
   /// paired device `id`. The call returns when the person at the other device has answered,
   /// which can take as long as a person takes to decide. `control` lets the other device
-  /// control the window, if `windowAbilities().canControl` says that this device can grant
-  /// it; a whole screen is only looked at, whatever `control` says. Throws
-  /// `ErrorKind.notPaired`, `ErrorKind.unreachable`, `ErrorKind.declined` if the device does
-  /// not show windows, and `ErrorKind.other` if this device does not share windows or a
-  /// window or screen is shared or shown already.
+  /// control the window or the screen, if `windowAbilities().canControl` says that this
+  /// device can grant it. Throws `ErrorKind.notPaired`, `ErrorKind.unreachable`,
+  /// `ErrorKind.declined` if the device does not show windows, and `ErrorKind.other` if this
+  /// device does not share windows or a window or screen is shared or shown already.
   Future<WindowShared> shareWindow({
     required String id,
     required bool control,

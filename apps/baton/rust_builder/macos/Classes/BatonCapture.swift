@@ -11,8 +11,8 @@
 // is given one by the picker needs no permission to record the screen, which an app that builds for
 // a free Apple ID would lose again with every build.
 //
-// A window can be steered by the person at the other device too (BatonInput.swift, and
-// BatonControl.swift for the calls of the system); a whole screen is looked at.
+// A window or a whole screen can be steered by the person at the other device too
+// (BatonInput.swift, and BatonControl.swift for the calls of the system).
 //
 // An iPhone or an iPad cannot share a window, so there is nothing here for them.
 
@@ -30,19 +30,19 @@ import os
 /// argument may be shown as `<private>`.
 private let layoutLog = Logger(subsystem: "io.github.jayunewal.baton", category: "layout")
 
-/// The window that was picked, as far as the system says: its number and the process that owns
-/// it. Only a window has them, and the system tells them from macOS 15.2 on.
-private struct PickedTarget {
-  var window: UInt32
-  var process: Int32
+/// What was picked, as far as the system says: the number of a window and the process that owns
+/// it, or the number of a display. The system tells them from macOS 15.2 on.
+private enum PickedTarget {
+  case window(UInt32, process: Int32)
+  case display(UInt32)
 }
 
 /// The picker of the system, as the sharer of this Mac. There is one for the life of the process.
 @available(macOS 14.0, *)
 final class MacSharer: NSObject, SharerPlatform, SCContentSharingPickerObserver {
-  /// A window can be steered where the system says which window the person picked, and where the
-  /// person has let this app post input events. It is asked again each time, since the person may
-  /// let the app in System Settings at any time.
+  /// A window or a screen can be steered where the system says which the person picked, and where
+  /// the person has let this app post input events. It is asked again each time, since the person
+  /// may let the app in System Settings at any time.
   var canControl: Bool { macControlAccess() == .allowed }
 
   private let lock = NSLock()
@@ -140,13 +140,19 @@ final class MacSharer: NSObject, SharerPlatform, SCContentSharingPickerObserver 
     var title = ""
     var app = ""
     var target: PickedTarget?
-    // The system tells which window it is only from macOS 15.2 on. A display has neither a title
-    // nor an application, and is looked at and not steered.
-    if !display, #available(macOS 15.2, *), let window = filter.includedWindows.first {
-      title = window.title ?? ""
-      app = window.owningApplication?.applicationName ?? ""
-      if let process = window.owningApplication?.processID {
-        target = PickedTarget(window: window.windowID, process: process)
+    // The system tells which window or display it is only from macOS 15.2 on. A display has neither
+    // a title nor an application.
+    if #available(macOS 15.2, *) {
+      if display {
+        if let shown = filter.includedDisplays.first {
+          target = .display(shown.displayID)
+        }
+      } else if let window = filter.includedWindows.first {
+        title = window.title ?? ""
+        app = window.owningApplication?.applicationName ?? ""
+        if let process = window.owningApplication?.processID {
+          target = .window(window.windowID, process: process)
+        }
       }
     }
     let info = PickedWindowInfo(
@@ -196,21 +202,31 @@ final class MacSharedWindow: SharedWindow {
     guard let format, let encoder, capture == nil else {
       throw SharerFailure(sentence: "This device could not start sharing the \(info.noun).")
     }
-    // The window server and the system are asked about the window while it is shared: where it is
-    // in each picture, and whether it can be seen. A display has no number and is never hidden.
+    // The window server and the system are asked about the window, or the display, while it is
+    // shared: where it is in each picture, and whether it can be seen. A display is never hidden.
     let listing = MacWindowListing()
     let activity = MacActivityReader()
-    let window = target?.window
+    let note: (String) -> Void = { text in layoutLog.notice("Baton: \(text, privacy: .public)") }
+    var layout: CaptureLayout?
+    var window: UInt32?
+    switch target {
+    case .window(let id, _):
+      layout = CaptureLayout(window: id, listing: listing, note: note)
+      window = id
+    case .display(let id):
+      let displays = MacDisplayListing()
+      layout = CaptureLayout(
+        noun: "screen", bounds: { displays.bounds(ofDisplay: id) }, note: note)
+    case nil:
+      break
+    }
     let made = Capture(
-      session: LibrarySourceSession(link: link), encoder: encoder, format: format,
-      layout: window.map { id in
-        CaptureLayout(
-          window: id, listing: listing,
-          note: { text in layoutLog.notice("Baton: \(text, privacy: .public)") })
-      },
-      look: { watchedState(window: window, listing: listing, activity: activity) })
-    if let target {
-      control = makeWindowControl(window: target.window, process: target.process)
+      session: LibrarySourceSession(link: link), encoder: encoder, format: format, layout: layout,
+      look: { [window] in watchedState(window: window, listing: listing, activity: activity) })
+    switch target {
+    case .window(let id, let process): control = makeWindowControl(window: id, process: process)
+    case .display(let id): control = makeDisplayControl(display: id)
+    case nil: break
     }
     do {
       // The system answers a start that fails (the person did not allow the recording, the window
@@ -254,7 +270,7 @@ private final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
   private let session: SourceSession
   private let pump: FramePump<H264Encoder>
   private let format: PictureFormat
-  /// How the window is laid out in each image, if it is a window that can be steered.
+  /// How the window or the screen is laid out in each image, if it can be steered.
   private let layout: CaptureLayout?
   /// Pauses the session while the window cannot be seen, and resumes it when it can.
   private let pauses: PauseWatch
@@ -364,7 +380,7 @@ private final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
     pump.captured(image, geometry: geometry(of: image, info))
   }
 
-  /// How the window is laid out in this image, if it is a window that can be steered.
+  /// How the window or the screen is laid out in this image, if it can be steered.
   private func geometry(of image: CVPixelBuffer, _ info: [SCStreamFrameInfo: Any])
     -> PictureGeometry?
   {

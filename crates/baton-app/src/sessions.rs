@@ -435,8 +435,6 @@ impl Sessions {
         let (width, height) = picked.size();
         let (title, app) = (picked.title(), picked.app());
         let display = picked.display();
-        // A display is looked at: how input is judged on a whole screen is not decided yet.
-        let control = control && !display;
         let mut window = WindowShare::new(title.clone(), app.clone(), width, height);
         if display {
             window = window.whole_display();
@@ -725,14 +723,15 @@ mod tests {
     }
 
     /// The lines that the logger of the tests wrote for the test that calls this: the lines that
-    /// were written on its thread, which is named after the test. (So no test has a name that
-    /// is the start of the name of another.)
+    /// were written on its thread, which is named after the test. The logger writes the name with
+    /// a space on each side, so a test whose name is the start of another's does not read its
+    /// lines.
     fn logged() -> Vec<String> {
         let thread = std::thread::current();
         let name = thread.name().expect("the thread of a test has its name");
         let text = String::from_utf8(LOGGED.lock().unwrap().clone()).unwrap();
         text.lines()
-            .filter(|line| line.contains(name))
+            .filter(|line| line.contains(&format!(" {name} ")))
             .map(str::to_owned)
             .collect()
     }

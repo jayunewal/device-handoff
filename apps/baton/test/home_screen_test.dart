@@ -454,7 +454,9 @@ void main() {
       find.byTooltip('Share a window or screen with Kitchen iPad'),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Share a window to look at and control'));
+    await tester.tap(
+      find.text('Share a window or screen to look at and control'),
+    );
     await tester.pumpAndSettle();
 
     expect(session.windowsShared, [(id: _kitchenIpad.id, control: true)]);

@@ -36,7 +36,13 @@ WindowSession _window({
   bool control = true,
   int width = 1600,
   int height = 1000,
-}) => sampleWindowSession(control: control, width: width, height: height);
+  bool display = false,
+}) => sampleWindowSession(
+  control: control,
+  width: width,
+  height: height,
+  display: display,
+);
 
 const _me = Me(
   id: 'f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0',
@@ -52,8 +58,14 @@ Future<_Shown> _open(
   bool control = true,
   int width = 1600,
   int height = 1000,
+  bool display = false,
 }) async {
-  final shown = _window(control: control, width: width, height: height);
+  final shown = _window(
+    control: control,
+    width: width,
+    height: height,
+    display: display,
+  );
   final session = FakeSession(me: _me);
   final controller = WindowsController(session, screen: FakeScreen());
   await controller.start();
@@ -323,6 +335,43 @@ void main() {
       expect(find.byTooltip('Stop controlling the window'), findsOneWidget);
       expect(
         find.byTooltip('Control the window from this device'),
+        findsNothing,
+      );
+    });
+
+    testWidgets('is there for a whole screen too, and says screen', (
+      tester,
+    ) async {
+      final shown = await _open(tester, display: true);
+      expect(
+        find.byTooltip('Control the screen from this device'),
+        findsOneWidget,
+      );
+      expect(
+        find.byTooltip('Control the window from this device'),
+        findsNothing,
+      );
+
+      await _turnOn(tester);
+
+      expect(find.byTooltip('Stop controlling the screen'), findsOneWidget);
+      expect(find.byTooltip('Stop controlling the window'), findsNothing);
+      expect(find.text('Esc'), findsOneWidget);
+
+      await tester.tapAt(_at(tester, 0.25, 0.75));
+      await tester.pump(const Duration(seconds: 1));
+
+      expect(shown.given, _click(0.25, 0.75));
+    });
+
+    testWidgets('is not there for a whole screen that cannot be controlled', (
+      tester,
+    ) async {
+      await _open(tester, control: false, display: true);
+
+      expect(find.text('Control'), findsNothing);
+      expect(
+        find.byTooltip('Control the screen from this device'),
         findsNothing,
       );
     });
@@ -1170,6 +1219,40 @@ void main() {
       );
     });
 
+    testWidgets('names the screen when it is a whole screen', (tester) async {
+      final shown = await _open(tester, display: true);
+      await _turnOn(tester);
+
+      shown.session.emit(notice(WindowNoticeReason.controlOff));
+      await tester.pump(Duration.zero);
+
+      expect(
+        find.text('Anna’s Mac has not let this device control the screen.'),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Anna’s Mac has not let this device control the window.'),
+        findsNothing,
+      );
+    });
+
+    testWidgets('names the window when it is a window', (tester) async {
+      final shown = await _open(tester);
+      await _turnOn(tester);
+
+      shown.session.emit(notice(WindowNoticeReason.controlOff));
+      await tester.pump(Duration.zero);
+
+      expect(
+        find.text('Anna’s Mac has not let this device control the window.'),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Anna’s Mac has not let this device control the screen.'),
+        findsNothing,
+      );
+    });
+
     testWidgets('is replaced by the one that follows', (tester) async {
       final shown = await _open(tester);
       await _turnOn(tester);
@@ -1781,11 +1864,65 @@ void main() {
       );
     });
 
+    test('say screen where the other device shares a whole screen', () {
+      String screen(WindowNoticeReason reason) =>
+          describeDropped(reason, 'Anna’s Mac', display: true);
+
+      expect(
+        screen(WindowNoticeReason.controlOff),
+        'Anna’s Mac has not let this device control the screen.',
+      );
+      expect(
+        screen(WindowNoticeReason.paused),
+        'The screen is paused on Anna’s Mac.',
+      );
+      expect(
+        screen(WindowNoticeReason.notOnScreen),
+        'The screen is gone from Anna’s Mac.',
+      );
+      expect(
+        screen(WindowNoticeReason.resized),
+        'The screen changed its size, so that was not done.',
+      );
+      expect(
+        screen(WindowNoticeReason.outsideWindow),
+        'That was outside the screen.',
+      );
+    });
+
+    test(
+      'are the same for a window and a screen where they do not name it',
+      () {
+        const unnamed = [
+          WindowNoticeReason.locked,
+          WindowNoticeReason.tooFast,
+          WindowNoticeReason.outOfDate,
+          WindowNoticeReason.pictureUnknown,
+          WindowNoticeReason.tooManyKeys,
+          WindowNoticeReason.notPressed,
+          WindowNoticeReason.other,
+        ];
+        for (final reason in unnamed) {
+          expect(
+            describeDropped(reason, 'Anna’s Mac', display: true),
+            describeDropped(reason, 'Anna’s Mac'),
+            reason: '$reason',
+          );
+        }
+      },
+    );
+
     test('are about every reason there is', () {
-      for (final reason in WindowNoticeReason.values) {
-        final sentence = describeDropped(reason, 'Anna’s Mac');
-        expect(sentence, endsWith('.'), reason: '$reason');
-        expect(sentence.length, greaterThan(10), reason: '$reason');
+      for (final display in [false, true]) {
+        for (final reason in WindowNoticeReason.values) {
+          final sentence = describeDropped(
+            reason,
+            'Anna’s Mac',
+            display: display,
+          );
+          expect(sentence, endsWith('.'), reason: '$reason');
+          expect(sentence.length, greaterThan(10), reason: '$reason');
+        }
       }
     });
 

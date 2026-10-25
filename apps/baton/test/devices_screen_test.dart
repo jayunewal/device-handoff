@@ -495,7 +495,7 @@ void main() {
 
       expect(find.text('Share to look at'), findsOneWidget);
       expect(
-        find.text('Share a window to look at and control'),
+        find.text('Share a window or screen to look at and control'),
         findsOneWidget,
       );
       expect(shared, isEmpty, reason: 'the button only asks');
@@ -504,7 +504,7 @@ void main() {
     testWidgets('is shared with control when that is chosen', (tester) async {
       await show(tester, ControlAccess.allowed);
 
-      await choose(tester, 'Share a window to look at and control');
+      await choose(tester, 'Share a window or screen to look at and control');
 
       expect(shared, [('Phone', true)]);
     });
@@ -524,16 +524,16 @@ void main() {
       (tester) async {
         final keeper = await show(tester, ControlAccess.needed);
 
-        await choose(tester, 'Share a window to look at and control');
+        await choose(tester, 'Share a window or screen to look at and control');
 
         expect(shared, isEmpty);
         expect(keeper.requests, 1);
         expect(
           find.textContaining(
-            'To let Phone control a window, allow Baton to control this '
-            'computer in System Settings, under Privacy & Security, '
+            'To let Phone control a window or a screen, allow Baton to control '
+            'this computer in System Settings, under Privacy & Security, '
             'Accessibility. If Baton is in the list already, take it out and '
-            'add it again. Then share the window again.',
+            'add it again. Then share it again.',
           ),
           findsOneWidget,
         );
@@ -557,7 +557,7 @@ void main() {
         final keeper = await show(tester, ControlAccess.allowed);
         keeper.access = ControlAccess.needed;
 
-        await choose(tester, 'Share a window to look at and control');
+        await choose(tester, 'Share a window or screen to look at and control');
 
         expect(shared, isEmpty);
         expect(keeper.requests, 1);
@@ -568,12 +568,14 @@ void main() {
       final keeper = await show(tester, ControlAccess.allowed);
       keeper.access = ControlAccess.unavailable;
 
-      await choose(tester, 'Share a window to look at and control');
+      await choose(tester, 'Share a window or screen to look at and control');
 
       expect(shared, isEmpty);
       expect(keeper.requests, 0);
       expect(
-        find.text('Controlling a window needs macOS 15.2 or later.'),
+        find.text(
+          'Controlling a window or a screen needs macOS 15.2 or later.',
+        ),
         findsOneWidget,
       );
     });
@@ -628,12 +630,14 @@ void main() {
 
         await choose(
           tester,
-          'Share a window to look at and control',
+          'Share a window or screen to look at and control',
           device: name,
         );
 
         expect(
-          find.textContaining('To let ${visibleText(name)} control a window'),
+          find.textContaining(
+            'To let ${visibleText(name)} control a window or a screen',
+          ),
           findsOneWidget,
         );
         expect(visibleText(name), isNot(name));
@@ -652,17 +656,17 @@ void main() {
       // The second device lies under the note about the first, so the order is the other way.
       await choose(
         tester,
-        'Share a window to look at and control',
+        'Share a window or screen to look at and control',
         device: 'Tablet',
       );
-      await choose(tester, 'Share a window to look at and control');
+      await choose(tester, 'Share a window or screen to look at and control');
 
       expect(
-        find.textContaining('To let Phone control a window'),
+        find.textContaining('To let Phone control a window or a screen'),
         findsOneWidget,
       );
       expect(
-        find.textContaining('To let Tablet control a window'),
+        find.textContaining('To let Tablet control a window or a screen'),
         findsNothing,
       );
     });

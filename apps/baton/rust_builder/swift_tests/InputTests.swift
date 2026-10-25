@@ -43,15 +43,29 @@ final class FakeActivity: MacActivity {
 }
 
 final class FakePoster: EventPoster {
-  var posted: [(event: SyntheticEvent, process: Int32)] = []
+  var posted: [SyntheticEvent] = []
   /// For each call, whether it works; calls beyond the list work.
   var works: [Bool] = []
 
-  func post(_ event: SyntheticEvent, toProcess process: Int32) -> Bool {
-    posted.append((event, process))
+  func post(_ event: SyntheticEvent) -> Bool {
+    posted.append(event)
     return works.isEmpty ? true : works.removeFirst()
   }
 }
+
+/// What the system says of displays: where each is, if it says.
+final class FakeDisplays: DisplayListing {
+  var places: [UInt32: ScreenRect] = [:]
+  private(set) var asked: [UInt32] = []
+
+  func bounds(ofDisplay id: UInt32) -> ScreenRect? {
+    asked.append(id)
+    return places[id]
+  }
+}
+
+let sharedDisplay: UInt32 = 3
+let displayBounds = ScreenRect(x: 0, y: 0, width: 1512, height: 982)
 
 let sharedWindow: UInt32 = 7
 let sharedProcess: Int32 = 100
@@ -718,6 +732,90 @@ func testTheWindowServerIsAskedOnceForManyImages() {
   check(listing.describedIds.count == 3, "\(listing.describedIds)")
 }
 
+/// Where the system says a display is, and how often it was asked.
+final class DisplayPlace {
+  var bounds: ScreenRect? = displayBounds
+  private(set) var asked = 0
+
+  func ask() -> ScreenRect? {
+    asked += 1
+    return bounds
+  }
+}
+
+/// A layout for the display that is 1512 by 982 points on the screen.
+func layoutOfASharedDisplay(
+  _ clock: TestClock = TestClock(), _ notes: LayoutNotes = LayoutNotes()
+) -> (CaptureLayout, DisplayPlace) {
+  let place = DisplayPlace()
+  let layout = CaptureLayout(
+    noun: "screen", bounds: { place.ask() }, now: { clock.seconds },
+    note: { notes.told.append($0) })
+  return (layout, place)
+}
+
+func testTheLayoutOfAnImageOfADisplayIsTheDisplayAndWhatTheCaptureSaysOfIt() {
+  let (layout, _) = layoutOfASharedDisplay()
+  // The display is 1512 by 982 points, drawn at twice the size, as the pixels of its screen are.
+  let said = ScreenRect(x: 0, y: 0, width: 3024, height: 1964)
+  check(
+    layout.geometry(pictureWidth: 3024, pictureHeight: 1964, reported: said)
+      == PictureGeometry(
+        windowWidth: 1512, windowHeight: 982, pictureWidth: 3024, pictureHeight: 1964,
+        content: said))
+}
+
+func testWhenTheCaptureSaysNothingADisplayOfTheShapeOfThePictureFillsIt() {
+  let (layout, _) = layoutOfASharedDisplay()
+  // Scaled down to the picture that the encoder takes, which has the shape of the display to within
+  // a pixel.
+  check(
+    layout.geometry(pictureWidth: 1920, pictureHeight: 1247, reported: nil)
+      == PictureGeometry(
+        windowWidth: 1512, windowHeight: 982, pictureWidth: 1920, pictureHeight: 1247,
+        content: ScreenRect(x: 0, y: 0, width: 1920, height: 1247)))
+  // A picture of another shape has no layout.
+  check(layout.geometry(pictureWidth: 1920, pictureHeight: 1080, reported: nil) == nil)
+}
+
+func testTheLayoutOfADisplayIsToldAsAScreenWithTheNumbersAndNothingMore() {
+  let notes = LayoutNotes()
+  let (layout, _) = layoutOfASharedDisplay(TestClock(), notes)
+  _ = layout.geometry(pictureWidth: 3024, pictureHeight: 1964, reported: nil)
+  check(notes.told.count == 1, "\(notes.told)")
+  let told = notes.told.first ?? ""
+  check(told.contains("wholePicture"), told)
+  check(told.contains("screen 0.0,0.0 1512.0x982.0 points"), told)
+  check(told.contains("3024x1964"), told)
+  check(!told.contains("window"), told)
+}
+
+func testADisplayThatTheSystemDoesNotHaveHasNoLayoutUntilItComesBack() {
+  let clock = TestClock()
+  let notes = LayoutNotes()
+  let (layout, place) = layoutOfASharedDisplay(clock, notes)
+  let said = ScreenRect(x: 0, y: 0, width: 3024, height: 1964)
+  place.bounds = nil
+  check(layout.geometry(pictureWidth: 3024, pictureHeight: 1964, reported: said) == nil)
+  check(notes.told.count == 1 && notes.told[0].contains("screen nothing"), "\(notes.told)")
+  clock.seconds += 1
+  place.bounds = displayBounds
+  check(layout.geometry(pictureWidth: 3024, pictureHeight: 1964, reported: said) != nil)
+}
+
+func testTheSystemIsAskedOnceForManyImagesOfADisplay() {
+  let clock = TestClock()
+  let (layout, place) = layoutOfASharedDisplay(clock)
+  for _ in 0..<10 {
+    _ = layout.geometry(pictureWidth: 3024, pictureHeight: 1964, reported: nil)
+    clock.seconds += 0.004
+  }
+  check(place.asked == 1, "\(place.asked)")
+  clock.seconds += CaptureLayout.reuse
+  _ = layout.geometry(pictureWidth: 3024, pictureHeight: 1964, reported: nil)
+  check(place.asked == 2, "\(place.asked)")
+}
+
 // MARK: - The keys of a Mac
 
 /// The keys of a US keyboard with the virtual key codes that HIToolbox/Events.h gives them
@@ -1123,7 +1221,7 @@ func testAScrollIsBoundedAndMustBeANumber() {
 
 // MARK: - A window that is steered
 
-func testAWindowIsSteeredByHandingEachEventToItsProcess() {
+func testAWindowIsSteeredByHandingEachEventToItsPoster() {
   let listing = FakeListing()
   listing.described = .window(listed(sharedWindow, process: sharedProcess))
   let activity = FakeActivity()
@@ -1133,17 +1231,16 @@ func testAWindowIsSteeredByHandingEachEventToItsProcess() {
     reader: SurroundingsReader(
       window: sharedWindow, process: sharedProcess, listing: listing, activity: activity,
       layers: testLayers),
-    translator: translator, poster: poster, process: sharedProcess)
+    translator: translator, poster: poster)
 
   check(control.surroundings()?.onScreen == true)
 
   check(control.post(key(0x04)))
-  check(poster.posted.count == 1 && poster.posted[0].process == sharedProcess)
-  check(poster.posted[0].event == syntheticKey(0x00))
+  check(poster.posted == [syntheticKey(0x00)])
 
   poster.posted = []
   check(control.post(key(0, text: "é")), "text goes down and up")
-  check(poster.posted.map { $0.event } == [syntheticKey(0, text: [233]), syntheticKey(0, down: false, text: [233])])
+  check(poster.posted == [syntheticKey(0, text: [233]), syntheticKey(0, down: false, text: [233])])
 
   poster.posted = []
   check(control.post(key(0xE1)), "a modifier key is handled by making nothing")
@@ -1161,15 +1258,91 @@ func testAnEventThatCannotBeHandedOverIsAFailureAndTheRestOfThePostIsNotTried() 
     reader: SurroundingsReader(
       window: sharedWindow, process: sharedProcess, listing: listing, activity: FakeActivity(),
       layers: testLayers),
-    translator: translator, poster: poster, process: 42)
+    translator: translator, poster: poster)
   poster.works = [false]
   check(!control.post(key(0, text: "x")))
   check(poster.posted.count == 1, "\(poster.posted.count)")
-  check(poster.posted[0].process == 42)
   poster.posted = []
   poster.works = [true, false]
   check(!control.post(key(0, text: "x")))
   check(poster.posted.count == 2)
+}
+
+func testADisplayIsSteeredByAskingTheDisplayAndHandingEachEventToItsPoster() {
+  let displays = FakeDisplays()
+  displays.places[sharedDisplay] = displayBounds
+  let poster = FakePoster()
+  let (translator, _) = translatorWithAClock()
+  let control = WindowControl(
+    reader: DisplayReader(display: sharedDisplay, listing: displays, activity: FakeActivity()),
+    translator: translator, poster: poster)
+
+  check(
+    control.surroundings()
+      == WindowSurroundings(
+        locked: false, onScreen: true, keyboard: .shared, window: displayBounds, fronts: []))
+  check(displays.asked == [sharedDisplay])
+
+  check(control.post(pointer(.move, at: (700, 400))))
+  check(control.post(key(0x04)))
+  check(poster.posted.count == 2)
+  check(poster.posted[1] == syntheticKey(0x00))
+  check(!control.post(key(0x66)), "a key that has no code on a Mac is a failure")
+  poster.works = [false]
+  check(!control.post(key(0, text: "x")), "a poster that cannot is a failure")
+}
+
+// MARK: - The surroundings of a whole display
+
+func readerOfASharedDisplay(
+  _ setUp: (FakeDisplays, FakeActivity) -> Void = { _, _ in }
+) -> (DisplayReader, FakeDisplays, FakeActivity) {
+  let displays = FakeDisplays()
+  displays.places[sharedDisplay] = displayBounds
+  let activity = FakeActivity()
+  setUp(displays, activity)
+  return (
+    DisplayReader(display: sharedDisplay, listing: displays, activity: activity), displays, activity
+  )
+}
+
+func testTheSurroundingsOfADisplayAreItsPlaceWithTheKeyboardAndNothingInFront() {
+  // The application that is in front is not the display's, and does not matter: everything on the
+  // display is shared.
+  let (reader, displays, activity) = readerOfASharedDisplay { _, activity in
+    activity.frontmostProcess = 999
+  }
+  check(
+    reader.read()
+      == WindowSurroundings(
+        locked: false, onScreen: true, keyboard: .shared, window: displayBounds, fronts: []))
+  check(displays.asked == [sharedDisplay])
+  check(activity.brought.isEmpty, "no application is brought to the front for a display")
+}
+
+func testADisplayLeftOfTheMainOneKeepsItsPlaceBelowZero() {
+  let place = ScreenRect(x: -1920, y: -120, width: 1920, height: 1080)
+  let (reader, _, _) = readerOfASharedDisplay { displays, _ in
+    displays.places[sharedDisplay] = place
+  }
+  check(reader.read()?.window == place, "\(String(describing: reader.read()))")
+}
+
+func testALockedMacIsToldWithoutAskingForTheDisplay() {
+  let (reader, displays, _) = readerOfASharedDisplay { _, activity in activity.locked = true }
+  check(
+    reader.read()
+      == WindowSurroundings(
+        locked: true, onScreen: false, keyboard: .unknown, window: .zero, fronts: []))
+  check(displays.asked.isEmpty, "a locked Mac is not asked about its displays")
+}
+
+func testADisplayThatIsNotThereIsNotOnTheScreen() {
+  let (reader, _, _) = readerOfASharedDisplay { displays, _ in displays.places = [:] }
+  check(
+    reader.read()
+      == WindowSurroundings(
+        locked: false, onScreen: false, keyboard: .unknown, window: .zero, fronts: []))
 }
 
 // MARK: - The two functions of the table
