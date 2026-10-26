@@ -313,6 +313,11 @@ The reference implementation also applies the following by default. They are not
 | Unread data a connection may hold | 64 KiB, raised to 16 MiB once the peer is known to be paired |
 | Frame streams that a viewer reads at once. One beyond the count is stopped with code 499 and not read | 12 |
 | Bytes of pictures that a viewer holds, those that streams are still delivering and those that wait to be decoded. A stream that would take it beyond the limit is stopped with code 499 and not read any further, because the bytes that a viewer has read no longer count against the connection window | 16 MiB, the connection window |
+| Packet streams of sound that a viewer reads at once. One beyond the count is stopped with code 499 and not read. The source keeps 8 packets in flight and may have reset up to 8 more that the viewer still counts | 16 |
+| Packets of sound that a source has in flight. A source with one more to send resets the oldest | 8 |
+| How late a packet of sound may be before the source resets its stream, counted from when the stream was written | 200 milliseconds and two round trips, at most 1 second |
+| How long a viewer holds a packet of sound that comes before the one it expects, before it goes on without the ones that did not come | 40 milliseconds |
+| Packets of sound that wait for an earlier one. Beyond that the viewer goes on without what is missing before the hold is over | 64 |
 | Time that a frame stream may deliver nothing, and that the rest of a message of a control stream may take to arrive once its length has. A stream that is slower is stopped with code 408 | 10 seconds |
 | Time that a source has to open its control stream once the viewer has accepted. A viewer that has not taken one by then ends the session | 10 seconds |
 | Time between two reports of a viewer | 500 milliseconds |
@@ -812,7 +817,7 @@ header = start (kind 4) | number u64 | capture time u64 | flags u8
 
 | Field | Meaning |
 | --- | --- |
-| `number` | Counts the packets of a session from 0, one for each packet that the encoder made, including those that were reset later. A packet that is reset is not sent again, so a number is never used twice. |
+| `number` | Counts the packets of a session from 0, one for each packet that the encoder made, including those that were reset later and those that the source had no room to write. A packet that is reset is not sent again, so a number is never used twice, and a number that never arrives tells the viewer that a packet is missing. |
 | `capture time` | When the first sample of the packet was captured, in microseconds since the session began, on the source's clock, which is the clock of the `capture time` of a frame of video. |
 | `flags` | Bit 0 (value 1): the first packet of a run, or of a run that began again after the capture of the source started afresh. The decoder forgets what it held before it. |
 

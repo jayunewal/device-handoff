@@ -63,5 +63,6 @@ On a Mac and a phone, as in ADR 0009: record the builds, the models, the output 
 - Sound keeps on while a session is paused for a locked Mac, if the tap goes on reading while the Mac is locked (inferred, A2 looks).
 - The line of ADR 0011 that says that sound is not part of the promise is superseded by this record once the Mac side is built.
 - The app needs the usage text for audio capture, and, for the sandbox, one more entitlement if A3 shows that it is needed. The guard of ADR 0011 does not tap, since a program that is not an app bundle gets silence, and a Mac whose app died plays again.
+- A path that stops costs the sound of the stall. When it comes back, the packets that the source kept are the newest eight, up to about 0.2 s old, and they arrive together; the player has to drop the sound that is older than its buffer allows, or the sound stays that much behind. A path that carries only half of the sound plays about half of it, in pieces, and keeps within about 0.3 s of the Mac. Both are what the simulated link shows with the starting values of the rules, and the player and A4 decide what to do about them.
 - The things that cost the phone something (the decoder, the ring, the audio session) are small, and A6 reads them.
 - There is no sound from a phone to a Mac here, and no microphone and no camera.

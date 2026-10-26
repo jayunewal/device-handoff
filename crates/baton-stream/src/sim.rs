@@ -31,21 +31,21 @@ use crate::{
 const STEP: Duration = Duration::from_millis(1);
 
 /// A small deterministic random source (xorshift64*).
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
-    fn next(&mut self) -> u64 {
+    pub(crate) fn next(&mut self) -> u64 {
         self.0 ^= self.0 >> 12;
         self.0 ^= self.0 << 25;
         self.0 ^= self.0 >> 27;
         self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
     }
 
-    fn below(&mut self, n: u64) -> u64 {
+    pub(crate) fn below(&mut self, n: u64) -> u64 {
         self.next() % n.max(1)
     }
 
-    fn chance(&mut self, permille: u64) -> bool {
+    pub(crate) fn chance(&mut self, permille: u64) -> bool {
         self.below(1000) < permille
     }
 }
@@ -79,7 +79,7 @@ impl Link {
         }
     }
 
-    fn rate_at(&self, t: Duration) -> u64 {
+    pub(crate) fn rate_at(&self, t: Duration) -> u64 {
         if self.stalls.iter().any(|(from, to)| *from <= t && t < *to) {
             return 0;
         }
