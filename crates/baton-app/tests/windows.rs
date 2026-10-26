@@ -2803,7 +2803,10 @@ async fn why_the_mac_has_no_screen_to_give_is_told_in_words_that_name_it() {
     asking.allow(StartAccess::Look);
     let reasons = [
         (ScreenError::Unsupported, "cannot start sharing its screen"),
-        (ScreenError::NeedsPermission, "Screen Recording"),
+        (
+            ScreenError::NeedsPermission,
+            "Screen & System Audio Recording",
+        ),
         (ScreenError::Unavailable, "no screen to give right now"),
         (
             ScreenError::Failed(PlatformError::new("No window server.")),

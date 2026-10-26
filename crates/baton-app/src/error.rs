@@ -285,8 +285,8 @@ impl Error {
             ),
             WhyNot::NeedsPermission => format!(
                 "Baton on {device} is not allowed to record its screen. Someone there has to turn \
-                 it on under Privacy & Security, Screen Recording, in System Settings, and then \
-                 open Baton again."
+                 it on under Privacy & Security, Screen & System Audio Recording, in System \
+                 Settings, and then open Baton again."
             ),
             WhyNot::Failed => format!("{device} could not give its screen. Try again."),
             WhyNot::Other => format!(
@@ -623,7 +623,7 @@ mod tests {
             ),
             (
                 WhyNot::NeedsPermission,
-                "Screen Recording, in System Settings, and then open Baton again",
+                "Screen & System Audio Recording, in System Settings, and then open Baton again",
             ),
             (WhyNot::Failed, "Try again"),
             (WhyNot::Other, "newer version"),
