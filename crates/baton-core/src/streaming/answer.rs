@@ -25,7 +25,7 @@ use baton_proto::{
     DeviceId,
     device::{MAX_DISPLAY_NAME_CHARS, MAX_DISPLAY_TITLE_CHARS, sanitize_text},
     id::SessionId,
-    message::{DeclineReason, Message, Response},
+    message::{DeclineReason, Hello, Message, Response, capability},
     stream::{
         Accepted, Codec, Declined, Offer, SourceKind, Stop, Stopped, StreamReply, StreamRequest,
         WhyNot,
@@ -34,7 +34,7 @@ use baton_proto::{
 use iroh::endpoint::Connection;
 use tokio_util::sync::CancellationToken;
 
-use super::{Decoder, Granted, Streaming, Takes, ViewHandle, ViewParams};
+use super::{Decoder, Granted, Speaker, Streaming, Takes, ViewHandle, ViewParams};
 use crate::{
     error::{Error, Result},
     transfer::incoming::Link,
@@ -121,9 +121,11 @@ impl fmt::Debug for WindowOffer {
 }
 
 /// What a viewer says when it takes a window: the largest picture it can show, the codecs it can
-/// decode, and the decoder and screen that it shows the picture with.
+/// decode, and the decoder and screen that it shows the picture with, and, if it plays the sound
+/// of a screen, the speaker.
 pub struct Viewing {
     pub(super) decoder: Box<dyn Decoder>,
+    pub(super) speaker: Option<Box<dyn Speaker>>,
     pub(super) takes: Takes,
     pub(super) params: ViewParams,
 }
@@ -150,6 +152,7 @@ impl Viewing {
         }
         let viewing = Self {
             decoder: Box::new(decoder),
+            speaker: None,
             takes: Takes {
                 max_width,
                 max_height,
@@ -165,6 +168,17 @@ impl Viewing {
         Ok(viewing)
     }
 
+    /// Plays the sound of the screen that the session shows with `speaker`, when the application
+    /// asks for it ([`ViewHandle::hear`]). Sound goes only with a whole display, and only to a
+    /// device that was set up to play it
+    /// ([`NodeBuilder::play_sound`](crate::NodeBuilder::play_sound)): on any other, the speaker is
+    /// never used.
+    #[must_use]
+    pub fn with_speaker(mut self, speaker: impl Speaker) -> Self {
+        self.speaker = Some(Box::new(speaker));
+        self
+    }
+
     /// The same, with the time limits of the session changed, for a test.
     #[cfg(test)]
     pub(crate) fn within(mut self, params: ViewParams) -> Self {
@@ -178,6 +192,7 @@ impl Viewing {
     pub(crate) fn raw(decoder: impl Decoder, takes: Takes, params: ViewParams) -> Self {
         Self {
             decoder: Box::new(decoder),
+            speaker: None,
             takes,
             params,
         }
@@ -198,6 +213,7 @@ impl fmt::Debug for Viewing {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Viewing")
             .field("takes", &self.takes)
+            .field("speaker", &self.speaker.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -260,6 +276,9 @@ pub(crate) struct Viewer {
     charge: Box<dyn Fn(&DeviceId) -> bool + Send + Sync>,
     /// How long a person has to answer.
     approval: Duration,
+    /// Whether the device plays the sound of the screens it is shown, which is whether it
+    /// advertises `stream.hear`.
+    hears: bool,
 }
 
 impl Viewer {
@@ -272,7 +291,14 @@ impl Viewer {
             handler,
             charge: Box::new(charge),
             approval,
+            hears: false,
         }
+    }
+
+    /// Whether the device plays sound.
+    pub(crate) fn hearing(mut self, hears: bool) -> Self {
+        self.hears = hears;
+        self
     }
 }
 
@@ -307,12 +333,15 @@ impl Seen {
     }
 }
 
-/// What the viewer keeps about offers: the one that waits for the person, and the ids seen on
-/// each connection.
+/// What the viewer keeps about offers: the one that waits for the person, the ids seen on each
+/// connection, and the connections on which the other device said that it sends sound.
 #[derive(Default)]
 pub(super) struct Offers {
     pub(super) waiting: Option<Waiting>,
     pub(super) seen: HashMap<Link, Seen>,
+    /// The connections whose device introduced itself as one that sends sound. A viewer sends a
+    /// `Hear` only to such a device.
+    pub(super) sounding: HashSet<Link>,
 }
 
 impl Offers {
@@ -374,10 +403,25 @@ impl Streaming {
         self.viewer.is_some()
     }
 
+    /// Whether this device plays the sound of the screens it is shown, which is whether it
+    /// advertises `stream.hear`.
+    pub(crate) fn hears(&self) -> bool {
+        self.viewer.as_ref().is_some_and(|viewer| viewer.hears)
+    }
+
     /// Whether this device takes part in window streaming at all, which is whether it advertises
     /// one of its capabilities.
     pub(super) fn takes_part(&self) -> bool {
         self.viewer.is_some() || self.sharer.is_some()
+    }
+
+    /// The device at the other end of the connection `link` introduced itself with `hello`. A
+    /// viewer is told by this which of the things it may say to a source the source takes, since
+    /// the offer does not say.
+    pub(crate) fn introduced(&self, link: Link, hello: &Hello) {
+        if self.hears() && hello.supports(capability::STREAM_SOUND) {
+            lock(&self.table).offers.sounding.insert(link);
+        }
     }
 
     /// Answers a request of section 9 that `paired` made on `connection`, which has the link
@@ -436,11 +480,12 @@ impl Streaming {
             // The offer that a start of this device asked for is taken without asking a person:
             // the person asked when they chose to start. It is not charged to the device either,
             // since this device asked for it.
+            let sounding = table.offers.sounding.contains(&link);
             if let Some(pending) = table
                 .starting
                 .take_if(|pending| pending.peer == paired.id && pending.session == session)
             {
-                return self.take_asked(&mut table, paired, connection, pending, &offer);
+                return self.take_asked(&mut table, paired, connection, pending, &offer, sounding);
             }
             // Too many items from the device, another offer that waits for a person, a window
             // that is shown already, or a start that waits for its own offer.
@@ -462,6 +507,7 @@ impl Streaming {
             session,
             withdrawn,
         };
+        let sounding = lock(&self.table).offers.sounding.contains(&link);
 
         let shown = WindowOffer::new(&offer);
         let verdict = tokio::select! {
@@ -497,6 +543,7 @@ impl Streaming {
                         Granted {
                             control: offer.control,
                             private: offer.private,
+                            sound: sounding,
                         },
                     )
                 };
@@ -550,7 +597,9 @@ impl Streaming {
 
     /// Lets go of what was kept for a connection that ended.
     pub(crate) fn connection_ended(&self, link: Link) {
-        lock(&self.table).offers.seen.remove(&link);
+        let mut table = lock(&self.table);
+        table.offers.seen.remove(&link);
+        table.offers.sounding.remove(&link);
     }
 }
 

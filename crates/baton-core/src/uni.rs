@@ -3,11 +3,12 @@
 //! The unidirectional streams of a session connection: who takes them.
 //!
 //! A paired device opens unidirectional streams to this one for the lanes of a file transfer
-//! (`docs/protocol.md` section 8) and, for window streaming, for the frames of video and the
-//! control streams (section 9). The first byte of a stream says which, and the next 16 name the
-//! transfer or the session that it belongs to. QUIC has one limit for all of them and does not
-//! know what they carry, so one task for each connection takes every stream, whatever it carries,
-//! and the rules that are the same for every kind are applied here and not once for each:
+//! (`docs/protocol.md` section 8) and, for window streaming, for the frames of video, the packets
+//! of sound and the control streams (section 9). The first byte of a stream says which, and the
+//! next 16 name the transfer or the session that it belongs to. QUIC has one limit for all of them
+//! and does not know what they carry, so one task for each connection takes every stream, whatever
+//! it carries, and the rules that are the same for every kind are applied here and not once for
+//! each:
 //!
 //! - A stream has to say what it is. It has [`Uni::start_deadline`] to send its first 17 bytes,
 //!   and one that does not is stopped with 408.
@@ -37,7 +38,7 @@ use std::{
 };
 
 use baton_proto::{DeviceId, close_code, transfer::lane::KIND_LANE};
-use baton_stream::{KIND_CONTROL, KIND_VIDEO, header::PREFIX_LEN};
+use baton_stream::{KIND_CONTROL, KIND_SOUND, KIND_VIDEO, header::PREFIX_LEN};
 use iroh::endpoint::{Connection, RecvStream};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -69,16 +70,19 @@ pub(crate) enum Kind {
     Video,
     /// A control stream (section 9).
     Control,
+    /// One packet of sound (section 9).
+    Sound,
 }
 
 impl Kind {
-    const COUNT: usize = 3;
+    const COUNT: usize = 4;
 
     fn from_byte(byte: u8) -> Option<Self> {
         match byte {
             KIND_LANE => Some(Self::Lane),
             KIND_VIDEO => Some(Self::Video),
             KIND_CONTROL => Some(Self::Control),
+            KIND_SOUND => Some(Self::Sound),
             _ => None,
         }
     }
@@ -88,17 +92,18 @@ impl Kind {
             Self::Lane => 0,
             Self::Video => 1,
             Self::Control => 2,
+            Self::Sound => 3,
         }
     }
 
     /// What a stream beyond the count of its kind is stopped with. A lane or a control stream
-    /// beyond it is a violation. A frame of video is not: the source cannot see when the viewer
-    /// stops counting a stream that it reset, so a frame can arrive just as the count is reached,
-    /// and that is no one's fault (ADR 0009).
+    /// beyond it is a violation. A frame of video or a packet of sound is not: the source cannot
+    /// see when the viewer stops counting a stream that it reset, so one can arrive just as the
+    /// count is reached, and that is no one's fault (ADR 0009, ADR 0012).
     const fn beyond_the_count(self) -> u32 {
         match self {
             Self::Lane | Self::Control => close_code::PROTOCOL_VIOLATION,
-            Self::Video => close_code::CANCELLED,
+            Self::Video | Self::Sound => close_code::CANCELLED,
         }
     }
 }
@@ -377,18 +382,24 @@ mod tests {
 
     #[tokio::test]
     async fn each_stream_goes_to_the_sink_of_its_kind_with_what_follows_its_start() {
-        let (b, mut taken) =
-            Device::taking(&[(Kind::Lane, 2), (Kind::Video, 2), (Kind::Control, 1)]).await;
+        let (b, mut taken) = Device::taking(&[
+            (Kind::Lane, 2),
+            (Kind::Video, 2),
+            (Kind::Control, 1),
+            (Kind::Sound, 2),
+        ])
+        .await;
         let (a, _) = Device::taking(&[]).await;
         let (dialed, _) = connect(&a, &b).await;
-        let [lanes, videos, controls] = taken.as_mut_slice() else {
-            panic!("three sinks");
+        let [lanes, videos, controls, sounds] = taken.as_mut_slice() else {
+            panic!("four sinks");
         };
 
         for (kind, id, rest, receiver) in [
             (KIND_LANE, 7, &b"lane bytes"[..], &mut *lanes),
             (KIND_VIDEO, 8, &b"a picture"[..], &mut *videos),
             (KIND_CONTROL, 9, &b"hello"[..], &mut *controls),
+            (KIND_SOUND, 10, &b"a packet"[..], &mut *sounds),
         ] {
             let mut send = open(&dialed, &[start(kind, id).as_slice(), rest].concat()).await;
             send.finish().unwrap();
@@ -400,7 +411,7 @@ mod tests {
             assert_eq!(arrival.recv.read_to_end(1024).await.unwrap(), rest);
         }
         // Each sink got its own.
-        for receiver in [lanes, videos, controls] {
+        for receiver in [lanes, videos, controls, sounds] {
             nothing_arrives(receiver).await;
         }
     }
@@ -412,7 +423,7 @@ mod tests {
         let (a, _) = Device::taking(&[]).await;
         let (dialed, _) = connect(&a, &b).await;
 
-        for kind in [KIND_VIDEO, KIND_CONTROL, 9] {
+        for kind in [KIND_VIDEO, KIND_CONTROL, KIND_SOUND, 9] {
             let send = open(&dialed, &start(kind, 1)).await;
             assert_eq!(stopped_with(&send).await, 400, "kind {kind}");
             // A sender that is stopped lets go of the stream, which gives its place back. There
@@ -501,6 +512,12 @@ mod tests {
     #[tokio::test]
     async fn a_frame_beyond_the_count_of_frames_is_stopped_with_499_and_no_one_is_at_fault() {
         let codes = open_beyond(&[(Kind::Video, 2), (Kind::Lane, 4)], KIND_VIDEO, 4).await;
+        assert_eq!(codes, [499, 499]);
+    }
+
+    #[tokio::test]
+    async fn a_packet_beyond_the_count_of_packets_is_stopped_with_499_and_no_one_is_at_fault() {
+        let codes = open_beyond(&[(Kind::Sound, 2), (Kind::Lane, 4)], KIND_SOUND, 4).await;
         assert_eq!(codes, [499, 499]);
     }
 
@@ -669,13 +686,16 @@ mod tests {
         // Another kind has a count of its own.
         let frame = counts.take(Kind::Video, 1).unwrap();
         assert!(counts.take(Kind::Video, 1).is_none());
+        let packet = counts.take(Kind::Sound, 1).unwrap();
+        assert!(counts.take(Kind::Sound, 1).is_none());
         assert_eq!(counts.open(Kind::Lane), 2);
         drop(first);
         assert_eq!(counts.open(Kind::Lane), 1);
         let third = counts.take(Kind::Lane, 2).unwrap();
-        drop((second, third, frame));
+        drop((second, third, frame, packet));
         assert_eq!(counts.open(Kind::Lane), 0);
         assert_eq!(counts.open(Kind::Video), 0);
+        assert_eq!(counts.open(Kind::Sound), 0);
     }
 
     #[test]
@@ -691,9 +711,11 @@ mod tests {
             Arc::clone(&sink),
         );
         assert_eq!(sinks.quic_limit(), 21);
+        let sinks = sinks.install(Kind::Sound, 16, Arc::clone(&sink));
+        assert_eq!(sinks.quic_limit(), 37);
         // A kind is installed once, and a limit of zero takes none.
         let sinks = sinks.install(Kind::Video, 0, Arc::clone(&sink));
-        assert_eq!(sinks.quic_limit(), 9);
+        assert_eq!(sinks.quic_limit(), 25);
         assert!(sinks.get(Kind::Video).is_none());
         let sinks = sinks.install(Kind::Lane, u32::MAX, sink);
         assert_eq!(sinks.quic_limit(), u32::MAX, "the sum does not wrap");
@@ -704,11 +726,16 @@ mod tests {
         assert_eq!(Kind::from_byte(KIND_LANE), Some(Kind::Lane));
         assert_eq!(Kind::from_byte(KIND_VIDEO), Some(Kind::Video));
         assert_eq!(Kind::from_byte(KIND_CONTROL), Some(Kind::Control));
-        for byte in (0..=u8::MAX).filter(|b| ![KIND_LANE, KIND_VIDEO, KIND_CONTROL].contains(b)) {
+        assert_eq!(Kind::from_byte(KIND_SOUND), Some(Kind::Sound));
+        for byte in
+            (0..=u8::MAX).filter(|b| ![KIND_LANE, KIND_VIDEO, KIND_CONTROL, KIND_SOUND].contains(b))
+        {
             assert_eq!(Kind::from_byte(byte), None, "{byte}");
         }
-        // A frame that is beyond the count is no one's fault, and the others are a violation.
+        // A frame or a packet that is beyond the count is no one's fault, and the others are a
+        // violation.
         assert_eq!(Kind::Video.beyond_the_count(), close_code::CANCELLED);
+        assert_eq!(Kind::Sound.beyond_the_count(), close_code::CANCELLED);
         assert_eq!(
             Kind::Lane.beyond_the_count(),
             close_code::PROTOCOL_VIOLATION

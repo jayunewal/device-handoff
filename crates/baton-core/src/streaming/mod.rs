@@ -10,12 +10,16 @@
 //! it, is behind traits that the platform implements: `SourceEvents` and [`Decoder`].
 //!
 //! `Streaming` holds the sessions of a node, from either side, and is installed as the `Sink`
-//! of the streams of kind frame and kind control (`crate::uni`). A stream is taken only if its
-//! start names a session that is running, that was made with the device that opened the stream,
-//! and that lives on the connection the stream came on: sessions live and die with their
-//! connection, so a stream of the same device on another connection is not part of the session.
-//! Any other stream is stopped with code 499, the code for something stopped on purpose, because
-//! a frame can arrive after its session has ended and that is no fault.
+//! of the streams of kind frame, kind control and kind sound (`crate::uni`). A stream is taken
+//! only if its start names a session that is running, that was made with the device that opened
+//! the stream, and that lives on the connection the stream came on: sessions live and die with
+//! their connection, so a stream of the same device on another connection is not part of the
+//! session. Any other stream is stopped with code 499, the code for something stopped on purpose,
+//! because a frame can arrive after its session has ended and that is no fault.
+//!
+//! When the screen of a source is shared whole, its sound can go with it, in packets on streams of
+//! their own and with two more messages on the control streams. `sound` holds what the platform is
+//! given and provides for it, and what the sessions keep.
 //!
 //! The two sides write and read their control streams in the same way, so that is here: a stream
 //! that carries one kind of message, in which a message that cannot be read, or that stops
@@ -56,6 +60,9 @@ mod answer_tests;
 mod offer;
 #[cfg(test)]
 mod offer_tests;
+mod sound;
+#[cfg(test)]
+mod sound_tests;
 mod source;
 mod start;
 #[cfg(test)]
@@ -69,7 +76,12 @@ pub(crate) const FRAME_STREAMS: u32 = 12;
 /// How many control streams a device takes from the other end of a session on a connection.
 pub(crate) const CONTROL_STREAMS: u32 = 1;
 
+/// How many packet streams of sound a viewer takes at once from a source on a connection: eight in
+/// flight and up to eight more that were reset and are still counted (ADR 0012).
+pub(crate) const SOUND_STREAMS: u32 = 16;
+
 const _: () = assert!(FRAME_STREAMS as usize == baton_stream::MAX_FRAME_STREAMS);
+const _: () = assert!(SOUND_STREAMS as usize == baton_stream::MAX_SOUND_STREAMS);
 
 use answer::Offers;
 pub(crate) use answer::Viewer;
@@ -79,6 +91,8 @@ use offer::Sending;
 pub(crate) use offer::{Offered, Reservation, SETTLE, Sharer, Withdraw, ask};
 pub use offer::{ShareOutcome, WindowShare};
 
+pub(crate) use sound::SoundPlan;
+pub use sound::{Play, SoundPacket, Speaker, playable};
 use source::Source;
 pub use source::{NotSent, Picture, SourceEvents, SourceHandle, SourceStats};
 pub(crate) use source::{SourceParams, SourceSetup};
@@ -264,8 +278,25 @@ impl Streaming {
         control: bool,
         private: bool,
     ) -> Result<ViewHandle> {
+        let granted = Granted {
+            control,
+            private,
+            sound: false,
+        };
+        self.view_granted(peer, connection, session, viewing, granted)
+    }
+
+    /// The same, for a source that said what it sends.
+    #[cfg(test)]
+    fn view_granted(
+        self: &Arc<Self>,
+        peer: &PairedDevice,
+        connection: Connection,
+        session: SessionId,
+        viewing: Viewing,
+        granted: Granted,
+    ) -> Result<ViewHandle> {
         let mut table = lock(&self.table);
-        let granted = Granted { control, private };
         self.view_in(&mut table, peer, connection, session, viewing, granted)
     }
 
@@ -277,10 +308,10 @@ impl Streaming {
     /// messages of the source. `viewing.takes` is what the viewer said it can take: a source that
     /// describes a picture beyond it breaks a rule. `granted` is what the offer granted the viewer
     /// and said of the source: control of the window, without which the session sends nothing that
-    /// the person does, and a private screen, without which it sends no [`ViewHandle::lift`]. The
-    /// session ends, and the decoder is told, when the source ends it, when it breaks a rule, when
-    /// the connection ends, when the returned handle is dropped and when the source does not open
-    /// its control stream in time.
+    /// the person does, a private screen, without which it sends no [`ViewHandle::lift`], and
+    /// sound, without which the person cannot ask to hear it. The session ends, and the decoder is
+    /// told, when the source ends it, when it breaks a rule, when the connection ends, when the
+    /// returned handle is dropped and when the source does not open its control stream in time.
     ///
     /// # Errors
     ///
@@ -304,6 +335,7 @@ impl Streaming {
             connection,
             viewing,
             granted,
+            self.hears(),
         );
         table.sessions.insert(session, Session::View(view));
         Ok(handle)
@@ -443,15 +475,18 @@ impl Sink for Streaming {
             (Session::View(view), Kind::Video) => {
                 tokio::spawn(view.read_frame(arrival));
             }
+            (Session::View(view), Kind::Sound) => {
+                tokio::spawn(view.read_packet(arrival));
+            }
             (Session::View(view), Kind::Control) => {
                 tokio::spawn(view.read_source_control(arrival));
             }
             (Session::Source(source), Kind::Control) => {
                 tokio::spawn(source.read_viewer_control(arrival));
             }
-            // A frame goes from the source to the viewer and not back, and lanes are not for this
-            // sink: the dispatcher does not send them here.
-            (Session::Source(_), Kind::Video) | (_, Kind::Lane) => {
+            // A frame or a packet goes from the source to the viewer and not back, and lanes are
+            // not for this sink: the dispatcher does not send them here.
+            (Session::Source(_), Kind::Video | Kind::Sound) | (_, Kind::Lane) => {
                 let mut recv = arrival.recv;
                 stop(&mut recv, close_code::PROTOCOL_VIOLATION);
             }

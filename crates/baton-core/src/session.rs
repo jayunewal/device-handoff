@@ -121,6 +121,14 @@ pub(crate) fn our_hello(shared: &Shared) -> Hello {
     if shared.streaming.keeps_private() {
         capabilities.push(capability::STREAM_PRIVATE.to_owned());
     }
+    // A device that was set up to send the sound of the screen it shares, or to play the sound of
+    // one it is shown, says so, so that the other side may use the messages and the streams.
+    if shared.streaming.sounds() {
+        capabilities.push(capability::STREAM_SOUND.to_owned());
+    }
+    if shared.streaming.hears() {
+        capabilities.push(capability::STREAM_HEAR.to_owned());
+    }
     // A device that was given someone to get ready when a paired device asks it to share starts
     // the session, instead of waiting to be told which window to offer.
     if shared.streaming.starts() {
@@ -386,6 +394,7 @@ async fn serve_stream(
 
     let response = match request {
         Request::Hello(hello) => {
+            shared.streaming.introduced(link, &hello);
             learn_from_hello(&shared, peer, &hello).await;
             note_contact(&shared, peer, contact_hints(&connection)).await;
             Response::Hello(our_hello(&shared))
