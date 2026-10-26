@@ -96,6 +96,9 @@ pub(crate) struct Given {
     pub(crate) app: String,
     pub(crate) width: u32,
     pub(crate) height: u32,
+    /// Whether it is a display that was given as private by a platform that can lift what keeps
+    /// it so, which is what the other device is told it may do.
+    pub(crate) private: bool,
 }
 
 /// The answer of the platform to a pick.
@@ -244,6 +247,10 @@ impl WindowSharer for AbiSharer {
         self.shared.calls.can_screen()
     }
 
+    fn can_lift(&self) -> bool {
+        self.shared.calls.can_lift()
+    }
+
     /// Has the platform give its main display. The call may wait for the system, so a thread that
     /// the runtime keeps for such calls makes it, and takes the display in the same breath: a
     /// display that nobody waits for any more is released by that thread when it is dropped there.
@@ -307,6 +314,8 @@ pub(crate) struct AbiPicked {
     window: PickedHandle,
     shared: Arc<Shared>,
     display: bool,
+    /// Whether the screen is kept private, and the other device may lift what keeps it so.
+    private: bool,
     /// The events of the session, and the rules that decide what they do to the window.
     input: Arc<Input>,
     title: String,
@@ -323,6 +332,7 @@ impl AbiPicked {
             window: shared.calls.adopt(given.context),
             shared: Arc::clone(shared),
             display: given.display,
+            private: given.private,
             input: Input::new(shared.timing),
             title: given.title,
             app: given.app,
@@ -336,6 +346,10 @@ impl AbiPicked {
 impl PickedWindow for AbiPicked {
     fn display(&self) -> bool {
         self.display
+    }
+
+    fn private(&self) -> bool {
+        self.private
     }
 
     fn title(&self) -> String {
@@ -378,6 +392,7 @@ impl PickedWindow for AbiPicked {
             window,
             shared,
             display,
+            private,
             input,
             prepared,
             ..
@@ -416,7 +431,9 @@ impl PickedWindow for AbiPicked {
         // The thread starts the window, so that a thread that cannot be made leaves a window that
         // was never started, and the answer comes back here.
         let (told, answer) = mpsc::sync_channel(1);
-        let worker = Worker::new(Arc::clone(&input), window, dropped).of_display(display);
+        let worker = Worker::new(Arc::clone(&input), window, dropped)
+            .of_display(display)
+            .keeping_private(private);
         let started = thread::Builder::new()
             .name("baton-input".to_owned())
             .spawn(move || worker.run(number, &told))

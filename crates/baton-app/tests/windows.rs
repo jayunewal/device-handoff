@@ -32,7 +32,7 @@ use baton_core::{
 };
 use baton_proto::{DeviceId, stream::Codec, ticket::PairTicket};
 use baton_stream::{
-    control::{Config, InputBatch, Report, SourceMessage, Thermal, Want},
+    control::{Config, InputBatch, Lift, Report, SourceMessage, Thermal, Want},
     gate::Reason,
     header::FrameHeader,
     input::{Button, Event as InputEvent, Modifiers, PointerAction},
@@ -235,6 +235,10 @@ struct Sharer {
     screens: AtomicUsize,
     /// What the screen was asked for as, each time.
     privacies: Mutex<Vec<Privacy>>,
+    /// Whether the platform can lift what keeps a screen private that it gave as private.
+    lifts: bool,
+    /// What the people at the other device lifted of the privacy, as it reached the platform.
+    lifted: Arc<Mutex<Vec<Lift>>>,
     /// How many times the person was given a picker.
     picks: AtomicUsize,
 }
@@ -250,15 +254,21 @@ enum ScreenPlan {
 
 impl Sharer {
     fn new(control: bool, next: Option<Chosen>) -> Arc<Self> {
-        Self::building(control, next, false)
+        Self::building(control, next, false, false)
     }
 
     /// A platform that can give its screen without the person picking it.
     fn with_screen(control: bool) -> Arc<Self> {
-        Self::building(control, None, true)
+        Self::building(control, None, true, false)
     }
 
-    fn building(control: bool, next: Option<Chosen>, gives_screen: bool) -> Arc<Self> {
+    /// A platform that can give its screen without the person picking it, and can lift what keeps
+    /// that screen private when the person at the other device says so.
+    fn with_lift(control: bool) -> Arc<Self> {
+        Self::building(control, None, true, true)
+    }
+
+    fn building(control: bool, next: Option<Chosen>, gives_screen: bool, lifts: bool) -> Arc<Self> {
         Arc::new(Self {
             control: AtomicBool::new(control),
             next: Mutex::new(next),
@@ -278,6 +288,8 @@ impl Sharer {
             screen_gate: Mutex::new(None),
             screens: AtomicUsize::new(0),
             privacies: Mutex::new(Vec::new()),
+            lifts,
+            lifted: Arc::new(Mutex::new(Vec::new())),
             picks: AtomicUsize::new(0),
         })
     }
@@ -290,6 +302,12 @@ impl Sharer {
     /// What the platform was given of what the person at the other device did, in order.
     fn inputs(&self) -> Vec<InputEvent> {
         self.inputs.lock().unwrap().clone()
+    }
+
+    /// What the people at the other device lifted of the privacy of the screen, in order, as the
+    /// platform heard it.
+    fn lifted(&self) -> Vec<Lift> {
+        self.lifted.lock().unwrap().clone()
     }
 
     /// The window that the platform keeps for `chosen`, as the session will use it.
@@ -305,6 +323,8 @@ impl Sharer {
             fails_at_once: self.fails_at_once.lock().unwrap().clone(),
             failure: Arc::clone(&self.failure),
             inputs: Arc::clone(&self.inputs),
+            private: false,
+            lifted: Arc::clone(&self.lifted),
         }
     }
 }
@@ -362,6 +382,10 @@ impl WindowSharer for Sharer {
         self.gives_screen
     }
 
+    fn can_lift(&self) -> bool {
+        self.lifts
+    }
+
     fn screen(
         &self,
         privacy: Privacy,
@@ -371,7 +395,11 @@ impl WindowSharer for Sharer {
         let plan = self.screen_plan.lock().unwrap().clone();
         let gate = self.screen_gate.lock().unwrap().take();
         let picked = match plan {
-            ScreenPlan::Gives(chosen) => Ok(self.picked(Some(chosen))),
+            ScreenPlan::Gives(chosen) => {
+                let mut picked = self.picked(Some(chosen));
+                picked.private = privacy == Privacy::Private && self.lifts;
+                Ok(picked)
+            }
             ScreenPlan::Refuses(error) => Err(error),
         };
         Box::pin(async move {
@@ -396,6 +424,9 @@ struct Picked {
     fails_at_once: Option<String>,
     failure: Arc<Mutex<Option<SharingFailure>>>,
     inputs: Arc<Mutex<Vec<InputEvent>>>,
+    /// Whether the screen was given as private by a platform that can lift what keeps it so.
+    private: bool,
+    lifted: Arc<Mutex<Vec<Lift>>>,
 }
 
 impl Drop for Picked {
@@ -407,6 +438,10 @@ impl Drop for Picked {
 impl PickedWindow for Picked {
     fn display(&self) -> bool {
         self.chosen.as_ref().is_some_and(|chosen| chosen.display)
+    }
+
+    fn private(&self) -> bool {
+        self.private
     }
 
     fn title(&self) -> String {
@@ -422,7 +457,11 @@ impl PickedWindow for Picked {
     }
 
     fn events(&mut self) -> Box<dyn SourceEvents> {
-        Box::new(Hearing(Arc::clone(&self.heard), Arc::clone(&self.inputs)))
+        Box::new(Hearing(
+            Arc::clone(&self.heard),
+            Arc::clone(&self.inputs),
+            Arc::clone(&self.lifted),
+        ))
     }
 
     fn prepare(&mut self, takes: &Takes) -> Option<Config> {
@@ -472,7 +511,11 @@ impl PickedWindow for Picked {
     }
 }
 
-struct Hearing(Arc<Heard>, Arc<Mutex<Vec<InputEvent>>>);
+struct Hearing(
+    Arc<Heard>,
+    Arc<Mutex<Vec<InputEvent>>>,
+    Arc<Mutex<Vec<Lift>>>,
+);
 
 impl SourceEvents for Hearing {
     fn report(&mut self, _report: Report) {
@@ -489,6 +532,11 @@ impl SourceEvents for Hearing {
     }
 
     fn held(&mut self, _tokens: Vec<LtrToken>) {}
+
+    fn lift(&mut self, lift: Lift) {
+        self.0.push("lift");
+        self.2.lock().unwrap().push(lift);
+    }
 
     fn recovery(&mut self) {
         self.0.push("recovery");
@@ -2820,6 +2868,109 @@ async fn screen_control(wish: bool, access: StartAccess, platform: bool) -> (boo
         [wish]
     );
     (session.control, shared.control)
+}
+
+/// Waits until the platform of the Mac has heard `count` words about what is lifted.
+async fn lifts_heard(sharer: &Sharer, count: usize) {
+    until("the platform to hear what was lifted", || {
+        sharer.lifted().len() >= count
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_screen_that_the_platform_keeps_private_is_private_at_both_ends_and_the_phone_lifts_it_in_parts()
+ {
+    let asking = Asking::with(Sharer::with_lift(true)).await;
+    asking.allow(StartAccess::Control);
+    let mut mac_events = asking.mac.app.events();
+
+    let session = asking.started(true).await;
+    let shared = started_at(&mut mac_events).await;
+
+    // The screen was asked for as private, both ends say so, and nothing is lifted to begin with.
+    assert_eq!(asking.sharer.privacies(), [Privacy::Private]);
+    assert!(session.control && session.private);
+    assert!(shared.control && shared.private);
+    assert_eq!(asking.sharer.lifted(), Vec::<Lift>::new());
+
+    // The person at the phone lifts either part and puts it back, as often as they like, and the
+    // platform hears every word, whole and in the order it was said, the same word twice included.
+    let said = [
+        (true, false),
+        (true, false),
+        (true, true),
+        (false, true),
+        (false, false),
+        (true, false),
+        (false, false),
+    ];
+    for (n, (screen, input)) in said.into_iter().enumerate() {
+        assert!(asking.phone.app.window_lift(session.id, screen, input));
+        lifts_heard(&asking.sharer, n + 1).await;
+    }
+    assert_eq!(
+        asking.sharer.lifted(),
+        said.map(|(screen, input)| Lift { screen, input })
+    );
+
+    // It is the phone that lifts: a window that is shared from here is not one to lift.
+    assert!(!asking.mac.app.window_lift(shared.id, true, true));
+    tokio::time::sleep(QUIET).await;
+    assert_eq!(asking.sharer.lifted().len(), said.len());
+
+    // Nothing is taken once the session is over.
+    assert!(asking.phone.app.end_window(session.id));
+    until("the platform of the Mac to be told", || {
+        asking.sharer.heard.has("ended")
+    })
+    .await;
+    assert!(!asking.phone.app.window_lift(session.id, true, true));
+}
+
+#[tokio::test]
+async fn a_screen_of_a_platform_that_cannot_lift_is_kept_private_and_the_phone_is_not_told_it_may()
+{
+    let asking = Asking::new(true).await;
+    asking.allow(StartAccess::Control);
+    let mut mac_events = asking.mac.app.events();
+
+    let session = asking.started(true).await;
+    let shared = started_at(&mut mac_events).await;
+
+    // The platform is asked to keep the screen private, as for any screen that is controlled, and
+    // the session is controlled, but the phone has nothing to lift.
+    assert_eq!(asking.sharer.privacies(), [Privacy::Private]);
+    assert!(session.control && shared.control);
+    assert!(!session.private && !shared.private);
+    assert!(!asking.phone.app.window_lift(session.id, true, true));
+    tokio::time::sleep(QUIET).await;
+    assert_eq!(asking.sharer.lifted(), Vec::<Lift>::new());
+}
+
+#[tokio::test]
+async fn a_screen_that_the_phone_only_looks_at_is_not_private_and_has_nothing_to_lift() {
+    let asking = Asking::with(Sharer::with_lift(true)).await;
+    asking.allow(StartAccess::Control);
+    let mut mac_events = asking.mac.app.events();
+
+    let session = asking.started(false).await;
+    let shared = started_at(&mut mac_events).await;
+
+    assert_eq!(asking.sharer.privacies(), [Privacy::Open]);
+    assert!(!session.control && !session.private);
+    assert!(!shared.control && !shared.private);
+    assert!(!asking.phone.app.window_lift(session.id, true, true));
+    tokio::time::sleep(QUIET).await;
+    assert_eq!(asking.sharer.lifted(), Vec::<Lift>::new());
+}
+
+#[tokio::test]
+async fn a_lift_for_a_window_that_is_not_shown_here_is_not_taken() {
+    let asking = Asking::with(Sharer::with_lift(true)).await;
+    assert!(!asking.phone.app.window_lift(0, true, true));
+    assert!(!asking.phone.app.window_lift(7, false, true));
+    assert!(!asking.mac.app.window_lift(u64::MAX, true, false));
 }
 
 #[tokio::test]

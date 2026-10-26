@@ -504,6 +504,8 @@ unsafe fn read_answer(
         app: text(app, MAX_NAME_BYTES),
         width: picked.width.min(MAX_WINDOW_EDGE),
         height: picked.height.min(MAX_WINDOW_EDGE),
+        // A window that the person picked is not one that a screen was kept private for.
+        private: false,
     }))
 }
 

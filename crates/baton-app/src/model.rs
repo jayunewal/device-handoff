@@ -649,6 +649,10 @@ pub struct WindowSession {
     pub height: u32,
     /// Whether the viewer may control the window.
     pub control: bool,
+    /// Whether the screen is kept private at the device that shares it: dark, and with the keys
+    /// and the pointer there out of use, until the device that shows it says otherwise with
+    /// [`App::window_lift`](crate::App::window_lift).
+    pub private: bool,
     /// What to draw the picture with, when the window is shown on this device: the number that the
     /// platform gave the screen. `None` when the window is shared from this device.
     pub screen: Option<i64>,
@@ -664,6 +668,7 @@ impl fmt::Debug for WindowSession {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("control", &self.control)
+            .field("private", &self.private)
             .field("screen", &self.screen)
             .finish_non_exhaustive()
     }
@@ -984,6 +989,7 @@ mod tests {
             width: 1440,
             height: 900,
             control: false,
+            private: false,
             screen: Some(7),
         };
         for shown in [format!("{request:?}"), format!("{session:?}")] {

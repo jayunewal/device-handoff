@@ -46,6 +46,12 @@ pub const SCREEN_NEEDS_INPUT_PERMISSION: i32 = 3;
 /// this one may see or use it meanwhile.
 pub const SCREEN_PRIVATE: u32 = 1;
 
+/// A bit of `lift`: the person at the other device lets the screen of this one be seen.
+pub const LIFT_SCREEN: u32 = 1;
+/// A bit of `lift`: the person at the other device lets the keyboard and the pointer of this one
+/// be used.
+pub const LIFT_INPUT: u32 = 2;
+
 /// A key frame.
 pub const FRAME_KEY: u32 = 1;
 /// A recovery frame.
@@ -608,12 +614,15 @@ pub type ScreenFn = unsafe extern "C" fn(
     picked: *mut BatonPicked,
     message: *mut BatonMessage,
 ) -> i32;
+/// Lifts, or puts back, what keeps the Mac private while another device controls it.
+pub type LiftFn = unsafe extern "C" fn(picked: *mut c_void, lifted: u32);
 
 /// What the platform registers to share windows. A function that is `None` here is a registration
 /// that is refused, except `surroundings` and `post`, which a platform that cannot post input
-/// leaves out, and `screen`, which a platform that cannot give its screen without a picker leaves
-/// out. `ended` and `release` are called with the pointer of the window, where the viewer's are
-/// called with the pointer of a screen.
+/// leaves out, `screen`, which a platform that cannot give its screen without a picker leaves out,
+/// and `lift`, which a platform that cannot keep a screen private leaves out. `ended` and `release`
+/// are called with the pointer of the window, where the viewer's are called with the pointer of a
+/// screen.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct BatonSharerVTable {
@@ -643,4 +652,6 @@ pub struct BatonSharerVTable {
     pub post: Option<PostFn>,
     /// See [`ScreenFn`]. A platform that cannot give its screen without a picker leaves it out.
     pub screen: Option<ScreenFn>,
+    /// See [`LiftFn`]. A platform that cannot keep a screen private leaves it out.
+    pub lift: Option<LiftFn>,
 }
