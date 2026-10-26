@@ -22,6 +22,12 @@
 //! is only slow does not fill the stream: its batches wait in the transport and arrive late, and
 //! the source drops what has gone out of date.
 //!
+//! When the screen of the source is shared whole, its sound can come with it. The person asks for
+//! it with [`ViewHandle::hear`]. The source answers on its control stream with the form of the
+//! packets, or with the reason it sends none, and the packets come on streams of their own, one
+//! each. The viewer puts them in order with the rules of `baton_stream::sound::receive`, which
+//! wait a short time for one that comes late, and gives them to the [`Speaker`] of the session.
+//!
 //! A session ends when the source ends it, when it breaks a rule, when the connection ends, when
 //! the person ends it, when the source does not open its control stream in time, and when a message
 //! of the source stalls ([`End`]). It ends once: the decoder is told, the pictures that are held
@@ -40,10 +46,17 @@ use std::{
 
 use baton_proto::{DeviceId, close_code, id::SessionId};
 use baton_stream::{
-    KIND_VIDEO,
-    control::{KeyFrame, Lift, Report, SourceMessage, Thermal, ViewerMessage, Want},
+    KIND_SOUND, KIND_VIDEO,
+    control::{Hear, KeyFrame, Lift, Report, SourceMessage, Thermal, ViewerMessage, Want},
     header::{FrameHeader, PREFIX_LEN, encode_prefix},
     input_queue::{Input, Queue, Refused},
+    sound::{
+        PacketHeader,
+        receive::{
+            Params as SoundRules, Refusal as SoundRefusal, Stats as SoundStats,
+            StreamId as SoundStream, Violation as SoundViolation,
+        },
+    },
     viewer::{Action, Params as Rules, Refusal, Stats, StreamId, Viewer, Violation},
 };
 use iroh::endpoint::{Connection, ReadExactError, RecvStream};
@@ -54,7 +67,9 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ControlEnd, End, Streaming, Takes, Viewing, WriteEnd, read_control, stop, write_control,
+    ControlEnd, End, Streaming, Takes, Viewing, WriteEnd, read_control,
+    sound::{Hearing, Said},
+    stop, write_control,
 };
 use crate::{trust::PairedDevice, uni::Arrival, util::lock};
 
@@ -72,6 +87,8 @@ const OUTBOX: usize = 64;
 pub(crate) struct ViewParams {
     /// The rules for choosing the frame to decode, and what the viewer holds at most.
     pub(crate) rules: Rules,
+    /// The rules for putting the packets of sound in order.
+    pub(crate) sound: SoundRules,
     /// How long a stream may deliver nothing before it is stopped with 408.
     pub(crate) stall: Duration,
     /// How long between two reports.
@@ -86,6 +103,7 @@ impl Default for ViewParams {
     fn default() -> Self {
         Self {
             rules: Rules::default(),
+            sound: SoundRules::default(),
             stall: Duration::from_secs(10),
             report_every: Duration::from_millis(500),
             tick_every: Duration::from_millis(100),
@@ -166,6 +184,11 @@ pub struct ViewStats {
     pub held_bytes: usize,
     /// The frame streams that are being read.
     pub streams: usize,
+    /// What the rules for the packets of sound have counted, all zero if the session plays no
+    /// sound.
+    pub sound: SoundStats,
+    /// The packet streams that are being read.
+    pub sound_streams: usize,
 }
 
 /// A frame that waits to be decoded.
@@ -180,13 +203,15 @@ struct State {
     /// holds, and no others.
     pictures: HashMap<u64, Picture>,
     decoder: Box<dyn Decoder>,
+    /// The sound of the session, if the application gave it a speaker.
+    sound: Option<Hearing>,
     /// Whether the decoder was told that the session is over. It is set under the lock that every
     /// call to the decoder is made with, and the decoder is called no more once it is set, whatever
     /// was on its way: a frame that was whole as the session ended, a message of the source, a tick.
     closed: bool,
 }
 
-/// Why a frame stream is not read any further.
+/// Why a frame stream or a packet stream is not read any further.
 enum Stop {
     /// Stop the stream with this code. It is no fault of the source.
     Code(u32),
@@ -205,6 +230,8 @@ pub(super) struct Granted {
     /// Whether the source keeps its screen private. Only then does the session send a
     /// [`ViewHandle::lift`].
     pub(super) private: bool,
+    /// Whether the source advertised that it sends sound, so that the person can ask to hear it.
+    pub(super) sound: bool,
 }
 
 /// The viewer's side of one session.
@@ -225,6 +252,13 @@ pub(super) struct View {
     input: Mutex<Queue>,
     /// Tells the task that sends the input that something was queued.
     input_ready: Notify,
+    /// Whether this device advertised `stream.hear`. A source sends `Sound` and `Silent` to such a
+    /// device only, whether or not the application gave this session a speaker.
+    hears: bool,
+    /// Whether the source advertised `stream.sound`, so that the person can ask to hear it.
+    source_sounds: bool,
+    /// Tells the task that plays the packets that wait that one arrived.
+    sound_wake: Notify,
     /// Whether the source's control stream has been taken. A second one is a violation.
     source_control: AtomicBool,
     /// Cancelled when the source's control stream has been taken.
@@ -327,12 +361,58 @@ impl ViewHandle {
     #[must_use]
     pub fn stats(&self) -> ViewStats {
         let state = lock(&self.view.state);
+        let (sound, sound_streams) = state
+            .sound
+            .as_ref()
+            .map_or((SoundStats::default(), 0), Hearing::counted);
         ViewStats {
             frames: state.viewer.stats(),
             shown: state.viewer.shown(),
             held_bytes: state.viewer.held_bytes(),
             streams: state.viewer.streams(),
+            sound,
+            sound_streams,
         }
+    }
+
+    /// Whether the person can ask to hear the sound of the screen: the source advertised that it
+    /// sends sound, this device advertised that it plays it, and the application gave the session a
+    /// speaker ([`Viewing::with_speaker`]). If not, [`hear`](Self::hear) does nothing. Sound goes
+    /// with a whole display only, so a viewer of a window is told why there is none when it asks.
+    #[must_use]
+    pub fn can_hear(&self) -> bool {
+        let view = &self.view;
+        view.source_sounds && lock(&view.state).sound.is_some()
+    }
+
+    /// Asks the source to send the sound of the screen, or to stop. Returns whether the request was
+    /// made, which it is not when the session is over or [`can_hear`](Self::can_hear) is false.
+    ///
+    /// The speaker is told what the packets are ([`Speaker::sound`](super::Speaker::sound)) when
+    /// the source answers, and why there is no sound
+    /// ([`Speaker::stopped`](super::Speaker::stopped)) when there is none. A request to hear is sent
+    /// every time it is made, which asks a source that could not capture to try again; a request
+    /// to stop is sent when sound was on. As with every message to the source, a request is
+    /// dropped when the source has not read the last 64 for a long time.
+    pub fn hear(&self, on: bool) -> bool {
+        let view = &self.view;
+        if !view.source_sounds {
+            return false;
+        }
+        let mut guard = lock(&view.state);
+        let state = &mut *guard;
+        if state.closed {
+            return false;
+        }
+        let Some(sound) = state.sound.as_mut() else {
+            return false;
+        };
+        let changed = sound.turn(on);
+        // Said under the lock, so that two requests are said in the order in which they were made.
+        if on || changed {
+            view.say(ViewerMessage::Hear(Hear { on }));
+        }
+        true
     }
 
     /// Ends the session.
@@ -399,7 +479,8 @@ async fn pump_input(
 }
 
 impl View {
-    /// Makes the session and starts what runs for as long as it does.
+    /// Makes the session and starts what runs for as long as it does. `hears` is whether this
+    /// device advertised `stream.hear`.
     pub(super) fn start(
         registry: Weak<Streaming>,
         session: SessionId,
@@ -407,13 +488,23 @@ impl View {
         connection: Connection,
         viewing: Viewing,
         granted: Granted,
+        hears: bool,
     ) -> (Arc<Self>, ViewHandle) {
-        let Granted { control, private } = granted;
+        let Granted {
+            control,
+            private,
+            sound: source_sounds,
+        } = granted;
         let Viewing {
             decoder,
+            speaker,
             takes,
             params,
         } = viewing;
+        let sound = speaker
+            .filter(|_| hears)
+            .map(|speaker| Hearing::new(speaker, params.sound));
+        let plays = sound.is_some();
         let (outbox, queue) = mpsc::channel(OUTBOX);
         let view = Arc::new(Self {
             registry,
@@ -427,12 +518,16 @@ impl View {
                 viewer: Viewer::new(params.rules),
                 pictures: HashMap::new(),
                 decoder,
+                sound,
                 closed: false,
             }),
             outbox,
             private,
             input: Mutex::new(Queue::new(control)),
             input_ready: Notify::new(),
+            hears,
+            source_sounds,
+            sound_wake: Notify::new(),
             source_control: AtomicBool::new(false),
             control_taken: CancellationToken::new(),
             ended: CancellationToken::new(),
@@ -443,6 +538,9 @@ impl View {
         tokio::spawn(Arc::clone(&view).keep_time());
         if control {
             tokio::spawn(Arc::clone(&view).send_input());
+        }
+        if plays {
+            tokio::spawn(Arc::clone(&view).keep_sound_time());
         }
         let handle = ViewHandle {
             view: Arc::clone(&view),
@@ -477,6 +575,9 @@ impl View {
         state.closed = true;
         state.pictures.clear();
         state.decoder.ended();
+        if let Some(sound) = state.sound.as_mut() {
+            sound.ended();
+        }
         drop(state);
         tracing::debug!(peer = %self.peer.short(), reason = ?how, "a window streaming session ended");
     }
@@ -530,6 +631,40 @@ impl View {
         drop(state);
         if !consistent {
             self.end(End::Internal);
+        }
+    }
+
+    /// Calls `each` with the sound of the session, unless the session is over or plays none.
+    fn with_sound<T>(&self, each: impl FnOnce(&mut Hearing) -> T) -> Option<T> {
+        let mut guard = lock(&self.state);
+        let state = &mut *guard;
+        match &mut state.sound {
+            Some(sound) if !state.closed => Some(each(sound)),
+            _ => None,
+        }
+    }
+
+    /// Goes on without the packet of sound that has not come in time, when the time that the
+    /// packets after it may wait is over. The loop of `keep_time` looks at the clock too rarely
+    /// for that: a packet is 21 milliseconds long, and may be held for 40.
+    async fn keep_sound_time(self: Arc<Self>) {
+        loop {
+            let deadline = self.with_sound(|sound| sound.next_deadline()).flatten();
+            let reached = async {
+                match deadline {
+                    Some(at) => tokio::time::sleep(at.saturating_sub(self.now())).await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                () = self.ended.cancelled() => return,
+                () = self.sound_wake.notified() => {}
+                () = reached => {
+                    if self.with_sound(|sound| sound.tick(self.now())) == Some(false) {
+                        self.end(End::Internal);
+                    }
+                }
+            }
         }
     }
 
@@ -653,26 +788,7 @@ impl View {
         }
         self.control_taken.cancel();
         let ended = read_control(recv, self.params.stall, &self.ended, |message| {
-            // A source sends sound messages only to a viewer that advertised `stream.hear`, and
-            // the messages of an unlock only to one that advertised `unlock.approve`. This viewer
-            // advertises neither yet (protocol.md section 9).
-            if matches!(
-                message,
-                SourceMessage::Sound(_)
-                    | SourceMessage::Silent(_)
-                    | SourceMessage::UnlockSealed(_)
-                    | SourceMessage::UnlockDone(_)
-            ) {
-                return ControlFlow::Break(());
-            }
-            // The source keeps within what the viewer said it can take.
-            if let SourceMessage::Config(config) = &message
-                && !self.takes.allows(config)
-            {
-                return ControlFlow::Break(());
-            }
-            self.deliver(message);
-            ControlFlow::Continue(())
+            self.source_said(message)
         })
         .await;
         drop(slot);
@@ -682,6 +798,46 @@ impl View {
             ControlEnd::Violation => self.end(End::Violation),
             ControlEnd::Stalled => self.end(End::Stalled),
         }
+    }
+
+    /// Takes a message of the source. `Break` is for one that breaks a rule of the session.
+    fn source_said(&self, message: SourceMessage) -> ControlFlow<()> {
+        match message {
+            // A source sends the messages about sound only to a viewer that advertised
+            // `stream.hear` (protocol.md section 9). It may send them after the viewer asked it to
+            // stop, or when this session has no speaker, and they are dropped.
+            SourceMessage::Sound(_) | SourceMessage::Silent(_) if !self.hears => {
+                return ControlFlow::Break(());
+            }
+            SourceMessage::Sound(sound) => {
+                let said = self.with_sound(|hearing| {
+                    let said = hearing.sound(sound);
+                    // A viewer that cannot play the sound says so, so that the source does not keep
+                    // the Mac quiet for it. Said under the lock, in the order of the requests.
+                    if said == Said::Unplayable {
+                        self.say(ViewerMessage::Hear(Hear { on: false }));
+                    }
+                    said
+                });
+                if said == Some(Said::Violation) {
+                    return ControlFlow::Break(());
+                }
+            }
+            SourceMessage::Silent(silent) => {
+                self.with_sound(|hearing| hearing.silent(silent.reason));
+            }
+            // A source sends the messages of an unlock only to a viewer that advertised
+            // `unlock.approve`. This viewer does not yet (protocol.md section 9).
+            SourceMessage::UnlockSealed(_) | SourceMessage::UnlockDone(_) => {
+                return ControlFlow::Break(());
+            }
+            // The source keeps within what the viewer said it can take.
+            SourceMessage::Config(config) if !self.takes.allows(&config) => {
+                return ControlFlow::Break(());
+            }
+            message => self.deliver(message),
+        }
+        ControlFlow::Continue(())
     }
 
     /// Gives a message of the source to the decoder, unless the session is over.
@@ -797,6 +953,93 @@ impl View {
                 drop(state);
                 self.end(End::Violation);
             }
+        }
+    }
+
+    /// Reads the packet of one stream and gives it to the rules for sound.
+    pub(super) async fn read_packet(self: Arc<Self>, arrival: Arrival) {
+        let Arrival { mut recv, slot, .. } = arrival;
+        let _slot = slot;
+        let started = self.with_sound(|sound| sound.receiver().stream_started());
+        let Some(Ok(stream)) = started else {
+            // The viewer does not listen, or as many are open as it takes, or this session plays
+            // no sound. The source sees the stop and treats the packet as lost, and has broken
+            // no rule: a packet can come just as the person turns sound off.
+            stop(&mut recv, close_code::CANCELLED);
+            return;
+        };
+        let received = tokio::select! {
+            () = self.ended.cancelled() => Err(Stop::Code(close_code::CANCELLED)),
+            received = self.receive_packet(&mut recv, stream) => received,
+        };
+        match received {
+            Ok((header, bytes)) => self.packet_arrived(stream, header, bytes),
+            Err(why) => {
+                self.with_sound(|sound| sound.receiver().stream_aborted(stream));
+                match why {
+                    Stop::Code(error) => stop(&mut recv, error),
+                    Stop::Gone => {}
+                    Stop::Violation => {
+                        stop(&mut recv, close_code::PROTOCOL_VIOLATION);
+                        self.end(End::Violation);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Reads the rest of the header and then the packet, which the rules for sound count as it
+    /// comes in, so that a source cannot make the viewer hold more than they allow.
+    async fn receive_packet(
+        &self,
+        recv: &mut RecvStream,
+        stream: SoundStream,
+    ) -> Result<(PacketHeader, Vec<u8>), Stop> {
+        let mut head = encode_prefix(KIND_SOUND, self.session).to_vec();
+        head.resize(PacketHeader::LEN, 0);
+        let (_, rest) = head.split_at_mut(PREFIX_LEN);
+        match tokio::time::timeout(self.params.stall, recv.read_exact(rest)).await {
+            Ok(Ok(())) => {}
+            // A header that is cut short is a violation (protocol.md section 9).
+            Ok(Err(ReadExactError::FinishedEarly(_))) => return Err(Stop::Violation),
+            Ok(Err(ReadExactError::ReadError(_))) => return Err(Stop::Gone),
+            Err(_) => return Err(Stop::Code(close_code::TIMEOUT)),
+        }
+        let Ok((header, _)) = PacketHeader::parse(&head) else {
+            return Err(Stop::Violation);
+        };
+
+        let mut packet = Vec::new();
+        loop {
+            let chunk =
+                match tokio::time::timeout(self.params.stall, recv.read_chunk(READ_CHUNK)).await {
+                    Ok(Ok(Some(chunk))) => chunk,
+                    Ok(Ok(None)) => break,
+                    Ok(Err(_)) => return Err(Stop::Gone),
+                    Err(_) => return Err(Stop::Code(close_code::TIMEOUT)),
+                };
+            // Counted before it is kept.
+            let counted =
+                self.with_sound(|sound| sound.receiver().stream_read(stream, chunk.len()));
+            match counted {
+                Some(Ok(())) => {}
+                Some(Err(SoundRefusal::TooLarge)) => return Err(Stop::Code(close_code::TOO_LARGE)),
+                Some(Err(_)) | None => return Err(Stop::Code(close_code::CANCELLED)),
+            }
+            packet.extend_from_slice(&chunk);
+        }
+        Ok((header, packet))
+    }
+
+    /// The packet of a stream is whole.
+    fn packet_arrived(&self, stream: SoundStream, header: PacketHeader, bytes: Vec<u8>) {
+        let now = self.now();
+        // A packet that was whole as the session ended is not kept, and not played.
+        match self.with_sound(|sound| sound.arrived(now, stream, header, bytes)) {
+            Some(Ok(true)) => self.sound_wake.notify_one(),
+            Some(Ok(false)) => self.end(End::Internal),
+            Some(Err(SoundViolation::RepeatedNumber { .. })) => self.end(End::Violation),
+            None => {}
         }
     }
 }
