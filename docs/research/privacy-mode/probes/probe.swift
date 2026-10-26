@@ -13,6 +13,7 @@ import AppKit
 import Carbon.HIToolbox
 import CoreGraphics
 import Foundation
+import ServiceManagement
 
 /// Where the app and run.sh leave each other's notes. The sandbox of the app lets it use this folder
 /// and no other.
@@ -669,6 +670,154 @@ func stageCursor() {
   try? FileManager.default.removeItem(atPath: dir + "/brightness")
 }
 
+// MARK: - The guard
+
+func describe(_ status: SMAppService.Status) -> String {
+  switch status {
+  case .notRegistered: return "not registered"
+  case .enabled: return "enabled"
+  case .requiresApproval: return "waiting for the person to approve it"
+  case .notFound: return "not found"
+  @unknown default: return "status \(status.rawValue)"
+  }
+}
+
+/// What the agent wrote down last, as name and value.
+func guardState() -> [String: String] {
+  guard let text = try? String(contentsOfFile: dir + "/guard-heartbeat", encoding: .utf8) else {
+    return [:]
+  }
+  var fields: [String: String] = [:]
+  for line in text.split(separator: "\n") {
+    let parts = line.split(separator: "=", maxSplits: 1)
+    if parts.count == 2 { fields[String(parts[0])] = String(parts[1]) }
+  }
+  return fields
+}
+
+func guardLine(_ fields: [String: String]) -> String {
+  fields.isEmpty
+    ? "nothing"
+    : fields.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+}
+
+/// A datagram to the agent on the loopback, which the sandbox lets an app send without a file.
+func sendDatagram(_ text: String) -> Bool {
+  let descriptor = socket(AF_INET, SOCK_DGRAM, 0)
+  guard descriptor >= 0 else { return false }
+  defer { close(descriptor) }
+  var address = sockaddr_in()
+  address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+  address.sin_family = sa_family_t(AF_INET)
+  address.sin_port = UInt16(47831).bigEndian
+  address.sin_addr.s_addr = inet_addr("127.0.0.1")
+  let bytes = Array(text.utf8)
+  let sent = withUnsafePointer(to: &address) {
+    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+      sendto(descriptor, bytes, bytes.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+    }
+  }
+  return sent == bytes.count
+}
+
+func stageGuard() {
+  phase("guard")
+  report.line("== guard: an agent that the system starts for the person, outside the sandbox")
+  panel.hide()
+  let files = FileManager.default
+  for file in ["guard-kill.txt", "lease", "private-flag"] {
+    try? files.removeItem(atPath: dir + "/" + file)
+  }
+  let service = SMAppService.agent(plistName: "io.github.jayunewal.baton.probe.guard.plist")
+  report.line("guard: status before: \(describe(service.status))")
+  do {
+    try service.register()
+    report.line("guard: register() worked")
+  } catch {
+    report.line("guard: register() failed: \(error)")
+  }
+  var status = service.status
+  report.line("guard: status after: \(describe(status))")
+  if status == .notFound {
+    report.line(
+      "guard: the system does not know the agent. Run it again from another place: "
+        + "BATON_PROBE_APPS=$HOME/Applications, then /Applications")
+    return
+  }
+  if status == .requiresApproval {
+    panel.show(
+      "Guard check: turn on BatonProbe in System Settings, General, Login Items & Extensions, under "
+        + "Allow in the Background. The check waits for 2 minutes.")
+    SMAppService.openSystemSettingsLoginItems()
+    for _ in 0..<60 {
+      spin(2)
+      status = service.status
+      if status == .enabled { break }
+    }
+    panel.hide()
+    report.line("guard: status after the wait: \(describe(status))")
+  }
+  guard status == .enabled else {
+    try? service.unregister()
+    return
+  }
+
+  var fields: [String: String] = [:]
+  for _ in 0..<80 {
+    spin(0.25)
+    fields = guardState()
+    if fields["pid"] != nil { break }
+  }
+  report.line("guard: the agent says: \(guardLine(fields))")
+  if fields["tap"] != "true" {
+    panel.show(
+      "Guard check: if macOS asks to allow \"guard\" (Input Monitoring, Accessibility), allow it. The "
+        + "check waits for up to a minute for the agent to be able to make a tap.")
+    for _ in 0..<30 {
+      spin(2)
+      fields = guardState()
+      if fields["tap"] == "true" { break }
+    }
+    panel.hide()
+    report.line("guard: the agent can make a tap: \(fields["tap"] ?? "?"); \(guardLine(fields))")
+  }
+
+  // The lease: the app renews it for 6 seconds, in a file and in datagrams, and then lets it go.
+  var sent = 0
+  let renewing = Date(timeIntervalSinceNow: 6)
+  while Date() < renewing {
+    try? "\(sent)".write(toFile: dir + "/lease", atomically: true, encoding: .utf8)
+    if sendDatagram("lease \(sent)") { sent += 1 }
+    spin(0.5)
+  }
+  report.line("guard: the lease was renewed 12 times in 6 s, \(sent) datagrams could be sent")
+  spin(8)
+  fields = guardState()
+  report.line("guard: 8 s after the last renewal: \(guardLine(fields))")
+
+  // Killed, the agent should be started again by the system, and find the flag that a private
+  // session leaves, which it takes for a crash.
+  try? "private".write(toFile: dir + "/private-flag", atomically: true, encoding: .utf8)
+  phase("guard-kill")
+  var killed: String?
+  for _ in 0..<240 {
+    spin(0.25)
+    killed = try? String(contentsOfFile: dir + "/guard-kill.txt", encoding: .utf8)
+    if killed != nil { break }
+  }
+  report.line("guard: killed with signal 9: \(killed?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "run.sh did not say")")
+  spin(2)
+  report.line("guard: the new agent says: \(guardLine(guardState()))")
+  try? files.removeItem(atPath: dir + "/private-flag")
+
+  do {
+    try service.unregister()
+    report.line("guard: unregistered")
+  } catch {
+    report.line("guard: unregister failed: \(error)")
+  }
+}
+
 // MARK: - The helper that has the keyboard
 
 /// A second instance of this app with one field in a window. It is another process on purpose: the
@@ -755,6 +904,7 @@ DispatchQueue.main.async {
         intro: "Check 2: the same, with a password field open that has the keyboard.\n\nFirst 8 seconds with your hands off. Then 10 seconds in which you type letters in the password field, move the pointer and swipe.")
     case "shield": stageShield()
     case "cursor": stageCursor()
+    case "guard": stageGuard()
     default: report.line("no stage called \(stage)")
     }
   }

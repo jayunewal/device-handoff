@@ -7,12 +7,13 @@ The checks here are a small app, built and run by `probes/run.sh` on a Mac with 
 ## Running the checks
 
 ```sh
-sh docs/research/privacy-mode/probes/run.sh              # every stage
+sh docs/research/privacy-mode/probes/run.sh              # tap, secure, shield and cursor
 sh docs/research/privacy-mode/probes/run.sh shield tap   # these stages, in this order
+sh docs/research/privacy-mode/probes/run.sh guard lock   # the helper, and the ways to lock the Mac
 sh docs/research/privacy-mode/probes/run.sh clean        # take away what a run left
 ```
 
-The first run asks to allow the app under Privacy & Security (Input Monitoring and Accessibility), once the tap cannot be made without. The app is signed with the identity that a free Apple ID gives when the Mac has one, and ad hoc when it does not; the report says which. A person has to stay at the Mac, and Focus has to be off for the banners. Each hold of the keys and the pointer lasts ten seconds, a cover of black lasts at most forty, and Escape pressed three times ends a hold. Everything ends by itself, and `run.sh` puts the backlight and the pointer back if the app dies. It prints the report at the end, and leaves it in `/tmp/baton-probe/report.txt`.
+The first run asks to allow the app under Privacy & Security (Input Monitoring and Accessibility), once the tap cannot be made without. The app is signed with the identity that a free Apple ID gives when the Mac has one, and ad hoc when it does not; the report says which. A person has to stay at the Mac, and Focus has to be off for the banners. Each hold of the keys and the pointer lasts ten seconds, a cover of black lasts at most forty, and Escape pressed three times ends a hold. Everything ends by itself, and `run.sh` puts the backlight and the pointer back if the app dies. The `lock` stage locks the Mac three times and needs the person to unlock it each time, so it is only run when it is named. The app is built into `/tmp/baton-probe`, or into the folder in `BATON_PROBE_APPS` (the system may want the helper of the `guard` stage to be in an Applications folder). It prints the report at the end, and leaves it in `/tmp/baton-probe/report.txt`.
 
 ## What each stage settles
 
@@ -22,8 +23,8 @@ The first run asks to allow the app under Privacy & Security (Input Monitoring a
 | `secure` | The same with a password field, in another process, that has the keyboard | Whether the tap is blind to keys then, as the guidance for secure input says, whether the keys still reach the field, and whether the counters see them |
 | `shield` | Covers every screen with black at the shielding level and lists the windows of other programs that stay above or at that level while the person tries Spotlight, Mission Control, the edges of the screen and two banners | Whether the cover is enough, or whether the keys that open these are also held, and which windows could show the activity of the remote person |
 | `cursor` | Hides the pointer over the cover while it moves, with the plain call and with the call that lets a program that is not in front do it, and turns the backlight to zero and back | Whether the pointer can be hidden with public calls, and whether the backlight can be turned off and restored from the sandbox |
-
-Not here yet, and next: a helper that the system starts for the person (`SMAppService`) with the identity of a free Apple ID, the time it takes to be started again after it is killed, how the app and the helper talk, and the ways to lock the Mac that need no consent.
+| `guard` | Registers a helper that is inside the app (`SMAppService`, a launch agent that the system keeps alive), waits for the person to approve it in the login items, reads what the helper says of itself, renews a lease with it in a file and in datagrams on the loopback, kills it, and times how long the system takes to start it again | Whether the helper can be installed with the identity of a free Apple ID, how the person is asked, which consents the helper needs of its own, whether the app can keep the lease with datagrams on the loopback, which the sandbox allows without an exception (the file of the lease works only because the checks have an exception for their folder), how long the Mac stays unguarded when the helper dies, and whether a flag that a crash leaves is found at the start |
+| `lock` | Locks the Mac with the three calls that need no consent (`SACLockScreenImmediate`, `CGSession -suspend`, `pmset displaysleepnow`) from a program outside the sandbox, and times how long the session takes to say that it is locked | Which call the guard uses to lock the Mac when a session ends, since posting the keys for it needs a consent that a rebuild takes away |
 
 ## What came out
 
