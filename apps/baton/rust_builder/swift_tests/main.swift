@@ -1125,6 +1125,18 @@ tests += [
     testTheRingDropsTheOldestSoundWhenItWouldHoldMoreThanTheMost
   ),
   (
+    "the ring lets go of sound that it did not come down to in a second of playing",
+    testTheRingLetsGoOfSoundThatItDidNotComeDownToInASecondOfPlaying
+  ),
+  (
+    "the ring keeps what the level came down to within the slack and lets go in the next second",
+    testTheRingKeepsWhatTheLevelCameDownToWithinTheSlackAndLetsGoInTheNextSecond
+  ),
+  (
+    "the ring begins the second again when it runs dry",
+    testTheRingBeginsTheSecondAgainWhenItRunsDry
+  ),
+  (
     "the ring keeps the order of sound that wraps around its storage",
     testTheRingKeepsTheOrderOfSoundThatWrapsAroundItsStorage
   ),
