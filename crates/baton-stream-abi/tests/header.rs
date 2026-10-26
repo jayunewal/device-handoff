@@ -734,8 +734,8 @@ fn rust_fn_types() -> Vec<CFunction> {
         rust_fn_type!(PostFn as "BatonPostFn": "int32_t" ["void *", "const BatonPost *"]
             is unsafe extern "C" fn(*mut c_void, *const BatonPost) -> i32),
         rust_fn_type!(ScreenFn as "BatonScreenFn": "int32_t"
-            ["void *", "BatonPicked *", "BatonMessage *"]
-            is unsafe extern "C" fn(*mut c_void, *mut BatonPicked, *mut BatonMessage) -> i32),
+            ["void *", "uint32_t", "BatonPicked *", "BatonMessage *"]
+            is unsafe extern "C" fn(*mut c_void, u32, *mut BatonPicked, *mut BatonMessage) -> i32),
     ]
 }
 
@@ -852,6 +852,8 @@ fn rust_numbers() -> Vec<(String, i64)> {
         PICKED_DISPLAY,
         SCREEN_NEEDS_PERMISSION,
         SCREEN_UNAVAILABLE,
+        SCREEN_NEEDS_INPUT_PERMISSION,
+        SCREEN_PRIVATE,
         FRAME_KEY,
         FRAME_RECOVERY,
         FRAME_REFERENCED,
@@ -1272,8 +1274,11 @@ static int32_t post_input(void *picked, const BatonPost *post) {
     return BATON_E_ARGUMENT;
 }
 
-static int32_t screen(void *context, BatonPicked *picked, BatonMessage *message) {
+static int32_t screen(void *context, uint32_t flags, BatonPicked *picked, BatonMessage *message) {
     (void)context;
+    if ((flags & ~BATON_SCREEN_PRIVATE) != 0) {
+        return BATON_E_ARGUMENT;
+    }
     if (picked->size < sizeof *picked || picked->title.len != 0 || message->cap == 0) {
         return BATON_E_ARGUMENT;
     }
@@ -1282,6 +1287,9 @@ static int32_t screen(void *context, BatonPicked *picked, BatonMessage *message)
     }
     if (picked->width == 8) {
         return BATON_SCREEN_UNAVAILABLE;
+    }
+    if ((flags & BATON_SCREEN_PRIVATE) != 0 && picked->width == 9) {
+        return BATON_SCREEN_NEEDS_INPUT_PERMISSION;
     }
     picked->width = 3024;
     picked->height = 1964;

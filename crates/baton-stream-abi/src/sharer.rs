@@ -33,7 +33,9 @@ use std::{
     time::Duration,
 };
 
-use baton_app::windows::{PickedWindow, PlatformError, ScreenError, SharingFailure, WindowSharer};
+use baton_app::windows::{
+    PickedWindow, PlatformError, Privacy, ScreenError, SharingFailure, WindowSharer,
+};
 use baton_core::{
     streaming::{NotSent, Picture, SourceEvents, SourceHandle, Takes},
     util::BoxFuture,
@@ -245,13 +247,16 @@ impl WindowSharer for AbiSharer {
     /// Has the platform give its main display. The call may wait for the system, so a thread that
     /// the runtime keeps for such calls makes it, and takes the display in the same breath: a
     /// display that nobody waits for any more is released by that thread when it is dropped there.
-    fn screen(&self) -> BoxFuture<'static, Result<Box<dyn PickedWindow>, ScreenError>> {
+    fn screen(
+        &self,
+        privacy: Privacy,
+    ) -> BoxFuture<'static, Result<Box<dyn PickedWindow>, ScreenError>> {
         let shared = Arc::clone(&self.shared);
         Box::pin(async move {
             let made = tokio::task::spawn_blocking(move || {
                 shared
                     .calls
-                    .screen()
+                    .screen(privacy == Privacy::Private)
                     .map(|given| AbiPicked::of(given, &shared))
             })
             .await;
@@ -269,6 +274,7 @@ fn screen_error(failure: ScreenFailure) -> ScreenError {
     match failure {
         ScreenFailure::Unsupported => ScreenError::Unsupported,
         ScreenFailure::NeedsPermission => ScreenError::NeedsPermission,
+        ScreenFailure::NeedsInputPermission => ScreenError::NeedsInputPermission,
         ScreenFailure::Unavailable => ScreenError::Unavailable,
         ScreenFailure::Failed(Failure(sentence)) => ScreenError::Failed(PlatformError::new(
             sentence.unwrap_or_else(|| NO_SCREEN.to_owned()),

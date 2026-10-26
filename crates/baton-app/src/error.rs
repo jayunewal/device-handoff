@@ -288,6 +288,12 @@ impl Error {
                  it on under Privacy & Security, Screen & System Audio Recording, in System \
                  Settings, and then open Baton again."
             ),
+            WhyNot::NeedsInputPermission => format!(
+                "Baton on {device} is not allowed to hold its keyboard and pointer while a \
+                 device controls it. Someone there has to turn it on under Privacy & Security, \
+                 in Accessibility and Input Monitoring, in System Settings, and then open Baton \
+                 again."
+            ),
             WhyNot::Failed => format!("{device} could not give its screen. Try again."),
             WhyNot::Other => format!(
                 "{device} gave a reason that this version of Baton does not know. Both devices \
@@ -624,6 +630,10 @@ mod tests {
             (
                 WhyNot::NeedsPermission,
                 "Screen & System Audio Recording, in System Settings, and then open Baton again",
+            ),
+            (
+                WhyNot::NeedsInputPermission,
+                "Accessibility and Input Monitoring, in System Settings, and then open Baton again",
             ),
             (WhyNot::Failed, "Try again"),
             (WhyNot::Other, "newer version"),

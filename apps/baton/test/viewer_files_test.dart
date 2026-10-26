@@ -22,6 +22,8 @@ const _files = [
   'BatonH264Decoder.swift',
   'BatonH264Encoder.swift',
   'BatonInput.swift',
+  'BatonPrivacy.swift',
+  'BatonPrivacyMac.swift',
   'BatonSource.swift',
   'BatonStreamPlugin.swift',
   'BatonViewer.swift',
@@ -89,6 +91,8 @@ void main() {
       'BatonH264Decoder.swift',
       'BatonH264Encoder.swift',
       'BatonInput.swift',
+      'BatonPrivacy.swift',
+      'BatonPrivacyMac.swift',
       'BatonSource.swift',
       'BatonViewer.swift',
     ];
@@ -102,6 +106,7 @@ void main() {
       'BatonViewer.swift',
       'BatonSource.swift',
       'BatonInput.swift',
+      'BatonPrivacy.swift',
     ]) {
       final swift = _read('rust_builder/macos/Classes/$file');
       final imports = RegExp(

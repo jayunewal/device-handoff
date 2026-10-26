@@ -50,8 +50,9 @@ use crate::{
         DecodeFn, EndedFn, FRONT_MENU, FRONT_SAME_APPLICATION, FRONTS_MAX, KEYBOARD_ELSEWHERE,
         KEYBOARD_SHARED, KEYBOARD_UNKNOWN, LimitsFn, MESSAGE_MAX, OK, OpenFn, PICKED_DISPLAY,
         POINTER_DOWN, POINTER_MOVE, POINTER_SCROLL, POINTER_UP, POST_KEY, POST_POINTER, PickFn,
-        PostFn, PrepareFn, ReleaseFn, SCREEN_NEEDS_PERMISSION, SCREEN_UNAVAILABLE, ScreenFn,
-        ShowFn, SourceFn, StartFn, StateFn, SurroundingsFn, size_of_u32,
+        PostFn, PrepareFn, ReleaseFn, SCREEN_NEEDS_INPUT_PERMISSION, SCREEN_NEEDS_PERMISSION,
+        SCREEN_PRIVATE, SCREEN_UNAVAILABLE, ScreenFn, ShowFn, SourceFn, StartFn, StateFn,
+        SurroundingsFn, size_of_u32,
     },
     registry::Registry,
     sharer::Given,
@@ -324,6 +325,9 @@ pub(crate) enum ScreenFailure {
     Unsupported,
     /// The system has not let the program capture the screen.
     NeedsPermission,
+    /// The display was asked for as private and the system has not let the program hold the
+    /// keyboard and the pointer.
+    NeedsInputPermission,
     /// There is no display to give now.
     Unavailable,
     /// The platform could not, or what it gave was not whole: the sentence it wrote, if it wrote
@@ -590,8 +594,9 @@ impl SharerCalls {
         self.screen.is_some()
     }
 
-    /// Has the platform give its main display, without the person choosing it. The call may wait
-    /// for the system, so it is not made on a thread that other work waits for.
+    /// Has the platform give its main display, without the person choosing it, and keep it
+    /// private from the start of the session if `private`. The call may wait for the system, so
+    /// it is not made on a thread that other work waits for.
     ///
     /// A display that the platform gave is the platform's until it is taken ([`adopt`]); an
     /// answer that is not whole is taken and released here, so that it is not lost.
@@ -603,7 +608,7 @@ impl SharerCalls {
     /// can be shared.
     ///
     /// [`adopt`]: Self::adopt
-    pub(crate) fn screen(&self) -> Result<Given, ScreenFailure> {
+    pub(crate) fn screen(&self, private: bool) -> Result<Given, ScreenFailure> {
         let Some(screen) = self.screen else {
             return Err(ScreenFailure::Unsupported);
         };
@@ -624,14 +629,18 @@ impl SharerCalls {
                 len: 0,
             },
         };
+        let flags = if private { SCREEN_PRIVATE } else { 0 };
         // SAFETY: the structs and the buffer behind the message live until the call returns; the
         // function is the platform's, called as the header says.
         let (code, text) = with_message_code(|message| {
-            within(|| unsafe { screen(self.context, &raw mut picked, message) })
+            within(|| unsafe { screen(self.context, flags, &raw mut picked, message) })
         });
         match code {
             OK => {}
             SCREEN_NEEDS_PERMISSION => return Err(ScreenFailure::NeedsPermission),
+            SCREEN_NEEDS_INPUT_PERMISSION if private => {
+                return Err(ScreenFailure::NeedsInputPermission);
+            }
             SCREEN_UNAVAILABLE => return Err(ScreenFailure::Unavailable),
             _ => return Err(ScreenFailure::Failed(Failure(text))),
         }
@@ -1078,7 +1087,8 @@ mod tests {
         let known = size_of_u32::<BatonViewerVTable>();
         for (what, table) in [
             ("version 0", BatonViewerVTable { version: 0, ..good }),
-            ("version 2", BatonViewerVTable { version: 2, ..good }),
+            ("version 1", BatonViewerVTable { version: 1, ..good }),
+            ("version 3", BatonViewerVTable { version: 3, ..good }),
             ("size 0", BatonViewerVTable { size: 0, ..good }),
             ("size 8", BatonViewerVTable { size: 8, ..good }),
             (

@@ -271,6 +271,10 @@ var tests: [(String, () -> Void)] = [
     testAScreenThatCannotBeGivenIsToldByItsCodeAndNothingIsWritten
   ),
   (
+    "a screen is asked for private only with the flag and an unknown flag fails without asking",
+    testAScreenIsAskedForPrivateOnlyWithTheFlagAndAFlagThatIsNotKnownFailsWithoutAsking
+  ),
+  (
     "a screen call with structs that are too short or missing is refused without asking the platform",
     testAScreenCallWithStructsThatAreTooShortOrMissingIsRefusedWithoutAskingThePlatform
   ),
@@ -775,6 +779,66 @@ tests += [
     "a picture that the encoder made keeps its own fields",
     testAPictureThatTheEncoderMadeKeepsItsOwnFields
   ),
+  (
+    "the cover goes up once and a failure leaves nothing raised",
+    testTheCoverGoesUpOnceAndAFailureLeavesNothingRaised
+  ),
+  (
+    "a window that was only given and let go of raises nothing and cannot be raised afterwards",
+    testAWindowThatWasOnlyGivenAndLetGoOfRaisesNothingAndCannotBeRaisedAfterwards
+  ),
+  (
+    "the cover comes down only after the Mac is locked and the lock screen was drawn",
+    testTheCoverComesDownOnlyAfterTheMacIsLockedAndTheLockScreenWasDrawn
+  ),
+  (
+    "a Mac that is locked already is not locked again and keeps the cover until the end",
+    testAMacThatIsLockedAlreadyIsNotLockedAgainAndKeepsTheCoverUntilTheEnd
+  ),
+  (
+    "a Mac that does not lock the first way is tried the next ways and keeps its cover",
+    testAMacThatDoesNotLockWithTheFirstWayIsTriedWithTheNextOnesAndKeepsItsCoverMeanwhile
+  ),
+  (
+    "a Mac that cannot be locked keeps its cover and finish returns after the patience",
+    testAMacThatCannotBeLockedKeepsItsCoverAndFinishReturnsAfterThePatience
+  ),
+  (
+    "something at the Mac ends the session once, tells the other device and locks the Mac",
+    testSomethingAtTheMacEndsTheSessionOnceTellsTheOtherDeviceAndLocksTheMac
+  ),
+  (
+    "something at the Mac while the cover goes up ends the session after the cover is up",
+    testSomethingThatHappensAtTheMacWhileTheCoverGoesUpEndsTheSessionAfterTheCoverIsUp
+  ),
+  (
+    "the Mac is locked while the other device is still being told",
+    testTheMacIsLockedWhileTheOtherDeviceIsStillBeingToldAndNeitherWaitsForTheOther
+  ),
+  (
+    "the end of a session waits for the lock and a release that follows does not",
+    testTheEndOfASessionWaitsForTheLockAndAReleaseThatFollowsDoesNot
+  ),
+  (
+    "a session that did not start after the cover went up is locked when it is released",
+    testASessionThatDidNotStartAfterTheCoverWentUpIsLockedAndGivenBackWhenItIsReleased
+  ),
+  (
+    "three presses of Escape in two seconds are the way out",
+    testThreePressesOfEscapeInTwoSecondsAreTheWayOut
+  ),
+  (
+    "a key that the app did not post is found and the keys of the app are not",
+    testAKeyThatTheAppDidNotPostIsFoundAndTheKeysOfTheAppAreNot
+  ),
+  (
+    "the ledger says how long ago the app last posted a key",
+    testTheLedgerSaysHowLongAgoTheAppLastPostedAKey
+  ),
+  (
+    "what the other device is told is a short sentence that says the Mac locks",
+    testWhatTheOtherDeviceIsToldIsAShortSentenceThatSaysTheMacLocks
+  ),
 ]
 
 #if canImport(VideoToolbox)
@@ -838,7 +902,11 @@ tests += [
     (
       "the Mac gives its main screen or says why it cannot",
       testTheMacGivesItsMainScreenOrSaysWhyItCannot
-    )
+    ),
+    (
+      "a private screen is given only to an app that can keep it private and changes nothing until it starts",
+      testAPrivateScreenIsGivenOnlyToAnAppThatCanKeepItPrivateAndChangesNothingUntilItStarts
+    ),
   ]
 #endif
 

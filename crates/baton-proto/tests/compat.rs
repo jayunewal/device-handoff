@@ -528,6 +528,23 @@ fn unknown_keys_are_ignored_in_the_messages_that_start_a_session() {
         panic!("not a refusal of a start");
     };
     assert_eq!(not_started.why, WhyNot::Busy);
+    // The reason for a source that cannot hold its keyboard and pointer is written by its name.
+    let held = encode(
+        &cbor!({
+            "Stream" => {
+                "NotStarted" => {
+                    "session" => session_id(), "why" => "NeedsInputPermission",
+                },
+            },
+        })
+        .unwrap(),
+    );
+    let Response::Stream(StreamReply::NotStarted(held)) =
+        frame::decode_payload::<Response>(&held).unwrap()
+    else {
+        panic!("not a refusal of a start");
+    };
+    assert_eq!(held.why, WhyNot::NeedsInputPermission);
 }
 
 #[test]

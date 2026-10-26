@@ -8,7 +8,7 @@
 use std::ffi::c_void;
 
 /// The version of the interface. It changes only when something is taken away or moved.
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 
 /// What a function of the interface returns when it worked, and what a call of the vtable returns
 /// when it worked.
@@ -38,6 +38,13 @@ pub const PICKED_DISPLAY: u32 = 1;
 pub const SCREEN_NEEDS_PERMISSION: i32 = 1;
 /// What `screen` returns when there is no display to give now, for example because none is on.
 pub const SCREEN_UNAVAILABLE: i32 = 2;
+/// What `screen` returns when the display was asked for with [`SCREEN_PRIVATE`] and the system has
+/// not let the program hold the keyboard and the pointer.
+pub const SCREEN_NEEDS_INPUT_PERMISSION: i32 = 3;
+
+/// A flag of `screen`: the display is for a session that another device controls, so nobody at
+/// this one may see or use it meanwhile.
+pub const SCREEN_PRIVATE: u32 = 1;
 
 /// A key frame.
 pub const FRAME_KEY: u32 = 1;
@@ -597,6 +604,7 @@ pub type PostFn = unsafe extern "C" fn(picked: *mut c_void, post: *const BatonPo
 /// Gives the main display, without the person choosing it.
 pub type ScreenFn = unsafe extern "C" fn(
     context: *mut c_void,
+    flags: u32,
     picked: *mut BatonPicked,
     message: *mut BatonMessage,
 ) -> i32;

@@ -272,6 +272,10 @@ pub enum WhyNot {
     /// The operating system of the source has not allowed its program to capture the screen, and
     /// the person at the source has to allow it.
     NeedsPermission,
+    /// The operating system of the source has not allowed its program to hold the keyboard and the
+    /// pointer of the source, which the source does while a device controls it so that nobody at
+    /// the source can use it, and the person at the source has to allow it.
+    NeedsInputPermission,
     /// Something went wrong at the source that the viewer did not cause, or it did not get ready
     /// in time.
     Failed,

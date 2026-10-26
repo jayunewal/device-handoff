@@ -233,6 +233,7 @@ fn stream_reply() -> impl Strategy<Value = StreamReply> {
                 Just(WhyNot::Invalid),
                 Just(WhyNot::Unavailable),
                 Just(WhyNot::NeedsPermission),
+                Just(WhyNot::NeedsInputPermission),
                 Just(WhyNot::Failed),
                 Just(WhyNot::Other)
             ]

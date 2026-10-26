@@ -26,7 +26,9 @@ use baton_app::{
     Event, Events, StartAccess, WindowButton, WindowEnd, WindowInput, WindowModifiers,
     WindowNoticeReason, WindowPointer, WindowRequest, WindowRole, WindowSession, WindowShared,
     Windows,
-    windows::{PickedWindow, PlatformError, ScreenError, ScreenLink, SharingFailure, WindowSharer},
+    windows::{
+        PickedWindow, PlatformError, Privacy, ScreenError, ScreenLink, SharingFailure, WindowSharer,
+    },
 };
 use baton_core::{
     Config as NodeConfig, Identity, Node, TrustStore,
@@ -55,11 +57,11 @@ use crate::{
     Error, Registry,
     abi::{
         BEGIN_DELTA, BEGIN_KEY, BEGIN_NOT_NOW, BatonBytes, BatonFormat, BatonFront, BatonGeometry,
-        BatonPicked, BatonPicture, BatonRect, CODEC_H264, E_PLATFORM, FRAME_KEY, FRAME_RECOVERY,
-        FRAME_REFERENCED, KEYBOARD_ELSEWHERE, PAUSE_HIDDEN, PAUSE_LOCKED, PAUSE_OTHER,
-        PICKED_DISPLAY, PICKED_WINDOW, SCREEN_NEEDS_PERMISSION, SCREEN_UNAVAILABLE, SENT,
-        SENT_OVER, SENT_STALE, SENT_TOO_LARGE, SOURCE_CONFIG, SOURCE_PAUSE, SOURCE_RESUME,
-        size_of_u32,
+        BatonPicked, BatonPicture, BatonRect, BatonSharerVTable, CODEC_H264, E_PLATFORM, FRAME_KEY,
+        FRAME_RECOVERY, FRAME_REFERENCED, KEYBOARD_ELSEWHERE, PAUSE_HIDDEN, PAUSE_LOCKED,
+        PAUSE_OTHER, PICKED_DISPLAY, PICKED_WINDOW, SCREEN_NEEDS_INPUT_PERMISSION,
+        SCREEN_NEEDS_PERMISSION, SCREEN_PRIVATE, SCREEN_UNAVAILABLE, SENT, SENT_OVER, SENT_STALE,
+        SENT_TOO_LARGE, SOURCE_CONFIG, SOURCE_PAUSE, SOURCE_RESUME, size_of_u32,
     },
     fake::{Call, Decoded, Fake, Watchdog},
     fake_sharer::{
@@ -2162,7 +2164,14 @@ async fn the_platform_cannot_call_back_while_the_library_is_calling_it() {
 
     // A screen that is given without a picker, and let go of: Screen, on the thread that waits for
     // the system, and the Release of the display that follows. It is the second window.
-    drop(rig.registry.sharer().unwrap().screen().await.unwrap());
+    drop(
+        rig.registry
+            .sharer()
+            .unwrap()
+            .screen(Privacy::Open)
+            .await
+            .unwrap(),
+    );
     rig.nothing_is_left().await;
     assert_eq!(rig.platform.calls(2), [SharerCall::Release]);
 
@@ -3088,7 +3097,12 @@ fn sharer_of(platform: &Arc<FakeSharer>) -> Arc<dyn WindowSharer> {
 
 /// What the app is told when it asks for the screen and does not get it.
 async fn screen_error(sharer: &Arc<dyn WindowSharer>) -> ScreenError {
-    match sharer.screen().await {
+    private_screen_error(sharer, Privacy::Open).await
+}
+
+/// The same, when the screen was asked for as `privacy`.
+async fn private_screen_error(sharer: &Arc<dyn WindowSharer>, privacy: Privacy) -> ScreenError {
+    match sharer.screen(privacy).await {
         Err(error) => error,
         Ok(_) => panic!("the platform gave a screen that it should not have given"),
     }
@@ -3100,7 +3114,7 @@ async fn a_platform_that_gives_its_screen_is_asked_for_it_and_the_display_is_rel
     let sharer = sharer_of(&platform);
     assert!(sharer.can_give_screen());
 
-    let picked = sharer.screen().await.unwrap();
+    let picked = sharer.screen(Privacy::Open).await.unwrap();
     // A whole display of the size the platform said, with no name, no application and no picker.
     assert!(picked.display());
     assert_eq!(picked.size(), (WIDTH, HEIGHT));
@@ -3108,7 +3122,7 @@ async fn a_platform_that_gives_its_screen_is_asked_for_it_and_the_display_is_rel
         (picked.title(), picked.app()),
         (String::new(), String::new())
     );
-    assert_eq!(platform.log(), [(0, SharerCall::Screen)]);
+    assert_eq!(platform.log(), [(0, SharerCall::Screen { flags: 0 })]);
     assert_eq!(platform.live_windows(), 1);
 
     // It is let go of when nobody needs it any more, without ever being started.
@@ -3138,6 +3152,27 @@ async fn a_platform_that_cannot_give_its_screen_is_not_asked_for_it() {
 }
 
 #[tokio::test]
+async fn a_sharer_written_for_the_first_version_is_refused() {
+    // The first version's `screen` has no flags. Called as the second version has it, it would be
+    // handed the wrong arguments, so the table is refused and nothing is called.
+    for version in [0, 1, 3] {
+        let platform = FakeSharer::new();
+        let registry = Registry::new();
+        let table = BatonSharerVTable {
+            version,
+            ..platform.vtable()
+        };
+        assert_eq!(
+            fake_sharer::register_table(&registry, &table),
+            Err(Error::Argument),
+            "version {version}"
+        );
+        assert!(registry.sharer().is_none(), "version {version}");
+        assert_eq!(platform.log(), [], "version {version}");
+    }
+}
+
+#[tokio::test]
 async fn why_the_platform_gave_no_screen_is_what_the_app_is_told() {
     let platform = FakeSharer::new();
     let sharer = sharer_of(&platform);
@@ -3158,8 +3193,14 @@ async fn why_the_platform_gave_no_screen_is_what_the_app_is_told() {
             fails(E_PLATFORM, b"No display is on.", 17),
             ScreenError::Failed(PlatformError::new("No display is on.")),
         ),
+        // The number for the keyboard and the pointer means nothing for a screen that was not asked
+        // for as private, so it is a failure like the others.
         (
-            fails(3, b"The system said no.", 19),
+            fails(SCREEN_NEEDS_INPUT_PERMISSION, b"The system said no.", 19),
+            ScreenError::Failed(PlatformError::new("The system said no.")),
+        ),
+        (
+            fails(4, b"The system said no.", 19),
             ScreenError::Failed(PlatformError::new("The system said no.")),
         ),
         // A length that claims more than the platform wrote is read as far as the text goes.
@@ -3176,7 +3217,60 @@ async fn why_the_platform_gave_no_screen_is_what_the_app_is_told() {
         assert_eq!(screen_error(&sharer).await, told, "{plan:?}");
     }
     // Nothing was given, so nothing is left to release.
-    assert_eq!(platform.count(|call| *call == SharerCall::Screen), 6);
+    assert_eq!(
+        platform.count(|call| matches!(call, SharerCall::Screen { .. })),
+        7
+    );
+    assert_eq!(platform.windows_made(), 0);
+    platform.assert_no_complaints();
+}
+
+#[tokio::test]
+async fn a_screen_is_asked_for_as_private_only_when_the_app_says_so() {
+    let platform = FakeSharer::new();
+    let sharer = sharer_of(&platform);
+
+    drop(sharer.screen(Privacy::Open).await.unwrap());
+    drop(sharer.screen(Privacy::Private).await.unwrap());
+
+    // The platform heard the flag, and nothing else of it: the display it gave is the same.
+    let screens: Vec<_> = platform
+        .log()
+        .into_iter()
+        .filter(|(_, call)| matches!(call, SharerCall::Screen { .. }))
+        .collect();
+    assert_eq!(
+        screens,
+        [
+            (0, SharerCall::Screen { flags: 0 }),
+            (
+                0,
+                SharerCall::Screen {
+                    flags: SCREEN_PRIVATE
+                }
+            ),
+        ]
+    );
+    assert_eq!(platform.live_windows(), 0);
+    platform.assert_no_complaints();
+}
+
+#[tokio::test]
+async fn a_platform_that_cannot_hold_the_input_for_a_private_screen_gives_nothing() {
+    let platform = FakeSharer::new();
+    let sharer = sharer_of(&platform);
+    platform.plan_screen(ScreenPlan::Fails {
+        code: SCREEN_NEEDS_INPUT_PERMISSION,
+        text: b"Not for the log.".to_vec(),
+        claimed_len: 16,
+    });
+
+    // Whatever the platform wrote, the app is told the reason by its number.
+    assert_eq!(
+        private_screen_error(&sharer, Privacy::Private).await,
+        ScreenError::NeedsInputPermission
+    );
+    // Nothing was given, so nothing is left to release.
     assert_eq!(platform.windows_made(), 0);
     platform.assert_no_complaints();
 }
@@ -3243,7 +3337,7 @@ async fn a_display_larger_than_the_protocol_allows_reads_as_the_largest() {
         ((5, 100_000), (5, MAX_WINDOW_EDGE)),
     ] {
         platform.plan_screen(ScreenPlan::Gives(given.0, given.1));
-        let picked = sharer.screen().await.unwrap();
+        let picked = sharer.screen(Privacy::Open).await.unwrap();
         assert_eq!(picked.size(), read, "a display of {given:?}");
     }
 }
@@ -3266,9 +3360,9 @@ async fn a_screen_that_nobody_waits_for_any_more_is_released_when_the_platform_g
     let sharer = sharer_of(&platform);
 
     // The app asks, the platform takes its time, and the app stops waiting.
-    let asking = tokio::spawn(sharer.screen());
+    let asking = tokio::spawn(sharer.screen(Privacy::Open));
     until("the platform to be asked", || {
-        platform.count(|call| *call == SharerCall::Screen) == 1
+        platform.count(|call| matches!(call, SharerCall::Screen { .. })) == 1
     })
     .await;
     asking.abort();
@@ -3446,7 +3540,7 @@ async fn a_phone_that_the_person_allowed_gets_the_screen_of_the_platform_through
             .any(|call| matches!(call, SharerCall::Start { .. }))
     })
     .await;
-    assert_eq!(asked()[0], (0, SharerCall::Screen));
+    assert_eq!(asked()[0], (0, SharerCall::Screen { flags: 0 }));
     assert_eq!(
         rig.platform
             .count(|call| matches!(call, SharerCall::Pick { .. })),

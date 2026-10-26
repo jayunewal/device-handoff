@@ -213,16 +213,37 @@ pub(crate) fn noun(display: bool) -> &'static str {
     if display { "screen" } else { "window" }
 }
 
+/// What the person at a device is promised while another device uses its screen
+/// ([`WindowSharer::screen`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Privacy {
+    /// The screen is given as it is: whoever is at the device can see it, as they could before.
+    Open,
+    /// Another device controls the screen, and nobody at this device may see what it does or use
+    /// the device meanwhile. For as long as the session lasts the platform keeps the screen dark
+    /// and the keyboard and the pointer of this device out of anyone's hands, and when the session
+    /// ends, or the connection is lost, it locks the device again.
+    ///
+    /// A platform that cannot promise that refuses the screen ([`ScreenError::Unsupported`] or
+    /// [`ScreenError::NeedsInputPermission`]) and never gives it open in its place.
+    Private,
+}
+
 /// Why a platform did not give the screen that it was asked for ([`WindowSharer::screen`]). The
 /// device that asked is told which of these it was, so that the person there knows what to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ScreenError {
-    /// The platform does not give its screen unless the person picks it.
+    /// The platform does not give its screen unless the person picks it, or does not give it with
+    /// the [`Privacy`] that was asked for.
     Unsupported,
     /// The operating system has not let the app capture the screen, and the person at this device
     /// has to allow it.
     NeedsPermission,
+    /// The screen was asked for as [`Privacy::Private`] and the operating system has not let the
+    /// app hold the keyboard and the pointer of this device, which that needs. The person at this
+    /// device has to allow it.
+    NeedsInputPermission,
     /// There is no screen to give now, for example because no display is on.
     Unavailable,
     /// The platform could not, and the sentence says why. The device that asked is told only that
@@ -237,6 +258,9 @@ impl fmt::Display for ScreenError {
             Self::NeedsPermission => {
                 f.write_str("the operating system has not let the app capture the screen")
             }
+            Self::NeedsInputPermission => f.write_str(
+                "the operating system has not let the app hold the keyboard and the pointer",
+            ),
             Self::Unavailable => f.write_str("there is no screen to give now"),
             Self::Failed(error) => write!(f, "the platform could not give its screen: {error}"),
         }
@@ -268,10 +292,20 @@ pub trait WindowSharer: Send + Sync + 'static {
     /// it: a paired device asked for it, and the person here allowed that device beforehand. What
     /// is given must be a whole display ([`PickedWindow::display`]); anything else is refused.
     ///
+    /// `privacy` is what the person here is promised while the screen is used. With
+    /// [`Privacy::Private`] the platform checks beforehand that it can keep the promise and
+    /// refuses if it cannot; it keeps it from the time the session starts
+    /// ([`PickedWindow::start`]) until the screen is let go of, and a screen that is dropped
+    /// without ever having started changes nothing at the device.
+    ///
     /// The future may take as long as the system takes. It is dropped when the device that asked
     /// gives up, or the time for the answer is up, and whatever it was about to give is let go of
     /// then. Only called if [`can_give_screen`](Self::can_give_screen) says yes.
-    fn screen(&self) -> BoxFuture<'static, Result<Box<dyn PickedWindow>, ScreenError>> {
+    fn screen(
+        &self,
+        privacy: Privacy,
+    ) -> BoxFuture<'static, Result<Box<dyn PickedWindow>, ScreenError>> {
+        let _ = privacy;
         Box::pin(std::future::ready(Err(ScreenError::Unsupported)))
     }
 }

@@ -16,7 +16,11 @@ use baton_core::{
     util::BoxFuture,
 };
 
-use crate::{model::WindowShared, sessions::Sessions, windows::ScreenError};
+use crate::{
+    model::WindowShared,
+    sessions::Sessions,
+    windows::{Privacy, ScreenError},
+};
 
 /// What the app does when a paired device that is allowed asks this one to start sharing its
 /// screen.
@@ -49,6 +53,7 @@ impl ScreenError {
         match self {
             Self::Unsupported => WhyNot::Unsupported,
             Self::NeedsPermission => WhyNot::NeedsPermission,
+            Self::NeedsInputPermission => WhyNot::NeedsInputPermission,
             Self::Unavailable => WhyNot::Unavailable,
             Self::Failed(_) => WhyNot::Failed,
         }
@@ -84,7 +89,18 @@ impl StartHandler for Starts {
                 return StartVerdict::NotStarted(WhyNot::Failed);
             };
             let device = from.id.short();
-            let picked = match sharer.screen().await {
+            // The paired device gets no more control than it asked for and the settings allow
+            // (the slot), and none if the platform cannot post input now: the node was set up when
+            // it could, and the person may have taken the consent back since.
+            let control = control && sharer.control();
+            // A screen that another device controls is one that nobody here may see or use
+            // meanwhile.
+            let privacy = if control {
+                Privacy::Private
+            } else {
+                Privacy::Open
+            };
+            let picked = match sharer.screen(privacy).await {
                 Ok(picked) if picked.display() => picked,
                 Ok(_) => {
                     // The platform is set up wrongly: a window is not what was asked for, and is
@@ -99,10 +115,6 @@ impl StartHandler for Starts {
                     return StartVerdict::NotStarted(why);
                 }
             };
-            // The paired device gets no more control than it asked for and the settings allow
-            // (the slot), and none if the platform cannot post input now: the node was set up when
-            // it could, and the person may have taken the consent back since.
-            let control = control && sharer.control();
             tracing::info!(%device, control, "a paired device started a screen");
             let sessions = Arc::clone(&self.sessions);
             let (peer, name) = (slot.peer(), from.display_name().to_owned());
