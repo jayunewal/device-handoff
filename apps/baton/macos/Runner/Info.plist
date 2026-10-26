@@ -22,6 +22,8 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Baton sends the sound of this Mac to a device that you let look at its screen, so that you hear on that device what the Mac plays. Nothing is recorded or kept.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Baton uses the camera to read the QR code that your other device shows, so that the two can be paired. Nothing is recorded.</string>
 	<key>NSDownloadsFolderUsageDescription</key>

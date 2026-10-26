@@ -24,8 +24,12 @@ final class FakeSharedWindow: SharedWindow {
   var postWorks = true
   /// What the person at the other device lifted of the privacy, each time they switched it.
   var lifts: [PrivateSession.Lifted] = []
+  /// Whether the person at the other device wanted to hear, each time they switched it.
+  var hears: [Bool] = []
 
   func surroundings() -> WindowSurroundings? { around }
+
+  func hear(_ on: Bool) { hears.append(on) }
 
   func lift(screen: Bool, input: Bool) {
     lifts.append(PrivateSession.Lifted(screen: screen, input: input))
@@ -56,6 +60,7 @@ final class FakeSharedWindow: SharedWindow {
 final class FakeSharerPlatform: SharerPlatform {
   var canControl = false
   var canGiveScreen = false
+  var canSendSound = false
   var picks: [UInt64] = []
   var cancelled: [UInt64] = []
   var pickFailure: Error?
@@ -569,6 +574,44 @@ func testWhatIsLiftedReachesTheWindowAsTheTwoPartsItIsMadeOfAndNoOtherPart() {
   ]
   check(window.lifts == expected, "\(window.lifts)")
   release(picked.context)
+  check(window.releasedCalls == 1)
+}
+
+func testTheTableHasAnEntryForTheSoundOnlyWhenThePlatformCanSendIt() {
+  let without = FakeSharerPlatform()
+  without.canGiveScreen = true
+  check(registeredSharing(without)?.hear == nil, "an entry for the sound of a platform with none")
+
+  // The sound and the screen are given on their own: a platform can send the sound of a display
+  // that the person picked and not give the screen to a device that asks for it.
+  let with = FakeSharerPlatform()
+  with.canSendSound = true
+  guard let table = registeredSharing(with) else { return check(false) }
+  check(table.hear != nil, "no entry for the sound of a platform that sends it")
+  check(table.screen == nil && table.lift == nil, "a platform that cannot give its screen")
+  check(table.size == UInt32(MemoryLayout<BatonSharerVTable>.size), "size \(table.size)")
+}
+
+func testWhatIsHeardReachesTheWindowAsYesOrNoAndAnyOtherNumberIsNo() {
+  let platform = FakeSharerPlatform()
+  platform.canSendSound = true
+  guard let table = registeredSharing(platform), let hear = table.hear,
+    let release = table.release
+  else { return check(false) }
+  let window = FakeSharedWindow()
+  guard let picked = chosen(window) else { return check(false) }
+  hear(picked, 1)
+  hear(picked, 0)
+  hear(picked, 1)
+  hear(picked, 1)
+  // A number that this version does not know asks for no sound: that is the safe side, since the
+  // Mac plays again.
+  hear(picked, 2)
+  hear(picked, UInt32.max)
+  // A call about a window that is not there is nothing.
+  hear(nil, 1)
+  check(window.hears == [true, false, true, true, false, false], "\(window.hears)")
+  release(picked)
   check(window.releasedCalls == 1)
 }
 

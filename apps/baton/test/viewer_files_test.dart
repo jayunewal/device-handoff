@@ -18,6 +18,7 @@ String _read(String path) =>
 
 const _files = [
   'BatonAacDecoder.swift',
+  'BatonAacEncoder.swift',
   'BatonCapture.swift',
   'BatonControl.swift',
   'BatonEngineOutput.swift',
@@ -28,6 +29,8 @@ const _files = [
   'BatonLock.swift',
   'BatonPrivacy.swift',
   'BatonPrivacyMac.swift',
+  'BatonSound.swift',
+  'BatonSoundMac.swift',
   'BatonSource.swift',
   'BatonSpeaker.swift',
   'BatonStreamPlugin.swift',
@@ -92,6 +95,7 @@ void main() {
     // an Apple framework, on a Mac), and rust_builder/swift_tests/run.sh does just that.
     const others = [
       'BatonAacDecoder.swift',
+      'BatonAacEncoder.swift',
       'BatonCapture.swift',
       'BatonControl.swift',
       'BatonEngineOutput.swift',
@@ -102,6 +106,8 @@ void main() {
       'BatonLock.swift',
       'BatonPrivacy.swift',
       'BatonPrivacyMac.swift',
+      'BatonSound.swift',
+      'BatonSoundMac.swift',
       'BatonSource.swift',
       'BatonSpeaker.swift',
       'BatonViewer.swift',
@@ -118,6 +124,7 @@ void main() {
       'BatonInput.swift',
       'BatonPrivacy.swift',
       'BatonGuard.swift',
+      'BatonSound.swift',
       'BatonSpeaker.swift',
     ]) {
       final swift = _read('rust_builder/macos/Classes/$file');
