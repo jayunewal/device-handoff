@@ -681,11 +681,13 @@ func testAGuardThatIsNotThereOrDoesNotAnswerIsNotArmed() {
 func testAnArmThatIsAnsweredTooLateIsTakenBackAndLocksNothing() {
   // A guard that is slow to say that it is armed is given up on, and a guard that was armed locks
   // the Mac when its input closes: the app has to say that the session is over first. The program
-  // here answers after a while, and writes down what it was told.
+  // here answers after a while, from a job of its own so that it goes on reading, and writes down
+  // what it was told. Its answer comes when the app has closed the pipe, and a shell that writes to
+  // a pipe like that is ended by it on one system and not on another.
   let told = temporaryPath("told")
   defer { try? FileManager.default.removeItem(atPath: told) }
   let script = "echo 'ready 1'; while read line; do echo \"$line\" >> '\(told)'; "
-    + "if [ \"$line\" = arm ]; then sleep 1.5; echo ok; fi; done"
+    + "if [ \"$line\" = arm ]; then (sleep 1.5; echo ok) & fi; done"
   let link = GuardLink(
     executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", script],
     timing: GuardTiming(answer: 1))
