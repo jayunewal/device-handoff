@@ -76,10 +76,7 @@ final class EngineOutput: SoundOutput {
     defer { if !made { EngineOutput.letGoOfTheDevice() } }
 
     let engine = AVAudioEngine()
-    // An engine that is started on a computer with no sound device stops the app with an
-    // exception, so the device is asked first.
-    let hardware = engine.outputNode.outputFormat(forBus: 0)
-    guard hardware.sampleRate > 0, hardware.channelCount > 0 else {
+    guard EngineOutput.thereIsADevice(for: engine) else {
       throw SoundFailure(step: "find a device to play on", code: -1)
     }
     guard
@@ -137,6 +134,13 @@ final class EngineOutput: SoundOutput {
     if release { EngineOutput.letGoOfTheDevice() }
   }
 
+  /// Whether the engine has a device to play on. An engine that is started on a computer with no
+  /// sound device stops the app with an exception, so the device is asked before every start.
+  private static func thereIsADevice(for engine: AVAudioEngine) -> Bool {
+    let hardware = engine.outputNode.outputFormat(forBus: 0)
+    return hardware.sampleRate > 0 && hardware.channelCount > 0
+  }
+
   /// A phone has one audio session, and the app plays on it: as media, so that the sound is heard
   /// also when the ringer is off, and other apps that play are paused.
   private static func takeTheDevice() throws {
@@ -184,6 +188,12 @@ final class EngineOutput: SoundOutput {
     #if os(iOS)
     try? AVAudioSession.sharedInstance().setActive(true)
     #endif
+    // The last output may be gone, as on a Mac whose headphones were the only one. The sound goes
+    // on when the device is back, which is another change of the configuration.
+    guard EngineOutput.thereIsADevice(for: engine) else {
+      NSLog("Baton: the sound of a screen could not go on, since there is no device to play on.")
+      return
+    }
     do {
       try engine.start()
     } catch {

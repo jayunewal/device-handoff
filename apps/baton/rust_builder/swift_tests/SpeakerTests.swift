@@ -97,6 +97,93 @@ func testTheRingDropsTheOldestSoundWhenItWouldHoldMoreThanTheMost() {
   check(ring.take(80).left == values(220..<300))
 }
 
+func testTheRingLetsGoOfSoundThatItDidNotComeDownToInASecondOfPlaying() {
+  // At 1000 Hz a millisecond is a frame: the start level is 80 frames, the most 250, the slack 40
+  // and a second 1000 frames. A burst of 170 frames, as the newest eight packets that a source kept
+  // through a stall, is under the most, and nothing else brings it down.
+  let ring = SoundRing(rate: 1000, channels: 2)
+  var next = 0
+  func put(_ frames: Int) {
+    ring.put(counting(frames, from: Float(next)))
+    next += frames
+  }
+  put(170)
+  check(ring.isPlaying && ring.frames == 170)
+  var heard: [Float] = []
+  // Ten frames are taken and ten put back, so the level is 160 after every read.
+  for step in 0..<99 {
+    let got = ring.take(10)
+    check(got.real == 10, "step \(step)")
+    heard += got.left
+    put(10)
+  }
+  check(ring.frames == 170 && ring.counts == SoundCounts(), "nothing yet: \(ring.counts)")
+  // The hundredth read ends the second. The level was never under 160, which is 80 above the start
+  // level, and the oldest 80 frames go.
+  let last = ring.take(10)
+  heard += last.left
+  check(last.real == 10)
+  check(ring.counts.caughtUp == 1 && ring.counts.droppedFrames == 80, "\(ring.counts)")
+  check(ring.frames == 80, "frames \(ring.frames)")
+  put(10)
+  check(heard == values(0..<1000), "what was played came in order, and none of it was let go of")
+  check(ring.take(90).left == values(1080..<1170), "the newest sound is what is left")
+}
+
+func testTheRingKeepsWhatTheLevelCameDownToWithinTheSlackAndLetsGoInTheNextSecond() {
+  let ring = SoundRing(rate: 1000, channels: 2)
+  var next = 0
+  func put(_ frames: Int) {
+    ring.put(counting(frames, from: Float(next)))
+    next += frames
+  }
+  put(170)
+  // Ten frames at a time, except at one step where sixty are taken. That leaves 110, which is 30
+  // above the start level, under the slack of 40.
+  var played = 0
+  var step = 0
+  while played < 1000 {
+    let size = step == 40 ? 60 : 10
+    check(ring.take(size).real == size, "step \(step)")
+    put(size)
+    played += size
+    step += 1
+  }
+  check(ring.frames == 170 && ring.counts == SoundCounts(), "the first second: \(ring.counts)")
+  // The next second has no such step, and the level was never under 160.
+  for _ in 0..<100 {
+    check(ring.take(10).real == 10)
+    put(10)
+  }
+  check(ring.counts.caughtUp == 1 && ring.counts.droppedFrames == 80, "\(ring.counts)")
+  check(ring.frames == 90, "frames \(ring.frames)")
+}
+
+func testTheRingBeginsTheSecondAgainWhenItRunsDry() {
+  let ring = SoundRing(rate: 1000, channels: 2)
+  var next = 0
+  func put(_ frames: Int) {
+    ring.put(counting(frames, from: Float(next)))
+    next += frames
+  }
+  put(170)
+  // 900 frames are played with the level at 160 and above.
+  for _ in 0..<90 {
+    check(ring.take(10).real == 10)
+    put(10)
+  }
+  // It runs dry and fills again: what was seen before says nothing about what follows.
+  check(ring.take(200).real == 170)
+  check(!ring.isPlaying && ring.counts.ranDry == 1)
+  put(170)
+  check(ring.isPlaying)
+  for _ in 0..<11 {
+    check(ring.take(10).real == 10)
+    put(10)
+  }
+  check(ring.counts.droppedFrames == 0 && ring.counts.caughtUp == 0, "\(ring.counts)")
+}
+
 func testTheRingKeepsTheOrderOfSoundThatWrapsAroundItsStorage() {
   let ring = SoundRing(rate: 1000, channels: 2)
   var next = 0
@@ -319,6 +406,21 @@ final class SpeakerRig {
   private var madeDecoders: [FakeSoundDecoder] = []
   private var madeOutputs: [FakeSoundOutput] = []
   private var number: UInt64 = 0
+  private var time = 0.0
+
+  /// The time on the clock of the speaker, in seconds. It stands where a test puts it.
+  var now: Double {
+    get {
+      lock.lock()
+      defer { lock.unlock() }
+      return time
+    }
+    set {
+      lock.lock()
+      time = newValue
+      lock.unlock()
+    }
+  }
 
   init(form: SoundForm = SoundForm(rate: 1000, channels: 2, samples: 10)) {
     self.form = form
@@ -326,6 +428,7 @@ final class SpeakerRig {
 
   lazy var speaker = ScreenSpeaker(
     levels: SoundLevels(startMillis: 40, mostMillis: 100),
+    clock: { [self] in now },
     makeDecoder: { [self] form in
       if decoderFails { throw SoundFailure(step: "make the decoder", code: -7) }
       let decoder = FakeSoundDecoder(form: form)
@@ -567,6 +670,97 @@ func testADecoderOrAnOutputThatCannotBeMadeEndsTheRunQuietly() {
   rig.settle()
   check(rig.decoders.last?.log == ["reset", "decode 1"], "a run after the ones that failed")
   check(rig.outputs.last?.stops == 0)
+}
+
+func testARunThatCouldNotBeMadeIsTriedAgainOnAPacketAfterASecond() {
+  let rig = SpeakerRig()
+  rig.outputFails = true
+  rig.begin()
+  rig.send(1, first: true)
+  rig.settle()
+  check(rig.decoders.count == 1 && rig.outputs.isEmpty, "the first try")
+
+  // The call is over, or the device is back.
+  rig.outputFails = false
+  rig.now = 0.5
+  rig.send(2)
+  rig.settle()
+  check(rig.decoders.count == 1 && rig.outputs.isEmpty, "a try before the second was over")
+
+  rig.now = 1.0
+  rig.send(3)
+  rig.send(4)
+  rig.settle()
+  check(rig.decoders.count == 2 && rig.outputs.count == 1, "the try after the second")
+  check(
+    rig.decoders.last?.log == ["decode 3", "decode 4"],
+    "\(String(describing: rig.decoders.last?.log))")
+  check(rig.outputs.last?.starts == 1 && rig.outputs.last?.stops == 0)
+  check(rig.outputs.last?.ring.frames == 20, "the packets after the try are played")
+  rig.send(5)
+  rig.now = 9
+  rig.send(6)
+  rig.settle()
+  check(rig.decoders.count == 2 && rig.outputs.count == 1, "a run that goes is not made again")
+}
+
+func testARunThatKeepsFailingIsTriedAgainOncePerSecond() {
+  let rig = SpeakerRig()
+  rig.startFails = true
+  rig.begin()
+  rig.settle()
+  check(rig.decoders.count == 1 && rig.outputs.count == 1, "the first try")
+  var byte: UInt8 = 0
+  for time in [0.25, 0.5, 0.75, 0.99] {
+    rig.now = time
+    byte += 1
+    rig.send(byte)
+  }
+  rig.settle()
+  check(rig.decoders.count == 1, "a try inside the second: \(rig.decoders.count)")
+  rig.now = 1.0
+  rig.send(9)
+  rig.settle()
+  check(rig.decoders.count == 2 && rig.outputs.count == 2, "the second try")
+  rig.now = 1.5
+  rig.send(10)
+  rig.settle()
+  check(rig.decoders.count == 2, "a second is counted from the last try")
+  rig.now = 2.0
+  rig.send(11)
+  rig.settle()
+  check(rig.decoders.count == 3 && rig.outputs.count == 3, "the third try")
+  check(rig.decoders.allSatisfy { $0.invalidated == 1 }, "a try that failed let go of its decoder")
+  check(rig.outputs.allSatisfy { $0.stops == 1 }, "a try that failed stopped its output")
+  check(rig.decoders.allSatisfy { $0.log.isEmpty }, "a packet was decoded without a run")
+}
+
+func testARunThatWasStoppedBeforeItWasMadeIsNotTriedAgainAndANewOneIsTriedInItsForm() {
+  let rig = SpeakerRig()
+  rig.outputFails = true
+  rig.begin()
+  rig.speaker.stop()
+  rig.settle()
+  rig.outputFails = false
+  rig.now = 5
+  rig.send(1)
+  rig.settle()
+  check(rig.decoders.count == 1 && rig.outputs.isEmpty, "a run that was stopped was made")
+
+  // A run that begins while another waits takes its place: it is the form of the last that is made.
+  let other = SoundForm(rate: 1000, channels: 1, samples: 20)
+  rig.outputFails = true
+  rig.begin()
+  rig.settle()
+  rig.speaker.begin(other)
+  rig.settle()
+  rig.outputFails = false
+  rig.now = 6
+  rig.send(2)
+  rig.settle()
+  check(rig.decoders.count == 4 && rig.outputs.count == 1, "the run that waited")
+  check(rig.decoders.last?.form == other, "a run was made in the form of the one before")
+  check(rig.decoders.last?.log == ["decode 2"] && rig.outputs.last?.ring.frames == 20)
 }
 
 func testThePacketIsCopiedBeforePlayReturns() {

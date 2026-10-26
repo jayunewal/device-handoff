@@ -85,6 +85,14 @@ final class MacSharer: NSObject, SharerPlatform, SCContentSharingPickerObserver 
   /// (`screen` says when they have not).
   var canGiveScreen: Bool { true }
 
+  /// The sound of a whole screen can be sent where the system has taps of the sound of the Mac,
+  /// which is from macOS 14.2. Whether the person has let the app record it is found out when
+  /// someone listens (`SoundPump`).
+  var canSendSound: Bool {
+    if #available(macOS 14.2, *) { return true }
+    return false
+  }
+
   private let lock = NSLock()
   /// The request that the picker is up for.
   private var request: UInt64?
@@ -310,6 +318,8 @@ final class MacSharedWindow: SharedWindow {
   private let privacy: ScreenPrivacy
   /// The privacy of a session that is private, made by `start`.
   private var privateSession: PrivateSession?
+  /// What sends the sound of a whole screen, made by `start`. A window has none.
+  private var sound: SoundPump?
 
   fileprivate init(
     filter: SCContentFilter, info: PickedWindowInfo, target: PickedTarget?,
@@ -356,6 +366,17 @@ final class MacSharedWindow: SharedWindow {
       ledger = posts
       privateSession = started
     }
+    // The sound of a whole screen goes with its pictures, when the person at the other device asks
+    // for it (`hear`). A private screen keeps this Mac quiet from now until it is locked again,
+    // whether or not the other device listens: nobody is here to hear it, and the people at home
+    // would hear what the person at the other device does not. What `released` finds is let go of.
+    if info.display, #available(macOS 14.2, *) {
+      let pump = SoundPump(
+        session: LibrarySoundSession(link: link), quiet: privacy == .private,
+        makeTap: { MacSoundTap() }, makeEncoder: { try AacEncoder(form: $0) })
+      sound = pump
+      if privacy == .private { pump.keepQuiet() }
+    }
     // The window server and the system are asked about the window, or the display, while it is
     // shared: where it is in each picture, and whether it can be seen. A display is never hidden.
     let listing = MacWindowListing()
@@ -400,6 +421,9 @@ final class MacSharedWindow: SharedWindow {
     // The Mac is locked before this returns, if it can be, and the screens and the keys come back
     // only then.
     privateSession?.finish(.sessionOver)
+    // The Mac plays again: at once for a screen that is not private, and for a private one only now
+    // that it is locked.
+    sound?.close()
   }
 
   func released() {
@@ -409,6 +433,7 @@ final class MacSharedWindow: SharedWindow {
     // A private screen that was raised and then did not start is locked and given back here. One
     // that was given and never started raised nothing, and changes nothing.
     privateSession?.finish(.released)
+    sound?.close()
   }
 
   func surroundings() -> WindowSurroundings? {
@@ -423,6 +448,10 @@ final class MacSharedWindow: SharedWindow {
     // A screen that is not private keeps nothing from the people at this Mac, and has nothing to
     // lift.
     privateSession?.lift(screen: screen, input: input)
+  }
+
+  func hear(_ on: Bool) {
+    sound?.hear(on)
   }
 }
 

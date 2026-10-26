@@ -93,6 +93,11 @@ protocol SharerPlatform: AnyObject {
   /// ask for its screen, and one that cannot says nothing of it.
   var canGiveScreen: Bool { get }
 
+  /// Whether the sound of a whole screen can be sent (`SharedWindow.hear`). It is asked once, when
+  /// the platform is registered: a device that can tells the devices it is paired with that they can
+  /// hear its screen, and one that cannot says nothing of it.
+  var canSendSound: Bool { get }
+
   /// Shows the picker of the system. It does not wait for the person: the answer is given to
   /// `answerPick`, once for each request, from any thread but not from inside this call. Throws
   /// `SharerFailure` if the picker cannot be shown, and nothing is answered then.
@@ -115,6 +120,7 @@ protocol SharerPlatform: AnyObject {
 
 extension SharerPlatform {
   var canGiveScreen: Bool { false }
+  var canSendSound: Bool { false }
 
   func screen(privacy: ScreenPrivacy) throws -> (window: SharedWindow, info: PickedWindowInfo) {
     throw SharerFailure(sentence: "This device cannot give its screen without asking.")
@@ -160,12 +166,21 @@ protocol SharedWindow: AnyObject {
   /// part that cannot be put back ends the session, with the device locked, and is not reported
   /// here. A window that keeps nothing private has nothing to lift.
   func lift(screen: Bool, input: Bool)
+
+  /// The other device wants to hear the sound of this screen (`on`), or does not any more. Called
+  /// after a `start` that worked and not after `ended`, in turn with the calls above, and only for
+  /// a window that is a whole display. The platform answers a `true` with the form of the sound or
+  /// with the reason there is none (`SoundSession`), also when it records already, since a run
+  /// begins at each. A `true` comes again, with no `false` between, when the person at the other
+  /// device asks anew while no sound is being sent. A window that sends no sound has nothing to do.
+  func hear(_ on: Bool)
 }
 
 extension SharedWindow {
   func surroundings() -> WindowSurroundings? { nil }
   func post(_ post: InputPost) -> Bool { false }
   func lift(screen: Bool, input: Bool) {}
+  func hear(_ on: Bool) {}
 }
 
 // MARK: - The answer to a pick
@@ -466,6 +481,12 @@ private func sharerLift(_ picked: UnsafeMutableRawPointer?, _ lifted: UInt32) {
     screen: lifted & UInt32(BATON_LIFT_SCREEN) != 0, input: lifted & UInt32(BATON_LIFT_INPUT) != 0)
 }
 
+/// The other device wants to hear the sound of this screen (1), or does not any more (0). Any other
+/// number wants none, which is the safe side: the Mac plays again.
+private func sharerHear(_ picked: UnsafeMutableRawPointer?, _ on: UInt32) {
+  windowOf(picked)?.hear(on == 1)
+}
+
 /// Gives the Rust side the platform's sharer: a device that has registered one lets the person
 /// share a window, and a device that has not shares none. Call it once, at launch, before the app
 /// starts. Returns what `baton_stream_register_sharer` returned.
@@ -489,8 +510,6 @@ func registerSharer(_ platform: SharerPlatform) -> Int32 {
     post: sharerPost,
     screen: nil,
     lift: nil,
-    // This device sends no sound yet: the entry is left out, and the devices it is paired with are
-    // not told that it can.
     hear: nil)
   // A device that cannot give its screen leaves the entries out, and its paired devices are not
   // told that they can ask for it. The screen is the one thing that is given private, so what
@@ -498,6 +517,11 @@ func registerSharer(_ platform: SharerPlatform) -> Int32 {
   if platform.canGiveScreen {
     table.screen = sharerScreen
     table.lift = sharerLift
+  }
+  // A device that cannot send sound leaves the entry out, and the devices it is paired with are not
+  // told that it can.
+  if platform.canSendSound {
+    table.hear = sharerHear
   }
   let code = baton_stream_register_sharer(&table)
   if code != ok {

@@ -65,6 +65,13 @@ struct SoundLevels: Equatable {
   /// `startMillis`: the clock of the other device and the clock of this one differ a little, and
   /// this is where a difference that has built up goes.
   var mostMillis: Int
+  /// How much more than `startMillis` the buffer has to have held, all through `windowMillis` of
+  /// playing, before it lets go of that much: sound that stayed in the buffer so long without being
+  /// needed only makes the sound late. This is where the sound that a stall held back goes when it
+  /// came in under `mostMillis`.
+  var slackMillis = 40
+  /// How much playing the lowest level is watched for, in milliseconds of sound.
+  var windowMillis = 1000
 
   static let standard = SoundLevels(startMillis: 80, mostMillis: 250)
 }
@@ -77,6 +84,9 @@ struct SoundCounts: Equatable {
   var droppedFrames = 0
   /// How many frames of silence were put in to cover packets that did not come.
   var coveredFrames = 0
+  /// How many times it let go of sound that had stayed in it for a whole window without being
+  /// needed. The frames are among those dropped.
+  var caughtUp = 0
 }
 
 /// The sound that is decoded and not played yet. One thread writes the packets as they are decoded
@@ -86,7 +96,9 @@ struct SoundCounts: Equatable {
 ///
 /// The ring plays nothing until it holds `startMillis` of sound. It then gives sound until it has
 /// none left, and plays silence, and waits for `startMillis` again. It never holds more than
-/// `mostMillis`.
+/// `mostMillis`, and it does not keep for long what it does not need: when its level has not come
+/// down to within `slackMillis` of `startMillis` for a whole window of playing, it lets go of the
+/// difference, the oldest sound first.
 final class SoundRing {
   let channels: Int
 
@@ -96,11 +108,17 @@ final class SoundRing {
   private let capacity: Int
   private let start: Int
   private let most: Int
+  private let slack: Int
+  private let window: Int
   /// Where the oldest frame is, and how many frames there are.
   private var head = 0
   private var count = 0
   private var playing = false
   private var tally = SoundCounts()
+  /// How many frames have been played since the window began, and the lowest the level has been
+  /// since, as it was left by a read.
+  private var watched = 0
+  private var lowest = Int.max
 
   /// `rate` is the sampling rate in hertz.
   init(rate: Int, channels: Int, levels: SoundLevels = .standard) {
@@ -108,6 +126,8 @@ final class SoundRing {
     let rate = max(rate, 1)
     let start = max(rate * max(levels.startMillis, 0) / 1000, 1)
     let most = max(rate * max(levels.mostMillis, 0) / 1000, start)
+    let slack = max(rate * max(levels.slackMillis, 0) / 1000, 1)
+    let window = max(rate * max(levels.windowMillis, 0) / 1000, 1)
     // Room for the most that is kept, a gap of silence that covers lost packets and the largest
     // packet there is, so that a write does not have to drop what it has not yet counted.
     let capacity = most + start + 4096
@@ -117,6 +137,8 @@ final class SoundRing {
     self.capacity = capacity
     self.start = start
     self.most = most
+    self.slack = slack
+    self.window = window
     self.storage = storage
   }
 
@@ -196,6 +218,9 @@ final class SoundRing {
       if taken < frames {
         playing = false
         tally.ranDry += 1
+        beginWindow()
+      } else {
+        watch(taken)
       }
     }
     if taken < frames {
@@ -210,6 +235,27 @@ final class SoundRing {
     head = (head + dropped) % capacity
     count -= dropped
     tally.droppedFrames += dropped
+  }
+
+  /// Notes the level that a read of `frames` frames left, and when a window of playing is over lets
+  /// go of what the level did not come down to in it. The lock is held.
+  private func watch(_ frames: Int) {
+    lowest = min(lowest, count)
+    watched += frames
+    guard watched >= window else { return }
+    let unneeded = lowest - start
+    if unneeded >= slack {
+      drop(unneeded)
+      tally.caughtUp += 1
+    }
+    beginWindow()
+  }
+
+  /// A new window begins: nothing has been played in it, and no level has been seen. The lock is
+  /// held.
+  private func beginWindow() {
+    watched = 0
+    lowest = Int.max
   }
 
   /// Puts `frames` frames of silence after the newest. The lock is held, and there is room.
@@ -247,18 +293,36 @@ final class SoundRing {
 /// the output, decodes the packets one after the other and writes them to the ring, which the
 /// device reads from a thread of its own. A call that comes when the speaker has been closed does
 /// nothing.
+///
+/// A run that cannot be made or started is not given up: what stopped it may be over in a moment
+/// (a phone call holds the audio session of the phone, and an output may come back), so the form
+/// is kept, and the next packet that comes a second or more after the last try makes it again.
 final class ScreenSpeaker {
   private let queue = DispatchQueue(
     label: "io.github.jayunewal.baton.speaker", qos: .userInteractive)
   private let makeDecoder: (SoundForm) throws -> SoundDecoder
   private let makeOutput: (SoundForm, SoundRing) throws -> SoundOutput
   private let levels: SoundLevels
+  private let retryAfter: TimeInterval
+  private let clock: () -> TimeInterval
 
   private let lock = NSLock()
   private var closed = false
 
   /// The run that goes, or nil. Only the queue touches it.
   private var run: Run?
+
+  /// The run that could not be made or started, and is tried again, or nil. Only the queue touches
+  /// it.
+  private var waiting: Waiting?
+
+  private struct Waiting {
+    var form: SoundForm
+    /// How many times it has been tried.
+    var tries: Int
+    /// The time on the clock from which the next try is made.
+    var at: TimeInterval
+  }
 
   /// What belongs to one run of sound, from a `sound` to the call that ends it.
   private final class Run {
@@ -285,12 +349,18 @@ final class ScreenSpeaker {
 
   /// `makeDecoder` makes the decoder for a form, and `makeOutput` the output that plays a ring of
   /// it; either one throws when the device cannot. Both are called from the queue of the speaker.
+  /// A run that could not be made is tried again `retryAfter` seconds after the last try, on a
+  /// packet, by `clock`.
   init(
     levels: SoundLevels = .standard,
+    retryAfter: TimeInterval = 1,
+    clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
     makeDecoder: @escaping (SoundForm) throws -> SoundDecoder,
     makeOutput: @escaping (SoundForm, SoundRing) throws -> SoundOutput
   ) {
     self.levels = levels
+    self.retryAfter = retryAfter
+    self.clock = clock
     self.makeDecoder = makeDecoder
     self.makeOutput = makeOutput
   }
@@ -346,13 +416,13 @@ final class ScreenSpeaker {
     return closed
   }
 
-  private func startRun(_ form: SoundForm) {
+  /// Makes the run, or keeps the form to try again. `tries` is how many times it was tried before.
+  private func startRun(_ form: SoundForm, tries: Int = 0) {
     let decoder: SoundDecoder
     do {
       decoder = try makeDecoder(form)
     } catch {
-      report("make the decoder", error)
-      return
+      return failed(form, tries: tries, "make the decoder", error)
     }
     let ring = SoundRing(rate: Int(form.rate), channels: Int(form.channels), levels: levels)
     let output: SoundOutput
@@ -360,21 +430,33 @@ final class ScreenSpeaker {
       output = try makeOutput(form, ring)
     } catch {
       decoder.invalidate()
-      report("make the output", error)
-      return
+      return failed(form, tries: tries, "make the output", error)
     }
     do {
       try output.start()
     } catch {
       output.stop()
       decoder.invalidate()
-      report("start the output", error)
-      return
+      return failed(form, tries: tries, "start the output", error)
     }
+    waiting = nil
     run = Run(form: form, decoder: decoder, ring: ring, output: output)
+    if tries > 0 {
+      NSLog("Baton: the sound of a screen plays now, after %ld tries.", tries + 1)
+    }
+  }
+
+  /// The run could not be made: it is told in the log the first time, and tried again after a
+  /// while.
+  private func failed(_ form: SoundForm, tries: Int, _ step: String, _ error: Error) {
+    if tries == 0 { report(step, error) }
+    waiting = Waiting(form: form, tries: tries + 1, at: clock() + retryAfter)
   }
 
   private func decode(_ bytes: Data, first: Bool, lost: UInt64) {
+    if run == nil, let again = waiting, clock() >= again.at {
+      startRun(again.form, tries: again.tries)
+    }
     guard let run else { return }
     run.owed = first ? 0 : run.owed &+ min(lost, ScreenSpeaker.mostCovered)
     // A decoder goes on from the packet before, and these do not: the first of a run, and the one
@@ -398,6 +480,7 @@ final class ScreenSpeaker {
   }
 
   private func endRun() {
+    waiting = nil
     guard let old = run else { return }
     run = nil
     // The output first, so that nothing reads the ring when the decoder is let go of.
@@ -405,9 +488,10 @@ final class ScreenSpeaker {
     old.decoder.invalidate()
     let counts = old.ring.counts
     NSLog(
-      "Baton: a run of sound ended after %ld packets. The buffer ran dry %ld times, dropped %ld "
-        + "frames and covered %ld; %ld packets could not be decoded.",
-      old.packets, counts.ranDry, counts.droppedFrames, counts.coveredFrames, old.undecodable)
+      "Baton: a run of sound ended after %ld packets. The buffer ran dry %ld times, caught up %ld "
+        + "times, dropped %ld frames in all and covered %ld; %ld packets could not be decoded.",
+      old.packets, counts.ranDry, counts.caughtUp, counts.droppedFrames, counts.coveredFrames,
+      old.undecodable)
   }
 
   /// Says in the log, once, that a run of sound cannot be played. The person is not told: the Rust

@@ -44,6 +44,14 @@ void main() {
     }
   });
 
+  test('the Mac app says why it records the sound of the Mac', () {
+    // The system gives silence to a program that has no such text, and asks nothing.
+    expect(
+      _read('macos/Runner/Info.plist'),
+      contains('<key>NSAudioCaptureUsageDescription'),
+    );
+  });
+
   test('the Mac app says why it puts files in Downloads', () {
     expect(
       _read('macos/Runner/Info.plist'),

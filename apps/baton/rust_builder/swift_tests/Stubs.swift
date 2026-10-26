@@ -121,6 +121,22 @@ struct SentGeometry: Equatable {
   var content: [Double]
 }
 
+/// What the Swift code gave `baton_stream_source_sound_begin`, as the Rust side reads it.
+struct SoundRecord: Equatable {
+  var size: UInt32
+  var codec: UInt32
+  var rate: UInt32
+  var channels: UInt32
+  var samples: UInt32
+}
+
+/// What the Swift code gave `baton_stream_source_sound`, as the Rust side reads it.
+struct SoundPacketRecord: Equatable {
+  var size: UInt32
+  var captureTime: UInt64
+  var bytes: [UInt8]
+}
+
 /// A call about a window that is shared.
 enum SourceCall: Equatable {
   case clock(UInt64)
@@ -133,6 +149,9 @@ enum SourceCall: Equatable {
   case resume(UInt64)
   /// nil is a NULL pointer for the sentence.
   case end(UInt64, String?)
+  case soundBegin(UInt64, SoundRecord)
+  case soundSilent(UInt64, UInt32)
+  case sound(UInt64, SoundPacketRecord)
 }
 
 /// What the stubs of the calls about a window answer.
@@ -153,6 +172,11 @@ struct SourceAnswers {
   var pauseCode: Int32 = 0
   var resumeCode: Int32 = 0
   var endCode: Int32 = 0
+  var soundBeginCode: Int32 = 0
+  var soundSilentCode: Int32 = 0
+  var soundCode: Int32 = 0
+  var soundOutcome: UInt32 = BATON_SOUND_SENT
+  var soundNumber: UInt64 = 7
 }
 
 var sourceCalls: [SourceCall] = []
@@ -281,4 +305,49 @@ func stubSourceResume(_ link: UInt64) -> Int32 {
   defer { stubLock.unlock() }
   sourceCalls.append(.resume(link))
   return sourceAnswers.resumeCode
+}
+
+@_cdecl("baton_stream_source_sound_begin")
+func stubSourceSoundBegin(_ link: UInt64, _ sound: UnsafePointer<BatonSound>?) -> Int32 {
+  stubLock.lock()
+  defer { stubLock.unlock() }
+  if let sound {
+    let c = sound.pointee
+    sourceCalls.append(
+      .soundBegin(
+        link,
+        SoundRecord(
+          size: c.size, codec: c.codec, rate: c.rate, channels: c.channels, samples: c.samples)))
+  }
+  return sourceAnswers.soundBeginCode
+}
+
+@_cdecl("baton_stream_source_sound_silent")
+func stubSourceSoundSilent(_ link: UInt64, _ reason: UInt32) -> Int32 {
+  stubLock.lock()
+  defer { stubLock.unlock() }
+  sourceCalls.append(.soundSilent(link, reason))
+  return sourceAnswers.soundSilentCode
+}
+
+@_cdecl("baton_stream_source_sound")
+func stubSourceSound(
+  _ link: UInt64, _ packet: UnsafePointer<BatonSoundPacket>?,
+  _ outcome: UnsafeMutablePointer<UInt32>?, _ number: UnsafeMutablePointer<UInt64>?
+) -> Int32 {
+  stubLock.lock()
+  defer { stubLock.unlock() }
+  if let packet {
+    let c = packet.pointee
+    let bytes: [UInt8] =
+      c.bytes.len > 0 && c.bytes.ptr != nil
+      ? Array(UnsafeBufferPointer(start: c.bytes.ptr, count: c.bytes.len)) : []
+    sourceCalls.append(
+      .sound(link, SoundPacketRecord(size: c.size, captureTime: c.capture_time, bytes: bytes)))
+  }
+  if sourceAnswers.soundCode == 0 {
+    outcome?.pointee = sourceAnswers.soundOutcome
+    number?.pointee = sourceAnswers.soundNumber
+  }
+  return sourceAnswers.soundCode
 }

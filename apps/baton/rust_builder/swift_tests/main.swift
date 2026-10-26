@@ -294,6 +294,14 @@ var tests: [(String, () -> Void)] = [
     testWhatIsLiftedReachesTheWindowAsTheTwoPartsItIsMadeOfAndNoOtherPart
   ),
   (
+    "the table has an entry for the sound only when the platform can send it",
+    testTheTableHasAnEntryForTheSoundOnlyWhenThePlatformCanSendIt
+  ),
+  (
+    "what is heard reaches the window as yes or no and any other number is no",
+    testWhatIsHeardReachesTheWindowAsYesOrNoAndAnyOtherNumberIsNo
+  ),
+  (
     "a window is prepared within what the other device takes",
     testAWindowIsPreparedWithinWhatTheOtherDeviceTakes
   ),
@@ -1021,6 +1029,86 @@ tests += [
     "a link is armed once and the guard ends when it is disarmed",
     testALinkIsArmedOnceAndTheGuardEndsWhenItIsDisarmed
   ),
+  (
+    "listening starts the tap muted and begins the run in the form of the tap",
+    testListeningStartsTheTapMutedAndBeginsTheRunInTheFormOfTheTap
+  ),
+  (
+    "samples become packets of 1024 frames with the time they were recorded",
+    testSamplesBecomePacketsOfOneThousandAndTwentyFourFramesWithTheTimeTheyWereRecorded
+  ),
+  (
+    "not listening any more stops the tap and blocks that came late are not sent",
+    testNotListeningAnyMoreStopsTheTapAndBlocksThatCameLateAreNotSent
+  ),
+  (
+    "a quiet screen keeps the Mac quiet for the whole session and sends only what is wanted",
+    testAQuietScreenKeepsTheMacQuietForTheWholeSessionAndSendsOnlyWhatIsWanted
+  ),
+  (
+    "listening again with no stop between begins another run from nothing",
+    testListeningAgainWithNoStopBetweenBeginsAnotherRunFromNothing
+  ),
+  (
+    "two seconds of silence while a program plays are taken for a Mac that has not let the app record",
+    testTwoSecondsOfSilenceWhileAProgramPlaysAreTakenForAMacThatHasNotLetTheAppRecord
+  ),
+  (
+    "silence while nothing plays is not reported and the count starts again after each look",
+    testSilenceWhileNothingPlaysIsNotReportedAndTheCountStartsAgainAfterEachLook
+  ),
+  (
+    "sound that was heard once rests the question of the permission",
+    testSoundThatWasHeardOnceRestsTheQuestionOfThePermission
+  ),
+  (
+    "a tap or an encoder that cannot be made is told as failed and the Mac plays again",
+    testATapOrAnEncoderThatCannotBeMadeIsToldAsFailedAndTheMacPlaysAgain
+  ),
+  (
+    "an encoder that fails ends the run as failed and one with no packet yet skips one",
+    testAnEncoderThatFailsEndsTheRunAsFailedAndOneWithNoPacketYetSkipsOne
+  ),
+  (
+    "packets that are dropped or too large or refused go on and over ends the run",
+    testPacketsThatAreDroppedOrTooLargeOrRefusedGoOnAndOverEndsTheRun
+  ),
+  (
+    "a clock that is gone ends the run without saying why",
+    testAClockThatIsGoneEndsTheRunWithoutSayingWhy
+  ),
+  (
+    "close is final and lets go of the tap and the encoder once",
+    testCloseIsFinalAndLetsGoOfTheTapAndTheEncoderOnce
+  ),
+  (
+    "the rate of the session is that of the Mac when it is 44100 or 48000 and any other is 48000",
+    testTheRateOfTheSessionIsThatOfTheMacWhenItIs44100Or48000AndAnyOtherIs48000
+  ),
+  (
+    "a second run keeps the form of the session when the Mac changes its rate",
+    testASecondRunKeepsTheFormOfTheSessionWhenTheMacChangesItsRate
+  ),
+  (
+    "the resampler keeps a line straight across blocks of any size",
+    testTheResamplerKeepsALineStraightAcrossBlocksOfAnySize
+  ),
+  (
+    "the resampler needs rates above zero and keeps the same rate whole",
+    testTheResamplerNeedsRatesAboveZeroAndKeepsTheSameRateWhole
+  ),
+  (
+    "the library session makes the calls of the interface with what it was given",
+    testTheLibrarySessionMakesTheCallsOfTheInterfaceWithWhatItWasGiven
+  ),
+  (
+    "the library session tells what became of every call",
+    testTheLibrarySessionTellsWhatBecameOfEveryCall
+  ),
+  (
+    "the calls of the sound may come from many threads at once",
+    testTheCallsOfTheSoundMayComeFromManyThreadsAtOnce
+  ),
 ]
 
 tests += [
@@ -1035,6 +1123,18 @@ tests += [
   (
     "the ring drops the oldest sound when it would hold more than the most",
     testTheRingDropsTheOldestSoundWhenItWouldHoldMoreThanTheMost
+  ),
+  (
+    "the ring lets go of sound that it did not come down to in a second of playing",
+    testTheRingLetsGoOfSoundThatItDidNotComeDownToInASecondOfPlaying
+  ),
+  (
+    "the ring keeps what the level came down to within the slack and lets go in the next second",
+    testTheRingKeepsWhatTheLevelCameDownToWithinTheSlackAndLetsGoInTheNextSecond
+  ),
+  (
+    "the ring begins the second again when it runs dry",
+    testTheRingBeginsTheSecondAgainWhenItRunsDry
   ),
   (
     "the ring keeps the order of sound that wraps around its storage",
@@ -1093,6 +1193,18 @@ tests += [
     "a decoder or an output that cannot be made ends the run quietly",
     testADecoderOrAnOutputThatCannotBeMadeEndsTheRunQuietly
   ),
+  (
+    "a run that could not be made is tried again on a packet after a second",
+    testARunThatCouldNotBeMadeIsTriedAgainOnAPacketAfterASecond
+  ),
+  (
+    "a run that keeps failing is tried again once per second",
+    testARunThatKeepsFailingIsTriedAgainOncePerSecond
+  ),
+  (
+    "a run stopped before it was made is not tried again, and a new run takes its place",
+    testARunThatWasStoppedBeforeItWasMadeIsNotTriedAgainAndANewOneIsTriedInItsForm
+  ),
   ("the packet is copied before play returns", testThePacketIsCopiedBeforePlayReturns),
   (
     "closing does not wait for the output to start and stops it afterwards",
@@ -1141,6 +1253,20 @@ tests += [
     (
       "the description of the stream is what the standard writes",
       testTheDescriptionOfTheStreamIsWhatTheStandardWritesAndNothingForWhatIsNotAacLc
+    ),
+  ]
+#endif
+
+#if canImport(AudioToolbox)
+  tests += [
+    ("the AAC encoder makes packets of a tone", testTheAacEncoderMakesPacketsOfATone),
+    (
+      "the AAC encoder refuses what it cannot make and is over when let go of",
+      testTheAacEncoderRefusesWhatItCannotMakeAndIsOverWhenLetGoOf
+    ),
+    (
+      "the decoder makes the tone back that the encoder of the Mac made of it",
+      testTheDecoderMakesTheToneBackThatTheEncoderOfTheMacMadeOfIt
     ),
   ]
 #endif
