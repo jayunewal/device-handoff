@@ -16,12 +16,15 @@
 //! - from the source, the picture it is sending ([`Config`]), a pause and the end of it
 //!   ([`SourceMessage::Pause`] and [`SourceMessage::Resume`]), the reason an event from the
 //!   viewer was dropped ([`gate::Notice`]) and, to a viewer that plays sound, the sound it sends
-//!   ([`Sound`]) or why it sends none ([`Silent`]);
+//!   ([`Sound`]) or why it sends none ([`Silent`]) and, to a viewer that may unlock it, the
+//!   question to answer with a face and what came of the unlock ([`Sealed`] and [`Done`]);
 //! - from the viewer, how it is doing ([`Report`]), what it can take now ([`Want`]), a request
 //!   for a key frame ([`KeyFrame`]), whether it wants to hear the source ([`Hear`]), when the
 //!   person at the source granted control, input ([`InputBatch`]) and, when the source keeps its
 //!   screen private, whether the people at the source see the screen and use the keys and the
-//!   pointer there ([`Lift`]).
+//!   pointer there ([`Lift`]) and, when the person at the source set it up, a request to unlock
+//!   the source, the answer to its question and giving up ([`ViewerMessage::Unlock`], [`Opened`]
+//!   and [`Cancelled`]).
 //!
 //! Everything here is checked when it is encoded and when it is decoded, because the other
 //! device is not trusted: a number out of range or a list that is too long is a violation.
@@ -42,6 +45,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     gate,
     input::{self, Event, InputError},
+    unlock::{Cancelled, Done, Opened, Sealed},
 };
 
 /// The picture that the source sends from now on.
@@ -145,7 +149,7 @@ pub struct Silent {
 }
 
 /// A message from the source to the viewer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SourceMessage {
     /// The picture that follows.
     Config(Config),
@@ -161,6 +165,15 @@ pub enum SourceMessage {
     /// There is no sound, and why. Only to a viewer that advertised
     /// [`capability::STREAM_HEAR`](baton_proto::message::capability::STREAM_HEAR).
     Silent(Silent),
+    /// The question that the viewer's person answers with their face, to unlock the screen. Only to
+    /// a viewer that advertised
+    /// [`capability::UNLOCK_APPROVE`](baton_proto::message::capability::UNLOCK_APPROVE), in a
+    /// session whose offer set `unlock`.
+    UnlockSealed(Sealed),
+    /// What came of an unlock, or why the source will not try. Only to a viewer that advertised
+    /// [`capability::UNLOCK_APPROVE`](baton_proto::message::capability::UNLOCK_APPROVE), in a
+    /// session whose offer set `unlock`.
+    UnlockDone(Done),
 }
 
 /// How hot the viewer's device is.
@@ -282,6 +295,16 @@ pub enum ViewerMessage {
     /// What the people at the source may do. Only to a source that advertised `stream.private`, in
     /// a session whose offer set `private`.
     Lift(Lift),
+    /// The viewer's person asks to unlock the screen of the source, which is locked. Only to a
+    /// source that advertised
+    /// [`capability::UNLOCK_TARGET`](baton_proto::message::capability::UNLOCK_TARGET), in a
+    /// session whose offer set `unlock`.
+    Unlock,
+    /// The viewer's person was recognised, and the sealed key is open. The same conditions as
+    /// [`Unlock`](Self::Unlock).
+    UnlockOpened(Opened),
+    /// The viewer gives up on the unlock. The same conditions as [`Unlock`](Self::Unlock).
+    UnlockCancelled(Cancelled),
 }
 
 impl Config {
@@ -401,7 +424,12 @@ impl Message for SourceMessage {
                 field: "number of dropped events",
                 reason: "is 0",
             }),
-            Self::Pause(_) | Self::Resume | Self::Notice(_) | Self::Silent(_) => Ok(()),
+            Self::UnlockSealed(sealed) => sealed.sealed.validate(),
+            Self::Pause(_)
+            | Self::Resume
+            | Self::Notice(_)
+            | Self::Silent(_)
+            | Self::UnlockDone(_) => Ok(()),
         }
     }
 }
@@ -411,7 +439,13 @@ impl Message for ViewerMessage {
 
     fn validate(&self) -> Result<(), LimitError> {
         match self {
-            Self::Report(_) | Self::KeyFrame(_) | Self::Hear(_) | Self::Lift(_) => Ok(()),
+            Self::Report(_)
+            | Self::KeyFrame(_)
+            | Self::Hear(_)
+            | Self::Lift(_)
+            | Self::Unlock
+            | Self::UnlockOpened(_)
+            | Self::UnlockCancelled(_) => Ok(()),
             Self::Want(want) => want.validate(),
             Self::Input(batch) => batch.validate(),
         }
@@ -420,7 +454,11 @@ impl Message for ViewerMessage {
 
 #[cfg(test)]
 mod tests {
-    use baton_proto::frame::{self, FrameError};
+    use baton_proto::{
+        frame::{self, FrameError},
+        limits::MAX_SEALED_KEY_BYTES,
+        unlock::{BoxKey, Challenge, SealedKey},
+    };
     use ciborium::{Value, cbor};
     use proptest::prelude::*;
 
@@ -428,6 +466,7 @@ mod tests {
     use crate::{
         gate::{Notice, Reason},
         input::{Button, Modifiers, PointerAction},
+        unlock::{CancelReason, Outcome},
     };
 
     const REASONS: [Reason; 16] = [
@@ -518,8 +557,39 @@ mod tests {
         ViewerMessage::Input(InputBatch { events })
     }
 
+    /// `N` bytes that count up from `first`.
+    fn counting<const N: usize>(first: u8) -> [u8; N] {
+        let mut out = [0; N];
+        for (byte, value) in out.iter_mut().zip(first..) {
+            *byte = value;
+        }
+        out
+    }
+
+    /// The question of an unlock as a source sends it: a challenge of 16 bytes, and the key of the
+    /// box sealed with ECIES to a P-256 key, which is 113 bytes.
+    fn question() -> Sealed {
+        Sealed {
+            challenge: Challenge::from_bytes(counting(0xc0)),
+            sealed: SealedKey::new(counting::<113>(0).to_vec()),
+        }
+    }
+
+    /// The answer to it as a viewer sends it, with a key of 32 bytes.
+    fn answer() -> Opened {
+        Opened {
+            challenge: Challenge::from_bytes(counting(0xc0)),
+            key: BoxKey::from_bytes(counting(0x20)),
+        }
+    }
+
     fn encoded<M: Message>(message: &M) -> String {
         hex(&frame::encode(message).unwrap())
+    }
+
+    /// What `message` is on the wire without the length that frames it.
+    fn payload_of_frame<M: Message>(message: &M) -> Vec<u8> {
+        frame::encode(message).unwrap()[frame::HEADER_LEN..].to_vec()
     }
 
     #[test]
@@ -673,12 +743,98 @@ mod tests {
     }
 
     #[test]
+    fn the_messages_of_an_unlock_have_known_wire_encodings() {
+        // The exact bytes are the protocol (docs/protocol.md section 7). If this fails, the wire
+        // format changed.
+        assert_eq!(
+            encoded(&SourceMessage::UnlockSealed(question())),
+            concat!(
+                "000000a4", // the frame: 164 bytes follow
+                "a1",
+                "6c556e6c6f636b5365616c6564", // {"UnlockSealed":
+                "a2",                         //   map of 2
+                "69",
+                "6368616c6c656e6765", //   "challenge":
+                "50",
+                "c0c1c2c3c4c5c6c7c8c9cacbcccdcecf", //     16 bytes,
+                "66",
+                "7365616c6564", //   "sealed":
+                "5871",         //     113 bytes:
+                "000102030405060708090a0b0c0d0e0f",
+                "101112131415161718191a1b1c1d1e1f",
+                "202122232425262728292a2b2c2d2e2f",
+                "303132333435363738393a3b3c3d3e3f",
+                "404142434445464748494a4b4c4d4e4f",
+                "505152535455565758595a5b5c5d5e5f",
+                "606162636465666768696a6b6c6d6e6f",
+                "70",
+            )
+        );
+        assert_eq!(
+            encoded(&SourceMessage::UnlockDone(Done {
+                outcome: Outcome::Unlocked
+            })),
+            // {"UnlockDone": {"outcome": "Unlocked"}}
+            "0000001ea16a556e6c6f636b446f6e65a1676f7574636f6d6568556e6c6f636b6564"
+        );
+        assert_eq!(
+            encoded(&SourceMessage::UnlockDone(Done {
+                outcome: Outcome::Rejected
+            })),
+            // {"UnlockDone": {"outcome": "Rejected"}}
+            "0000001ea16a556e6c6f636b446f6e65a1676f7574636f6d656852656a6563746564"
+        );
+        assert_eq!(
+            encoded(&ViewerMessage::Unlock),
+            // "Unlock"
+            "0000000766556e6c6f636b"
+        );
+        assert_eq!(
+            encoded(&ViewerMessage::UnlockOpened(answer())),
+            concat!(
+                "00000050", // the frame: 80 bytes follow
+                "a1",
+                "6c556e6c6f636b4f70656e6564", // {"UnlockOpened":
+                "a2",                         //   map of 2
+                "69",
+                "6368616c6c656e6765", //   "challenge":
+                "50",
+                "c0c1c2c3c4c5c6c7c8c9cacbcccdcecf", //     16 bytes,
+                "63",
+                "6b6579", //   "key":
+                "5820",   //     32 bytes:
+                "202122232425262728292a2b2c2d2e2f",
+                "303132333435363738393a3b3c3d3e3f",
+            )
+        );
+        assert_eq!(
+            encoded(&ViewerMessage::UnlockCancelled(Cancelled {
+                reason: CancelReason::Declined
+            })),
+            // {"UnlockCancelled": {"reason": "Declined"}}
+            "00000022a16f556e6c6f636b43616e63656c6c6564a166726561736f6e684465636c696e6564"
+        );
+        assert_eq!(
+            encoded(&ViewerMessage::UnlockCancelled(Cancelled {
+                reason: CancelReason::KeyLost
+            })),
+            // {"UnlockCancelled": {"reason": "KeyLost"}}
+            "00000021a16f556e6c6f636b43616e63656c6c6564a166726561736f6e674b65794c6f7374"
+        );
+    }
+
+    #[test]
     fn a_unit_variant_may_also_be_a_map_with_null() {
         // Section 2 of the protocol: some encoders write `Resume` this way, and it is accepted.
         let payload = cbor_bytes(&cbor!({ "Resume" => null }).unwrap());
         assert_eq!(
             frame::decode_payload::<SourceMessage>(&payload),
             Ok(SourceMessage::Resume)
+        );
+        let payload = cbor_bytes(&cbor!({ "Unlock" => null }).unwrap());
+        assert_eq!(
+            frame::decode_payload::<ViewerMessage>(&payload),
+            Ok(ViewerMessage::Unlock)
         );
     }
 
@@ -822,6 +978,20 @@ mod tests {
                 thermal: Thermal::Other
             }))
         );
+        // And for an unlock. An outcome of a later version is not an unlocked screen.
+        assert_eq!(
+            decode(cbor!({ "UnlockDone" => { "outcome" => "Postponed" } }).unwrap()),
+            Ok(SourceMessage::UnlockDone(Done {
+                outcome: Outcome::Other
+            }))
+        );
+        let cancelled = cbor!({ "UnlockCancelled" => { "reason" => "Tired" } }).unwrap();
+        assert_eq!(
+            frame::decode_payload::<ViewerMessage>(&cbor_bytes(&cancelled)),
+            Ok(ViewerMessage::UnlockCancelled(Cancelled {
+                reason: CancelReason::Other
+            }))
+        );
     }
 
     #[test]
@@ -852,6 +1022,23 @@ mod tests {
             .unwrap(),
         );
         assert!(frame::decode_payload::<ViewerMessage>(&sound).is_err());
+        // Nor the messages of an unlock.
+        let sealed = payload_of_frame(&SourceMessage::UnlockSealed(question()));
+        assert!(frame::decode_payload::<SourceMessage>(&sealed).is_ok());
+        assert!(frame::decode_payload::<ViewerMessage>(&sealed).is_err());
+        let done = cbor_bytes(&cbor!({ "UnlockDone" => { "outcome" => "Unlocked" } }).unwrap());
+        assert!(frame::decode_payload::<SourceMessage>(&done).is_ok());
+        assert!(frame::decode_payload::<ViewerMessage>(&done).is_err());
+        let unlock = cbor_bytes(&Value::Text("Unlock".into()));
+        assert!(frame::decode_payload::<ViewerMessage>(&unlock).is_ok());
+        assert!(frame::decode_payload::<SourceMessage>(&unlock).is_err());
+        let opened = payload_of_frame(&ViewerMessage::UnlockOpened(answer()));
+        assert!(frame::decode_payload::<ViewerMessage>(&opened).is_ok());
+        assert!(frame::decode_payload::<SourceMessage>(&opened).is_err());
+        let cancelled =
+            cbor_bytes(&cbor!({ "UnlockCancelled" => { "reason" => "Declined" } }).unwrap());
+        assert!(frame::decode_payload::<ViewerMessage>(&cancelled).is_ok());
+        assert!(frame::decode_payload::<SourceMessage>(&cancelled).is_err());
     }
 
     #[test]
@@ -981,6 +1168,171 @@ mod tests {
                 "{message:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_parts_of_an_unlock_have_the_lengths_that_the_protocol_gives_them() {
+        let bytes = |len: usize| Value::Bytes(vec![7; len]);
+        let sealed = |challenge: usize, sealed: usize| {
+            let message = cbor!({ "UnlockSealed" => {
+                "challenge" => bytes(challenge), "sealed" => bytes(sealed) } })
+            .unwrap();
+            frame::decode_payload::<SourceMessage>(&cbor_bytes(&message))
+        };
+        let opened = |challenge: usize, key: usize| {
+            let message = cbor!({ "UnlockOpened" => {
+                "challenge" => bytes(challenge), "key" => bytes(key) } })
+            .unwrap();
+            frame::decode_payload::<ViewerMessage>(&cbor_bytes(&message))
+        };
+        // A challenge has 16 bytes and a key 32, and a string that is one byte off is no string
+        // of that kind. The lengths are written as numbers and not as the constants.
+        assert!(sealed(16, 113).is_ok());
+        assert!(opened(16, 32).is_ok());
+        for wrong in [0, 15, 17, 32] {
+            assert!(matches!(sealed(wrong, 113), Err(FrameError::Decode(_))));
+            assert!(matches!(opened(wrong, 32), Err(FrameError::Decode(_))));
+        }
+        for wrong in [0, 16, 31, 33, 64] {
+            assert!(matches!(opened(16, wrong), Err(FrameError::Decode(_))));
+        }
+
+        // A sealed key has from one byte to 1024. It is the limit of the table in section 6.
+        assert!(sealed(16, 1).is_ok());
+        assert!(sealed(16, 1024).is_ok());
+        assert!(matches!(
+            sealed(16, 0),
+            Err(FrameError::Limit(LimitError::Empty { .. }))
+        ));
+        assert!(matches!(
+            sealed(16, 1025),
+            Err(FrameError::Limit(LimitError::TooLong { .. }))
+        ));
+        let said = |len: usize| {
+            frame::encode(&SourceMessage::UnlockSealed(Sealed {
+                sealed: SealedKey::new(vec![7; len]),
+                ..question()
+            }))
+        };
+        assert!(said(1).is_ok());
+        assert!(said(1024).is_ok());
+        assert!(matches!(
+            said(0),
+            Err(FrameError::Limit(LimitError::Empty { .. }))
+        ));
+        assert!(matches!(
+            said(1025),
+            Err(FrameError::Limit(LimitError::TooLong { .. }))
+        ));
+    }
+
+    #[test]
+    fn an_unlock_message_that_does_not_say_what_it_is_for_is_not_read() {
+        // An outcome and a reason have no default. A `Done` that leaves its outcome out does not
+        // say that the screen is unlocked, or anything else, and is refused.
+        let outcome = |value: Value| {
+            let message = cbor!({ "UnlockDone" => { "outcome" => value } }).unwrap();
+            frame::decode_payload::<SourceMessage>(&cbor_bytes(&message))
+        };
+        let nothing = cbor!({ "UnlockDone" => {} }).unwrap();
+        assert!(matches!(
+            frame::decode_payload::<SourceMessage>(&cbor_bytes(&nothing)),
+            Err(FrameError::Decode(_))
+        ));
+        for wrong in [Value::from(0), Value::from(true), Value::Null] {
+            assert!(
+                matches!(outcome(wrong.clone()), Err(FrameError::Decode(_))),
+                "{wrong:?}"
+            );
+        }
+        let nothing = cbor!({ "UnlockCancelled" => {} }).unwrap();
+        assert!(matches!(
+            frame::decode_payload::<ViewerMessage>(&cbor_bytes(&nothing)),
+            Err(FrameError::Decode(_))
+        ));
+
+        // An answer needs both of its parts, and a question does too.
+        let key = Value::Bytes(vec![7; 32]);
+        let challenge = Value::Bytes(vec![7; 16]);
+        let sealed = Value::Bytes(vec![7; 113]);
+        for message in [
+            cbor!({ "UnlockOpened" => { "challenge" => challenge.clone() } }).unwrap(),
+            cbor!({ "UnlockOpened" => { "key" => key } }).unwrap(),
+            cbor!({ "UnlockOpened" => {} }).unwrap(),
+        ] {
+            assert!(
+                matches!(
+                    frame::decode_payload::<ViewerMessage>(&cbor_bytes(&message)),
+                    Err(FrameError::Decode(_))
+                ),
+                "{message:?}"
+            );
+        }
+        for message in [
+            cbor!({ "UnlockSealed" => { "challenge" => challenge } }).unwrap(),
+            cbor!({ "UnlockSealed" => { "sealed" => sealed } }).unwrap(),
+        ] {
+            assert!(
+                matches!(
+                    frame::decode_payload::<SourceMessage>(&cbor_bytes(&message)),
+                    Err(FrameError::Decode(_))
+                ),
+                "{message:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_messages_of_an_unlock_have_no_other_limits_to_break() {
+        for outcome in [
+            Outcome::Unlocked,
+            Outcome::NotSetUp,
+            Outcome::NotLocked,
+            Outcome::NotPrivate,
+            Outcome::Busy,
+            Outcome::Stale,
+            Outcome::Rejected,
+            Outcome::TimedOut,
+            Outcome::Failed,
+            Outcome::Other,
+        ] {
+            assert!(frame::encode(&SourceMessage::UnlockDone(Done { outcome })).is_ok());
+        }
+        for reason in [
+            CancelReason::Declined,
+            CancelReason::KeyLost,
+            CancelReason::Failed,
+            CancelReason::Other,
+        ] {
+            let cancelled = ViewerMessage::UnlockCancelled(Cancelled { reason });
+            assert!(frame::encode(&cancelled).is_ok());
+        }
+        assert!(frame::encode(&ViewerMessage::Unlock).is_ok());
+        assert!(frame::encode(&ViewerMessage::UnlockOpened(answer())).is_ok());
+    }
+
+    #[test]
+    fn what_an_unlock_guards_is_not_in_the_error_or_in_the_log() {
+        // The key and the challenge are printed as nothing, and the sealed key as its length, so
+        // that a message can be logged whole.
+        let sealed = SourceMessage::UnlockSealed(question());
+        assert_eq!(
+            format!("{sealed:?}"),
+            "UnlockSealed(Sealed { challenge: Challenge(..), sealed: SealedKey(113 bytes) })"
+        );
+        let opened = ViewerMessage::UnlockOpened(answer());
+        assert_eq!(
+            format!("{opened:?}"),
+            "UnlockOpened(Opened { challenge: Challenge(..), key: BoxKey(..) })"
+        );
+        // And what says why a message was refused does not repeat what was in it.
+        let too_long = SourceMessage::UnlockSealed(Sealed {
+            sealed: SealedKey::new(vec![0x5a; MAX_SEALED_KEY_BYTES + 1]),
+            ..question()
+        });
+        let error = frame::encode(&too_long).unwrap_err();
+        let shown = format!("{error:?} {error}");
+        assert!(!shown.contains("5a") && !shown.contains("90"), "{shown}");
     }
 
     #[test]
@@ -1254,6 +1606,29 @@ mod tests {
                 Just(SilentReason::Other)
             ]
             .prop_map(|reason| SourceMessage::Silent(Silent { reason })),
+            (
+                any::<[u8; Challenge::LEN]>(),
+                proptest::collection::vec(any::<u8>(), 1..=MAX_SEALED_KEY_BYTES)
+            )
+                .prop_map(|(challenge, sealed)| {
+                    SourceMessage::UnlockSealed(Sealed {
+                        challenge: Challenge::from_bytes(challenge),
+                        sealed: SealedKey::new(sealed),
+                    })
+                }),
+            prop_oneof![
+                Just(Outcome::Unlocked),
+                Just(Outcome::NotSetUp),
+                Just(Outcome::NotLocked),
+                Just(Outcome::NotPrivate),
+                Just(Outcome::Busy),
+                Just(Outcome::Stale),
+                Just(Outcome::Rejected),
+                Just(Outcome::TimedOut),
+                Just(Outcome::Failed),
+                Just(Outcome::Other)
+            ]
+            .prop_map(|outcome| SourceMessage::UnlockDone(Done { outcome })),
         ]
     }
 
@@ -1288,6 +1663,22 @@ mod tests {
                 .prop_map(|(screen, input)| ViewerMessage::Lift(Lift { screen, input })),
             proptest::collection::vec(event(), 1..=input::MAX_BATCH).prop_map(batch),
             any::<bool>().prop_map(|on| ViewerMessage::Hear(Hear { on })),
+            Just(ViewerMessage::Unlock),
+            (any::<[u8; Challenge::LEN]>(), any::<[u8; BoxKey::LEN]>()).prop_map(
+                |(challenge, key)| {
+                    ViewerMessage::UnlockOpened(Opened {
+                        challenge: Challenge::from_bytes(challenge),
+                        key: BoxKey::from_bytes(key),
+                    })
+                }
+            ),
+            prop_oneof![
+                Just(CancelReason::Declined),
+                Just(CancelReason::KeyLost),
+                Just(CancelReason::Failed),
+                Just(CancelReason::Other)
+            ]
+            .prop_map(|reason| ViewerMessage::UnlockCancelled(Cancelled { reason })),
         ]
     }
 

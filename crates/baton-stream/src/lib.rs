@@ -27,6 +27,8 @@
 //!   the releases.
 //! - [`gate`] holds the rules that confine a viewer's input to the shared window.
 //! - [`control`] holds the messages on the two control streams of a session.
+//! - [`unlock`] holds the messages with which a viewer unlocks the screen of a source that is
+//!   locked, when the person at the source set that up (`docs/adr/0013-unlock-from-a-phone.md`).
 //! - [`h264`] turns an H.264 picture from the form it has on the wire into the form that the
 //!   encoder and the decoder of a platform use, and back.
 
@@ -43,6 +45,7 @@ pub mod input;
 pub mod input_queue;
 pub mod sender;
 pub mod sound;
+pub mod unlock;
 pub mod viewer;
 
 #[cfg(test)]

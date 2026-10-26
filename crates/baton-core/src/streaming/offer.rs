@@ -213,6 +213,8 @@ impl WindowShare {
             height: self.height,
             control: self.control,
             private: self.private,
+            // No device offers an unlock yet.
+            unlock: false,
         }
     }
 

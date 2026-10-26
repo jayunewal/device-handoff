@@ -833,6 +833,11 @@ impl View {
             SourceMessage::Silent(silent) => {
                 self.with_sound(|hearing| hearing.silent(silent.reason));
             }
+            // A source sends the messages of an unlock only to a viewer that advertised
+            // `unlock.approve`. This viewer does not yet (protocol.md section 9).
+            SourceMessage::UnlockSealed(_) | SourceMessage::UnlockDone(_) => {
+                return ControlFlow::Break(());
+            }
             // The source keeps within what the viewer said it can take.
             SourceMessage::Config(config) if !self.takes.allows(&config) => {
                 return ControlFlow::Break(());
@@ -1050,7 +1055,10 @@ impl View {
 mod tests {
     use std::collections::HashSet;
 
-    use baton_proto::stream::Codec;
+    use baton_proto::{
+        stream::Codec,
+        unlock::{Challenge, SealedKey},
+    };
     use baton_stream::{
         KIND_CONTROL,
         control::{
@@ -1058,6 +1066,7 @@ mod tests {
         },
         header::Flags,
         input::{Button, Event, Modifiers, NO_KEY, PointerAction},
+        unlock::{Done, Outcome, Sealed},
     };
     use iroh::endpoint::SendStream;
 
@@ -1907,6 +1916,26 @@ mod tests {
             }),
             SourceMessage::Silent(Silent {
                 reason: SilentReason::Failed,
+            }),
+        ] {
+            let rig = Rig::new().await;
+            let mut send = rig.open_source_control().await;
+            write_message(&mut send, &message).await.unwrap();
+            assert_eq!(rig.ended().await, End::Violation, "{message:?}");
+            assert_eq!(stopped_with(&send).await, 400, "{message:?}");
+            assert!(rig.log.source().is_empty(), "{message:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_messages_of_an_unlock_are_a_violation_while_the_viewer_takes_no_unlock() {
+        for message in [
+            SourceMessage::UnlockSealed(Sealed {
+                challenge: Challenge::from_bytes([1; Challenge::LEN]),
+                sealed: SealedKey::new(vec![3; 113]),
+            }),
+            SourceMessage::UnlockDone(Done {
+                outcome: Outcome::Unlocked,
             }),
         ] {
             let rig = Rig::new().await;
