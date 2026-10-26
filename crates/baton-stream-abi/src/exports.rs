@@ -21,20 +21,23 @@ use std::{
     slice,
 };
 
+use baton_core::streaming::SoundPacket;
 use baton_proto::limits::{
-    MAX_NAME_BYTES, MAX_PICTURE_BYTES, MAX_STREAM_TITLE_BYTES, MAX_WINDOW_EDGE,
+    MAX_NAME_BYTES, MAX_PICTURE_BYTES, MAX_SOUND_PACKET_BYTES, MAX_STREAM_TITLE_BYTES,
+    MAX_WINDOW_EDGE,
 };
+use baton_stream::control::{Sound, SoundCodec};
 
 use crate::{
     Error,
     abi::{
         ABI_VERSION, BatonBytes, BatonFormat, BatonPicked, BatonPicture, BatonSharerVTable,
-        BatonViewerVTable, FRAME_REFERENCED, MESSAGE_MAX, PICKED_DISPLAY, PICKED_WINDOW,
-        SET_BYTES_MAX, SETS_MAX,
+        BatonSound, BatonSoundPacket, BatonViewerVTable, FRAME_REFERENCED, MESSAGE_MAX,
+        PICKED_DISPLAY, PICKED_WINDOW, SET_BYTES_MAX, SETS_MAX, SOUND_CODEC_AAC,
     },
     platform::{Chosen, geometry_of, inside_call},
     registry::{Registry, global},
-    sharer::{Given, Made, PickAnswer, SourceLink},
+    sharer::{Given, Made, PickAnswer, SoundOutcome, SourceLink},
 };
 
 /// Runs `call` and gives the number that the platform is told: its result, or the number of a
@@ -190,6 +193,45 @@ pub extern "C" fn baton_stream_source_resume(link: u64) -> i32 {
     answer(|| global().source_resume(link))
 }
 
+/// Says what the packets of sound are. See the header.
+///
+/// # Safety
+///
+/// `sound` is either null, or points to a `BatonSound` that begins with its size and is that long.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn baton_stream_source_sound_begin(
+    link: u64,
+    sound: *const BatonSound,
+) -> i32 {
+    // SAFETY: the caller's promise about `sound` is this function's own.
+    answer(|| unsafe { global().source_sound_begin(link, sound) })
+}
+
+/// The sound that is wanted cannot be sent. See the header.
+#[unsafe(no_mangle)]
+pub extern "C" fn baton_stream_source_sound_silent(link: u64, reason: u32) -> i32 {
+    answer(|| global().source_sound_silent(link, reason))
+}
+
+/// A packet of sound was made: sends it. See the header.
+///
+/// # Safety
+///
+/// `packet` is either null, or points to a `BatonSoundPacket` that begins with its size and is that
+/// long, whose `bytes` describe memory that can be read during the call and that nothing writes to
+/// meanwhile; `outcome` and `number` are either null, or point to a `u32` and a `u64` that can be
+/// written during the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn baton_stream_source_sound(
+    link: u64,
+    packet: *const BatonSoundPacket,
+    outcome: *mut u32,
+    number: *mut u64,
+) -> i32 {
+    // SAFETY: the caller's promise about the pointers is this function's own.
+    answer(|| unsafe { global().source_sound(link, packet, outcome, number) })
+}
+
 /// Ends the session. See the header.
 ///
 /// # Safety
@@ -331,6 +373,44 @@ impl Registry {
     pub(crate) fn source_resume(&self, link: u64) -> Result<(), Error> {
         self.source(link)?.resume();
         Ok(())
+    }
+
+    /// Says what the packets of sound are.
+    ///
+    /// # Safety
+    ///
+    /// As for [`baton_stream_source_sound_begin`].
+    pub(crate) unsafe fn source_sound_begin(
+        &self,
+        link: u64,
+        sound: *const BatonSound,
+    ) -> Result<(), Error> {
+        let source = self.source(link)?;
+        // SAFETY: the caller's promise about `sound` is this function's own.
+        let sound = unsafe { read_struct(sound, size_of::<BatonSound>()) }?;
+        source.begin_sound(sound_of(&sound)?)
+    }
+
+    /// The sound that is wanted cannot be sent.
+    pub(crate) fn source_sound_silent(&self, link: u64, reason: u32) -> Result<(), Error> {
+        self.source(link)?.silent(reason)
+    }
+
+    /// Sends a packet of sound.
+    ///
+    /// # Safety
+    ///
+    /// As for [`baton_stream_source_sound`].
+    pub(crate) unsafe fn source_sound(
+        &self,
+        link: u64,
+        packet: *const BatonSoundPacket,
+        outcome: *mut u32,
+        number: *mut u64,
+    ) -> Result<(), Error> {
+        let source = self.source(link)?;
+        // SAFETY: the caller's promise about the pointers is this function's own.
+        unsafe { send_sound(&source, packet, outcome, number) }
     }
 
     /// Ends the session.
@@ -558,6 +638,64 @@ unsafe fn send_picture(
     Ok(())
 }
 
+/// The form of sound that the platform said. Whether the numbers are within what the protocol
+/// allows is for the session to say.
+///
+/// # Errors
+///
+/// [`Error::Argument`] if the codec is not one that the interface has, or a number does not fit.
+fn sound_of(sound: &BatonSound) -> Result<Sound, Error> {
+    if sound.codec != SOUND_CODEC_AAC {
+        return Err(Error::Argument);
+    }
+    Ok(Sound {
+        codec: SoundCodec::Aac,
+        rate: sound.rate,
+        channels: u8::try_from(sound.channels).map_err(|_| Error::Argument)?,
+        samples: u16::try_from(sound.samples).map_err(|_| Error::Argument)?,
+    })
+}
+
+/// Reads the packet of sound that the platform made, sends it, and tells the platform what became
+/// of it.
+///
+/// # Safety
+///
+/// As for [`baton_stream_source_sound`].
+unsafe fn send_sound(
+    source: &SourceLink,
+    packet: *const BatonSoundPacket,
+    outcome: *mut u32,
+    number: *mut u64,
+) -> Result<(), Error> {
+    let (outcome, number) = (writable(outcome)?, writable(number)?);
+    // SAFETY: the caller's promise about `packet` is this function's own.
+    let packet = unsafe { read_struct(packet, size_of::<BatonSoundPacket>()) }?;
+    // A packet of no bytes is not one: the platform's encoder has made nothing yet.
+    if packet.bytes.len == 0 {
+        return Err(Error::Argument);
+    }
+    let sent = if packet.bytes.len > MAX_SOUND_PACKET_BYTES {
+        // Not read, as a picture that large is not: what is behind the length is the platform's
+        // business.
+        SoundOutcome::TooLarge
+    } else {
+        // SAFETY: the caller's promise about the bytes is this function's own, since the struct
+        // that describes them is the one it vouches for.
+        let bytes = unsafe { read_bytes(&packet.bytes, MAX_SOUND_PACKET_BYTES) }?;
+        source.sound(SoundPacket {
+            bytes: bytes.to_vec(),
+            capture_time: packet.capture_time,
+        })
+    };
+    // SAFETY: both are writable for the call, as the caller promises, and were checked.
+    unsafe {
+        outcome.write(sent.code());
+        number.write(sent.number());
+    }
+    Ok(())
+}
+
 /// The parameter sets of a picture, each as the bytes it describes.
 ///
 /// # Safety
@@ -722,12 +860,15 @@ mod tests {
                     baton_stream_source_new_epoch(link, ptr::null()),
                     baton_stream_source_pause(link, 0),
                     baton_stream_source_resume(link),
+                    baton_stream_source_sound_begin(link, ptr::null()),
+                    baton_stream_source_sound_silent(link, 0),
+                    baton_stream_source_sound(link, ptr::null(), &raw mut small, &raw mut number),
                     baton_stream_source_end(link, ptr::null()),
                 ]
             }
         };
         for link in [0, 1, 99, u64::MAX] {
-            assert_eq!(everything(link), [E_UNKNOWN_LINK; 10], "link {link}");
+            assert_eq!(everything(link), [E_UNKNOWN_LINK; 13], "link {link}");
         }
         assert_eq!(
             // SAFETY: both null is one of the answers that the function is made for.
@@ -1036,6 +1177,55 @@ mod tests {
         // looked at when no session is open under the link.
         let ended = unsafe { registry.source_end(99, &raw const nowhere) };
         assert_eq!(ended, Err(Error::UnknownLink));
+    }
+
+    #[test]
+    fn the_form_of_the_sound_is_what_the_platform_said_and_its_numbers_are_for_the_session_to_judge()
+     {
+        let form = |codec, rate, channels, samples| BatonSound {
+            size: size_of_u32::<BatonSound>(),
+            codec,
+            rate,
+            channels,
+            samples,
+            reserved: 0,
+        };
+        assert_eq!(
+            sound_of(&form(SOUND_CODEC_AAC, 48_000, 2, 1024)),
+            Ok(Sound {
+                codec: SoundCodec::Aac,
+                rate: 48_000,
+                channels: 2,
+                samples: 1024,
+            })
+        );
+        // A codec that the interface does not have.
+        for codec in [0, 2, u32::MAX] {
+            assert_eq!(
+                sound_of(&form(codec, 48_000, 2, 1024)),
+                Err(Error::Argument),
+                "codec {codec}"
+            );
+        }
+        // A number that does not fit where the protocol keeps it is refused here.
+        for (channels, samples) in [(256, 1024), (u32::MAX, 1024), (2, 65_536), (2, u32::MAX)] {
+            assert_eq!(
+                sound_of(&form(SOUND_CODEC_AAC, 48_000, channels, samples)),
+                Err(Error::Argument),
+                "{channels} channels, {samples} samples"
+            );
+        }
+        // One that fits goes on as it is: whether it is within what the protocol allows is for the
+        // session to say.
+        assert_eq!(
+            sound_of(&form(SOUND_CODEC_AAC, 0, 0, 0)),
+            Ok(Sound {
+                codec: SoundCodec::Aac,
+                rate: 0,
+                channels: 0,
+                samples: 0,
+            })
+        );
     }
 
     #[test]

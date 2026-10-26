@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! The viewer that the platform registered, as the app's [`WindowViewer`], and the decoder of each
-//! of its screens, as the session's [`Decoder`].
+//! The viewer that the platform registered, as the app's [`WindowViewer`], and the decoder and the
+//! speaker of each of its screens, as the session's [`Decoder`] and [`Speaker`].
 //!
 //! The decoder is where the Rust side stands between the network and the platform. A picture
 //! comes in the form of the wire (H.264 in Annex B form) and goes out in the form that the Apple
@@ -10,14 +10,19 @@
 //! and held to what the device said it can show: a decoder allocates by the sets, which come from a
 //! paired device that may be broken, and the source's `Config` is checked against the same limits
 //! but says nothing about what is inside the pictures.
+//!
+//! The speaker is the other half of a screen, for a platform that plays sound: it passes the form
+//! of the sound, the packets and the end of a run to the platform, in the order that the session
+//! gives them. It stands for the same screen as the decoder, so the two share it: whichever of them
+//! is dropped last releases the screen, after the link is closed.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use baton_app::windows::{PlatformError, Screen, ScreenLink, ShowLimits, WindowViewer};
-use baton_core::streaming::{DecodeError, Decoder, DecoderState, WindowOffer};
+use baton_core::streaming::{DecodeError, Decoder, DecoderState, Play, Speaker, WindowOffer};
 use baton_proto::stream::Codec;
 use baton_stream::{
-    control::{PauseReason, SourceMessage, Thermal},
+    control::{PauseReason, SilentReason, Sound, SourceMessage, Thermal},
     gate::Reason,
     h264,
     header::FrameHeader,
@@ -36,7 +41,7 @@ use crate::{
         THERMAL_CRITICAL, THERMAL_FAIR, THERMAL_NOMINAL, THERMAL_SERIOUS, size_of_u32,
     },
     platform::{Calls, Frame, ScreenHandle, Window},
-    registry::Links,
+    registry::{Links, lock},
 };
 
 /// What the person is told when the platform made no screen and gave no reason.
@@ -105,18 +110,26 @@ impl WindowViewer for AbiViewer {
             number,
         );
         match opened {
-            Ok(opened) => Ok(Screen {
-                decoder: Box::new(AbiDecoder {
+            Ok(opened) => {
+                let held = Arc::new(Mutex::new(Held {
                     screen: opened.screen,
+                    over: false,
+                }));
+                let decoder = AbiDecoder {
+                    held: Arc::clone(&held),
                     max_width: self.limits.max_width,
                     max_height: self.limits.max_height,
                     link: number,
                     links: Arc::clone(&self.links),
-                    over: false,
                     sample: Vec::new(),
-                }),
-                id: opened.id,
-            }),
+                };
+                let screen = Screen::new(Box::new(decoder), opened.id);
+                Ok(if self.calls.can_play() {
+                    screen.with_speaker(AbiSpeaker { held })
+                } else {
+                    screen
+                })
+            }
             Err(failure) => {
                 self.links.remove(number);
                 Err(PlatformError::new(
@@ -125,20 +138,42 @@ impl WindowViewer for AbiViewer {
             }
         }
     }
+
+    fn plays_sound(&self) -> bool {
+        self.calls.can_play()
+    }
+}
+
+/// The screen of the platform, which the decoder and the speaker of a screen both call.
+///
+/// The session calls the two with its lock held, one after the other, so the lock around this is
+/// never waited for: it only lets the two own the screen together.
+struct Held {
+    screen: ScreenHandle,
+    /// Whether the platform was told that the session is over. Nothing is passed to it after that,
+    /// though the session does not call either.
+    over: bool,
+}
+
+impl Held {
+    /// Tells the platform that the session is over, once.
+    fn end(&mut self) {
+        if !self.over {
+            self.over = true;
+            self.screen.ended();
+        }
+    }
 }
 
 /// The decoder of one screen.
 struct AbiDecoder {
-    screen: ScreenHandle,
+    held: Arc<Mutex<Held>>,
     /// The largest picture the device said it can show.
     max_width: u32,
     max_height: u32,
     /// The number the platform was given to say that the decoder failed.
     link: u64,
     links: Arc<Links>,
-    /// Whether the platform was told that the session is over. Nothing is passed to it after that,
-    /// though the session does not call either.
-    over: bool,
     /// Room for the sample of the next frame, kept to save an allocation for each.
     sample: Vec<u8>,
 }
@@ -155,14 +190,17 @@ impl AbiDecoder {
 impl Drop for AbiDecoder {
     fn drop(&mut self) {
         // The platform's link ends before its screen is released, so a call that is on its way
-        // from a thread of the platform finds the link closed and not a screen that is gone.
+        // from a thread of the platform finds the link closed and not a screen that is gone. The
+        // screen is released when the last of the decoder and the speaker is dropped, which is
+        // after this.
         self.links.remove(self.link);
     }
 }
 
 impl Decoder for AbiDecoder {
     fn decode(&mut self, frame: &FrameHeader, picture: Vec<u8>) -> Result<(), DecodeError> {
-        if self.over {
+        let mut held = lock(&self.held);
+        if held.over {
             return Err(DecodeError);
         }
         self.sample.clear();
@@ -176,7 +214,7 @@ impl Decoder for AbiDecoder {
         if frame.is_key() && !(sets.idr && !sets.sps.is_empty() && !sets.pps.is_empty()) {
             return Err(DecodeError);
         }
-        let taken = self.screen.decode(&Frame {
+        let taken = held.screen.decode(&Frame {
             flags: frame_flags(frame),
             number: frame.number,
             depends_on: frame.depends_on,
@@ -191,34 +229,69 @@ impl Decoder for AbiDecoder {
     }
 
     fn show(&mut self, number: u64) {
-        if !self.over {
-            self.screen.show(number);
+        let mut held = lock(&self.held);
+        if !held.over {
+            held.screen.show(number);
         }
     }
 
     fn source(&mut self, message: SourceMessage) {
-        if !self.over
+        let mut held = lock(&self.held);
+        if !held.over
             && let Some(message) = source_message(&message)
         {
-            self.screen.source(&message);
+            held.screen.source(&message);
         }
     }
 
     fn state(&self) -> DecoderState {
-        if self.over {
+        let held = lock(&self.held);
+        if held.over {
             return DecoderState {
                 decode_us: 0,
                 thermal: Thermal::Nominal,
             };
         }
-        self.screen.state().into()
+        held.screen.state().into()
     }
 
     fn ended(&mut self) {
-        if !self.over {
-            self.over = true;
-            self.screen.ended();
+        lock(&self.held).end();
+    }
+}
+
+/// The speaker of one screen, for a platform that plays sound. It is given what the session gives
+/// it, in that order, and passes it to the platform's screen; nothing is passed after the end.
+struct AbiSpeaker {
+    held: Arc<Mutex<Held>>,
+}
+
+impl Speaker for AbiSpeaker {
+    fn sound(&mut self, sound: Sound) {
+        let mut held = lock(&self.held);
+        if !held.over {
+            held.screen.sound(sound);
         }
+    }
+
+    fn play(&mut self, play: Play, packet: Vec<u8>) {
+        let mut held = lock(&self.held);
+        if !held.over {
+            held.screen.play(play, &packet);
+        }
+    }
+
+    fn stopped(&mut self, why: Option<SilentReason>) {
+        let mut held = lock(&self.held);
+        if !held.over {
+            held.screen.stopped(why);
+        }
+    }
+
+    /// The session is over for the screen as a whole: whichever of the decoder and the speaker
+    /// hears it first tells the platform, and the other finds it told.
+    fn ended(&mut self) {
+        lock(&self.held).end();
     }
 }
 
@@ -331,8 +404,6 @@ impl From<BatonDecoderState> for DecoderState {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use std::sync::Mutex;
-
     use baton_proto::id::SessionId;
     use baton_stream::{
         control::{Config, Pause, Silent, SilentReason, Sound, SoundCodec},
@@ -343,10 +414,11 @@ mod tests {
     use super::*;
     use crate::{
         abi::{
-            CODEC_H264, FRAME_KEY, FRAME_REFERENCED, SOURCE_CONFIG, SOURCE_NOTICE, SOURCE_PAUSE,
-            SOURCE_RESUME,
+            BatonSound, CODEC_H264, FRAME_KEY, FRAME_REFERENCED, PLAY_FIRST, SILENT_FAILED,
+            SILENT_NO_PERMISSION, SILENT_OFF, SILENT_OTHER, SILENT_WINDOW, SOUND_CODEC_AAC,
+            SOURCE_CONFIG, SOURCE_NOTICE, SOURCE_PAUSE, SOURCE_RESUME,
         },
-        fake::{Call, Fake},
+        fake::{Call, Fake, Played},
         fixture::{
             HEIGHT, IDR, PPS, SEI, SLICE, SPS, WIDTH, avcc_kinds, kind, pictures, sps, units,
             with_first, without,
@@ -391,13 +463,16 @@ mod tests {
         let opened = calls.open(&window, 1).ok().unwrap();
         let links = Arc::new(Links::default());
         let link = links.add(ScreenLink::default());
-        let decoder = AbiDecoder {
+        let held = Arc::new(Mutex::new(Held {
             screen: opened.screen,
+            over: false,
+        }));
+        let decoder = AbiDecoder {
+            held,
             max_width,
             max_height,
             link,
             links: Arc::clone(&links),
-            over: false,
             sample: Vec::new(),
         };
         Rig {
@@ -408,6 +483,13 @@ mod tests {
     }
 
     impl Rig {
+        /// The speaker of the same screen as the decoder.
+        fn speaker(&self) -> AbiSpeaker {
+            AbiSpeaker {
+                held: Arc::clone(&self.decoder.held),
+            }
+        }
+
         fn decoded(&self) -> Vec<crate::fake::Decoded> {
             self.fake
                 .calls(1)
@@ -894,5 +976,179 @@ mod tests {
         assert_eq!(*open_at_release.lock().unwrap(), [0]);
         assert_eq!(fake.count(|call| *call == Call::Release), 1);
         assert_eq!(fake.live_screens(), 0);
+    }
+
+    /// The form of sound that the Mac makes.
+    fn aac() -> Sound {
+        Sound {
+            codec: SoundCodec::Aac,
+            rate: 48_000,
+            channels: 2,
+            samples: 1024,
+        }
+    }
+
+    fn played(number: u64, first: bool, lost_before: u64) -> Play {
+        Play {
+            number,
+            capture_time: 20_000 * number,
+            first,
+            lost_before,
+        }
+    }
+
+    /// The calls of the platform that are about sound.
+    fn sound_calls(fake: &Fake) -> Vec<Call> {
+        fake.calls(1)
+            .into_iter()
+            .filter(|call| matches!(call, Call::Sound(_) | Call::Play(_) | Call::Stopped(_)))
+            .collect()
+    }
+
+    #[test]
+    fn the_speaker_passes_the_form_the_packets_and_the_end_of_a_run_to_the_platform() {
+        let rig = rig(WIDTH, HEIGHT);
+        let mut speaker = rig.speaker();
+        speaker.sound(aac());
+        speaker.play(played(7, true, 0), vec![1, 2, 3]);
+        speaker.play(played(10, false, 2), vec![4; 300]);
+        speaker.stopped(None);
+        assert_eq!(
+            rig.fake.calls(1),
+            [
+                Call::Sound(BatonSound {
+                    size: size_of_u32::<BatonSound>(),
+                    codec: SOUND_CODEC_AAC,
+                    rate: 48_000,
+                    channels: 2,
+                    samples: 1024,
+                    reserved: 0,
+                }),
+                Call::Play(Played {
+                    flags: PLAY_FIRST,
+                    number: 7,
+                    capture_time: 140_000,
+                    lost_before: 0,
+                    packet: vec![1, 2, 3],
+                }),
+                Call::Play(Played {
+                    flags: 0,
+                    number: 10,
+                    capture_time: 200_000,
+                    lost_before: 2,
+                    packet: vec![4; 300],
+                }),
+                Call::Stopped(SILENT_OFF),
+            ]
+        );
+        assert!(
+            rig.fake.complaints().is_empty(),
+            "{:?}",
+            rig.fake.complaints()
+        );
+    }
+
+    #[test]
+    fn a_packet_that_the_source_made_empty_is_still_a_packet_for_the_platform() {
+        // What a source sends is not checked here: a packet that the decoder cannot use is lost like
+        // one that did not arrive, and the platform covers the gap.
+        let rig = rig(WIDTH, HEIGHT);
+        let mut speaker = rig.speaker();
+        speaker.sound(aac());
+        speaker.play(played(1, true, 0), Vec::new());
+        let calls = sound_calls(&rig.fake);
+        assert!(
+            matches!(&calls[1], Call::Play(Played { number: 1, packet, .. }) if packet.is_empty()),
+            "{calls:?}"
+        );
+        assert!(
+            rig.fake.complaints().is_empty(),
+            "{:?}",
+            rig.fake.complaints()
+        );
+    }
+
+    #[test]
+    fn a_run_that_stops_tells_the_platform_why() {
+        let rig = rig(WIDTH, HEIGHT);
+        let mut speaker = rig.speaker();
+        for why in [
+            None,
+            Some(SilentReason::Window),
+            Some(SilentReason::NoPermission),
+            Some(SilentReason::Failed),
+            Some(SilentReason::Other),
+        ] {
+            speaker.stopped(why);
+        }
+        assert_eq!(
+            sound_calls(&rig.fake),
+            [
+                Call::Stopped(SILENT_OFF),
+                Call::Stopped(SILENT_WINDOW),
+                Call::Stopped(SILENT_NO_PERMISSION),
+                Call::Stopped(SILENT_FAILED),
+                Call::Stopped(SILENT_OTHER),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_end_is_told_to_the_platform_once_whichever_of_the_two_hears_it_first() {
+        for speaker_first in [false, true] {
+            let mut rig = rig(WIDTH, HEIGHT);
+            let mut speaker = rig.speaker();
+            speaker.sound(aac());
+            if speaker_first {
+                speaker.ended();
+                rig.decoder.ended();
+            } else {
+                rig.decoder.ended();
+                speaker.ended();
+            }
+            // The session does not call after the end, and if it did the platform would not hear.
+            speaker.sound(aac());
+            speaker.play(played(1, true, 0), vec![1]);
+            speaker.stopped(None);
+            speaker.ended();
+            rig.decoder.ended();
+            let Rig { decoder, fake, .. } = rig;
+            drop(decoder);
+            drop(speaker);
+            let calls = fake.calls(1);
+            assert_eq!(calls.len(), 3, "speaker first: {speaker_first}: {calls:?}");
+            assert!(matches!(calls[0], Call::Sound(_)));
+            assert_eq!(calls[1..], [Call::Ended, Call::Release]);
+            assert!(fake.complaints().is_empty(), "{:?}", fake.complaints());
+        }
+    }
+
+    #[test]
+    fn the_screen_is_released_when_the_last_of_the_decoder_and_the_speaker_is_dropped() {
+        for decoder_first in [true, false] {
+            let rig = rig(WIDTH, HEIGHT);
+            let speaker = rig.speaker();
+            let Rig {
+                decoder,
+                fake,
+                links,
+            } = rig;
+            let released = |fake: &Fake| fake.count(|call| *call == Call::Release);
+            if decoder_first {
+                // The link goes with the decoder, before anything is released.
+                drop(decoder);
+                assert_eq!(links.len(), 0);
+                assert_eq!(released(&fake), 0);
+                drop(speaker);
+            } else {
+                drop(speaker);
+                assert_eq!((links.len(), released(&fake)), (1, 0));
+                drop(decoder);
+                assert_eq!(links.len(), 0);
+            }
+            assert_eq!(released(&fake), 1, "decoder first: {decoder_first}");
+            assert_eq!(fake.live_screens(), 0);
+            assert!(fake.complaints().is_empty(), "{:?}", fake.complaints());
+        }
     }
 }

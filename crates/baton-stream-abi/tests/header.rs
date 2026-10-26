@@ -27,15 +27,18 @@ use std::{
 
 use baton_proto::limits::{
     MAX_CODECS, MAX_FRAME_RATE, MAX_NAME_BYTES, MAX_PICTURE_BYTES, MAX_PICTURE_EDGE,
-    MAX_STREAM_TITLE_BYTES, MAX_WINDOW_EDGE,
+    MAX_SOUND_CHANNELS, MAX_SOUND_PACKET_BYTES, MAX_SOUND_PACKET_SAMPLES, MAX_SOUND_RATE,
+    MAX_STREAM_TITLE_BYTES, MAX_WINDOW_EDGE, MIN_SOUND_PACKET_SAMPLES, MIN_SOUND_RATE,
 };
 use baton_stream_abi::{
     abi::{
         self, BatonBytes, BatonDecoderState, BatonFormat, BatonFrame, BatonFront, BatonGeometry,
-        BatonLimits, BatonMessage, BatonPicked, BatonPicture, BatonPost, BatonRect, BatonScreen,
-        BatonSharerVTable, BatonSourceMessage, BatonSurroundings, BatonTakes, BatonViewerVTable,
-        BatonWindow, CancelPickFn, ControlFn, DecodeFn, EndedFn, LiftFn, LimitsFn, OpenFn, PickFn,
-        PostFn, PrepareFn, ReleaseFn, ScreenFn, ShowFn, SourceFn, StartFn, StateFn, SurroundingsFn,
+        BatonLimits, BatonMessage, BatonPicked, BatonPicture, BatonPlay, BatonPost, BatonRect,
+        BatonScreen, BatonSharerVTable, BatonSound, BatonSoundPacket, BatonSourceMessage,
+        BatonSurroundings, BatonTakes, BatonViewerVTable, BatonWindow, CancelPickFn, ControlFn,
+        DecodeFn, EndedFn, HearFn, LiftFn, LimitsFn, OpenFn, PickFn, PlayFn, PostFn, PrepareFn,
+        ReleaseFn, ScreenFn, ShowFn, SoundFn, SourceFn, StartFn, StateFn, StoppedFn,
+        SurroundingsFn,
     },
     exports::{
         baton_stream_abi_version, baton_stream_link_decode_failed, baton_stream_pick_done,
@@ -43,6 +46,8 @@ use baton_stream_abi::{
         baton_stream_source_cancel, baton_stream_source_changed, baton_stream_source_clock,
         baton_stream_source_end, baton_stream_source_new_epoch, baton_stream_source_pause,
         baton_stream_source_recovery_pending, baton_stream_source_resume, baton_stream_source_sent,
+        baton_stream_source_sound, baton_stream_source_sound_begin,
+        baton_stream_source_sound_silent,
     },
 };
 
@@ -473,6 +478,7 @@ macro_rules! rust_struct {
 fn rust_structs() -> Vec<RustStruct> {
     let mut all = structs_for_showing();
     all.extend(structs_for_sharing());
+    all.extend(structs_for_sound());
     all.extend(tables_of_functions());
     all
 }
@@ -632,6 +638,34 @@ fn structs_for_sharing() -> Vec<RustStruct> {
     ]
 }
 
+/// The structs for the sound of a display, on both sides.
+fn structs_for_sound() -> Vec<RustStruct> {
+    vec![
+        rust_struct!(BatonSound {
+            size: u32 = "uint32_t",
+            codec: u32 = "uint32_t",
+            rate: u32 = "uint32_t",
+            channels: u32 = "uint32_t",
+            samples: u32 = "uint32_t",
+            reserved: u32 = "uint32_t",
+        }),
+        rust_struct!(BatonPlay {
+            size: u32 = "uint32_t",
+            flags: u32 = "uint32_t",
+            number: u64 = "uint64_t",
+            capture_time: u64 = "uint64_t",
+            lost_before: u64 = "uint64_t",
+            packet: BatonBytes = "BatonBytes",
+        }),
+        rust_struct!(BatonSoundPacket {
+            size: u32 = "uint32_t",
+            reserved: u32 = "uint32_t",
+            capture_time: u64 = "uint64_t",
+            bytes: BatonBytes = "BatonBytes",
+        }),
+    ]
+}
+
 /// The tables of functions that the platform registers.
 fn tables_of_functions() -> Vec<RustStruct> {
     vec![
@@ -647,6 +681,9 @@ fn tables_of_functions() -> Vec<RustStruct> {
             state: Option<StateFn> = "BatonStateFn",
             ended: Option<EndedFn> = "BatonEndedFn",
             release: Option<ReleaseFn> = "BatonReleaseFn",
+            sound: Option<SoundFn> = "BatonSoundFn",
+            play: Option<PlayFn> = "BatonPlayFn",
+            stopped: Option<StoppedFn> = "BatonStoppedFn",
         }),
         rust_struct!(BatonSharerVTable {
             version: u32 = "uint32_t",
@@ -663,6 +700,7 @@ fn tables_of_functions() -> Vec<RustStruct> {
             post: Option<PostFn> = "BatonPostFn",
             screen: Option<ScreenFn> = "BatonScreenFn",
             lift: Option<LiftFn> = "BatonLiftFn",
+            hear: Option<HearFn> = "BatonHearFn",
         }),
     ]
 }
@@ -717,6 +755,12 @@ fn rust_fn_types() -> Vec<CFunction> {
             is unsafe extern "C" fn(*mut c_void)),
         rust_fn_type!(ReleaseFn as "BatonReleaseFn": "void" ["void *"]
             is unsafe extern "C" fn(*mut c_void)),
+        rust_fn_type!(SoundFn as "BatonSoundFn": "void" ["void *", "const BatonSound *"]
+            is unsafe extern "C" fn(*mut c_void, *const BatonSound)),
+        rust_fn_type!(PlayFn as "BatonPlayFn": "void" ["void *", "const BatonPlay *"]
+            is unsafe extern "C" fn(*mut c_void, *const BatonPlay)),
+        rust_fn_type!(StoppedFn as "BatonStoppedFn": "void" ["void *", "uint32_t"]
+            is unsafe extern "C" fn(*mut c_void, u32)),
         rust_fn_type!(ControlFn as "BatonControlFn": "uint32_t" ["void *"]
             is unsafe extern "C" fn(*mut c_void) -> u32),
         rust_fn_type!(PickFn as "BatonPickFn": "int32_t" ["void *", "uint64_t", "BatonMessage *"]
@@ -739,29 +783,14 @@ fn rust_fn_types() -> Vec<CFunction> {
             is unsafe extern "C" fn(*mut c_void, u32, *mut BatonPicked, *mut BatonMessage) -> i32),
         rust_fn_type!(LiftFn as "BatonLiftFn": "void" ["void *", "uint32_t"]
             is unsafe extern "C" fn(*mut c_void, u32)),
+        rust_fn_type!(HearFn as "BatonHearFn": "void" ["void *", "uint32_t"]
+            is unsafe extern "C" fn(*mut c_void, u32)),
     ]
 }
 
-/// The functions that the library exports, as the header declares them. Each is named, so one
-/// whose signature changes stops this from compiling.
+/// The functions that the library exports, as the header declares them.
 fn rust_exports() -> Vec<CFunction> {
-    let _: extern "C" fn() -> u32 = baton_stream_abi_version;
-    let _: unsafe extern "C" fn(*const BatonViewerVTable) -> i32 = baton_stream_register_viewer;
-    let _: extern "C" fn(u64) -> i32 = baton_stream_link_decode_failed;
-    let _: unsafe extern "C" fn(*const BatonSharerVTable) -> i32 = baton_stream_register_sharer;
-    let _: unsafe extern "C" fn(u64, *const BatonPicked, *const BatonBytes) -> i32 =
-        baton_stream_pick_done;
-    let _: unsafe extern "C" fn(u64, *mut u64) -> i32 = baton_stream_source_clock;
-    let _: unsafe extern "C" fn(u64, *mut u32) -> i32 = baton_stream_source_begin;
-    let _: extern "C" fn(u64) -> i32 = baton_stream_source_cancel;
-    let _: unsafe extern "C" fn(u64, *mut u32) -> i32 = baton_stream_source_recovery_pending;
-    let _: unsafe extern "C" fn(u64, *const BatonPicture, *mut u32, *mut u64) -> i32 =
-        baton_stream_source_sent;
-    let _: extern "C" fn(u64, u64) -> i32 = baton_stream_source_changed;
-    let _: unsafe extern "C" fn(u64, *const BatonFormat) -> i32 = baton_stream_source_new_epoch;
-    let _: extern "C" fn(u64, u32) -> i32 = baton_stream_source_pause;
-    let _: extern "C" fn(u64) -> i32 = baton_stream_source_resume;
-    let _: unsafe extern "C" fn(u64, *const BatonBytes) -> i32 = baton_stream_source_end;
+    exports_by_name();
     vec![
         function("baton_stream_abi_version", "uint32_t", &[]),
         function(
@@ -823,11 +852,57 @@ fn rust_exports() -> Vec<CFunction> {
         ),
         function("baton_stream_source_resume", "int32_t", &["uint64_t"]),
         function(
+            "baton_stream_source_sound_begin",
+            "int32_t",
+            &["uint64_t", "const BatonSound *"],
+        ),
+        function(
+            "baton_stream_source_sound_silent",
+            "int32_t",
+            &["uint64_t", "uint32_t"],
+        ),
+        function(
+            "baton_stream_source_sound",
+            "int32_t",
+            &[
+                "uint64_t",
+                "const BatonSoundPacket *",
+                "uint32_t *",
+                "uint64_t *",
+            ],
+        ),
+        function(
             "baton_stream_source_end",
             "int32_t",
             &["uint64_t", "const BatonBytes *"],
         ),
     ]
+}
+
+/// Each function that the library exports, named, so that one whose signature changes stops this
+/// from compiling. Nothing is called.
+fn exports_by_name() {
+    let _: extern "C" fn() -> u32 = baton_stream_abi_version;
+    let _: unsafe extern "C" fn(*const BatonViewerVTable) -> i32 = baton_stream_register_viewer;
+    let _: extern "C" fn(u64) -> i32 = baton_stream_link_decode_failed;
+    let _: unsafe extern "C" fn(*const BatonSharerVTable) -> i32 = baton_stream_register_sharer;
+    let _: unsafe extern "C" fn(u64, *const BatonPicked, *const BatonBytes) -> i32 =
+        baton_stream_pick_done;
+    let _: unsafe extern "C" fn(u64, *mut u64) -> i32 = baton_stream_source_clock;
+    let _: unsafe extern "C" fn(u64, *mut u32) -> i32 = baton_stream_source_begin;
+    let _: extern "C" fn(u64) -> i32 = baton_stream_source_cancel;
+    let _: unsafe extern "C" fn(u64, *mut u32) -> i32 = baton_stream_source_recovery_pending;
+    let _: unsafe extern "C" fn(u64, *const BatonPicture, *mut u32, *mut u64) -> i32 =
+        baton_stream_source_sent;
+    let _: extern "C" fn(u64, u64) -> i32 = baton_stream_source_changed;
+    let _: unsafe extern "C" fn(u64, *const BatonFormat) -> i32 = baton_stream_source_new_epoch;
+    let _: extern "C" fn(u64, u32) -> i32 = baton_stream_source_pause;
+    let _: extern "C" fn(u64) -> i32 = baton_stream_source_resume;
+    let _: unsafe extern "C" fn(u64, *const BatonSound) -> i32 = baton_stream_source_sound_begin;
+    let _: extern "C" fn(u64, u32) -> i32 = baton_stream_source_sound_silent;
+    let _: unsafe extern "C" fn(u64, *const BatonSoundPacket, *mut u32, *mut u64) -> i32 =
+        baton_stream_source_sound;
+    let _: unsafe extern "C" fn(u64, *const BatonBytes) -> i32 = baton_stream_source_end;
 }
 
 /// The numbers of `abi` by the name that the header gives them. `ABI_VERSION` is the one whose
@@ -901,6 +976,17 @@ fn rust_numbers() -> Vec<(String, i64)> {
         SENT_STALE,
         SENT_TOO_LARGE,
         SENT_OVER,
+        SOUND_CODEC_AAC,
+        PLAY_FIRST,
+        SILENT_OFF,
+        SILENT_WINDOW,
+        SILENT_NO_PERMISSION,
+        SILENT_FAILED,
+        SILENT_OTHER,
+        SOUND_SENT,
+        SOUND_DROPPED,
+        SOUND_TOO_LARGE,
+        SOUND_OVER,
         KEYBOARD_ELSEWHERE,
         KEYBOARD_SHARED,
         KEYBOARD_UNKNOWN,
@@ -1091,6 +1177,28 @@ fn the_header_says_what_the_protocol_allows() {
         text.contains("A sample of more than 8 MiB is not read"),
         "the header's largest picture is not the protocol's"
     );
+
+    // What a form of sound and a packet of sound are held to.
+    assert_eq!(MAX_SOUND_CHANNELS, 2);
+    assert!(
+        text.contains(&format!(
+            "the sampling rate in hertz, from {MIN_SOUND_RATE} to {MAX_SOUND_RATE}, and channels is 1 or {MAX_SOUND_CHANNELS}"
+        )),
+        "the header's rates and channels of sound are not the protocol's"
+    );
+    assert!(
+        text.contains(&format!(
+            "one packet holds, from {MIN_SOUND_PACKET_SAMPLES} to {MAX_SOUND_PACKET_SAMPLES}"
+        )),
+        "the header's samples in a packet of sound are not the protocol's"
+    );
+    assert_eq!(MAX_SOUND_PACKET_BYTES, 8 * 1024);
+    assert_eq!(
+        text.matches("packet of more than 8 KiB is not read")
+            .count(),
+        2,
+        "the header's largest packet of sound is not the protocol's"
+    );
     // The sentences that the person is shown are cut to the length of every message.
     assert_eq!(
         text.matches(&format!(
@@ -1182,6 +1290,31 @@ static void ended(void *screen) { (void)screen; }
 
 static void release(void *screen) { (void)screen; }
 
+static void sound(void *screen, const BatonSound *form) {
+    (void)screen;
+    if (form->codec == BATON_SOUND_CODEC_AAC && form->channels == 2 && form->samples == 1024) {
+        (void)form->rate;
+    }
+}
+
+static void play(void *screen, const BatonPlay *packet) {
+    (void)screen;
+    if ((packet->flags & BATON_PLAY_FIRST) != 0 || packet->lost_before > 0) {
+        (void)packet->capture_time;
+    }
+    (void)packet->number;
+    (void)packet->packet.len;
+}
+
+static void stopped(void *screen, uint32_t why) {
+    (void)screen;
+    if (why == BATON_SILENT_OFF || why == BATON_SILENT_WINDOW) {
+        return;
+    }
+    (void)(why == BATON_SILENT_NO_PERMISSION || why == BATON_SILENT_FAILED ||
+           why == BATON_SILENT_OTHER);
+}
+
 static int32_t register_viewer(void) {
     BatonViewerVTable table;
     table.version = BATON_STREAM_ABI_VERSION;
@@ -1195,6 +1328,9 @@ static int32_t register_viewer(void) {
     table.state = state;
     table.ended = ended;
     table.release = release;
+    table.sound = sound;
+    table.play = play;
+    table.stopped = stopped;
     (void)baton_stream_link_decode_failed(1);
     return baton_stream_register_viewer(&table);
 }
@@ -1314,6 +1450,13 @@ static void window_ended(void *picked) { (void)picked; }
 
 static void window_released(void *picked) { (void)picked; }
 
+static uint32_t listening = 0;
+
+static void hear(void *picked, uint32_t on) {
+    (void)picked;
+    listening = on;
+}
+
 static int32_t register_sharer(void) {
     BatonSharerVTable table;
     table.version = BATON_STREAM_ABI_VERSION;
@@ -1330,6 +1473,7 @@ static int32_t register_sharer(void) {
     table.post = post_input;
     table.screen = screen;
     table.lift = lift;
+    table.hear = hear;
     return baton_stream_register_sharer(&table);
 }
 
@@ -1450,6 +1594,56 @@ int32_t capture(uint64_t link, uint32_t pending_picture) {
     sentence.ptr = (const uint8_t *)sorry;
     sentence.len = sizeof sorry - 1;
     return baton_stream_source_end(link, pending_picture == 0 ? NULL : &sentence);
+}
+
+/* What the thread that records and encodes the sound of a display does, once hear said 1. */
+int32_t record(uint64_t link, uint32_t allowed) {
+    static const uint8_t access_unit[] = {0x21, 0x10, 0x04, 0x60};
+    uint64_t micros = 0;
+    uint64_t number = 0;
+    uint32_t outcome = BATON_SOUND_OVER;
+    BatonSound form;
+    BatonSoundPacket packet;
+    int32_t status;
+    if (listening == 0) {
+        return BATON_OK;
+    }
+    if (allowed == 0) {
+        return baton_stream_source_sound_silent(link, BATON_SILENT_NO_PERMISSION);
+    }
+    form.size = (uint32_t)sizeof form;
+    form.codec = BATON_SOUND_CODEC_AAC;
+    form.rate = 48000;
+    form.channels = 2;
+    form.samples = 1024;
+    form.reserved = 0;
+    status = baton_stream_source_sound_begin(link, &form);
+    if (status != BATON_OK) {
+        return status;
+    }
+    status = baton_stream_source_clock(link, &micros);
+    if (status != BATON_OK) {
+        return status;
+    }
+    packet.size = (uint32_t)sizeof packet;
+    packet.reserved = 0;
+    packet.capture_time = micros;
+    packet.bytes.ptr = access_unit;
+    packet.bytes.len = sizeof access_unit;
+    status = baton_stream_source_sound(link, &packet, &outcome, &number);
+    if (status != BATON_OK) {
+        return status;
+    }
+    if (outcome == BATON_SOUND_OVER) {
+        return BATON_E_UNKNOWN_LINK;
+    }
+    if (outcome == BATON_SOUND_TOO_LARGE) {
+        return baton_stream_source_sound_silent(link, BATON_SILENT_FAILED);
+    }
+    if (outcome == BATON_SOUND_DROPPED) {
+        return baton_stream_source_sound_silent(link, BATON_SILENT_OTHER);
+    }
+    return outcome == BATON_SOUND_SENT ? BATON_OK : BATON_E_PLATFORM;
 }
 "#;
 
@@ -1626,8 +1820,29 @@ fn a_compiler_refuses_a_header_whose_numbers_are_wrong() {
             "offsetof(BatonSharerVTable, lift) == 88",
         ),
         (
+            "offsetof(BatonSharerVTable, hear) == 104",
+            "offsetof(BatonSharerVTable, hear) == 96",
+        ),
+        (
+            "sizeof(BatonSharerVTable) == 112",
             "sizeof(BatonSharerVTable) == 104",
-            "sizeof(BatonSharerVTable) == 96",
+        ),
+        (
+            "offsetof(BatonViewerVTable, play) == 88",
+            "offsetof(BatonViewerVTable, play) == 80",
+        ),
+        (
+            "sizeof(BatonViewerVTable) == 104",
+            "sizeof(BatonViewerVTable) == 80",
+        ),
+        ("sizeof(BatonSound) == 24", "sizeof(BatonSound) == 20"),
+        (
+            "offsetof(BatonPlay, lost_before) == 24",
+            "offsetof(BatonPlay, lost_before) == 20",
+        ),
+        (
+            "    uint64_t capture_time;\n    BatonBytes bytes;\n} BatonSoundPacket;",
+            "    uint64_t capture_time;\n} BatonSoundPacket;",
         ),
     ] {
         assert_eq!(text.matches(right).count(), 1, "the header has `{right}`");

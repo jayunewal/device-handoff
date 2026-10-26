@@ -12,6 +12,7 @@
 
 use std::{
     ffi::c_void,
+    mem::offset_of,
     slice,
     sync::{
         Arc, Mutex, MutexGuard, PoisonError, Weak,
@@ -26,8 +27,8 @@ use crate::{
     Error, Registry,
     abi::{
         ABI_VERSION, BatonBytes, BatonDecoderState, BatonFrame, BatonLimits, BatonMessage,
-        BatonScreen, BatonSourceMessage, BatonViewerVTable, BatonWindow, CODEC_H264, MESSAGE_MAX,
-        OK, size_of_u32,
+        BatonPlay, BatonScreen, BatonSound, BatonSourceMessage, BatonViewerVTable, BatonWindow,
+        CODEC_H264, MESSAGE_MAX, OK, PLAY_FIRST, size_of_u32,
     },
     platform::Calls,
 };
@@ -44,6 +45,16 @@ pub(crate) struct Decoded {
     pub(crate) sample: Vec<u8>,
     pub(crate) sets: Vec<Vec<u8>>,
     pub(crate) sequence_sets: usize,
+}
+
+/// A packet of sound as the platform got it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Played {
+    pub(crate) flags: u32,
+    pub(crate) number: u64,
+    pub(crate) capture_time: u64,
+    pub(crate) lost_before: u64,
+    pub(crate) packet: Vec<u8>,
 }
 
 /// One call that the platform got.
@@ -64,6 +75,12 @@ pub(crate) enum Call {
     State,
     Ended,
     Release,
+    /// The platform was told what the packets of sound are.
+    Sound(BatonSound),
+    /// The platform was handed a packet of sound to decode and play.
+    Play(Played),
+    /// The run of sound is over, for this `SILENT_` reason.
+    Stopped(u32),
 }
 
 /// What `open` does.
@@ -111,6 +128,8 @@ struct State {
     decode_code: i32,
     decode_us: u32,
     thermal: u32,
+    /// Whether the platform registers as one that plays sound.
+    sound: bool,
     hook: Option<Hook>,
 }
 
@@ -168,6 +187,7 @@ impl Fake {
                 decode_code: OK,
                 decode_us: 1000,
                 thermal: 0,
+                sound: true,
                 hook: None,
             }),
             cells: Mutex::new(Vec::new()),
@@ -194,9 +214,15 @@ impl Fake {
         read_table(&self.vtable()).expect("the vtable of the fake is whole")
     }
 
-    /// Registers this platform in `registry`.
+    /// Registers this platform in `registry`: as one that plays sound, unless a test said that it
+    /// does not ([`Self::plays_no_sound`]).
     pub(crate) fn register_in(self: &Arc<Self>, registry: &Registry) -> Result<(), Error> {
-        register_table(registry, &self.vtable())
+        let table = if self.state().sound {
+            self.vtable()
+        } else {
+            self.vtable_without_sound()
+        };
+        register_table(registry, &table)
     }
 
     /// The vtable that registers this platform.
@@ -213,7 +239,30 @@ impl Fake {
             state: Some(state),
             ended: Some(ended),
             release: Some(release),
+            sound: Some(sound),
+            play: Some(play),
+            stopped: Some(stopped),
         }
+    }
+
+    /// The vtable of a platform that was written before sound was carried: it ends at `release`,
+    /// and the library reads the three functions that it lacks as missing.
+    pub(crate) fn vtable_without_sound(self: &Arc<Self>) -> BatonViewerVTable {
+        BatonViewerVTable {
+            size: u32::try_from(offset_of!(BatonViewerVTable, sound)).unwrap(),
+            sound: None,
+            play: None,
+            stopped: None,
+            ..self.vtable()
+        }
+    }
+
+    /// Registers this platform in `registry`, as one that plays no sound.
+    pub(crate) fn register_without_sound_in(
+        self: &Arc<Self>,
+        registry: &Registry,
+    ) -> Result<(), Error> {
+        register_table(registry, &self.vtable_without_sound())
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -244,6 +293,11 @@ impl Fake {
 
     pub(crate) fn fail_limits(&self, code: i32) {
         self.state().limits_code = code;
+    }
+
+    /// The platform registers as one that was written before sound was carried.
+    pub(crate) fn plays_no_sound(&self) {
+        self.state().sound = false;
     }
 
     pub(crate) fn plan_open(&self, plan: OpenPlan) {
@@ -578,4 +632,53 @@ unsafe extern "C" fn release(screen: *mut c_void) {
     if cell.released.swap(true, Ordering::SeqCst) {
         fake.complain(format!("released twice, on screen {}", cell.number));
     }
+}
+
+unsafe extern "C" fn sound(screen: *mut c_void, sound: *const BatonSound) {
+    // SAFETY: `screen` is a pointer that `open` gave.
+    let (cell, fake) = unsafe { screen_of(screen) };
+    if sound.is_null() {
+        fake.complain("sound: a null struct");
+        return;
+    }
+    // SAFETY: not null, and the Rust side gives a struct of the interface.
+    let sound = unsafe { *sound };
+    if sound.size != size_of_u32::<BatonSound>() || sound.reserved != 0 {
+        fake.complain(format!(
+            "sound: size {} reserved {}",
+            sound.size, sound.reserved
+        ));
+    }
+    about_screen(cell, &fake, &Call::Sound(sound));
+}
+
+unsafe extern "C" fn play(screen: *mut c_void, play: *const BatonPlay) {
+    // SAFETY: `screen` is a pointer that `open` gave.
+    let (cell, fake) = unsafe { screen_of(screen) };
+    if play.is_null() {
+        fake.complain("play: a null struct");
+        return;
+    }
+    // SAFETY: not null, and the Rust side gives a struct of the interface.
+    let play = unsafe { *play };
+    if play.size != size_of_u32::<BatonPlay>() || play.flags & !PLAY_FIRST != 0 {
+        fake.complain(format!("play: size {} flags {}", play.size, play.flags));
+    }
+    about_screen(
+        cell,
+        &fake,
+        &Call::Play(Played {
+            flags: play.flags,
+            number: play.number,
+            capture_time: play.capture_time,
+            lost_before: play.lost_before,
+            packet: bytes(&play.packet),
+        }),
+    );
+}
+
+unsafe extern "C" fn stopped(screen: *mut c_void, why: u32) {
+    // SAFETY: `screen` is a pointer that `open` gave.
+    let (cell, fake) = unsafe { screen_of(screen) };
+    about_screen(cell, &fake, &Call::Stopped(why));
 }

@@ -12,6 +12,12 @@
  * platform captures it and encodes it. The Rust side offers it to the other device, decides when
  * a picture may be made and how it goes out, and sends it.
  *
+ * Sound. A whole display can go with the sound of the device. The Rust side tells the sharing
+ * platform when the other device wants to hear it (hear); the platform records it, encodes it,
+ * and gives each packet to the Rust side, which sends it. The showing platform is given the
+ * packets in order (sound, play, stopped), decodes them and plays them. Both halves are optional:
+ * a platform that leaves them out sends no sound, or plays none.
+ *
  * This file is the whole of what the two sides say to each other, and
  * docs/adr/0009-window-streaming.md says why it is this small. It is written by hand, and the
  * tests of the crate read it: the sizes and offsets that the BATON_STATIC_ASSERT lines at the
@@ -25,13 +31,17 @@
  *       baton_stream_register_sharer;
  *     while a window is shown: baton_stream_link_decode_failed;
  *     while the person picks a window or a display to share: baton_stream_pick_done;
- *     while a window is shared: the baton_stream_source_ functions.
+ *     while a window is shared: the baton_stream_source_ functions, those of the sound among
+ *       them (baton_stream_source_sound_begin, baton_stream_source_sound_silent and
+ *       baton_stream_source_sound).
  *   The Rust side calls the functions of the vtables that the platform registered:
  *     viewer: limits and open (about the device), and decode, show, source, state, ended and
- *       release (about one screen, with the pointer that open gave);
+ *       release (about one screen, with the pointer that open gave), and, for a platform that
+ *       plays sound, sound, play and stopped (about the same screen);
  *     sharer: control, pick, cancel_pick and screen (about the device), and prepare, start,
  *       surroundings, post, ended and release (about one window, with the pointer that
- *       baton_stream_pick_done or screen gave).
+ *       baton_stream_pick_done or screen gave), and, for a platform that sends sound, hear
+ *       (about the same window).
  *
  * Rules that hold for every call.
  *
@@ -48,7 +58,8 @@
  *     reads it. BatonBytes, a pointer and a length, is the one struct that does not begin so.
  *   - No call waits for long. The Rust side makes the calls of a screen while it holds the lock
  *     of the session, so a decoder that takes time hands the picture to a thread of its own, and
- *     reports a failure that comes later with baton_stream_link_decode_failed. The calls of a
+ *     reports a failure that comes later with baton_stream_link_decode_failed, and a speaker
+ *     that decodes sound hands the packets to a thread of its own too. The calls of a
  *     window that is shared hold no lock that a function of this interface needs, so ended and
  *     release may stop the platform's capture threads, also ones that are inside a function of
  *     this interface at that moment.
@@ -62,11 +73,12 @@
  *     open is called on a thread of the app's runtime, and two calls of open may overlap each
  *     other and the calls of any screen that is open, so whatever open shares with other calls
  *     (a table of screens, a pool of textures) is kept under a lock. The calls of one screen
- *     never overlap, but two calls may come on two threads, so a screen keeps nothing in
- *     thread-local storage. The calls of two screens may overlap. The same holds for the
- *     sharer: control, pick and cancel_pick are called on a thread of the app's runtime and may
- *     overlap each other; the calls of one window (prepare, start, surroundings, post, ended,
- *     release) never overlap, and release is the last; the calls of two windows may overlap.
+ *     (decode, show, source, state, sound, play, stopped, ended, release) never overlap, but two
+ *     calls may come on two threads, so a screen keeps nothing in thread-local storage. The
+ *     calls of two screens may overlap. The same holds for the sharer: control, pick and
+ *     cancel_pick are called on a thread of the app's runtime and may overlap each other; the
+ *     calls of one window (prepare, start, surroundings, post, hear, ended, release) never
+ *     overlap, and release is the last; the calls of two windows may overlap.
  *   - Nothing in the platform may unwind into the Rust side: a Swift error or an exception
  *     is caught before it leaves the call.
  */
@@ -194,6 +206,29 @@ extern "C" {
 #define BATON_SENT_STALE 1u     /* it is of no use any more: drop it and begin again */
 #define BATON_SENT_TOO_LARGE 2u /* it is larger than the protocol allows: nothing went out */
 #define BATON_SENT_OVER 3u      /* the session is over: nothing went out */
+
+/* The codecs of sound, in BatonSound. Any other number is one that this version does not know. */
+#define BATON_SOUND_CODEC_AAC 1u /* AAC-LC: a packet is one access unit, with no ADTS header */
+
+/* The flags of a BatonPlay. */
+#define BATON_PLAY_FIRST 1u /* it begins a run of sound: the decoder starts afresh at it */
+
+/*
+ * Why there is no sound, as stopped says it, and as baton_stream_source_sound_silent is told it.
+ * Only the last three are the platform's to say; the first two are given to stopped and no other
+ * call. A reason that this version does not know reads as OTHER.
+ */
+#define BATON_SILENT_OFF 0u           /* the person turned the sound off */
+#define BATON_SILENT_WINDOW 1u        /* the screen is a window, and only a display has sound */
+#define BATON_SILENT_NO_PERMISSION 2u /* the system has not let the program record the sound */
+#define BATON_SILENT_FAILED 3u        /* something went wrong where the sound is recorded */
+#define BATON_SILENT_OTHER 4u         /* any other reason */
+
+/* What baton_stream_source_sound says became of the packet. */
+#define BATON_SOUND_SENT 0u      /* it went out; the number says which packet it is */
+#define BATON_SOUND_DROPPED 1u   /* it did not go out, and nothing is wrong: drop it */
+#define BATON_SOUND_TOO_LARGE 2u /* it is larger than the protocol allows: nothing went out */
+#define BATON_SOUND_OVER 3u      /* the session is over: nothing went out */
 
 /* Whether the shared window has the keyboard, in BatonSurroundings. */
 #define BATON_KEYBOARD_ELSEWHERE 0u /* another window has it, or the application is not in front */
@@ -552,8 +587,62 @@ typedef struct BatonPost {
 } BatonPost;
 
 /*
- * The functions of the platform. All of them are mandatory. A function that returns int32_t
- * returns BATON_OK, or something else for a failure.
+ * What the packets of sound are: the platform that sends sound gives it to
+ * baton_stream_source_sound_begin before the first packet of a run, and the Rust side gives it to
+ * sound before the first packet that a screen plays. A session has one form for the whole of it.
+ *
+ * codec is BATON_SOUND_CODEC_AAC. rate is the sampling rate in hertz, from 8000 to 96000, and
+ * channels is 1 or 2. samples is how many samples of each channel one packet holds, from 256 to
+ * 2048. A viewer plays AAC-LC with 1024 samples in a packet, or 960 in the variant that some
+ * encoders make, and no other form: a sender that begins another is not heard, and is told with
+ * hear that the sound is not wanted. The Rust side calls sound with a form that the viewer plays.
+ */
+typedef struct BatonSound {
+    uint32_t size;
+    uint32_t codec;
+    uint32_t rate;
+    uint32_t channels;
+    uint32_t samples;
+    uint32_t reserved;
+} BatonSound;
+
+/*
+ * A packet of sound for the screen to decode and play, in the order in which packets are to be
+ * played. packet is the bytes of the packet in the codec of the BatonSound before it; for AAC-LC
+ * one access unit with no ADTS header and no other framing. flags holds BATON_PLAY_ bits.
+ *
+ * number counts the packets of a run, and the packets come in the order of their numbers.
+ * lost_before is how many packets before this one are missing and are not played if they come
+ * later: the screen covers a gap of that many packets, with silence, say. It is 0 for the first
+ * packet of a run, which has BATON_PLAY_FIRST. capture_time is when the first sample of the
+ * packet was captured, in microseconds since the session began, on the clock of the source.
+ */
+typedef struct BatonPlay {
+    uint32_t size;
+    uint32_t flags;
+    uint64_t number;
+    uint64_t capture_time;
+    uint64_t lost_before;
+    BatonBytes packet;
+} BatonPlay;
+
+/*
+ * A packet of sound that the encoder made, as baton_stream_source_sound gives it. bytes is the
+ * packet in the codec of the BatonSound that began the run: at least one byte, and a packet of
+ * more than 8 KiB is not read. capture_time is when the first sample of the packet was recorded,
+ * in the microseconds that baton_stream_source_clock counts, so that sound and pictures have one
+ * clock.
+ */
+typedef struct BatonSoundPacket {
+    uint32_t size;
+    uint32_t reserved;
+    uint64_t capture_time;
+    BatonBytes bytes;
+} BatonSoundPacket;
+
+/*
+ * The functions of the platform. All of them are mandatory but the last three. A function that
+ * returns int32_t returns BATON_OK, or something else for a failure.
  *
  *   limits:  fills in what the device can show. Called once, at registration.
  *   open:    the person said yes to a window: makes the decoder and the screen for it, and fills
@@ -569,6 +658,27 @@ typedef struct BatonPost {
  *   ended:   the session is over. Let go of what the screen shows; no call follows except release.
  *   release: the screen is not needed any more, whether or not ended came first. Let go of all of
  *            it. Called exactly once, and nothing follows. The link is not valid after it.
+ *
+ * The last three are about the sound of a screen, and a platform that plays no sound leaves all
+ * three NULL: a table that ends at release is accepted, and so is one that gives some of the
+ * three and not all, which reads as none. They are called after the person at this device turned
+ * the sound on with the app, one after the other, as the calls above are. Only a screen that
+ * shows a whole display gets sound and play; a window has no sound, and its stopped says so.
+ *
+ *   sound:   the source sends sound from now on, in this form (BatonSound), which is one that the
+ *            screen plays: a run of sound begins. Make a decoder for the form and get ready to
+ *            play. The packets that follow are in this form until the next sound or stopped, and
+ *            a session has one form for the whole of it.
+ *   play:    decodes and plays one packet (BatonPlay), in the order of the numbers: the Rust
+ *            side holds a packet that comes early. A packet that cannot be decoded is dropped by
+ *            the platform; there is no failure to report, since the Rust side has nothing to do
+ *            about it.
+ *   stopped: no sound is wanted or sent. why is a BATON_SILENT_ number: BATON_SILENT_OFF if the
+ *            person turned the sound off, BATON_SILENT_WINDOW for a screen that shows a window,
+ *            and otherwise the reason that the source gave. No packet follows until the next
+ *            sound. Let go of the decoder and stop playing; what is queued need not be played
+ *            out. It can come when no sound did, and then there is nothing to let go of. A run
+ *            that is going when the session ends is not stopped: ended ends it.
  */
 typedef int32_t (*BatonLimitsFn)(void *context, BatonLimits *limits);
 typedef int32_t (*BatonOpenFn)(void *context, const BatonWindow *window, uint64_t link,
@@ -579,12 +689,16 @@ typedef void (*BatonSourceFn)(void *screen, const BatonSourceMessage *message);
 typedef void (*BatonStateFn)(void *screen, BatonDecoderState *state);
 typedef void (*BatonEndedFn)(void *screen);
 typedef void (*BatonReleaseFn)(void *screen);
+typedef void (*BatonSoundFn)(void *screen, const BatonSound *sound);
+typedef void (*BatonPlayFn)(void *screen, const BatonPlay *play);
+typedef void (*BatonStoppedFn)(void *screen, uint32_t why);
 
 /*
  * What the platform registers: the version of the interface it was written for, the size of this
  * struct as the platform knows it, the pointer that limits and open get as their first argument,
  * and the functions. A struct that is larger than the Rust side knows is accepted, and the end of
- * it is ignored.
+ * it is ignored. A table of the size it had before sound was carried (80 bytes, ending at
+ * release) is accepted: the three functions it lacks read as NULL.
  */
 typedef struct BatonViewerVTable {
     uint32_t version;
@@ -598,11 +712,14 @@ typedef struct BatonViewerVTable {
     BatonStateFn state;
     BatonEndedFn ended;
     BatonReleaseFn release;
+    BatonSoundFn sound;
+    BatonPlayFn play;
+    BatonStoppedFn stopped;
 } BatonViewerVTable;
 
 /*
  * The functions of the platform that shares windows. All of them are mandatory but the last
- * four. The first three are about the device and take the context of the table; the others are
+ * five. The first three are about the device and take the context of the table; the others are
  * about one window, and take the pointer that baton_stream_pick_done gave. BatonEndedFn and
  * BatonReleaseFn are the types of ended and release above, with the pointer of the window in
  * place of the one of the screen.
@@ -635,10 +752,10 @@ typedef struct BatonViewerVTable {
  *                side a moment after the end, with no lock held, so it may wait for the capture
  *                threads of the platform to leave the functions of this interface: the link is
  *                closed before ended is called, and a call that is on its way is answered with
- *                BATON_E_UNKNOWN_LINK. Stop capturing and encoding, and let go of what the
- *                capture holds. Called only after a start that returned BATON_OK, once, and
- *                also when the runtime of the app is shut down before the session is over: the
- *                link is closed before ended then too. No call follows but release.
+ *                BATON_E_UNKNOWN_LINK. Stop capturing and encoding, the sound included, and let
+ *                go of what the capture holds. Called only after a start that returned BATON_OK,
+ *                once, and also when the runtime of the app is shut down before the session is
+ *                over: the link is closed before ended then too. No call follows but release.
  *   release:     the window is not needed any more, whether or not ended came first, and
  *                whether or not it was ever started. Let go of all of it, the picker's
  *                result included. Called exactly once, and nothing follows.
@@ -698,7 +815,7 @@ typedef struct BatonViewerVTable {
  *                that is released without start changes nothing at the device. A flag that the
  *                platform does not know makes the call fail.
  *
- * The last one is about a screen that was given with BATON_SCREEN_PRIVATE, and takes the pointer
+ * The next one is about a screen that was given with BATON_SCREEN_PRIVATE, and takes the pointer
  * of the window. A platform that cannot let the device that controls the screen lift what keeps
  * it private leaves it NULL (a table that ends at screen is accepted): the screen then stays as
  * the promise of screen says for the whole session, and the device that controls it is not told
@@ -724,6 +841,37 @@ typedef struct BatonViewerVTable {
  *                back and then locks the device. A lift that cannot be put back is not reported
  *                here: the platform ends the session with baton_stream_source_end, from a thread
  *                of its own, and the device is locked.
+ *
+ * The very last is about the sound of a display, and takes the pointer of the window like the
+ * ones about one window do. A platform that cannot send sound leaves it NULL (a table that ends at
+ * lift is accepted), and the device does not tell the devices it is paired with that it sends
+ * sound. It is called after a start that returned BATON_OK and not after ended, from the one
+ * thread that also calls start, ended, release, surroundings, post and lift, in turn with them,
+ * and only for a window that is a whole display, once the person at the other device has turned
+ * the sound on.
+ *
+ *   hear:        whether the other device wants to hear the sound of this one, 1 or 0.
+ *
+ *                1: record the sound of the device and encode it, as AAC-LC (BatonSound says in
+ *                what form), and give it to the Rust side. The platform says what its packets
+ *                are with baton_stream_source_sound_begin as soon as the encoder knows, and then
+ *                gives each packet to baton_stream_source_sound, in the order in which they were
+ *                recorded. A platform that cannot record the sound says why with
+ *                baton_stream_source_sound_silent instead. Every 1 is answered so, also when the
+ *                platform records already: the packets are dropped (BATON_SOUND_DROPPED) until
+ *                the begin that answers the 1, and the other device starts a new run at it. A 1
+ *                comes again, with no 0 between, when the person asks anew while no sound is
+ *                being sent, as the person does to try again after a silence.
+ *
+ *                0: the other device does not want to hear any more: the person turned the sound
+ *                off, the device has gone quiet, or it cannot play the form. Stop recording and
+ *                encoding, and let go of what the capture holds; a 0 that finds nothing recorded
+ *                changes nothing. The packets that are in flight are not needed, and a packet
+ *                that comes after this one is answered BATON_SOUND_DROPPED.
+ *
+ *                The Rust side tells the latest word and not the ones between: a person who turns
+ *                the sound on, off and on again faster than hear answers is told a 1, and one who
+ *                turns it on and off, a 0.
  */
 typedef uint32_t (*BatonControlFn)(void *context);
 typedef int32_t (*BatonPickFn)(void *context, uint64_t request, BatonMessage *message);
@@ -735,14 +883,16 @@ typedef int32_t (*BatonPostFn)(void *picked, const BatonPost *post);
 typedef int32_t (*BatonScreenFn)(void *context, uint32_t flags, BatonPicked *picked,
                                  BatonMessage *message);
 typedef void (*BatonLiftFn)(void *picked, uint32_t lifted);
+typedef void (*BatonHearFn)(void *picked, uint32_t on);
 
 /*
  * What the platform registers to share windows, as the table above does to show them. A table of
- * the size it had before input was carried (72 bytes, ending at release) is accepted: the four
+ * the size it had before input was carried (72 bytes, ending at release) is accepted: the five
  * functions it lacks read as NULL. So is one of the size it had before the screen could be given
- * without a picker (88 bytes, ending at post): the two functions it lacks read as NULL. So is one
- * of the size it had before the privacy of a screen could be lifted (96 bytes, ending at screen):
- * the function it lacks reads as NULL.
+ * without a picker (88 bytes, ending at post): the three functions it lacks read as NULL. So is
+ * one of the size it had before the privacy of a screen could be lifted (96 bytes, ending at
+ * screen): the two functions it lacks read as NULL. And so is one of the size it had before sound
+ * was carried (104 bytes, ending at lift): the function it lacks reads as NULL.
  */
 typedef struct BatonSharerVTable {
     uint32_t version;
@@ -759,6 +909,7 @@ typedef struct BatonSharerVTable {
     BatonPostFn post;
     BatonScreenFn screen;
     BatonLiftFn lift;
+    BatonHearFn hear;
 } BatonSharerVTable;
 
 /* The version of the interface that the library was built with, for the platform to compare. */
@@ -824,7 +975,8 @@ int32_t baton_stream_pick_done(uint64_t request, const BatonPicked *picked,
  * is over or the number was never given, is answered with BATON_E_UNKNOWN_LINK, which a capture
  * thread takes as the end and stops at. The link closes a moment after the end, and a call that
  * comes between the two is answered as the session would have: begin says BATON_BEGIN_NOT_NOW,
- * sent says BATON_SENT_OVER, and the others return BATON_OK and change nothing.
+ * sent says BATON_SENT_OVER, sound says BATON_SOUND_OVER, and the others return BATON_OK and
+ * change nothing.
  *
  * The pictures. For each picture that it could make, the platform asks baton_stream_source_begin.
  * BATON_BEGIN_NOT_NOW means that none is wanted now, because too many are in flight, or the
@@ -908,6 +1060,49 @@ int32_t baton_stream_source_pause(uint64_t link, uint32_t reason);
 
 /* The pictures go on. */
 int32_t baton_stream_source_resume(uint64_t link);
+
+/*
+ * The sound. A platform that has hear sends the sound of a display while hear says 1. Once the
+ * encoder knows what its packets are, the platform says so with baton_stream_source_sound_begin,
+ * and gives each packet to baton_stream_source_sound as the encoder makes it, at the pace at
+ * which the sound is recorded: the Rust side keeps a limited number of packets in flight, and
+ * drops the packet that has no room. If the platform cannot send the sound it says why with
+ * baton_stream_source_sound_silent. While the other device does not want to hear (before the
+ * first hear(1), and after a hear(0)), the begin and the silent do nothing and return BATON_OK,
+ * and a packet is answered BATON_SOUND_DROPPED, so a platform that is on its way with a packet
+ * when hear(0) comes is not harmed by it.
+ */
+
+/*
+ * Says what the packets of sound are, before the first packet of a run: a run begins here, for
+ * the other device, which is told the form and then plays the packets. The platform gives it
+ * again after every hear(1) that it answers with sound, and the form is the same every time in a
+ * session: it converts the sound if the device it records changes. Returns BATON_OK, and changes
+ * nothing if the other device does not want to hear any more. Returns BATON_E_ARGUMENT, and
+ * changes nothing, if sound is not a form (a pointer, a size, a codec or a number that is wrong,
+ * or beyond what the protocol allows), or differs from the form of an earlier run of the session.
+ */
+int32_t baton_stream_source_sound_begin(uint64_t link, const BatonSound *sound);
+
+/*
+ * The platform cannot send the sound that is wanted, or can no more: ends the run, if one goes,
+ * and tells the other device why, which is one of BATON_SILENT_NO_PERMISSION, BATON_SILENT_FAILED
+ * and BATON_SILENT_OTHER; any other reason returns BATON_E_ARGUMENT and changes nothing. The
+ * person at the other device can try again, which the platform learns from another hear(1).
+ */
+int32_t baton_stream_source_sound_silent(uint64_t link, uint32_t reason);
+
+/*
+ * A packet of sound was made: sends it. Returns BATON_OK, and *outcome says what became of the
+ * packet (a BATON_SOUND_ number), and *number is the number of the packet if it went out, and 0
+ * if not. A packet that does not go out is lost, and the other device covers the gap that it
+ * leaves.
+ *
+ * Returns BATON_E_ARGUMENT if the packet was not taken, because a pointer or a size is wrong, or
+ * it holds no bytes. A packet of more than 8 KiB is not read: *outcome says BATON_SOUND_TOO_LARGE.
+ */
+int32_t baton_stream_source_sound(uint64_t link, const BatonSoundPacket *packet, uint32_t *outcome,
+                                  uint64_t *number);
 
 /*
  * Ends the session. When sentence is NULL or empty, the person closed the window or ended the
@@ -1081,7 +1276,30 @@ BATON_STATIC_ASSERT(offsetof(BatonPost, down) == 48, "BatonPost.down");
 BATON_STATIC_ASSERT(offsetof(BatonPost, repeat) == 52, "BatonPost.repeat");
 BATON_STATIC_ASSERT(offsetof(BatonPost, text) == 56, "BatonPost.text");
 
-BATON_STATIC_ASSERT(sizeof(BatonViewerVTable) == 80, "BatonViewerVTable");
+BATON_STATIC_ASSERT(sizeof(BatonSound) == 24, "BatonSound");
+BATON_STATIC_ASSERT(offsetof(BatonSound, size) == 0, "BatonSound.size");
+BATON_STATIC_ASSERT(offsetof(BatonSound, codec) == 4, "BatonSound.codec");
+BATON_STATIC_ASSERT(offsetof(BatonSound, rate) == 8, "BatonSound.rate");
+BATON_STATIC_ASSERT(offsetof(BatonSound, channels) == 12, "BatonSound.channels");
+BATON_STATIC_ASSERT(offsetof(BatonSound, samples) == 16, "BatonSound.samples");
+BATON_STATIC_ASSERT(offsetof(BatonSound, reserved) == 20, "BatonSound.reserved");
+
+BATON_STATIC_ASSERT(sizeof(BatonPlay) == 48, "BatonPlay");
+BATON_STATIC_ASSERT(offsetof(BatonPlay, size) == 0, "BatonPlay.size");
+BATON_STATIC_ASSERT(offsetof(BatonPlay, flags) == 4, "BatonPlay.flags");
+BATON_STATIC_ASSERT(offsetof(BatonPlay, number) == 8, "BatonPlay.number");
+BATON_STATIC_ASSERT(offsetof(BatonPlay, capture_time) == 16, "BatonPlay.capture_time");
+BATON_STATIC_ASSERT(offsetof(BatonPlay, lost_before) == 24, "BatonPlay.lost_before");
+BATON_STATIC_ASSERT(offsetof(BatonPlay, packet) == 32, "BatonPlay.packet");
+
+BATON_STATIC_ASSERT(sizeof(BatonSoundPacket) == 32, "BatonSoundPacket");
+BATON_STATIC_ASSERT(offsetof(BatonSoundPacket, size) == 0, "BatonSoundPacket.size");
+BATON_STATIC_ASSERT(offsetof(BatonSoundPacket, reserved) == 4, "BatonSoundPacket.reserved");
+BATON_STATIC_ASSERT(offsetof(BatonSoundPacket, capture_time) == 8,
+                    "BatonSoundPacket.capture_time");
+BATON_STATIC_ASSERT(offsetof(BatonSoundPacket, bytes) == 16, "BatonSoundPacket.bytes");
+
+BATON_STATIC_ASSERT(sizeof(BatonViewerVTable) == 104, "BatonViewerVTable");
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, version) == 0, "BatonViewerVTable.version");
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, size) == 4, "BatonViewerVTable.size");
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, context) == 8, "BatonViewerVTable.context");
@@ -1093,8 +1311,11 @@ BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, source) == 48, "BatonViewerVTabl
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, state) == 56, "BatonViewerVTable.state");
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, ended) == 64, "BatonViewerVTable.ended");
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, release) == 72, "BatonViewerVTable.release");
+BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, sound) == 80, "BatonViewerVTable.sound");
+BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, play) == 88, "BatonViewerVTable.play");
+BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, stopped) == 96, "BatonViewerVTable.stopped");
 
-BATON_STATIC_ASSERT(sizeof(BatonSharerVTable) == 104, "BatonSharerVTable");
+BATON_STATIC_ASSERT(sizeof(BatonSharerVTable) == 112, "BatonSharerVTable");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, version) == 0, "BatonSharerVTable.version");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, size) == 4, "BatonSharerVTable.size");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, context) == 8, "BatonSharerVTable.context");
@@ -1111,6 +1332,7 @@ BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, surroundings) == 72,
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, post) == 80, "BatonSharerVTable.post");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, screen) == 88, "BatonSharerVTable.screen");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, lift) == 96, "BatonSharerVTable.lift");
+BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, hear) == 104, "BatonSharerVTable.hear");
 
 #ifdef __cplusplus
 }

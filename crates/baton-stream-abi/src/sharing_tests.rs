@@ -40,7 +40,7 @@ use baton_core::{
 };
 use baton_proto::{
     DeviceId,
-    limits::{MAX_PICTURE_BYTES, MAX_WINDOW_EDGE},
+    limits::{MAX_PICTURE_BYTES, MAX_SOUND_PACKET_BYTES, MAX_WINDOW_EDGE},
     stream::Codec,
     ticket::PairTicket,
 };
@@ -57,18 +57,21 @@ use crate::{
     Error, Registry,
     abi::{
         BEGIN_DELTA, BEGIN_KEY, BEGIN_NOT_NOW, BatonBytes, BatonFormat, BatonFront, BatonGeometry,
-        BatonPicked, BatonPicture, BatonRect, BatonSharerVTable, CODEC_H264, E_PLATFORM, FRAME_KEY,
-        FRAME_RECOVERY, FRAME_REFERENCED, KEYBOARD_ELSEWHERE, LIFT_INPUT, LIFT_SCREEN,
-        PAUSE_HIDDEN, PAUSE_LOCKED, PAUSE_OTHER, PICKED_DISPLAY, PICKED_WINDOW,
-        SCREEN_NEEDS_INPUT_PERMISSION, SCREEN_NEEDS_PERMISSION, SCREEN_PRIVATE, SCREEN_UNAVAILABLE,
-        SENT, SENT_OVER, SENT_STALE, SENT_TOO_LARGE, SOURCE_CONFIG, SOURCE_PAUSE, SOURCE_RESUME,
-        size_of_u32,
+        BatonPicked, BatonPicture, BatonRect, BatonSharerVTable, BatonSound, BatonSoundPacket,
+        CODEC_H264, E_PLATFORM, FRAME_KEY, FRAME_RECOVERY, FRAME_REFERENCED, KEYBOARD_ELSEWHERE,
+        LIFT_INPUT, LIFT_SCREEN, PAUSE_HIDDEN, PAUSE_LOCKED, PAUSE_OTHER, PICKED_DISPLAY,
+        PICKED_WINDOW, PLAY_FIRST, SCREEN_NEEDS_INPUT_PERMISSION, SCREEN_NEEDS_PERMISSION,
+        SCREEN_PRIVATE, SCREEN_UNAVAILABLE, SENT, SENT_OVER, SENT_STALE, SENT_TOO_LARGE,
+        SILENT_FAILED, SILENT_NO_PERMISSION, SILENT_OFF, SILENT_OTHER, SILENT_WINDOW,
+        SOUND_DROPPED, SOUND_OVER, SOUND_SENT, SOUND_TOO_LARGE, SOURCE_CONFIG, SOURCE_PAUSE,
+        SOURCE_RESUME, size_of_u32,
     },
-    fake::{Call, Decoded, Fake, Watchdog},
+    fake::{Call, Decoded, Fake, Played, Watchdog},
     fake_sharer::{
-        self, Around, FakeSharer, Pic, PickPlan, PreparePlan, ScreenPlan, SharerCall, StartPlan,
-        begin, cancel, changed, clock, end, key_post, left_down, left_up, new_epoch, new_epoch_raw,
-        pause, pointer_post, recovery_pending, resume, sent, sent_sized, sent_with,
+        self, Around, FakeSharer, Pic, PickPlan, PreparePlan, RECORD, STOP, ScreenPlan, SharerCall,
+        StartPlan, aac, begin, cancel, changed, clock, end, key_post, left_down, left_up,
+        new_epoch, new_epoch_raw, pause, pointer_post, recovery_pending, resume, sent, sent_sized,
+        sent_with, sound, sound_begin, sound_begin_raw, sound_raw, sound_silent,
     },
     fixture::{HEIGHT, PPS, SPS, WIDTH, pictures, sps},
     input::Timing,
@@ -420,6 +423,25 @@ impl Rig {
                     message.fps,
                     message.epoch,
                 )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The calls of the viewing platform about the sound of a screen, in order.
+    fn sound_calls(&self, screen: u64) -> Vec<Call> {
+        self.screen_calls(screen)
+            .into_iter()
+            .filter(|call| matches!(call, Call::Sound(_) | Call::Play(_) | Call::Stopped(_)))
+            .collect()
+    }
+
+    /// The packets of sound that the viewing platform was given to play, in order.
+    fn played(&self, screen: u64) -> Vec<Played> {
+        self.screen_calls(screen)
+            .into_iter()
+            .filter_map(|call| match call {
+                Call::Play(played) => Some(played),
                 _ => None,
             })
             .collect()
@@ -1573,6 +1595,12 @@ fn every_call(registry: &Registry, link: u64) -> Vec<(&'static str, Result<(), E
         ),
         ("pause", pause(registry, link, PAUSE_HIDDEN)),
         ("resume", resume(registry, link)),
+        (
+            "sound_begin",
+            sound_begin(registry, link, &aac(48_000, 2, 1024)),
+        ),
+        ("sound_silent", sound_silent(registry, link, SILENT_FAILED)),
+        ("sound", sound(registry, link, 0, b"packet").map(drop)),
         ("end", end(registry, link, None)),
         (
             "end with a sentence",
@@ -2176,14 +2204,27 @@ async fn the_platform_cannot_call_back_while_the_library_is_calling_it() {
     rig.nothing_is_left().await;
     assert_eq!(rig.platform.calls(2), [SharerCall::Release]);
 
+    // A display that is shared with sound, which the person at the other device wants to hear:
+    // Hear as well, on the thread that serves the window. It is the third window.
+    rig.windows += 1;
+    let heard = rig.share_of(true, false).await;
+    assert!(rig.viewing.app.hear_window(heard.viewing.id, true));
+    until("the platform to be asked for the sound", || {
+        rig.platform.hear_calls(heard.window) == [RECORD]
+    })
+    .await;
+    assert!(rig.sharing.app.end_window(heard.sharing.id));
+    assert_eq!(rig.sharing_end().await, WindowEnd::ThisDevice);
+    rig.nothing_is_left().await;
+
     let answers = answers.lock().unwrap();
     let kinds: HashSet<_> = answers
         .iter()
         .map(|(call, ..)| mem::discriminant(call))
         .collect();
-    assert_eq!(kinds.len(), 10, "every kind of call of the library");
+    assert_eq!(kinds.len(), 11, "every kind of call of the library");
     // Every function was tried inside every call, and none was let in.
-    assert!(answers.len() >= 10 * 12, "{} answers", answers.len());
+    assert!(answers.len() >= 11 * 15, "{} answers", answers.len());
     for (call, name, answer) in answers.iter() {
         assert_eq!(*answer, Err(Error::Reentrant), "{name} inside {call:?}");
     }
@@ -3085,6 +3126,680 @@ async fn a_picture_does_not_go_out_before_the_gate_can_have_its_frame() {
 
     assert!(rig.sharing.app.end_window(shown.sharing.id));
     rig.nothing_is_left().await;
+}
+
+// Sound (ADR 0012).
+
+/// A packet of sound as the other platform is given it to play, in a run with no loss.
+fn played(flags: u32, number: u64, capture_time: u64, packet: &[u8]) -> Played {
+    Played {
+        flags,
+        number,
+        capture_time,
+        lost_before: 0,
+        packet: packet.to_vec(),
+    }
+}
+
+#[tokio::test]
+async fn the_sound_of_a_display_goes_from_the_functions_the_platform_calls_to_the_functions_the_other_platform_gets()
+ {
+    let mut rig = Rig::new().await;
+    let shown = rig.share_of(true, false).await;
+    let (link, window, session) = (shown.link, shown.window, shown.viewing.id);
+    let form = aac(48_000, 2, 1024);
+
+    // Nothing is recorded before the person at the other device asks for it. What the platform
+    // has anyway goes nowhere, and what it says about the sound changes nothing.
+    assert_eq!(rig.platform.hear_calls(window), []);
+    assert_eq!(
+        sound(&rig.registry, link, 0, b"early"),
+        Ok((SOUND_DROPPED, 0))
+    );
+    assert_eq!(sound_begin(&rig.registry, link, &form), Ok(()));
+    assert_eq!(sound_silent(&rig.registry, link, SILENT_FAILED), Ok(()));
+    assert_eq!(
+        sound(&rig.registry, link, 0, b"early"),
+        Ok((SOUND_DROPPED, 0))
+    );
+
+    // The person turns the sound on. The platform is told, and answers with what its packets are.
+    assert!(rig.viewing.app.hear_window(session, true));
+    until("the platform to be asked for the sound", || {
+        rig.platform.hear_calls(window) == [RECORD]
+    })
+    .await;
+    assert_eq!(sound_begin(&rig.registry, link, &form), Ok(()));
+    until("the other platform to be told what the packets are", || {
+        rig.sound_calls(1) == [Call::Sound(form)]
+    })
+    .await;
+
+    // The packets go out under the numbers they get, and the other platform plays them in the
+    // order in which they were made, the first as the start of the run.
+    let packets: [&[u8]; 3] = [b"one", b"two", b"three"];
+    for (number, bytes) in (0_u64..).zip(packets) {
+        let sent = sound(&rig.registry, link, 21_333 * number, bytes);
+        assert_eq!(sent, Ok((SOUND_SENT, number)), "packet {number}");
+    }
+    until("the packets to be played", || rig.played(1).len() == 3).await;
+    assert_eq!(
+        rig.played(1),
+        [
+            played(PLAY_FIRST, 0, 0, b"one"),
+            played(0, 1, 21_333, b"two"),
+            played(0, 2, 42_666, b"three"),
+        ]
+    );
+
+    // The person turns the sound off. The platform is told, the speaker of the other platform
+    // stops, and a packet that was in the hands of the platform goes nowhere.
+    assert!(rig.viewing.app.hear_window(session, false));
+    until(
+        "the platform to be told that the sound is not wanted",
+        || rig.platform.hear_calls(window) == [RECORD, STOP],
+    )
+    .await;
+    until("the speaker to stop", || {
+        rig.sound_calls(1).last() == Some(&Call::Stopped(SILENT_OFF))
+    })
+    .await;
+    assert_eq!(
+        sound(&rig.registry, link, 64_000, b"late"),
+        Ok((SOUND_DROPPED, 0))
+    );
+    assert_eq!(sound_begin(&rig.registry, link, &form), Ok(()));
+    assert_eq!(sound_silent(&rig.registry, link, SILENT_OTHER), Ok(()));
+
+    // The next time is a fresh start: the platform is told again, gives the form again, and the
+    // first packet of the run begins it for the other platform.
+    assert!(rig.viewing.app.hear_window(session, true));
+    until("the platform to be asked again", || {
+        rig.platform.hear_calls(window) == [RECORD, STOP, RECORD]
+    })
+    .await;
+    assert_eq!(sound_begin(&rig.registry, link, &form), Ok(()));
+    let (outcome, number) = sound(&rig.registry, link, 90_000, b"again").unwrap();
+    assert_eq!(outcome, SOUND_SENT);
+    until("the packet to be played", || rig.played(1).len() == 4).await;
+    assert_eq!(
+        rig.played(1)[3],
+        played(PLAY_FIRST, number, 90_000, b"again")
+    );
+    // The forms and the packets that came while the sound was off never reached the speaker.
+    let forms = rig
+        .sound_calls(1)
+        .into_iter()
+        .filter(|call| matches!(call, Call::Sound(_)))
+        .count();
+    assert_eq!(forms, 2);
+
+    assert!(rig.viewing.app.end_window(session));
+    rig.nothing_is_left().await;
+}
+
+#[tokio::test]
+async fn a_platform_that_cannot_record_says_why_and_the_person_can_ask_again() {
+    let mut rig = Rig::new().await;
+    let shown = rig.share_of(true, false).await;
+    let (link, window, session) = (shown.link, shown.window, shown.viewing.id);
+
+    // Each reason is told to the speaker of the other platform. The person asks again after each,
+    // with the sound still on, and the platform is told 1 again with no 0 between.
+    let reasons = [SILENT_NO_PERMISSION, SILENT_FAILED, SILENT_OTHER];
+    for (asked, reason) in (1..).zip(reasons) {
+        assert!(rig.viewing.app.hear_window(session, true));
+        until("the platform to be asked for the sound", || {
+            rig.platform.hear_calls(window).len() == asked
+        })
+        .await;
+        assert_eq!(sound_silent(&rig.registry, link, reason), Ok(()));
+        until("the speaker to be told why there is no sound", || {
+            rig.sound_calls(1).len() == asked
+        })
+        .await;
+    }
+    assert_eq!(rig.platform.hear_calls(window), [RECORD; 3]);
+    assert_eq!(rig.sound_calls(1), reasons.map(Call::Stopped));
+
+    // A reason that the platform may not give changes nothing: the person turning the sound off
+    // and the session being of a window are for the library to say.
+    for reason in [SILENT_OFF, SILENT_WINDOW, 5, u32::MAX] {
+        assert_eq!(
+            sound_silent(&rig.registry, link, reason),
+            Err(Error::Argument),
+            "reason {reason}"
+        );
+    }
+    // Nothing of that reached the other device: what it is told next is the next reason that
+    // works.
+    assert_eq!(sound_silent(&rig.registry, link, SILENT_FAILED), Ok(()));
+    until("the speaker to be told once more", || {
+        rig.sound_calls(1).len() == 4
+    })
+    .await;
+    assert_eq!(rig.sound_calls(1)[3], Call::Stopped(SILENT_FAILED));
+
+    // The person asks once more, and this time the platform can: the run begins afresh.
+    assert!(rig.viewing.app.hear_window(session, true));
+    until("the platform to be asked once more", || {
+        rig.platform.hear_calls(window).len() == 4
+    })
+    .await;
+    let form = aac(44_100, 1, 960);
+    assert_eq!(sound_begin(&rig.registry, link, &form), Ok(()));
+    let sent = sound(&rig.registry, link, 0, b"first");
+    assert_eq!(sent.map(|(outcome, _)| outcome), Ok(SOUND_SENT));
+    until("the packet to be played", || rig.played(1).len() == 1).await;
+    assert_eq!(rig.sound_calls(1)[4], Call::Sound(form));
+    assert_eq!(rig.platform.hear_calls(window), [RECORD; 4]);
+
+    assert!(rig.viewing.app.end_window(session));
+    rig.nothing_is_left().await;
+}
+
+#[tokio::test]
+async fn the_sound_of_a_window_is_not_asked_of_the_platform_and_the_other_device_is_told_why() {
+    let mut rig = Rig::new().await;
+    let shown = rig.share(false).await;
+    let (link, window, session) = (shown.link, shown.window, shown.viewing.id);
+
+    assert!(rig.viewing.app.hear_window(session, true));
+    until("the speaker to be told that a window has no sound", || {
+        rig.sound_calls(1) == [Call::Stopped(SILENT_WINDOW)]
+    })
+    .await;
+    // The platform was not asked, and what it hands over anyway goes nowhere.
+    assert_eq!(rig.platform.hear_calls(window), []);
+    assert_eq!(
+        sound_begin(&rig.registry, link, &aac(48_000, 2, 1024)),
+        Ok(())
+    );
+    assert_eq!(
+        sound(&rig.registry, link, 0, b"packet"),
+        Ok((SOUND_DROPPED, 0))
+    );
+
+    // Asking again is answered the same way.
+    assert!(rig.viewing.app.hear_window(session, true));
+    until("the speaker to be told again", || {
+        rig.sound_calls(1).len() == 2
+    })
+    .await;
+    assert_eq!(
+        rig.sound_calls(1),
+        [Call::Stopped(SILENT_WINDOW), Call::Stopped(SILENT_WINDOW)]
+    );
+    assert_eq!(rig.platform.hear_calls(window), []);
+
+    assert!(rig.viewing.app.end_window(session));
+    rig.nothing_is_left().await;
+}
+
+#[tokio::test]
+async fn a_form_of_sound_that_is_wrong_or_changes_is_refused_and_nothing_goes_out_for_it() {
+    let mut rig = Rig::new().await;
+    let shown = rig.share_of(true, false).await;
+    let (link, window, session) = (shown.link, shown.window, shown.viewing.id);
+    assert!(rig.viewing.app.hear_window(session, true));
+    until("the platform to be asked for the sound", || {
+        rig.platform.hear_calls(window) == [RECORD]
+    })
+    .await;
+
+    // A form that is not within what the protocol allows is refused, also while the sound is
+    // wanted.
+    let good = aac(48_000, 2, 1024);
+    let wrong = [
+        ("a codec that is not known", BatonSound { codec: 2, ..good }),
+        ("no codec", BatonSound { codec: 0, ..good }),
+        ("a rate that is too low", aac(7_999, 2, 1024)),
+        ("a rate that is too high", aac(96_001, 2, 1024)),
+        ("no channels", aac(48_000, 0, 1024)),
+        ("three channels", aac(48_000, 3, 1024)),
+        ("channels that do not fit a byte", aac(48_000, 258, 1024)),
+        ("too few samples", aac(48_000, 2, 255)),
+        ("too many samples", aac(48_000, 2, 2049)),
+        ("samples that do not fit", aac(48_000, 2, 65_537)),
+    ];
+    for (what, form) in wrong {
+        assert_eq!(
+            sound_begin(&rig.registry, link, &form),
+            Err(Error::Argument),
+            "{what}"
+        );
+    }
+    // So is a form that is not there, or that does not say it is whole.
+    // SAFETY: no struct at all is one of the arguments that the function is made for.
+    let nothing = unsafe { sound_begin_raw(&rig.registry, link, None) };
+    assert_eq!(nothing, Err(Error::Argument));
+    for size in [0, 4, size_of_u32::<BatonSound>() - 1] {
+        let short = BatonSound { size, ..good };
+        // SAFETY: a struct that lives through the call, and is refused for its size.
+        let result = unsafe { sound_begin_raw(&rig.registry, link, Some(&short)) };
+        assert_eq!(result, Err(Error::Argument), "size {size}");
+    }
+    // None of that began a run.
+    assert_eq!(
+        sound(&rig.registry, link, 0, b"packet"),
+        Ok((SOUND_DROPPED, 0))
+    );
+
+    // A struct that says it is longer than this version knows is a newer one: what follows the
+    // part that is known is not read.
+    let newer = BatonSound {
+        size: size_of_u32::<BatonSound>() + 8,
+        ..good
+    };
+    // SAFETY: a struct that lives through the call; the library reads no more of it than it knows.
+    let began = unsafe { sound_begin_raw(&rig.registry, link, Some(&newer)) };
+    assert_eq!(began, Ok(()));
+    until("the other platform to be told what the packets are", || {
+        rig.sound_calls(1) == [Call::Sound(good)]
+    })
+    .await;
+
+    // A session has one form of sound. Another is refused, and the run goes on as it was.
+    for (what, other) in [
+        ("another rate", aac(44_100, 2, 1024)),
+        ("another number of channels", aac(48_000, 1, 1024)),
+        ("another size of packet", aac(48_000, 2, 960)),
+    ] {
+        assert_eq!(
+            sound_begin(&rig.registry, link, &other),
+            Err(Error::Argument),
+            "{what}"
+        );
+    }
+    assert_eq!(
+        sound(&rig.registry, link, 0, b"packet"),
+        Ok((SOUND_SENT, 0))
+    );
+    // The same form again is a new run, which the other platform is told.
+    assert_eq!(sound_begin(&rig.registry, link, &good), Ok(()));
+    assert_eq!(
+        sound(&rig.registry, link, 21_333, b"packet"),
+        Ok((SOUND_SENT, 1))
+    );
+    until("the packets to be played", || rig.played(1).len() == 2).await;
+    assert_eq!(
+        rig.sound_calls(1)
+            .iter()
+            .filter(|call| matches!(call, Call::Sound(_)))
+            .count(),
+        2
+    );
+
+    assert!(rig.viewing.app.end_window(session));
+    rig.nothing_is_left().await;
+}
+
+#[tokio::test]
+async fn a_form_that_the_other_device_cannot_play_ends_the_run_and_the_platform_is_told_it_is_not_wanted()
+ {
+    let mut rig = Rig::new().await;
+    let shown = rig.share_of(true, false).await;
+    let (link, window, session) = (shown.link, shown.window, shown.viewing.id);
+    assert!(rig.viewing.app.hear_window(session, true));
+    until("the platform to be asked for the sound", || {
+        rig.platform.hear_calls(window) == [RECORD]
+    })
+    .await;
+
+    // The protocol allows packets of 2048 samples, and this device plays those of 960 or 1024.
+    assert_eq!(
+        sound_begin(&rig.registry, link, &aac(48_000, 2, 2048)),
+        Ok(())
+    );
+    until(
+        "the speaker to be told that there is nothing to play",
+        || rig.sound_calls(1) == [Call::Stopped(SILENT_OTHER)],
+    )
+    .await;
+    // The device turned the sound off by itself, and the platform is told so.
+    until(
+        "the platform to be told that the sound is not wanted",
+        || rig.platform.hear_calls(window) == [RECORD, STOP],
+    )
+    .await;
+    assert_eq!(
+        sound(&rig.registry, link, 0, b"packet"),
+        Ok((SOUND_DROPPED, 0))
+    );
+    assert_eq!(rig.played(1), []);
+
+    assert!(rig.viewing.app.end_window(session));
+    rig.nothing_is_left().await;
+}
+
+/// The person at the other device asks to hear the display, and the platform that shares it is
+/// asked to record.
+async fn asks_to_hear(rig: &Rig, shown: &Shown) {
+    assert!(rig.viewing.app.hear_window(shown.viewing.id, true));
+    until("the platform to be asked for the sound", || {
+        rig.platform.hear_calls(shown.window) == [RECORD]
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn packets_that_are_not_there_are_refused_and_nothing_is_written_through_pointers_that_are_not()
+ {
+    let mut rig = Rig::new().await;
+    let shown = rig.share_of(true, false).await;
+    let (link, session) = (shown.link, shown.viewing.id);
+    asks_to_hear(&rig, &shown).await;
+    assert_eq!(
+        sound_begin(&rig.registry, link, &aac(48_000, 2, 1024)),
+        Ok(())
+    );
+
+    let bytes = b"packet";
+    let whole = size_of_u32::<BatonSoundPacket>();
+    let packet = |size: u32| BatonSoundPacket {
+        size,
+        reserved: 0,
+        capture_time: 0,
+        bytes: BatonBytes::of(bytes),
+    };
+    let (before_outcome, before_number) = (0xaaaa_aaaa_u32, 0xbbbb_bbbb_bbbb_bbbb_u64);
+    let (mut outcome, mut number) = (before_outcome, before_number);
+    let wrong: Vec<(&str, Option<BatonSoundPacket>)> = vec![
+        ("no packet", None),
+        ("a struct with no size", Some(packet(0))),
+        ("a struct that is too short", Some(packet(whole - 1))),
+        (
+            "no bytes",
+            Some(BatonSoundPacket {
+                bytes: BatonBytes::of(b""),
+                ..packet(whole)
+            }),
+        ),
+        (
+            "bytes with no pointer",
+            Some(BatonSoundPacket {
+                bytes: BatonBytes {
+                    ptr: ptr::null(),
+                    len: bytes.len(),
+                },
+                ..packet(whole)
+            }),
+        ),
+    ];
+    for (what, bad) in wrong {
+        // SAFETY: the bytes are there, and live through the call.
+        let result = unsafe {
+            sound_raw(
+                &rig.registry,
+                link,
+                bad.as_ref(),
+                Some(&mut outcome),
+                Some(&mut number),
+            )
+        };
+        assert_eq!(result, Err(Error::Argument), "{what}");
+        assert_eq!((outcome, number), (before_outcome, before_number), "{what}");
+    }
+    // A missing place for what became of the packet is refused too, before it is sent.
+    for (what, outcome_there, number_there) in [
+        ("no place for the outcome", false, true),
+        ("no place for the number", true, false),
+    ] {
+        let (mut outcome, mut number) = (before_outcome, before_number);
+        let good = packet(whole);
+        // SAFETY: as above.
+        let result = unsafe {
+            sound_raw(
+                &rig.registry,
+                link,
+                Some(&good),
+                outcome_there.then_some(&mut outcome),
+                number_there.then_some(&mut number),
+            )
+        };
+        assert_eq!(result, Err(Error::Argument), "{what}");
+        assert_eq!((outcome, number), (before_outcome, before_number), "{what}");
+    }
+    // None of that sent anything: the first packet that goes out is the first of the run.
+    assert_eq!(sound(&rig.registry, link, 0, b"first"), Ok((SOUND_SENT, 0)));
+    until("the packet to be played", || rig.played(1).len() == 1).await;
+    assert_eq!(rig.played(1), [played(PLAY_FIRST, 0, 0, b"first")]);
+
+    assert!(rig.viewing.app.end_window(session));
+    rig.nothing_is_left().await;
+}
+
+#[tokio::test]
+async fn a_packet_larger_than_the_protocol_allows_is_not_read_and_the_largest_that_is_read_goes_out_whole()
+ {
+    let mut rig = Rig::new().await;
+    let shown = rig.share_of(true, false).await;
+    let (link, session) = (shown.link, shown.viewing.id);
+    asks_to_hear(&rig, &shown).await;
+    assert_eq!(
+        sound_begin(&rig.registry, link, &aac(48_000, 2, 1024)),
+        Ok(())
+    );
+
+    // The pointer of such a packet leads nowhere, and it is not followed.
+    let nowhere = BatonSoundPacket {
+        size: size_of_u32::<BatonSoundPacket>(),
+        reserved: 0,
+        capture_time: 0,
+        bytes: BatonBytes {
+            ptr: 8 as *const u8,
+            len: MAX_SOUND_PACKET_BYTES + 1,
+        },
+    };
+    let (mut outcome, mut number) = (0xaaaa_aaaa_u32, 0xbbbb_bbbb_bbbb_bbbb_u64);
+    // SAFETY: the bytes are described but are not read, as the header says of a length this large.
+    let result = unsafe {
+        sound_raw(
+            &rig.registry,
+            link,
+            Some(&nowhere),
+            Some(&mut outcome),
+            Some(&mut number),
+        )
+    };
+    assert_eq!(result, Ok(()));
+    assert_eq!((outcome, number), (SOUND_TOO_LARGE, 0));
+    // The largest packet that is read goes out whole, as the first of the run.
+    let largest = vec![0xaa_u8; MAX_SOUND_PACKET_BYTES];
+    assert_eq!(
+        sound(&rig.registry, link, 21_333, &largest),
+        Ok((SOUND_SENT, 0))
+    );
+    until("the packet to be played", || rig.played(1).len() == 1).await;
+    assert_eq!(rig.played(1), [played(PLAY_FIRST, 0, 21_333, &largest)]);
+
+    assert!(rig.viewing.app.end_window(session));
+    rig.nothing_is_left().await;
+}
+
+#[tokio::test]
+async fn a_packet_that_is_handed_over_as_the_session_ends_is_told_that_it_is_over() {
+    let mut rig = Rig::new().await;
+    let shown = rig.share_of(true, false).await;
+    let (link, window, session) = (shown.link, shown.window, shown.viewing.id);
+    let form = aac(48_000, 2, 1024);
+    assert!(rig.viewing.app.hear_window(session, true));
+    until("the platform to be asked for the sound", || {
+        rig.platform.hear_calls(window) == [RECORD]
+    })
+    .await;
+    assert_eq!(sound_begin(&rig.registry, link, &form), Ok(()));
+    assert_eq!(sound(&rig.registry, link, 0, b"one"), Ok((SOUND_SENT, 0)));
+
+    // The end is not told to the platform at once: a task of the library does that. Until it has,
+    // the link is open, and a thread of the platform that is recording is answered.
+    assert_eq!(end(&rig.registry, link, None), Ok(()));
+    assert_eq!(
+        sound(&rig.registry, link, 21_333, b"two"),
+        Ok((SOUND_OVER, 0))
+    );
+    assert_eq!(sound_begin(&rig.registry, link, &form), Ok(()));
+    assert_eq!(sound_silent(&rig.registry, link, SILENT_FAILED), Ok(()));
+    assert_eq!(rig.sharing_end().await, WindowEnd::ThisDevice);
+    rig.nothing_is_left().await;
+
+    // Once the platform is told, the link is closed, and whatever it says is answered so.
+    assert_eq!(
+        sound(&rig.registry, link, 42_666, b"three"),
+        Err(Error::UnknownLink)
+    );
+    assert_eq!(
+        sound_begin(&rig.registry, link, &form),
+        Err(Error::UnknownLink)
+    );
+    assert_eq!(
+        sound_silent(&rig.registry, link, SILENT_FAILED),
+        Err(Error::UnknownLink)
+    );
+}
+
+#[tokio::test]
+async fn a_device_that_plays_no_sound_cannot_ask_for_it() {
+    // A viewing platform that was written before sound was carried.
+    let mut rig = Rig::with(|_, viewer| viewer.plays_no_sound()).await;
+    let shown = rig.share_of(true, false).await;
+    assert!(!rig.viewing.app.hear_window(shown.viewing.id, true));
+    assert_eq!(rig.platform.hear_calls(shown.window), []);
+    // What the sharing platform has anyway goes nowhere.
+    assert_eq!(
+        sound_begin(&rig.registry, shown.link, &aac(48_000, 2, 1024)),
+        Ok(())
+    );
+    assert_eq!(
+        sound(&rig.registry, shown.link, 0, b"packet"),
+        Ok((SOUND_DROPPED, 0))
+    );
+    // The pictures go on as they would, and the speaker was never called.
+    assert_eq!(rig.send(shown.link, 0).await, (BEGIN_KEY, SENT, 0));
+    rig.close_at_viewer(&shown).await;
+    rig.nothing_is_left().await;
+    assert_eq!(rig.sound_calls(1), []);
+}
+
+#[tokio::test]
+async fn a_platform_that_sends_no_sound_is_not_asked_for_it() {
+    // A sharing platform that was written before sound was carried.
+    let mut rig = Rig::with(|platform, _| platform.sends_no_sound()).await;
+    let shown = rig.share_of(true, false).await;
+    assert!(!rig.viewing.app.hear_window(shown.viewing.id, true));
+    assert_eq!(rig.platform.hear_calls(shown.window), []);
+    assert_eq!(
+        sound(&rig.registry, shown.link, 0, b"packet"),
+        Ok((SOUND_DROPPED, 0))
+    );
+    // The pictures go on as they would, and the speaker was never called.
+    assert_eq!(rig.send(shown.link, 0).await, (BEGIN_KEY, SENT, 0));
+    rig.close_at_viewer(&shown).await;
+    rig.nothing_is_left().await;
+    assert_eq!(rig.sound_calls(1), []);
+}
+
+/// A capture thread that sends sound and is not careful: it calls the functions about sound in an
+/// order of its own, from the moment it is started until the link is closed. One that is `ender`
+/// also ends the session, once, after a while.
+fn hammer_sound(registry: &Registry, link: u64, seed: u64, ender: bool, calls: &AtomicU64) {
+    let (form, changed_form) = (aac(48_000, 2, 1024), aac(44_100, 1, 960));
+    let mut state = seed;
+    let mut done = false;
+    loop {
+        // A small generator that needs nothing else.
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let step = (state >> 33) % 9;
+        let answer = match step {
+            0 => sound_begin(registry, link, &form),
+            1 => sound_begin(registry, link, &changed_form),
+            2 => sound_silent(registry, link, SILENT_FAILED),
+            3..=5 => sound(registry, link, state >> 40, b"packet").map(drop),
+            6 => clock(registry, link).map(drop),
+            _ if ender && !done && calls.load(Ordering::SeqCst) > 1000 => {
+                done = true;
+                end(registry, link, None)
+            }
+            _ => Ok(()),
+        };
+        calls.fetch_add(1, Ordering::SeqCst);
+        match answer {
+            // A form that is not the first of the session, or a call that is not wanted.
+            Ok(()) | Err(Error::Argument) => {}
+            Err(Error::UnknownLink) => return,
+            Err(other) => panic!("step {step}: the library answered {other:?}"),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn threads_of_the_platform_that_send_sound_when_a_session_ends_are_all_told_so() {
+    // The session is ended by the person at the other device, by the platform itself from one of
+    // its threads, and by the person at this one, while the person at the other device turns the
+    // sound on and off.
+    for how in [
+        "the other device",
+        "a thread of the platform",
+        "this device",
+    ] {
+        let mut rig = Rig::new().await;
+        let shown = rig.share_of(true, false).await;
+        let calls = Arc::new(AtomicU64::new(0));
+        let threads: Vec<_> = (0..4)
+            .map(|number| {
+                let (registry, calls) = (Arc::clone(&rig.registry), Arc::clone(&calls));
+                let (link, ender) = (shown.link, number == 0 && how == "a thread of the platform");
+                thread::spawn(move || hammer_sound(&registry, link, 77 + number, ender, &calls))
+            })
+            .collect();
+        for round in 0..40 {
+            let _ = rig
+                .viewing
+                .app
+                .hear_window(shown.viewing.id, round % 3 != 2);
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        until("the threads to be at work", || {
+            calls.load(Ordering::SeqCst) >= 500
+        })
+        .await;
+        match how {
+            "the other device" => rig.close_at_viewer(&shown).await,
+            "this device" => assert!(rig.sharing.app.end_window(shown.sharing.id)),
+            _ => {}
+        }
+        // Each thread was told at some time that the link is closed, and stopped.
+        let _watch = Watchdog::start("a thread of the platform");
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        rig.nothing_is_left().await;
+        let end = rig.sharing_end().await;
+        assert_eq!(
+            end,
+            match how {
+                "the other device" => WindowEnd::OtherDevice,
+                _ => WindowEnd::ThisDevice,
+            },
+            "{how}"
+        );
+        // The platform was told about the sound while the window ran and not outside it.
+        let calls = rig.platform.calls(shown.window);
+        assert_eq!(calls[1], SharerCall::Start { link: shown.link }, "{how}");
+        assert!(
+            calls[2..calls.len() - 2]
+                .iter()
+                .all(|call| matches!(call, SharerCall::Hear { .. })),
+            "{how}: {calls:?}"
+        );
+        assert_eq!(
+            calls[calls.len() - 2..],
+            [SharerCall::Ended, SharerCall::Release],
+            "{how}"
+        );
+    }
 }
 
 // The screen without a picker (ADR 0010).

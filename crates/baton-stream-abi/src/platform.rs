@@ -14,7 +14,9 @@
 //!   returned, it calls the platform's functions with that pointer and no other, and it calls
 //!   `release` once, when it is dropped. Its methods take what a call needs as Rust types and
 //!   build the structs of the interface here, so a pointer that the platform is given always
-//!   points into memory that this module keeps alive for the call.
+//!   points into memory that this module keeps alive for the call. A platform that plays sound
+//!   also has `sound`, `play` and `stopped` ([`ScreenHandle::sound`], [`ScreenHandle::play`],
+//!   [`ScreenHandle::stopped`]), which are called on the same pointer as the rest.
 //! - [`SharerCalls`] and [`PickedHandle`] are the same two for sharing: the vtable of the sharer,
 //!   and one window that the person picked, whose pointer the platform gave with its answer
 //!   ([`SharerCalls::adopt`]) and which is released once, when the handle is dropped. A window
@@ -23,7 +25,8 @@
 //!   ([`PickedHandle::post`]). A platform that can give its main display without a picker also
 //!   has `screen` ([`SharerCalls::screen`]), whose answer is a window of the same kind, and one
 //!   that can keep that display private also has `lift` ([`PickedHandle::lift`]), which tells it
-//!   what the other device lets be lifted of that.
+//!   what the other device lets be lifted of that. A platform that can send the sound of its
+//!   screen has `hear` ([`PickedHandle::hear`]), which says when the sound is wanted.
 //!
 //! Every call is made inside [`within`], which marks the thread. The functions of the interface
 //! that the platform calls refuse to run on a thread that is inside a call into the platform,
@@ -36,8 +39,10 @@ use std::{
     ptr::{self, NonNull},
 };
 
+use baton_core::streaming::Play;
 use baton_proto::limits::MAX_WINDOW_EDGE;
 use baton_stream::{
+    control::{SilentReason, Sound, SoundCodec},
     gate::{Front, Geometry, Keyboard, Post, Rect, Size},
     input::{Button, PointerAction},
 };
@@ -47,14 +52,16 @@ use crate::{
     abi::{
         ABI_VERSION, BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT, BatonBytes, BatonDecoderState,
         BatonFormat, BatonFrame, BatonFront, BatonGeometry, BatonLimits, BatonMessage, BatonPicked,
-        BatonPost, BatonRect, BatonScreen, BatonSharerVTable, BatonSourceMessage,
-        BatonSurroundings, BatonTakes, BatonViewerVTable, BatonWindow, CancelPickFn, ControlFn,
-        DecodeFn, EndedFn, FRONT_MENU, FRONT_SAME_APPLICATION, FRONTS_MAX, KEYBOARD_ELSEWHERE,
-        KEYBOARD_SHARED, KEYBOARD_UNKNOWN, LiftFn, LimitsFn, MESSAGE_MAX, OK, OpenFn,
-        PICKED_DISPLAY, POINTER_DOWN, POINTER_MOVE, POINTER_SCROLL, POINTER_UP, POST_KEY,
-        POST_POINTER, PickFn, PostFn, PrepareFn, ReleaseFn, SCREEN_NEEDS_INPUT_PERMISSION,
-        SCREEN_NEEDS_PERMISSION, SCREEN_PRIVATE, SCREEN_UNAVAILABLE, ScreenFn, ShowFn, SourceFn,
-        StartFn, StateFn, SurroundingsFn, size_of_u32,
+        BatonPlay, BatonPost, BatonRect, BatonScreen, BatonSharerVTable, BatonSound,
+        BatonSourceMessage, BatonSurroundings, BatonTakes, BatonViewerVTable, BatonWindow,
+        CancelPickFn, ControlFn, DecodeFn, EndedFn, FRONT_MENU, FRONT_SAME_APPLICATION, FRONTS_MAX,
+        HearFn, KEYBOARD_ELSEWHERE, KEYBOARD_SHARED, KEYBOARD_UNKNOWN, LiftFn, LimitsFn,
+        MESSAGE_MAX, OK, OpenFn, PICKED_DISPLAY, PLAY_FIRST, POINTER_DOWN, POINTER_MOVE,
+        POINTER_SCROLL, POINTER_UP, POST_KEY, POST_POINTER, PickFn, PlayFn, PostFn, PrepareFn,
+        ReleaseFn, SCREEN_NEEDS_INPUT_PERMISSION, SCREEN_NEEDS_PERMISSION, SCREEN_PRIVATE,
+        SCREEN_UNAVAILABLE, SILENT_FAILED, SILENT_NO_PERMISSION, SILENT_OFF, SILENT_OTHER,
+        SILENT_WINDOW, SOUND_CODEC_AAC, ScreenFn, ShowFn, SoundFn, SourceFn, StartFn, StateFn,
+        StoppedFn, SurroundingsFn, size_of_u32,
     },
     registry::Registry,
     sharer::Given,
@@ -142,6 +149,9 @@ pub(crate) struct Calls {
     state: StateFn,
     ended: EndedFn,
     release: ReleaseFn,
+    /// `sound`, `play` and `stopped`, which a platform that cannot play sound leaves out: all three
+    /// or none.
+    speaker: Option<(SoundFn, PlayFn, StoppedFn)>,
 }
 
 // SAFETY: a `Calls` exists only for a vtable that the platform registered, and the header's
@@ -159,8 +169,11 @@ impl Calls {
     /// # Errors
     ///
     /// The pointer is null or not aligned, the version is not the one of this library, the size
-    /// is smaller than the struct that this version knows (a larger one is accepted: the end of
-    /// it belongs to a newer version), or a function is missing.
+    /// is smaller than the part of the struct that ends at `release` (a larger one is accepted:
+    /// the end of it belongs to a newer version), or one of the functions up to `release` is
+    /// missing. `sound`, `play` and `stopped` may be missing; a table that has only some of them
+    /// has none. A table that ends before them, as the tables of platforms older than the sound
+    /// do, reads as one without them.
     ///
     /// # Safety
     ///
@@ -168,7 +181,7 @@ impl Calls {
     /// `u32` size and is `size` bytes long, that nothing writes to during this call.
     pub(crate) unsafe fn read(vtable: *const BatonViewerVTable) -> Result<Self, Error> {
         // SAFETY: the caller's promise about `vtable` is this function's own.
-        let table = unsafe { read_table(vtable, size_of::<BatonViewerVTable>()) }?;
+        let table = unsafe { read_table(vtable, offset_of!(BatonViewerVTable, sound)) }?;
         match (
             table.limits,
             table.open,
@@ -198,9 +211,18 @@ impl Calls {
                 state,
                 ended,
                 release,
+                speaker: match (table.sound, table.play, table.stopped) {
+                    (Some(sound), Some(play), Some(stopped)) => Some((sound, play, stopped)),
+                    _ => None,
+                },
             }),
             _ => Err(Error::Argument),
         }
+    }
+
+    /// Whether the platform gave the functions that play sound.
+    pub(crate) fn can_play(&self) -> bool {
+        self.speaker.is_some()
     }
 
     /// What the device can show, as the platform says it.
@@ -430,6 +452,64 @@ impl ScreenHandle {
         // SAFETY: `context` is the screen the platform gave, not yet released.
         within(|| unsafe { (self.calls.ended)(self.context.as_ptr()) });
     }
+
+    /// Tells the platform what the packets of sound are from now on. Nothing happens if the
+    /// platform plays no sound.
+    pub(crate) fn sound(&mut self, sound: Sound) {
+        let Some((call, _, _)) = self.calls.speaker else {
+            return;
+        };
+        let c_sound = BatonSound {
+            size: size_of_u32::<BatonSound>(),
+            codec: match sound.codec {
+                SoundCodec::Aac => SOUND_CODEC_AAC,
+                SoundCodec::Other => 0,
+            },
+            rate: sound.rate,
+            channels: u32::from(sound.channels),
+            samples: u32::from(sound.samples),
+            reserved: 0,
+        };
+        // SAFETY: `c_sound` lives until the call returns, and `context` is the screen the platform
+        // gave, not yet released.
+        within(|| unsafe { call(self.context.as_ptr(), &raw const c_sound) });
+    }
+
+    /// Gives the platform a packet of sound to decode and play. Nothing happens if the platform
+    /// plays no sound.
+    pub(crate) fn play(&mut self, play: Play, packet: &[u8]) {
+        let Some((_, call, _)) = self.calls.speaker else {
+            return;
+        };
+        let c_play = BatonPlay {
+            size: size_of_u32::<BatonPlay>(),
+            flags: if play.first { PLAY_FIRST } else { 0 },
+            number: play.number,
+            capture_time: play.capture_time,
+            lost_before: play.lost_before,
+            packet: BatonBytes::of(packet),
+        };
+        // SAFETY: `c_play` and the bytes behind it live until the call returns, and `context` is
+        // the screen the platform gave, not yet released.
+        within(|| unsafe { call(self.context.as_ptr(), &raw const c_play) });
+    }
+
+    /// Tells the platform that the run of sound is over: the person turned the sound off (`None`),
+    /// or the source says why it sends none. Nothing happens if the platform plays no sound.
+    pub(crate) fn stopped(&mut self, why: Option<SilentReason>) {
+        let Some((_, _, call)) = self.calls.speaker else {
+            return;
+        };
+        let why = match why {
+            None => SILENT_OFF,
+            Some(SilentReason::Window) => SILENT_WINDOW,
+            Some(SilentReason::NoPermission) => SILENT_NO_PERMISSION,
+            Some(SilentReason::Failed) => SILENT_FAILED,
+            Some(SilentReason::Other) => SILENT_OTHER,
+        };
+        // SAFETY: `context` is the screen the platform gave, not yet released.
+        within(|| unsafe { call(self.context.as_ptr(), why) });
+    }
 }
 
 impl Drop for ScreenHandle {
@@ -501,6 +581,8 @@ pub(crate) struct SharerCalls {
     screen: Option<ScreenFn>,
     /// `lift`, which a platform that cannot keep a screen private leaves out.
     lift: Option<LiftFn>,
+    /// `hear`, which a platform that cannot send the sound of its screen leaves out.
+    hear: Option<HearFn>,
 }
 
 // SAFETY: a `SharerCalls` exists only for a vtable that the platform registered, and the header's
@@ -524,7 +606,8 @@ impl SharerCalls {
     /// neither. `screen` may be missing too: a platform without it cannot give its screen, and a
     /// table that ends before it, as the tables of platforms older than the call do, reads as one
     /// without it. So may `lift`, in the same way: a platform without it gives a private screen
-    /// that stays as it was given for the whole session.
+    /// that stays as it was given for the whole session. So may `hear`: a platform without it
+    /// sends no sound.
     ///
     /// # Safety
     ///
@@ -562,6 +645,7 @@ impl SharerCalls {
                 input: table.surroundings.zip(table.post),
                 screen: table.screen,
                 lift: table.lift,
+                hear: table.hear,
             }),
             _ => Err(Error::Argument),
         }
@@ -603,6 +687,11 @@ impl SharerCalls {
     /// Whether the platform gave the function that lifts what keeps a private screen private.
     pub(crate) fn can_lift(&self) -> bool {
         self.lift.is_some()
+    }
+
+    /// Whether the platform gave the function that says when the sound of its screen is wanted.
+    pub(crate) fn can_hear(&self) -> bool {
+        self.hear.is_some()
     }
 
     /// Has the platform give its main display, without the person choosing it, and keep it
@@ -815,6 +904,16 @@ impl PickedHandle {
         within(|| unsafe { call(self.context.as_ptr(), lifted) });
     }
 
+    /// Tells the platform whether the sound of the screen is wanted. Nothing happens if the
+    /// platform gave no way to.
+    pub(crate) fn hear(&mut self, on: bool) {
+        let Some(call) = self.calls.hear else {
+            return;
+        };
+        // SAFETY: `context` is the window the platform gave, not yet released.
+        within(|| unsafe { call(self.context.as_ptr(), u32::from(on)) });
+    }
+
     /// Tells the platform that the session is over.
     pub(crate) fn ended(&mut self) {
         // SAFETY: `context` is the window the platform gave, not yet released.
@@ -1024,7 +1123,7 @@ mod tests {
             CODEC_H264, FRAME_KEY, FRAME_REFERENCED, LIFT_INPUT, LIFT_SCREEN, MOD_CAPS_LOCK,
             MOD_COMMAND, MOD_CONTROL, MOD_OPTION, MOD_SHIFT, SOURCE_RESUME, THERMAL_SERIOUS,
         },
-        fake::{Call, Fake, OpenPlan, Watchdog},
+        fake::{Call, Fake, OpenPlan, Played, Watchdog},
         fake_sharer::{
             Around, AroundPlan, FakeSharer, SharerCall, key_post, left_down, pointer_post,
             read_table,
@@ -1108,7 +1207,9 @@ mod tests {
             unsafe { Calls::read(std::ptr::null()) }.err(),
             Some(Error::Argument)
         );
-        let known = size_of_u32::<BatonViewerVTable>();
+        // The part that every version has ends at `release`; the three functions of the sound
+        // come after it, and a platform may leave them out.
+        let required = u32::try_from(offset_of!(BatonViewerVTable, sound)).unwrap();
         for (what, table) in [
             ("version 0", BatonViewerVTable { version: 0, ..good }),
             ("version 1", BatonViewerVTable { version: 1, ..good }),
@@ -1118,7 +1219,7 @@ mod tests {
             (
                 "one byte short",
                 BatonViewerVTable {
-                    size: known - 1,
+                    size: required - 1,
                     ..good
                 },
             ),
@@ -1151,7 +1252,7 @@ mod tests {
         let good = fake.vtable();
         let mut buffer = [0_u64; 16];
         let start = buffer.as_mut_ptr().cast::<u8>();
-        // SAFETY: the vtable is 80 bytes, and a buffer of 128 has room for it from the start and
+        // SAFETY: the vtable is 104 bytes, and a buffer of 128 has room for it from the start and
         // from one byte in; the bytes are copied, so a whole vtable is where they land.
         let odd = unsafe {
             start.add(1).copy_from_nonoverlapping(
@@ -1198,7 +1299,235 @@ mod tests {
         // SAFETY: `longer` starts with a vtable and is as long as its size says.
         let calls = unsafe { Calls::read((&raw const longer).cast()) }.unwrap();
         assert!(calls.limits().is_ok());
+        assert!(calls.can_play(), "the functions of the sound are read");
         assert_eq!(longer.newer, [u64::MAX; 2]);
+    }
+
+    /// The calls of a platform whose vtable is `table`, which is whole as far as its size says.
+    fn calls_of(table: &BatonViewerVTable) -> Calls {
+        // SAFETY: a table that is whole as far as its size says, and nothing writes to it.
+        unsafe { Calls::read(table) }.unwrap()
+    }
+
+    /// The form of sound that a Mac makes.
+    fn aac() -> Sound {
+        Sound {
+            codec: SoundCodec::Aac,
+            rate: 48_000,
+            channels: 2,
+            samples: 1024,
+        }
+    }
+
+    /// The first packet of a run.
+    fn first_packet() -> Play {
+        Play {
+            number: 0,
+            capture_time: 1_500,
+            first: true,
+            lost_before: 0,
+        }
+    }
+
+    fn is_about_sound(call: &Call) -> bool {
+        matches!(call, Call::Sound(_) | Call::Play(_) | Call::Stopped(_))
+    }
+
+    #[test]
+    fn a_platform_that_plays_no_sound_is_given_none_and_one_that_plays_some_of_it_plays_none() {
+        let fake = Fake::new();
+        assert!(calls_of(&fake.vtable()).can_play());
+
+        let whole = fake.vtable();
+        let at = |offset: usize| u32::try_from(offset).unwrap();
+        let tables = [
+            // Written before sound was carried: the table ends at `release`.
+            ("a table that ends at release", fake.vtable_without_sound()),
+            (
+                "a table without the three",
+                BatonViewerVTable {
+                    sound: None,
+                    play: None,
+                    stopped: None,
+                    ..whole
+                },
+            ),
+            (
+                "a table without sound",
+                BatonViewerVTable {
+                    sound: None,
+                    ..whole
+                },
+            ),
+            (
+                "a table without play",
+                BatonViewerVTable {
+                    play: None,
+                    ..whole
+                },
+            ),
+            (
+                "a table without stopped",
+                BatonViewerVTable {
+                    stopped: None,
+                    ..whole
+                },
+            ),
+            // A size decides what is read, whatever the fields beyond it hold.
+            (
+                "a table that ends after sound",
+                BatonViewerVTable {
+                    size: at(offset_of!(BatonViewerVTable, play)),
+                    ..whole
+                },
+            ),
+            (
+                "a table that ends after play",
+                BatonViewerVTable {
+                    size: at(offset_of!(BatonViewerVTable, stopped)),
+                    ..whole
+                },
+            ),
+            // A size that cuts a function in two gives half of a pointer to nobody: the function
+            // is not read.
+            (
+                "a size that cuts stopped",
+                BatonViewerVTable {
+                    size: at(offset_of!(BatonViewerVTable, stopped)) + 4,
+                    ..whole
+                },
+            ),
+        ];
+        let count = tables.len();
+        for (what, table) in tables {
+            let calls = calls_of(&table);
+            assert!(!calls.can_play(), "{what}");
+            // The screen of such a platform is a screen all the same: it shows, and it is not
+            // given a call about sound.
+            let mut opened = open(&calls);
+            opened.screen.sound(aac());
+            opened.screen.play(first_packet(), &[1, 2, 3]);
+            opened.screen.stopped(None);
+            opened.screen.stopped(Some(SilentReason::NoPermission));
+            opened.screen.show(3);
+            drop(opened);
+        }
+        assert_eq!(fake.count(is_about_sound), 0);
+        assert_eq!(fake.count(|call| matches!(call, Call::Show(3))), count);
+        assert!(fake.complaints().is_empty(), "{:?}", fake.complaints());
+    }
+
+    #[test]
+    fn the_sound_of_a_screen_reaches_the_platform_as_the_header_describes_it() {
+        let fake = Fake::new();
+        let calls = registered(&fake);
+        let mut opened = open(&calls);
+        let mono = Sound {
+            codec: SoundCodec::Aac,
+            rate: 44_100,
+            channels: 1,
+            samples: 960,
+        };
+        opened.screen.sound(aac());
+        opened.screen.sound(mono);
+        // A codec that this version does not know has the number that no codec has.
+        opened.screen.sound(Sound {
+            codec: SoundCodec::Other,
+            ..mono
+        });
+        // The first packet of a run, and one with a gap before it, at the end of the clock.
+        opened.screen.play(first_packet(), &[1, 2, 3]);
+        opened.screen.play(
+            Play {
+                number: u64::MAX,
+                capture_time: u64::MAX,
+                first: false,
+                lost_before: 4,
+            },
+            &[],
+        );
+        let reasons = [
+            None,
+            Some(SilentReason::Window),
+            Some(SilentReason::NoPermission),
+            Some(SilentReason::Failed),
+            Some(SilentReason::Other),
+        ];
+        for why in reasons {
+            opened.screen.stopped(why);
+        }
+        let big = vec![9_u8; 8 * 1024];
+        opened.screen.play(first_packet(), &big);
+        drop(opened);
+
+        let form = |rate, channels, samples, codec| {
+            Call::Sound(BatonSound {
+                size: size_of_u32::<BatonSound>(),
+                codec,
+                rate,
+                channels,
+                samples,
+                reserved: 0,
+            })
+        };
+        let stopped = reasons.map(|why| match why {
+            None => Call::Stopped(SILENT_OFF),
+            Some(SilentReason::Window) => Call::Stopped(SILENT_WINDOW),
+            Some(SilentReason::NoPermission) => Call::Stopped(SILENT_NO_PERMISSION),
+            Some(SilentReason::Failed) => Call::Stopped(SILENT_FAILED),
+            Some(SilentReason::Other) => Call::Stopped(SILENT_OTHER),
+        });
+        let mut expected = vec![
+            form(48_000, 2, 1024, SOUND_CODEC_AAC),
+            form(44_100, 1, 960, SOUND_CODEC_AAC),
+            form(44_100, 1, 960, 0),
+            Call::Play(Played {
+                flags: PLAY_FIRST,
+                number: 0,
+                capture_time: 1_500,
+                lost_before: 0,
+                packet: vec![1, 2, 3],
+            }),
+            Call::Play(Played {
+                flags: 0,
+                number: u64::MAX,
+                capture_time: u64::MAX,
+                lost_before: 4,
+                packet: Vec::new(),
+            }),
+        ];
+        expected.extend(stopped);
+        expected.push(Call::Play(Played {
+            flags: PLAY_FIRST,
+            number: 0,
+            capture_time: 1_500,
+            lost_before: 0,
+            packet: big,
+        }));
+        let sound: Vec<Call> = fake.calls(1).into_iter().filter(is_about_sound).collect();
+        assert_eq!(sound, expected);
+        assert!(fake.complaints().is_empty(), "{:?}", fake.complaints());
+    }
+
+    #[test]
+    fn the_calls_about_sound_are_made_inside_the_marking_too() {
+        let fake = Fake::new();
+        let inside = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&inside);
+        fake.on_call(move |call| seen.lock().unwrap().push((call.clone(), inside_call())));
+        let calls = registered(&fake);
+        let mut opened = open(&calls);
+        opened.screen.sound(aac());
+        opened.screen.play(first_packet(), &[1]);
+        opened.screen.stopped(None);
+        drop(opened);
+        assert!(!inside_call());
+        let seen = inside.lock().unwrap();
+        // Open, the three, and release.
+        assert_eq!(seen.len(), 5);
+        for (call, inside) in seen.iter() {
+            assert!(inside, "{call:?} was made outside of the marking");
+        }
     }
 
     #[test]
@@ -1812,5 +2141,86 @@ mod tests {
         assert_eq!(flags, [SCREEN_PRIVATE, 0, SCREEN_PRIVATE, 0]);
         assert_eq!(fake.live_windows(), 0);
         assert_eq!(fake.complaints(), Vec::<String>::new());
+    }
+
+    fn is_hear(call: &SharerCall) -> bool {
+        matches!(call, SharerCall::Hear { .. })
+    }
+
+    #[test]
+    fn a_platform_that_sends_no_sound_is_not_told_when_it_is_wanted() {
+        let fake = FakeSharer::new();
+        let whole = fake.vtable();
+        assert!(read_table(&whole).unwrap().can_hear());
+        let tables = [
+            // Written before sound was carried: the table ends at `lift`, or earlier.
+            ("a table that ends at lift", fake.vtable_without_hear()),
+            ("a table that ends at screen", fake.vtable_without_lift()),
+            (
+                "a table without hear",
+                BatonSharerVTable {
+                    hear: None,
+                    ..whole
+                },
+            ),
+            // A size that cuts a function in two gives half of a pointer to nobody: the function
+            // is not read.
+            (
+                "a size that cuts hear",
+                BatonSharerVTable {
+                    size: u32::try_from(offset_of!(BatonSharerVTable, hear)).unwrap() + 4,
+                    ..whole
+                },
+            ),
+            // Older still: nothing after `post`, or after `release`.
+            ("a table that ends at post", fake.vtable_without_screen()),
+            ("a table that ends at release", fake.vtable_without_input()),
+        ];
+        for (what, table) in tables {
+            let calls = read_table(&table).unwrap();
+            assert!(!calls.can_hear(), "{what}");
+            // Such a window is a window all the same, and the word is lost on it without harm.
+            let mut window = started(&fake, &calls);
+            window.hear(true);
+            window.hear(false);
+        }
+        assert_eq!(fake.count(is_hear), 0);
+        fake.assert_no_complaints();
+    }
+
+    #[test]
+    fn the_word_about_the_sound_reaches_the_window_as_a_one_or_a_zero() {
+        let fake = FakeSharer::new();
+        let mut window = started(&fake, &fake.platform());
+        window.hear(true);
+        window.hear(true);
+        window.hear(false);
+        let heard: Vec<SharerCall> = fake.calls(1).into_iter().filter(is_hear).collect();
+        assert_eq!(
+            heard,
+            [
+                SharerCall::Hear { on: true },
+                SharerCall::Hear { on: true },
+                SharerCall::Hear { on: false },
+            ]
+        );
+        fake.assert_no_complaints();
+    }
+
+    #[test]
+    fn the_word_about_the_sound_is_a_call_into_the_platform_too() {
+        let fake = FakeSharer::new();
+        let inside = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&inside);
+        fake.on_call(move |_, call| {
+            if is_hear(call) {
+                seen.lock().unwrap().push(inside_call());
+            }
+        });
+        let mut window = started(&fake, &fake.platform());
+        window.hear(true);
+        window.hear(false);
+        assert!(!inside_call());
+        assert_eq!(*inside.lock().unwrap(), [true, true]);
     }
 }
