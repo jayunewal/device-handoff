@@ -6,9 +6,10 @@
 //
 // This file holds what does not depend on the frameworks of an Apple device: the functions that
 // the Rust side calls, the reading of what it passes, and the rules for which picture is shown
-// and when a decoder has failed. The decoder, the screen and the texture are given to it as
-// protocols. So that it can be built and tested on any computer that has a Swift compiler
-// (apps/baton/rust_builder/swift_tests), nothing here may import more than Foundation.
+// and when a decoder has failed. The sound of a screen is handed on to BatonSpeaker.swift. The
+// decoder, the screen and the texture are given to it as protocols. So that it can be built and
+// tested on any computer that has a Swift compiler (apps/baton/rust_builder/swift_tests), nothing
+// here may import more than Foundation.
 //
 // A call from Rust must never end in a trap, because a trap ends the whole app: nothing here
 // force-unwraps, indexes without looking, or asserts on what Rust passed.
@@ -54,6 +55,14 @@ protocol ViewerPlatform: AnyObject {
   /// screens that are open go on meanwhile, so whatever this shares with them is kept under a
   /// lock.
   func makeScreen(for window: WindowInfo, link: UInt64) throws -> MadeScreen
+
+  /// Whether the screens that it makes play the sound of a screen. A platform that does not is not
+  /// given the calls about sound, and the devices it is paired with are not told that it can.
+  var playsSound: Bool { get }
+}
+
+extension ViewerPlatform {
+  var playsSound: Bool { false }
 }
 
 struct MadeScreen {
@@ -77,6 +86,24 @@ protocol ViewerScreen: AnyObject {
   func ended()
   /// The screen is not needed any more, whether or not `ended` came first. Called once.
   func released()
+
+  /// The source sends sound from now on, in this form: a run of sound begins. Make a decoder for
+  /// the form and get ready to play. The packets that follow are in this form until the next call
+  /// of this or `stopped`.
+  func sound(_ form: SoundForm)
+  /// Decodes and plays one packet, in the order of their numbers. A packet that cannot be decoded
+  /// is dropped: the Rust side has nothing to do about it.
+  func play(_ packet: PlayInput)
+  /// No sound is wanted or sent, for the reason `why` (BATON_SILENT_): let go of the decoder and
+  /// stop playing. It comes also when no sound did.
+  func stopped(_ why: UInt32)
+}
+
+/// A screen that plays no sound takes the three calls about it and does nothing.
+extension ViewerScreen {
+  func sound(_ form: SoundForm) {}
+  func play(_ packet: PlayInput) {}
+  func stopped(_ why: UInt32) {}
 }
 
 // MARK: - What the Rust side passes
@@ -213,6 +240,72 @@ struct DecoderReport: Equatable {
   var thermal: UInt32
 }
 
+/// What the packets of sound are. A session has one form for the whole of it, and the codec is
+/// AAC-LC: the Rust side calls `sound` with a form that this version plays, which has 1024 or 960
+/// samples in a packet.
+struct SoundForm: Equatable {
+  /// The sampling rate in hertz.
+  var rate: UInt32
+  var channels: UInt32
+  /// How many samples of each channel one packet holds.
+  var samples: UInt32
+
+  init(rate: UInt32, channels: UInt32, samples: UInt32) {
+    self.rate = rate
+    self.channels = channels
+    self.samples = samples
+  }
+
+  /// Reads a form of the interface. nil if the struct is shorter than this version of the
+  /// interface knows it, or the codec is one it does not know.
+  init?(reading sound: UnsafePointer<BatonSound>) {
+    // The size first and alone, as for a frame.
+    guard sound.pointee.size >= UInt32(MemoryLayout<BatonSound>.size) else { return nil }
+    let c = sound.pointee
+    guard c.codec == BATON_SOUND_CODEC_AAC else { return nil }
+    self.init(rate: c.rate, channels: c.channels, samples: c.samples)
+  }
+}
+
+/// A packet of sound to play. The memory behind `packet` is valid until the call returns and not
+/// after: whatever has to outlive the call is copied.
+struct PlayInput {
+  var flags: UInt32
+  var number: UInt64
+  /// When the first sample was captured, in microseconds since the session began, on the clock of
+  /// the source.
+  var captureTime: UInt64
+  /// How many packets before this one are missing, and are not played if they come later.
+  var lostBefore: UInt64
+  /// The access unit: AAC-LC with no ADTS header and no other framing.
+  var packet: UnsafeRawBufferPointer
+
+  /// The packet begins a run of sound: the decoder starts afresh at it.
+  var isFirst: Bool { flags & BATON_PLAY_FIRST != 0 }
+
+  init(
+    flags: UInt32, number: UInt64, captureTime: UInt64, lostBefore: UInt64,
+    packet: UnsafeRawBufferPointer
+  ) {
+    self.flags = flags
+    self.number = number
+    self.captureTime = captureTime
+    self.lostBefore = lostBefore
+    self.packet = packet
+  }
+
+  /// Reads a packet of the interface. nil if the struct is shorter than this version of the
+  /// interface knows it, or the bytes are given a length and no pointer.
+  init?(reading play: UnsafePointer<BatonPlay>) {
+    guard play.pointee.size >= UInt32(MemoryLayout<BatonPlay>.size) else { return nil }
+    let c = play.pointee
+    guard let packet = UnsafeRawBufferPointer(reading: c.packet) else { return nil }
+    self.init(
+      flags: c.flags, number: c.number, captureTime: c.capture_time, lostBefore: c.lost_before,
+      packet: packet)
+  }
+}
+
 // MARK: - The functions that the Rust side calls
 
 /// What the context pointer of the registered table points to.
@@ -345,6 +438,24 @@ private func viewerRelease(_ screen: UnsafeMutableRawPointer?) {
   box.release()
 }
 
+private func viewerSound(_ screen: UnsafeMutableRawPointer?, _ sound: UnsafePointer<BatonSound>?) {
+  guard let screen = screenOf(screen), let sound, let form = SoundForm(reading: sound) else {
+    return
+  }
+  screen.sound(form)
+}
+
+private func viewerPlay(_ screen: UnsafeMutableRawPointer?, _ play: UnsafePointer<BatonPlay>?) {
+  guard let screen = screenOf(screen), let play, let input = PlayInput(reading: play) else {
+    return
+  }
+  screen.play(input)
+}
+
+private func viewerStopped(_ screen: UnsafeMutableRawPointer?, _ why: UInt32) {
+  screenOf(screen)?.stopped(why)
+}
+
 /// Gives the Rust side the platform's viewer: a device that has registered one takes the windows
 /// that other devices offer, and a device that has not takes none. Call it once, at launch,
 /// before the app starts. Returns what `baton_stream_register_viewer` returned.
@@ -353,6 +464,16 @@ func registerViewer(_ platform: ViewerPlatform) -> Int32 {
   // The Rust side keeps the context for as long as the process lives, so it is let go of only if
   // the registration failed.
   let context = Unmanaged.passRetained(ViewerBox(platform))
+  // A platform that plays no sound leaves the last three entries out, all of them, and the devices
+  // it is paired with are not told that it can.
+  var sound: BatonSoundFn?
+  var play: BatonPlayFn?
+  var stopped: BatonStoppedFn?
+  if platform.playsSound {
+    sound = viewerSound
+    play = viewerPlay
+    stopped = viewerStopped
+  }
   var table = BatonViewerVTable(
     version: BATON_STREAM_ABI_VERSION,
     size: UInt32(MemoryLayout<BatonViewerVTable>.size),
@@ -365,11 +486,9 @@ func registerViewer(_ platform: ViewerPlatform) -> Int32 {
     state: viewerState,
     ended: viewerEnded,
     release: viewerRelease,
-    // This device plays no sound yet: the entries are left out, and the devices it is paired with
-    // are not told that it can.
-    sound: nil,
-    play: nil,
-    stopped: nil)
+    sound: sound,
+    play: play,
+    stopped: stopped)
   let code = baton_stream_register_viewer(&table)
   if code != ok {
     context.release()
@@ -490,6 +609,7 @@ struct SmoothedMicros {
 
 /// A window that is shown: it takes the frames, decodes them, and shows the pictures that the
 /// Rust side asks for. What shows a picture, and what tells how hot the device is, are given to it.
+/// A screen that shows a whole display can also be given a speaker, which plays the sound.
 final class WindowScreen<Decoder: PictureDecoder>: ViewerScreen {
   private let decoder: Decoder
   private let pictures = PictureTable<Decoder.Picture>()
@@ -497,6 +617,7 @@ final class WindowScreen<Decoder: PictureDecoder>: ViewerScreen {
   private let failed: () -> Void
   private let thermal: () -> UInt32
   private let onRelease: () -> Void
+  private let speaker: ScreenSpeaker?
 
   private let lock = NSLock()
   private var sets: ParameterSets?
@@ -510,16 +631,18 @@ final class WindowScreen<Decoder: PictureDecoder>: ViewerScreen {
   /// must not call back into the screen. `failed` tells the Rust side that the decoder failed on a
   /// frame after it had taken it, and is called on a thread of its own, never from within a call
   /// of the Rust side. `onRelease` is called once, when the Rust side no longer needs the screen.
+  /// `speaker` plays the sound of the screen, if the device plays any.
   init(
     decoder: Decoder, present: @escaping (Decoder.Picture?) -> Void,
     failed: @escaping () -> Void, thermal: @escaping () -> UInt32,
-    onRelease: @escaping () -> Void
+    onRelease: @escaping () -> Void, speaker: ScreenSpeaker? = nil
   ) {
     self.decoder = decoder
     self.present = present
     self.failed = failed
     self.thermal = thermal
     self.onRelease = onRelease
+    self.speaker = speaker
   }
 
   func decode(_ frame: FrameInput) -> Bool {
@@ -613,12 +736,26 @@ final class WindowScreen<Decoder: PictureDecoder>: ViewerScreen {
     return DecoderReport(decodeMicros: micros, thermal: thermal())
   }
 
+  func sound(_ form: SoundForm) {
+    speaker?.begin(form)
+  }
+
+  func play(_ packet: PlayInput) {
+    speaker?.play(packet)
+  }
+
+  func stopped(_ why: UInt32) {
+    speaker?.stop()
+  }
+
   func ended() {
     lock.lock()
     let already = over
     over = true
     lock.unlock()
     if already { return }
+    // The speaker is let go of first: it takes the sound off the device without waiting for it.
+    speaker?.close()
     decoder.stop()
     pictures.clear()
     present(nil)

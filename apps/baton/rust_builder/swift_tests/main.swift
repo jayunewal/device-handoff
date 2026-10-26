@@ -1023,6 +1023,137 @@ tests += [
   ),
 ]
 
+tests += [
+  (
+    "the ring plays nothing until it holds the start level and then plays in order",
+    testTheRingPlaysNothingUntilItHoldsTheStartLevelAndThenPlaysInOrder
+  ),
+  (
+    "the ring plays silence and fills again when it runs dry",
+    testTheRingPlaysSilenceAndFillsAgainWhenItRunsDry
+  ),
+  (
+    "the ring drops the oldest sound when it would hold more than the most",
+    testTheRingDropsTheOldestSoundWhenItWouldHoldMoreThanTheMost
+  ),
+  (
+    "the ring keeps the order of sound that wraps around its storage",
+    testTheRingKeepsTheOrderOfSoundThatWrapsAroundItsStorage
+  ),
+  (
+    "a gap is covered with silence only while the ring plays with sound in it",
+    testAGapIsCoveredWithSilenceOnlyWhileTheRingPlaysWithSoundInIt
+  ),
+  (
+    "the ring takes mono and ignores a part of a frame at the end",
+    testTheRingTakesMonoAndIgnoresAPartOfAFrameAtTheEnd
+  ),
+  (
+    "a ring that one thread writes and another reads keeps the order and loses nothing unaccounted for",
+    testARingThatOneThreadWritesAndAnotherReadsKeepsTheOrderAndLosesNothingUnaccountedFor
+  ),
+  (
+    "a run begins with a decoder, an output and a ring of its form",
+    testARunBeginsWithADecoderAnOutputAndARingOfItsForm
+  ),
+  (
+    "packets are decoded in order and played once the ring holds the start level",
+    testPacketsAreDecodedInOrderAndPlayedOnceTheRingHoldsTheStartLevel
+  ),
+  (
+    "the first packet of a run and the packet after a gap reset the decoder",
+    testTheFirstPacketOfARunAndThePacketAfterAGapResetTheDecoder
+  ),
+  (
+    "a speaker covers a gap with silence while it plays",
+    testASpeakerCoversAGapWithSilenceWhileItPlays
+  ),
+  (
+    "a packet that cannot be decoded is dropped and counts as missing",
+    testAPacketThatCannotBeDecodedIsDroppedAndCountsAsMissing
+  ),
+  (
+    "a packet that gives no samples changes nothing",
+    testAPacketThatGivesNoSamplesChangesNothing
+  ),
+  (
+    "a packet before a run begins and after it ended is dropped",
+    testAPacketBeforeARunBeginsAndAfterItEndedIsDropped
+  ),
+  (
+    "stopped ends the run, lets go of the decoder and stops the output once",
+    testStoppedEndsTheRunLetsGoOfTheDecoderAndStopsTheOutputOnce
+  ),
+  ("a new run ends the one that went on", testANewRunEndsTheOneThatWentOn),
+  (
+    "closing ends the run and later calls do nothing",
+    testClosingEndsTheRunAndLaterCallsDoNothing
+  ),
+  (
+    "a decoder or an output that cannot be made ends the run quietly",
+    testADecoderOrAnOutputThatCannotBeMadeEndsTheRunQuietly
+  ),
+  ("the packet is copied before play returns", testThePacketIsCopiedBeforePlayReturns),
+  (
+    "closing does not wait for the output to start and stops it afterwards",
+    testClosingDoesNotWaitForTheOutputToStartAndStopsItAfterwards
+  ),
+  (
+    "a window screen hands the sound to its speaker and closes it when it ends",
+    testAWindowScreenHandsTheSoundToItsSpeakerAndClosesItWhenItEnds
+  ),
+  (
+    "a screen with no speaker takes the calls about sound and does nothing",
+    testAScreenWithNoSpeakerTakesTheCallsAboutSoundAndDoesNothing
+  ),
+  (
+    "a platform that plays sound gives the three entries and the screen is told in order",
+    testAPlatformThatPlaysSoundGivesTheThreeEntriesAndTheScreenIsToldInOrder
+  ),
+  (
+    "sound calls with structs that are not whole never reach the screen",
+    testSoundCallsWithStructsThatAreNotWholeNeverReachTheScreen
+  ),
+  (
+    "a screen that plays no sound is not given calls about it",
+    testAScreenThatPlaysNoSoundIsNotGivenCallsAboutIt
+  ),
+]
+
+#if canImport(AudioToolbox)
+  tests += [
+    (
+      "the decoder makes the tone back that the encoder of the system made of it",
+      testTheDecoderMakesTheToneBackThatTheEncoderOfTheSystemMadeOfIt
+    ),
+    (
+      "the decoder makes a tone of one channel at the rate of CDs too",
+      testTheDecoderMakesAToneOfOneChannelAtTheRateOfCdsToo
+    ),
+    (
+      "the decoder goes on after a packet that is not audio and a reset",
+      testTheDecoderGoesOnAfterAPacketThatIsNotAudioAndAReset
+    ),
+    (
+      "the decoder is not made for a form that is not AAC-LC of one or two channels",
+      testTheDecoderIsNotMadeForAFormThatIsNotAacLcOfOneOrTwoChannels
+    ),
+    (
+      "the description of the stream is what the standard writes",
+      testTheDescriptionOfTheStreamIsWhatTheStandardWritesAndNothingForWhatIsNotAacLc
+    ),
+  ]
+#endif
+
+#if canImport(AVFoundation)
+  tests += [
+    (
+      "the samples of an output go to buffers of one channel each and to one with the channels interleaved",
+      testTheSamplesOfAnOutputGoToBuffersOfOneChannelEachAndToOneWithTheChannelsInterleaved
+    )
+  ]
+#endif
+
 #if canImport(VideoToolbox)
   tests += [
     (

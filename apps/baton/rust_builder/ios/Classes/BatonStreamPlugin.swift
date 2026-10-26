@@ -76,13 +76,19 @@ private func thermalLevel() -> UInt32 {
   }
 }
 
-/// What this device shows windows with: H.264 decoded by VideoToolbox, drawn from a texture.
+/// What this device shows windows with: H.264 decoded by VideoToolbox, drawn from a texture. The
+/// sound of a screen is decoded by AudioToolbox and played by an audio engine.
 final class DeviceViewer: ViewerPlatform {
   /// The largest picture and the highest rate the device is asked for. The hardware of every
   /// device that runs the app decodes H.264 at 4K, and a window that is larger is made smaller by
   /// the source, with its proportions kept.
   let limits = ViewerLimits(
     maxWidth: 3840, maxHeight: 2160, maxFps: 60, codecs: UInt32(BATON_CODEC_H264))
+
+  /// Every device that runs the app has a decoder for AAC-LC and a way to play it. A device with
+  /// nothing to play on at the moment, such as a Mac with no output, plays nothing and says so in
+  /// the log: the Rust side has no way to be told.
+  let playsSound = true
 
   private let places: ScreenPlaces<TextureSlot>
 
@@ -110,7 +116,10 @@ final class DeviceViewer: ViewerPlatform {
       onRelease: { [places] in
         slot.show(nil)
         places.give(slot)
-      })
+      },
+      speaker: ScreenSpeaker(
+        makeDecoder: { try AacDecoder(form: $0) },
+        makeOutput: { form, ring in try EngineOutput(form: form, ring: ring) }))
     return MadeScreen(screen: screen, id: slot.id)
   }
 }

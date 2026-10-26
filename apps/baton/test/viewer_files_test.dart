@@ -17,8 +17,10 @@ String _read(String path) =>
     File(path).readAsStringSync().replaceAll('\r\n', '\n');
 
 const _files = [
+  'BatonAacDecoder.swift',
   'BatonCapture.swift',
   'BatonControl.swift',
+  'BatonEngineOutput.swift',
   'BatonGuard.swift',
   'BatonH264Decoder.swift',
   'BatonH264Encoder.swift',
@@ -27,6 +29,7 @@ const _files = [
   'BatonPrivacy.swift',
   'BatonPrivacyMac.swift',
   'BatonSource.swift',
+  'BatonSpeaker.swift',
   'BatonStreamPlugin.swift',
   'BatonViewer.swift',
   'baton_stream_abi.h',
@@ -88,8 +91,10 @@ void main() {
     // The others build without Flutter on any computer with a Swift compiler (the ones that need
     // an Apple framework, on a Mac), and rust_builder/swift_tests/run.sh does just that.
     const others = [
+      'BatonAacDecoder.swift',
       'BatonCapture.swift',
       'BatonControl.swift',
+      'BatonEngineOutput.swift',
       'BatonGuard.swift',
       'BatonH264Decoder.swift',
       'BatonH264Encoder.swift',
@@ -98,6 +103,7 @@ void main() {
       'BatonPrivacy.swift',
       'BatonPrivacyMac.swift',
       'BatonSource.swift',
+      'BatonSpeaker.swift',
       'BatonViewer.swift',
     ];
     for (final file in others) {
@@ -112,6 +118,7 @@ void main() {
       'BatonInput.swift',
       'BatonPrivacy.swift',
       'BatonGuard.swift',
+      'BatonSpeaker.swift',
     ]) {
       final swift = _read('rust_builder/macos/Classes/$file');
       final imports = RegExp(

@@ -16,7 +16,8 @@ swiftc -swift-version 5 "$@" \
   "$classes/BatonViewer.swift" "$classes/BatonSource.swift" "$classes/BatonInput.swift" \
   "$classes/BatonH264Decoder.swift" "$classes/BatonH264Encoder.swift" "$classes/BatonCapture.swift" \
   "$classes/BatonControl.swift" "$classes/BatonPrivacy.swift" "$classes/BatonPrivacyMac.swift" \
-  "$classes/BatonGuard.swift" "$classes/BatonLock.swift" \
+  "$classes/BatonGuard.swift" "$classes/BatonLock.swift" "$classes/BatonSpeaker.swift" \
+  "$classes/BatonAacDecoder.swift" "$classes/BatonEngineOutput.swift" \
   "$here"/*.swift \
   -o "$work/tests"
 "$work/tests"
