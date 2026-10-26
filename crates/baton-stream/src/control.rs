@@ -832,16 +832,18 @@ mod tests {
         };
         assert!(said(48_000, 2, 1024).is_ok());
         assert!(said(44_100, 1, 960).is_ok());
-        assert!(said(MIN_SOUND_RATE, 1, MIN_SOUND_PACKET_SAMPLES).is_ok());
-        assert!(said(MAX_SOUND_RATE, MAX_SOUND_CHANNELS, MAX_SOUND_PACKET_SAMPLES).is_ok());
-        assert!(limit(said(MIN_SOUND_RATE - 1, 2, 1024)));
+        // The edges are written as numbers and not as the constants, so that a change of a limit
+        // is a change of this test, and of the table in section 6 of the protocol.
+        assert!(said(8_000, 1, 256).is_ok());
+        assert!(said(96_000, 2, 2048).is_ok());
+        assert!(limit(said(7_999, 2, 1024)));
         assert!(limit(said(0, 2, 1024)));
-        assert!(limit(said(MAX_SOUND_RATE + 1, 2, 1024)));
+        assert!(limit(said(96_001, 2, 1024)));
         assert!(limit(said(48_000, 0, 1024)));
-        assert!(limit(said(48_000, MAX_SOUND_CHANNELS + 1, 1024)));
-        assert!(limit(said(48_000, 2, MIN_SOUND_PACKET_SAMPLES - 1)));
+        assert!(limit(said(48_000, 3, 1024)));
+        assert!(limit(said(48_000, 2, 255)));
         assert!(limit(said(48_000, 2, 0)));
-        assert!(limit(said(48_000, 2, MAX_SOUND_PACKET_SAMPLES + 1)));
+        assert!(limit(said(48_000, 2, 2049)));
 
         // A format that a later version could send is still checked on the way in.
         let payload = cbor_bytes(

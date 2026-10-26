@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! The header of a packet of sound.
+//! Packets of sound: the header, and the rules for sending and receiving them.
 //!
 //! A packet of sound is one unidirectional stream: the 17 bytes that start every stream of a
 //! session ([`PREFIX_LEN`], with the kind [`KIND_SOUND`]), the rest of the header
 //! ([`PacketHeader`], 34 bytes in all) and then the packet of the codec, up to the end of the
 //! stream. All numbers are big-endian. The design is in `docs/adr/0012-sound.md`.
+//!
+//! - [`send`] holds the source's accounting of packets in flight, and when to give up on one.
+//! - [`receive`] holds the viewer's choice of which packet to play next, what to do about the
+//!   ones that do not come, and its limits on the packet streams it reads.
 //!
 //! | Offset | Size | Field |
 //! |---|---|---|
@@ -21,6 +25,11 @@ use crate::{
     KIND_SOUND,
     header::{PREFIX_LEN, decode_prefix, encode_prefix},
 };
+
+pub mod receive;
+pub mod send;
+#[cfg(test)]
+mod sim;
 
 /// The flags of a packet of sound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -79,8 +88,9 @@ pub struct PacketHeader {
     /// The session the packet belongs to.
     pub session: SessionId,
     /// Counts the packets of a session from 0, one for each packet that the encoder made,
-    /// including those that were reset later. A packet that is reset is not sent again, so a
-    /// number is never used twice.
+    /// including those that were reset later and those that the source had no room to write. A
+    /// packet that is reset is not sent again, so a number is never used twice, and a number that
+    /// never arrives tells the viewer that a packet is missing.
     pub number: u64,
     /// When the sound of the packet was captured, in microseconds since the session began, on
     /// the source's clock: the clock that [`FrameHeader::capture_time`](crate::header::FrameHeader)
@@ -237,6 +247,25 @@ mod tests {
                 ..header
             }
             .is_first()
+        );
+    }
+
+    #[test]
+    fn a_header_of_exactly_the_length_is_read_with_the_same_checks() {
+        let header = first();
+        let bytes: [u8; PacketHeader::LEN] = header.encode().try_into().unwrap();
+        assert_eq!(PacketHeader::decode(&bytes), Ok(header));
+        let mut other = bytes;
+        *other.first_mut().unwrap() = 2;
+        assert_eq!(
+            PacketHeader::decode(&other),
+            Err(PacketError::WrongKind { found: 2 })
+        );
+        let mut flagged = bytes;
+        *flagged.last_mut().unwrap() = 0b10;
+        assert_eq!(
+            PacketHeader::decode(&flagged),
+            Err(PacketError::ReservedFlags(0b10))
         );
     }
 

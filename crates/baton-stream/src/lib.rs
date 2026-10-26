@@ -16,7 +16,8 @@
 //! control may do and how it sends it:
 //!
 //! - [`header`] holds the first bytes of a stream and the header of a frame of video.
-//! - [`sound`] holds the header of a packet of sound.
+//! - [`sound`] holds the header of a packet of sound, the source's accounting of packets in
+//!   flight, and the viewer's choice of which packet to play next.
 //! - [`sender`] holds the source's accounting of frames in flight, and when to give up on one.
 //! - [`viewer`] holds the viewer's choice of which frame to decode next, and its limits on the
 //!   frame streams it reads and the pictures it holds.
@@ -65,6 +66,11 @@ pub const KIND_SOUND: u8 = 4;
 /// resetting: six in flight, and up to six more that were reset and that the viewer still counts
 /// (ADR 0009).
 pub const MAX_FRAME_STREAMS: usize = 12;
+
+/// How many packet streams of sound a viewer reads at once, and so how many a source keeps open or
+/// is resetting: eight in flight, and up to eight more that were reset and that the viewer still
+/// counts (ADR 0012).
+pub const MAX_SOUND_STREAMS: usize = 16;
 
 // A receiver tells the kinds apart by this byte alone, and stops a stream whose kind it does not
 // know (docs/protocol.md section 8). The kinds live in two crates, so the check that no two of
