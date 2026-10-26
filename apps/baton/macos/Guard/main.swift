@@ -15,6 +15,8 @@ import os
 
 private let guardLog = Logger(subsystem: "io.github.jayunewal.baton", category: "guard")
 
-exit(
-  runGuardProgram(
-    mac: MacLock(), log: { guardLog.notice("Baton guard: \($0, privacy: .public)") }))
+private func say(_ line: String) {
+  guardLog.notice("Baton guard: \(line, privacy: .public)")
+}
+
+exit(runGuardProgram(mac: MacLock(log: say), log: say))

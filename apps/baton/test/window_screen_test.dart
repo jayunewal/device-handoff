@@ -1018,22 +1018,58 @@ void main() {
       },
     );
 
-    testWidgets('show in the bar that something is switched on', (
+    // Either switch alone is something that is switched on.
+    for (final (what, tile) in [
+      ('the screen switch', screenSwitch),
+      ('the keyboard and trackpad switch', inputSwitch),
+    ]) {
+      testWidgets('show in the bar that $what is on', (tester) async {
+        await _open(tester, window: privateScreen());
+        expect(settingsWithSomethingOn, findsNothing);
+        expect(
+          tester.widget<Badge>(find.byType(Badge)).isLabelVisible,
+          isFalse,
+        );
+
+        await openSettings(tester);
+        await tester.tap(tile);
+        await tester.pumpAndSettle();
+        await closeSettings(tester);
+        expect(settingsWithSomethingOn, findsOneWidget);
+        expect(tester.widget<Badge>(find.byType(Badge)).isLabelVisible, isTrue);
+
+        await openSettings(tester);
+        await tester.tap(tile);
+        await tester.pumpAndSettle();
+        await closeSettings(tester);
+        expect(settingsWithSomethingOn, findsNothing);
+        expect(
+          tester.widget<Badge>(find.byType(Badge)).isLabelVisible,
+          isFalse,
+        );
+      });
+    }
+
+    testWidgets('go on saying so while one of the two is still on', (
       tester,
     ) async {
       await _open(tester, window: privateScreen());
-      expect(settingsWithSomethingOn, findsNothing);
-      expect(tester.widget<Badge>(find.byType(Badge)).isLabelVisible, isFalse);
-
       await openSettings(tester);
+      await tester.tap(screenSwitch);
+      await tester.pumpAndSettle();
+      await tester.tap(inputSwitch);
+      await tester.pumpAndSettle();
+
+      // The screen goes off again, and the keyboard and trackpad are still on.
       await tester.tap(screenSwitch);
       await tester.pumpAndSettle();
       await closeSettings(tester);
       expect(settingsWithSomethingOn, findsOneWidget);
       expect(tester.widget<Badge>(find.byType(Badge)).isLabelVisible, isTrue);
 
+      // Then the keyboard and trackpad go off too, and nothing is on.
       await openSettings(tester);
-      await tester.tap(screenSwitch);
+      await tester.tap(inputSwitch);
       await tester.pumpAndSettle();
       await closeSettings(tester);
       expect(settingsWithSomethingOn, findsNothing);
@@ -1072,6 +1108,10 @@ void main() {
       await openSettings(tester);
       await tester.tap(screenSwitch);
       await tester.pumpAndSettle();
+      await tester.tap(inputSwitch);
+      await tester.pumpAndSettle();
+      expect(on(tester, screenSwitch), isTrue);
+      expect(on(tester, inputSwitch), isTrue);
       expect(
         find.text(
           'Both switch off again when this session ends, and the Mac locks.',
@@ -1089,10 +1129,15 @@ void main() {
 
       // Both are off again, and the sheet says that the session is over.
       expect(on(tester, screenSwitch), isFalse);
+      expect(on(tester, inputSwitch), isFalse);
       expect(find.text('This session is over.'), findsOneWidget);
+
+      // Neither can be switched on again, and nothing is sent to the Mac.
       final lifts = shown.session.windowLifts.length;
+      await tester.tap(screenSwitch, warnIfMissed: false);
       await tester.tap(inputSwitch, warnIfMissed: false);
       await tester.pumpAndSettle();
+      expect(on(tester, screenSwitch), isFalse);
       expect(on(tester, inputSwitch), isFalse);
       expect(shown.session.windowLifts.length, lifts);
     });

@@ -23,7 +23,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     End, Picture, ShareOutcome, SourceHandle, Takes, WindowShare,
-    answer_tests::{App, Heard, Plan, Platform, Told, ask, declined, offer, stop, stopped},
+    answer_tests::{
+        App, Heard, Plan, Platform, Told, ask, declined, offer, session, stop, stopped,
+    },
 };
 use crate::{
     error::{Error, Result},
@@ -297,6 +299,17 @@ fn what_is_shared_is_printed_as_a_kind_and_a_size_and_not_by_name() {
         for name in ["Q3", "Numbers", "Studio"] {
             assert!(!shown.contains(name), "{shown}");
         }
+    }
+}
+
+#[test]
+fn no_offer_lets_the_viewer_unlock_while_no_device_unlocks() {
+    for share in [
+        window(),
+        window().with_control(),
+        window().with_control().with_private(),
+    ] {
+        assert!(!share.offer(session(1)).unlock);
     }
 }
 

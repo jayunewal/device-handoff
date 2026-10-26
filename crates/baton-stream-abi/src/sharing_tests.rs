@@ -45,7 +45,7 @@ use baton_proto::{
     ticket::PairTicket,
 };
 use baton_stream::{
-    control::{Config as Format, SourceMessage, Thermal},
+    control::{Config as Format, Lift, SourceMessage, Thermal},
     gate::MAX_STALE,
     header::FrameHeader,
     input::{NO_KEY, PointerAction},
@@ -74,7 +74,7 @@ use crate::{
         sent_with, sound, sound_begin, sound_begin_raw, sound_raw, sound_silent,
     },
     fixture::{HEIGHT, PPS, SPS, WIDTH, pictures, sps},
-    input::Timing,
+    input::{Forward, Timing},
     session_tests::{Dev, QUIET, WAIT, avcc, next_matching, pair, units_of, until, window_ended},
 };
 
@@ -4426,4 +4426,50 @@ async fn a_platform_that_cannot_lift_gives_a_private_screen_that_the_phone_canno
     handle.end();
     rig.nothing_is_left().await;
     rig.platform.assert_no_complaints();
+}
+
+#[tokio::test]
+async fn a_window_that_the_person_picked_is_not_told_what_is_lifted_whatever_the_session_says() {
+    // The library drops a word about what is lifted when the session is not private, so the thread
+    // of the window is the second guard: the `lift` of the platform is for a display that was
+    // given as private and for no other window. The word is given to the events of the session as
+    // the library would give it if it forwarded it, and then an event of the phone goes through.
+    // The thread serves the word ahead of the events, so the platform has the event only after
+    // the thread has dealt with the word.
+    let mut rig = Rig::controlled().await;
+    let shown = rig.shown_with_control().await;
+    let input = rig.registry.source(shown.link).unwrap().input();
+    Forward::new(input).lift(Lift {
+        screen: true,
+        input: true,
+    });
+    assert!(
+        rig.viewing
+            .app
+            .window_input(shown.viewing.id, touch(0.5, 0.5, WindowPointer::Move))
+    );
+    until("the window to be asked and told", || {
+        rig.platform.posts(shown.window).len() == 1
+    })
+    .await;
+    assert_eq!(told_lifted(&rig.platform), Vec::<u32>::new());
+    rig.platform.assert_no_complaints();
+
+    assert!(rig.sharing.app.end_window(shown.sharing.id));
+    rig.nothing_is_left().await;
+}
+
+#[tokio::test]
+async fn a_window_from_the_picker_is_never_private_even_when_the_platform_can_lift() {
+    // Only a screen that the app asked for as private is one. A window that the person picked is
+    // shown as the person chose it, and neither device offers the switches for it, which would do
+    // nothing there.
+    let mut rig = Rig::controlled().await;
+    assert!(rig.registry.sharer().unwrap().can_lift());
+    let shown = rig.shown_with_control().await;
+    assert!(!shown.sharing.private);
+    assert!(!shown.viewing.private);
+
+    assert!(rig.sharing.app.end_window(shown.sharing.id));
+    rig.nothing_is_left().await;
 }

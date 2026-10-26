@@ -18,6 +18,7 @@ use crate::{
     },
     stream::{StreamReply, StreamRequest},
     transfer::{TransferReply, TransferRequest},
+    unlock::{UnlockReply, UnlockRequest},
 };
 
 /// Capability identifiers a device can advertise in [`Hello`].
@@ -61,6 +62,17 @@ pub mod capability {
     /// `Lift` on the control stream of that session (section 9 of `docs/protocol.md`). Only a
     /// device that advertises [`STREAM_CONTROL`] advertises it.
     pub const STREAM_PRIVATE: &str = "stream.private";
+    /// Can be unlocked by a paired device that its person set up for it, as the target of an
+    /// unlock: sets `unlock` in an offer, writes `UnlockSealed` and `UnlockDone` on the control
+    /// stream of that session, takes `Unlock`, `UnlockOpened` and `UnlockCancelled`, and sends
+    /// [`UnlockRequest::Key`](crate::unlock::UnlockRequest::Key) (section 9 of
+    /// `docs/protocol.md`). Only a device that advertises [`STREAM_PRIVATE`] advertises it.
+    pub const UNLOCK_TARGET: &str = "unlock.target";
+    /// Unlocks a paired device with the face of its person, as the approver of an unlock: answers
+    /// [`UnlockRequest::Key`](crate::unlock::UnlockRequest::Key), takes `UnlockSealed` and
+    /// `UnlockDone`, and sends `Unlock`, `UnlockOpened` and `UnlockCancelled` (section 9 of
+    /// `docs/protocol.md`). Only a device that advertises [`STREAM_VIEW`] advertises it.
+    pub const UNLOCK_APPROVE: &str = "unlock.approve";
 }
 
 /// A message with a defined maximum size and field limits.
@@ -92,6 +104,9 @@ pub enum Request {
     /// only to a peer that advertised [`capability::STREAM_VIEW`], a start only to one that
     /// advertised [`capability::STREAM_START`], and a stop to the other end of the session.
     Stream(StreamRequest),
+    /// Ask a paired device for the key that an unlock is sealed to. Only to a peer that
+    /// advertised [`capability::UNLOCK_APPROVE`].
+    Unlock(UnlockRequest),
 }
 
 /// A response to a [`Request`].
@@ -107,6 +122,8 @@ pub enum Response {
     Transfer(TransferReply),
     /// Answers [`Request::Stream`].
     Stream(StreamReply),
+    /// Answers [`Request::Unlock`].
+    Unlock(UnlockReply),
     /// The request could not be handled at all.
     Error(ErrorReply),
 }
@@ -366,7 +383,7 @@ impl Message for Request {
     fn validate(&self) -> Result<(), LimitError> {
         match self {
             Self::Hello(hello) => hello.validate(),
-            Self::Ping(_) => Ok(()),
+            Self::Ping(_) | Self::Unlock(_) => Ok(()),
             Self::Handoff(handoff) => handoff.item.validate(),
             Self::Transfer(request) => request.validate(),
             Self::Stream(request) => request.validate(),
@@ -383,6 +400,7 @@ impl Message for Response {
             Self::Pong(_) | Self::Handoff(_) => Ok(()),
             Self::Transfer(reply) => reply.validate(),
             Self::Stream(reply) => reply.validate(),
+            Self::Unlock(reply) => reply.validate(),
             Self::Error(error) => {
                 check_len("error message", &error.message, MAX_ERROR_MESSAGE_BYTES)
             }

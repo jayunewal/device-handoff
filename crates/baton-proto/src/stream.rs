@@ -149,6 +149,13 @@ pub struct Offer {
     /// screen is not kept private.
     #[serde(default, skip_serializing_if = "is_default")]
     pub private: bool,
+    /// Whether the person at the source set up the unlock of its screen for the viewer, so that
+    /// the viewer may ask the source to unlock it when it is locked, with an `Unlock` on the
+    /// control stream. Only a source that advertised `unlock.target` sets it, to a viewer that
+    /// advertised `unlock.approve`, and only with `private`. The viewer cannot turn it on later.
+    /// Left out when the viewer may not.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub unlock: bool,
 }
 
 // The title of a window can name a document, a person or a page, and the application tells
@@ -164,6 +171,7 @@ impl fmt::Debug for Offer {
             .field("height", &self.height)
             .field("control", &self.control)
             .field("private", &self.private)
+            .field("unlock", &self.unlock)
             .finish()
     }
 }
@@ -384,6 +392,7 @@ mod tests {
             height: 900,
             control: true,
             private: false,
+            unlock: false,
         }
     }
 
@@ -423,6 +432,11 @@ mod tests {
             }),
             StreamRequest::Offer(Offer {
                 private: true,
+                ..offer()
+            }),
+            StreamRequest::Offer(Offer {
+                private: true,
+                unlock: true,
                 ..offer()
             }),
             StreamRequest::Stop(Stop {
@@ -543,6 +557,49 @@ mod tests {
                 "6448323634",                         //       "H264"]
             )
         );
+    }
+
+    #[test]
+    fn the_vector_of_an_offer_that_may_be_unlocked_is_what_the_code_writes() {
+        let private = frame::encode(&Request::Stream(StreamRequest::Offer(Offer {
+            private: true,
+            ..offer()
+        })))
+        .unwrap();
+        // A session that the viewer may unlock has one more key behind `private`, which is eight
+        // bytes more.
+        let unlocking = frame::encode(&Request::Stream(StreamRequest::Offer(Offer {
+            private: true,
+            unlock: true,
+            ..offer()
+        })))
+        .unwrap();
+        assert_eq!(
+            hex(&unlocking),
+            concat!(
+                "00000081",                           // the frame: 129 bytes follow
+                "a16653747265616d",                   // {"Stream":
+                "a1654f66666572",                     //   {"Offer":
+                "a9",                                 //     map of 9
+                "6773657373696f6e",                   //     "session":
+                "50a0a1a2a3a4a5a6a7a8a9aaabacadaeaf", //       16 bytes
+                "66736f75726365",                     //     "source":
+                "6657696e646f77",                     //       "Window",
+                "657469746c65",                       //     "title":
+                "6a5265706f72742e706466",             //       "Report.pdf",
+                "63617070",                           //     "app":
+                "6750726576696577",                   //       "Preview",
+                "6577696474681905a0",                 //     "width": 1440,
+                "66686569676874190384",               //     "height": 900,
+                "67636f6e74726f6c",                   //     "control":
+                "f5",                                 //       true,
+                "6770726976617465",                   //     "private":
+                "f5",                                 //       true,
+                "66756e6c6f636b",                     //     "unlock":
+                "f5",                                 //       true
+            )
+        );
+        assert_eq!(unlocking.len(), private.len() + 8);
     }
 
     #[test]
@@ -803,5 +860,19 @@ mod tests {
         assert!(!shown.contains("Numbers"), "{shown}");
         assert!(shown.contains("title_bytes: 16"), "{shown}");
         assert!(shown.contains("app_bytes: 7"), "{shown}");
+    }
+
+    #[test]
+    fn a_log_says_whether_the_viewer_may_unlock() {
+        let shown = format!(
+            "{:?}",
+            Offer {
+                private: true,
+                unlock: true,
+                ..offer()
+            }
+        );
+        assert!(shown.contains("unlock: true"), "{shown}");
+        assert!(format!("{:?}", offer()).contains("unlock: false"));
     }
 }

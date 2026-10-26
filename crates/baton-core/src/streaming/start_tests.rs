@@ -159,6 +159,7 @@ fn display_offer(session: SessionId, control: bool) -> StreamRequest {
         height: 1964,
         control,
         private: false,
+        unlock: false,
     })
 }
 

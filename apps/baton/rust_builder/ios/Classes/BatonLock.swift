@@ -24,20 +24,34 @@ func macSessionLocked() -> Bool {
   return (session[kCGSessionOnConsoleKey as String] as? NSNumber)?.boolValue == false
 }
 
+/// Whether the system says anything about the session of this process. When it does not, the Mac is
+/// never found to be locked, whatever is tried.
+func macSessionReadable() -> Bool {
+  CGSessionCopyCurrentDictionary() != nil
+}
+
 /// The three ways to lock this Mac, tried in turn: the call of the system, the shortcut posted as
 /// keys, and the sleep of the display.
 final class MacLock: MacLocking {
   private let noteKeyDown: () -> Void
+  private let log: (String) -> Void
 
   /// `noteKeyDown` is called before each key that the shortcut posts goes to the system, so that a
-  /// private session does not take a key of its own for the key of somebody at the Mac.
-  init(noteKeyDown: @escaping () -> Void = {}) {
+  /// private session does not take a key of its own for the key of somebody at the Mac. `log` is
+  /// told what keeps the Mac from being found locked, and never what is typed.
+  init(noteKeyDown: @escaping () -> Void = {}, log: @escaping (String) -> Void = { _ in }) {
     self.noteKeyDown = noteKeyDown
+    self.log = log
   }
 
   var locked: Bool { macSessionLocked() }
 
   func lock(attempt: Int) {
+    // A session that cannot be read is never found to be locked, and the ways then go round for as
+    // long as the guard runs: the first try says so, where the log of the guard shows it.
+    if attempt == 0 && !macSessionReadable() {
+      log("the session of the Mac cannot be read, so it cannot be told when the Mac is locked")
+    }
     // The call of the system first, which locks at once and does not depend on a shortcut that the
     // person may have changed; then the shortcut; then the sleep of the display, which locks a Mac
     // that asks for its password at once.

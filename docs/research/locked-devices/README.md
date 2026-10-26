@@ -19,7 +19,7 @@ The notes number their tests T (Windows and Apple) and V (Linux and Android). Se
 
 Left out or changed in this copy:
 
-- Step-level procedures for reaching or typing into a lock screen: a SYSTEM-level helper on Windows, input posted at a lock screen, and shell-level input on Android. Baton never unlocks or types into a lock screen (section 5.5 of the page), so each is replaced by a short stub that says what it covered.
+- Step-level procedures for reaching or typing into a lock screen: a SYSTEM-level helper on Windows, input posted at a lock screen, and shell-level input on Android. Baton does not use any of these to unlock (section 5.5 of the page), so each is replaced by a short stub that says what it covered.
 - Entries about other file-sharing tools that Baton does not follow, and wording about who asked for the research and how the research sessions were run.
 - Punctuation in one quotation from Apple (the PushKit entry in apple.md). The original has long dashes and the copy has commas. The words are unchanged.
 

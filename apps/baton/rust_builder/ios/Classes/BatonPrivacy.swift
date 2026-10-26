@@ -47,7 +47,7 @@ enum PrivacyAlarm: Error, Equatable {
     case .coverLost:
       return "The Mac could not keep its screens dark. The session ended, and the Mac locks."
     case .guardLost:
-      return "The Mac's guard stopped answering. The session ended, and the Mac locks."
+      return "The Mac lost its guard. The session ended, and the Mac locks."
     }
   }
 }

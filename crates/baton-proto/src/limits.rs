@@ -121,6 +121,16 @@ pub const MIN_SOUND_PACKET_SAMPLES: u16 = 256;
 /// Most samples of each channel that one packet of sound holds.
 pub const MAX_SOUND_PACKET_SAMPLES: u16 = 2048;
 
+// Unlocking a locked screen (docs/protocol.md section 9).
+
+/// Longest public key that a device gives to have a secret sealed to it, in bytes. A point of
+/// P-256 in the uncompressed form is 65.
+pub const MAX_SEALING_KEY_BYTES: usize = 256;
+
+/// Longest sealed key of an unlock, in bytes. A key of 32 bytes sealed to a point of P-256 with
+/// ECIES is 113.
+pub const MAX_SEALED_KEY_BYTES: usize = 1024;
+
 /// A field that does not satisfy the protocol's limits.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LimitError {
@@ -183,4 +193,23 @@ pub(crate) fn check_non_empty_len(
         return Err(LimitError::Empty { field });
     }
     check_len(field, value, max)
+}
+
+/// Checks that `value` is not empty and not longer than `max` bytes.
+pub(crate) fn check_non_empty_bytes(
+    field: &'static str,
+    value: &[u8],
+    max: usize,
+) -> Result<(), LimitError> {
+    if value.is_empty() {
+        return Err(LimitError::Empty { field });
+    }
+    if value.len() > max {
+        return Err(LimitError::TooLong {
+            field,
+            len: value.len(),
+            max,
+        });
+    }
+    Ok(())
 }
