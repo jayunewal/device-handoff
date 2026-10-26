@@ -714,6 +714,10 @@ tests += [
     testTheConsentIsToldToTheAppWithTheWordsItReads
   ),
   (
+    "the consent to record the screen is told to the app with the words it reads",
+    testTheConsentToRecordTheScreenIsToldToTheAppWithTheWordsItReads
+  ),
+  (
     "a rectangle can hold something only with a finite size above zero",
     testARectangleCanHoldSomethingOnlyWithAFiniteSizeAboveZero
   ),

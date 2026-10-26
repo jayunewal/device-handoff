@@ -207,6 +207,31 @@ func requestMacControlAccess() {
   }
 }
 
+/// What this Mac says about letting the app record the screen. It is asked again each time, since
+/// the person may change it in System Settings at any time.
+func macScreenAccess() -> ScreenAccess {
+  CGPreflightScreenCaptureAccess() ? .allowed : .needed
+}
+
+/// Where System Settings lists the apps that may record the screen, which is where the consent to
+/// record it is given.
+private let screenSettingsAddress =
+  "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+
+/// Asks the system to let the app record the screen. It shows its own question once, and does not
+/// wait for the answer: the person gives it in System Settings, and the system takes it into
+/// effect when the app is opened again. As for the consent to control, the list in System Settings
+/// is opened for the person whenever the answer is not yes, since it is hard to find by hand. The
+/// question is asked on the main thread, as `MacSharer.screen` asks it.
+func requestMacScreenAccess() {
+  DispatchQueue.main.async {
+    guard !CGRequestScreenCaptureAccess(), let settings = URL(string: screenSettingsAddress) else {
+      return
+    }
+    _ = NSWorkspace.shared.open(settings)
+  }
+}
+
 // MARK: - The events
 
 /// Hands the events of the person at the other device to the system, as if the person at this Mac

@@ -122,8 +122,10 @@ final class DeviceViewer: ViewerPlatform {
 public class BatonStreamPlugin: NSObject, FlutterPlugin {
   /// The channel of the questions that the app asks the plugin. `controlAccess` says whether this
   /// device lets Baton steer the windows and screens it shares (`ControlAccess`), and
-  /// `requestControlAccess` asks the system to let it. `status` is for the tests of the app, and
-  /// says what the plugin did (integration_test/app_test.dart). The names are the ones in
+  /// `requestControlAccess` asks the system to let it. `screenAccess` says whether this device
+  /// lets Baton record its screen with no picker (`ScreenAccess`), and `requestScreenAccess` asks
+  /// the system to let it. `status` is for the tests of the app, and says what the plugin did
+  /// (integration_test/app_test.dart). The names are the ones in
   /// apps/baton/lib/src/control_access.dart.
   static let channelName = "io.github.jayunewal.baton/stream"
 
@@ -228,18 +230,26 @@ public class BatonStreamPlugin: NSObject, FlutterPlugin {
     case "requestControlAccess":
       requestControlAccess()
       result(nil)
+    case "screenAccess":
+      result(screenAccess().rawValue)
+    case "requestScreenAccess":
+      requestScreenAccess()
+      result(nil)
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+
+  /// Whether this device has a sharer: the one that was registered now, or before.
+  private var hasSharer: Bool {
+    sharerRegistration == Int32(BATON_OK) || sharerRegistration == Int32(BATON_E_REGISTERED)
   }
 
   /// Whether this device lets Baton hand input events to the windows of others and to the system.
   /// A device that registered no sharer shares no window.
   private func controlAccess() -> ControlAccess {
     #if os(macOS)
-    let registered =
-      sharerRegistration == Int32(BATON_OK) || sharerRegistration == Int32(BATON_E_REGISTERED)
-    return registered ? macControlAccess() : .unavailable
+    return hasSharer ? macControlAccess() : .unavailable
     #else
     return .unavailable
     #endif
@@ -248,6 +258,22 @@ public class BatonStreamPlugin: NSObject, FlutterPlugin {
   private func requestControlAccess() {
     #if os(macOS)
     requestMacControlAccess()
+    #endif
+  }
+
+  /// Whether this device lets Baton record its screen with no picker, which a screen that a paired
+  /// device asks for needs. A device that registered no sharer gives no screen.
+  private func screenAccess() -> ScreenAccess {
+    #if os(macOS)
+    return hasSharer ? macScreenAccess() : .unavailable
+    #else
+    return .unavailable
+    #endif
+  }
+
+  private func requestScreenAccess() {
+    #if os(macOS)
+    requestMacScreenAccess()
     #endif
   }
 }

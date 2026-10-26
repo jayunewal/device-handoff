@@ -985,6 +985,23 @@ enum ControlAccess: String, Equatable {
   case unavailable
 }
 
+// MARK: - The consent to record the screen
+
+/// Whether this Mac lets the app record the screen with no picker of the system, which a screen
+/// that a paired device asks for needs (docs/adr/0010-sessions-that-the-viewer-starts.md). The
+/// person gives the consent once, in the settings of the system, and the system may take it into
+/// effect only when the app is opened again. The raw values are the answers that the app's screens
+/// read (apps/baton/lib/src/control_access.dart).
+enum ScreenAccess: String, Equatable {
+  /// The person has let the app.
+  case allowed
+  /// The system could let the app, and the person has not.
+  case needed
+  /// This device gives no screen to a device that asks: it is not a Mac, or its system is too old
+  /// to share windows.
+  case unavailable
+}
+
 // MARK: - A window or a display that is steered
 
 /// Hands events to the system, as if the person at the Mac did them (BatonControl.swift has the one

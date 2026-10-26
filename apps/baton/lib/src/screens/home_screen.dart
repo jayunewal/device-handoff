@@ -34,6 +34,7 @@ class HomeScreen extends StatefulWidget {
     this.shower = const SystemFileShower(),
     this.screen = const PlatformScreenKeeper(),
     this.controlAccess = const PlatformControlAccess(),
+    this.screenAccess = const PlatformScreenAccess(),
     super.key,
   });
 
@@ -61,6 +62,10 @@ class HomeScreen extends StatefulWidget {
   /// What the system says about letting another device control a window or a screen of this one.
   /// Tests give it one of their own.
   final ControlAccessKeeper controlAccess;
+
+  /// What the system says about letting Baton record the screen of this device. Tests give it one
+  /// of their own.
+  final ScreenAccessKeeper screenAccess;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -220,6 +225,7 @@ class _HomeScreenState extends State<HomeScreen> {
             scanner: widget.scanner,
             chooser: widget.chooser,
             controlAccess: widget.controlAccess,
+            screenAccess: widget.screenAccess,
             onShareWindow: _windows.abilities.canShare
                 ? (device, {required control}) =>
                       unawaited(_windows.share(device, control: control))

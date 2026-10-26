@@ -27,6 +27,7 @@ class DevicesScreen extends StatefulWidget {
     this.onStartScreen,
     this.canGiveScreen = false,
     this.controlAccess = const PlatformControlAccess(),
+    this.screenAccess = const PlatformScreenAccess(),
     super.key,
   });
 
@@ -58,6 +59,10 @@ class DevicesScreen extends StatefulWidget {
   /// What the system says about letting another device control a window or a screen of this one.
   /// Tests give it one of their own.
   final ControlAccessKeeper controlAccess;
+
+  /// What the system says about letting Baton record the screen of this device, which a device
+  /// that asks for the screen needs. Tests give it one of their own.
+  final ScreenAccessKeeper screenAccess;
 
   @override
   State<DevicesScreen> createState() => _DevicesScreenState();
@@ -133,9 +138,17 @@ class _DevicesScreenState extends State<DevicesScreen>
       'Security, Accessibility. If Baton is in the list already, take it out '
       'and add it again.';
 
+  /// What the person does in the settings of the system to let [device] ask this device for its
+  /// screen. The system takes the answer into effect only when Baton is opened again.
+  String _allowRecording(Device device) =>
+      'To let ${visibleText(device.name)} ask for the screen, allow Baton to '
+      'record it in System Settings, under Privacy & Security, Screen & System '
+      'Audio Recording. Then quit Baton and open it again.';
+
   /// Lets the person say whether [device] may ask this device for its screen, with no one here
-  /// asked each time. To let it control the screen needs the consent of the system, which is asked
-  /// about now, as it is for a window that is shared to be controlled.
+  /// asked each time. To show the screen needs the consent of the system to record it, and to let
+  /// the device control it needs the consent to control. Both are asked about now, once the
+  /// setting is kept, since nobody is here to say yes when the device asks.
   Future<void> _allowScreen(Device device) async {
     final current = _controller.startAccess(device);
     if (current == null) return;
@@ -155,10 +168,18 @@ class _DevicesScreenState extends State<DevicesScreen>
       _tell(problem);
       return;
     }
-    if (chosen != StartAccess.control) return;
-    if (await widget.controlAccess.state() != ControlAccess.needed) return;
-    await widget.controlAccess.request();
-    if (mounted) _tell(_allowControl(device));
+    if (chosen == StartAccess.off) return;
+    final sentences = <String>[];
+    if (await widget.screenAccess.state() == ScreenAccess.needed) {
+      await widget.screenAccess.request();
+      sentences.add(_allowRecording(device));
+    }
+    if (chosen == StartAccess.control &&
+        await widget.controlAccess.state() == ControlAccess.needed) {
+      await widget.controlAccess.request();
+      sentences.add(_allowControl(device));
+    }
+    if (mounted && sentences.isNotEmpty) _tell(sentences.join(' '));
   }
 
   void _tell(String sentence) {

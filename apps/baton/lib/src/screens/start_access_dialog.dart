@@ -90,8 +90,9 @@ class _StartAccessDialogState extends State<StartAccessDialog> {
           Text(
             'The screen shows only while $computer is awake and unlocked. '
             'Turning this off does not end a screen that is shared: end it '
-            'with Stop. The first time a screen is asked for, $computer asks '
-            'whether Baton may record it. Say yes while you are here.',
+            'with Stop. Baton must be allowed to record the screen to show it: '
+            'when you save, $computer asks for that if it has not been given. '
+            'Say yes while you are here, then quit Baton and open it again.',
             style: theme.textTheme.bodySmall,
           ),
         ],

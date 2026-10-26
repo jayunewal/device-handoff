@@ -225,6 +225,70 @@ void main() {
       },
     );
   });
+
+  group('the screen that a paired device asks for', () {
+    Matcher notPaired() => throwsA(
+      isA<BatonError>().having((e) => e.kind, 'kind', ErrorKind.notPaired),
+    );
+
+    test(
+      'is allowed to each device as the person says, where they say it',
+      () async {
+        final mac = await _device('Device A');
+        final phone = await _device('Device B');
+        final events = StreamIterator(await mac.events());
+        addTearDown(() => unawaited(events.cancel()));
+        await _pair(mac, events, phone);
+
+        // Nothing is allowed to a device that was just paired.
+        expect(mac.startAccess(phone.me.id), StartAccess.off);
+        // Each setting goes to the library and comes back as it went, and it is kept at the device
+        // where it was said, not at the other.
+        for (final access in [
+          StartAccess.look,
+          StartAccess.control,
+          StartAccess.off,
+        ]) {
+          await mac.setStartAccess(phone.me.id, access);
+          expect(mac.startAccess(phone.me.id), access);
+          expect(phone.startAccess(mac.me.id), StartAccess.off);
+        }
+      },
+    );
+
+    test('is not shown by a computer that has no way to show it', () async {
+      final mac = await _device('Device A');
+      final phone = await _device('Device B');
+      final events = StreamIterator(await mac.events());
+      addTearDown(() => unawaited(events.cancel()));
+      await _pair(mac, events, phone);
+
+      // This computer shows no screens, so the question is answered with a sentence, whether or
+      // not control is wished for.
+      for (final control in [false, true]) {
+        await expectLater(
+          phone.startScreen(mac.me.id, control: control),
+          throwsA(
+            isA<BatonError>()
+                .having((e) => e.kind, 'kind', ErrorKind.other)
+                .having((e) => e.message, 'message', contains('cannot')),
+          ),
+        );
+      }
+    });
+
+    test('is nothing to a device that is not paired', () async {
+      final session = await _device('Device A');
+      final nobody = '0' * 64;
+
+      await expectLater(session.startScreen(nobody), notPaired());
+      expect(() => session.startAccess(nobody), notPaired());
+      await expectLater(
+        session.setStartAccess(nobody, StartAccess.look),
+        notPaired(),
+      );
+    });
+  });
 }
 
 /// How long to wait for something that should happen at once.
