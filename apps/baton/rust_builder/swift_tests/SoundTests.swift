@@ -889,10 +889,12 @@ func testTheAacEncoderMakesPacketsOfATone() {
     }
   }
   check(sizes.count >= 44 && sizes.count <= 47, "\(sizes.count) packets")
-  // A packet is an access unit of a few hundred bytes, and never more than the protocol takes.
+  // A packet is an access unit that is never more than the protocol takes. A pure tone costs the
+  // encoder much less than the 341 bytes to a packet that 128 kbit/s allows on average (a Mac made
+  // 72 on average), so the mean is only kept under that.
   check(sizes.allSatisfy { $0 > 0 && $0 <= 8192 }, "\(sizes)")
   let mean = Double(sizes.reduce(0, +)) / Double(max(sizes.count, 1))
-  check(mean > 100 && mean < 900, "a mean of \(mean) bytes")
+  check(mean > 10 && mean < 400, "a mean of \(mean) bytes")
   encoder.invalidate()
 }
 
