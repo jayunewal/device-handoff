@@ -251,6 +251,25 @@ mod tests {
     }
 
     #[test]
+    fn a_header_of_exactly_the_length_is_read_with_the_same_checks() {
+        let header = first();
+        let bytes: [u8; PacketHeader::LEN] = header.encode().try_into().unwrap();
+        assert_eq!(PacketHeader::decode(&bytes), Ok(header));
+        let mut other = bytes;
+        *other.first_mut().unwrap() = 2;
+        assert_eq!(
+            PacketHeader::decode(&other),
+            Err(PacketError::WrongKind { found: 2 })
+        );
+        let mut flagged = bytes;
+        *flagged.last_mut().unwrap() = 0b10;
+        assert_eq!(
+            PacketHeader::decode(&flagged),
+            Err(PacketError::ReservedFlags(0b10))
+        );
+    }
+
+    #[test]
     fn a_header_that_is_cut_short_is_refused_at_every_length() {
         let bytes = first().encode();
         for len in 0..PacketHeader::LEN {
