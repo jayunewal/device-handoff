@@ -41,7 +41,7 @@ use std::{
 use baton_proto::{DeviceId, close_code, id::SessionId};
 use baton_stream::{
     KIND_VIDEO,
-    control::{KeyFrame, Report, SourceMessage, Thermal, ViewerMessage, Want},
+    control::{KeyFrame, Lift, Report, SourceMessage, Thermal, ViewerMessage, Want},
     header::{FrameHeader, PREFIX_LEN, encode_prefix},
     input_queue::{Input, Queue, Refused},
     viewer::{Action, Params as Rules, Refusal, Stats, StreamId, Viewer, Violation},
@@ -196,6 +196,17 @@ enum Stop {
     Violation,
 }
 
+/// What the offer of a source granted the viewer, and said of the source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Granted {
+    /// Whether the person at the source granted the viewer control of the window. Only then does
+    /// the session send what the person does.
+    pub(super) control: bool,
+    /// Whether the source keeps its screen private. Only then does the session send a
+    /// [`ViewHandle::lift`].
+    pub(super) private: bool,
+}
+
 /// The viewer's side of one session.
 pub(super) struct View {
     registry: Weak<Streaming>,
@@ -208,6 +219,8 @@ pub(super) struct View {
     state: Mutex<State>,
     /// What the viewer says to the source, in the order in which it says it.
     outbox: mpsc::Sender<ViewerMessage>,
+    /// Whether the offer said that the source keeps its screen private.
+    private: bool,
     /// What the person did on the viewer and has not been sent yet. Never held across a wait.
     input: Mutex<Queue>,
     /// Tells the task that sends the input that something was queued.
@@ -257,6 +270,31 @@ impl ViewHandle {
     #[must_use]
     pub fn control(&self) -> bool {
         lock(&self.view.input).granted()
+    }
+
+    /// Whether the source keeps its screen private for the session, which the offer said. If not,
+    /// [`lift`](Self::lift) sends nothing.
+    #[must_use]
+    pub fn private(&self) -> bool {
+        self.view.private
+    }
+
+    /// Tells the source what the people there may do: see its screen (`screen`), and use its keys
+    /// and its pointer (`input`). A session starts with neither, and each call says both, so the
+    /// last one is how things stand: it may be called as often as the person likes, and either
+    /// one can be put back. The source does not answer, and ends the session if it cannot take
+    /// back what was lifted.
+    ///
+    /// Returns whether the message was queued: it is not for a session that is not private, and
+    /// not when the messages that wait for the source fill the queue, which is a source that
+    /// reads nothing. The person is to be told in that case, since things are as they were.
+    pub fn lift(&self, screen: bool, input: bool) -> bool {
+        let view = &self.view;
+        view.private
+            && view
+                .outbox
+                .try_send(ViewerMessage::Lift(Lift { screen, input }))
+                .is_ok()
     }
 
     /// Gives what the person did on the picture. A position is tagged with the frame that is on
@@ -368,8 +406,9 @@ impl View {
         peer: DeviceId,
         connection: Connection,
         viewing: Viewing,
-        control: bool,
+        granted: Granted,
     ) -> (Arc<Self>, ViewHandle) {
+        let Granted { control, private } = granted;
         let Viewing {
             decoder,
             takes,
@@ -391,6 +430,7 @@ impl View {
                 closed: false,
             }),
             outbox,
+            private,
             input: Mutex::new(Queue::new(control)),
             input_ready: Notify::new(),
             source_control: AtomicBool::new(false),
@@ -919,20 +959,28 @@ mod tests {
 
         /// A rig whose viewer said that it can take `takes`.
         async fn taking(takes: Takes, params: ViewParams, control_streams: u32) -> Self {
-            Self::offered(takes, params, control_streams, false).await
+            Self::offered(takes, params, control_streams, false, false).await
         }
 
         /// A rig where the person at the source granted control with the offer.
         async fn controlling() -> Self {
-            Self::offered(takes(), quick(), 2, true).await
+            Self::offered(takes(), quick(), 2, true, false).await
         }
 
-        /// A rig whose offer granted control, or did not.
+        /// A rig where the offer granted control and said that the source keeps its screen
+        /// private.
+        async fn private() -> Self {
+            Self::offered(takes(), quick(), 2, true, true).await
+        }
+
+        /// A rig whose offer granted control, or did not, and said that the screen is private, or
+        /// did not.
         async fn offered(
             takes: Takes,
             params: ViewParams,
             control_streams: u32,
             granted: bool,
+            private: bool,
         ) -> Self {
             let streaming = Streaming::new();
             let sinks = Sinks::default()
@@ -959,6 +1007,7 @@ mod tests {
                         params,
                     ),
                     granted,
+                    private,
                 )
                 .unwrap();
             Self {
@@ -1143,6 +1192,7 @@ mod tests {
                 accepted,
                 session_id(),
                 Viewing::raw(Keep(Arc::clone(&pictures)), takes(), ViewParams::default()),
+                false,
                 false,
             )
             .unwrap();
@@ -1795,6 +1845,7 @@ mod tests {
                 quick(),
             ),
             false,
+            false,
         );
         assert!(again.is_err());
         // The session that was there first is untouched.
@@ -1935,6 +1986,93 @@ mod tests {
                 other => panic!("unexpected message {other:?}"),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn what_the_person_lifts_reaches_the_source_as_it_was_said() {
+        let mut rig = Rig::private().await;
+        let _source_control = rig.open_source_control().await;
+        let mut viewer_control = rig.viewer_control().await;
+        assert!(rig.handle.private());
+        // Each call says both things, and either can be put back, as often as the person likes.
+        let said = [
+            Lift {
+                screen: true,
+                input: false,
+            },
+            Lift {
+                screen: true,
+                input: true,
+            },
+            Lift {
+                screen: false,
+                input: true,
+            },
+            Lift {
+                screen: false,
+                input: false,
+            },
+            Lift {
+                screen: true,
+                input: false,
+            },
+        ];
+        for lift in said {
+            assert!(rig.handle.lift(lift.screen, lift.input));
+        }
+        let mut heard = Vec::new();
+        while heard.len() < said.len() {
+            match read_message_from(&mut viewer_control).await.unwrap() {
+                ViewerMessage::Lift(lift) => heard.push(lift),
+                ViewerMessage::Report(_) => {}
+                other => panic!("unexpected message {other:?}"),
+            }
+        }
+        assert_eq!(heard, said);
+    }
+
+    #[tokio::test]
+    async fn a_session_that_is_not_private_sends_no_lift() {
+        let mut rig = Rig::controlling().await;
+        let _source_control = rig.open_source_control().await;
+        let mut viewer_control = rig.viewer_control().await;
+        assert!(rig.handle.control());
+        assert!(!rig.handle.private());
+        assert!(!rig.handle.lift(true, true));
+        assert!(!rig.handle.lift(false, false));
+        // The viewer goes on reporting, and nothing else comes.
+        for _ in 0..5 {
+            match read_message_from(&mut viewer_control).await.unwrap() {
+                ViewerMessage::Report(_) => {}
+                other => panic!("unexpected message {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_lift_finds_the_queue_to_the_source_full_and_the_next_gets_through() {
+        let mut rig = Rig::private().await;
+        // The source has not opened its control stream, so nothing leaves the queue.
+        let mut queued = 0;
+        while rig.handle.lift(queued % 2 == 0, false) {
+            queued += 1;
+            assert!(queued <= OUTBOX, "the queue has no end");
+        }
+        assert!(queued > 0 && queued <= OUTBOX, "{queued}");
+        assert!(!rig.handle.lift(true, true), "a full queue took a message");
+        // The source opens its stream, and what was queued goes out.
+        let _source_control = rig.open_source_control().await;
+        let mut viewer_control = rig.viewer_control().await;
+        let mut lifts = 0;
+        while lifts < queued {
+            if let ViewerMessage::Lift(_) = read_message_from(&mut viewer_control).await.unwrap() {
+                lifts += 1;
+            }
+        }
+        rig.until("the queue to take a lift again", |rig| {
+            rig.handle.lift(false, false)
+        })
+        .await;
     }
 
     #[tokio::test]

@@ -62,6 +62,25 @@ impl TestNode {
         .await
     }
 
+    /// The error that a node whose builder `build` has changed fails to start with.
+    pub(crate) async fn refused(build: impl FnOnce(NodeBuilder) -> NodeBuilder) -> crate::Error {
+        let dir = tempfile::tempdir().unwrap();
+        let identity = Identity::generate();
+        let trust = TrustStore::load(dir.path().join("devices.json")).unwrap();
+        let mut config = Config::default();
+        config.network.relay = RelayMode::Disabled;
+        config.network.lan_discovery = false;
+        config.network.dns_discovery = false;
+        config.network.port_mapping = false;
+        match build(NodeBuilder::new(&identity, trust, config))
+            .bind()
+            .await
+        {
+            Ok(_) => panic!("the node started"),
+            Err(error) => error,
+        }
+    }
+
     /// A node that keeps what other devices may be holding for it in a file of its folder, as the
     /// app does, so that [`restarted`](Self::restarted) finds it again.
     pub(crate) async fn journaled(build: impl FnOnce(NodeBuilder) -> NodeBuilder) -> Self {
