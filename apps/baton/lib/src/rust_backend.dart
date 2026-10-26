@@ -237,6 +237,10 @@ class _RustSession implements Session {
       _baton.releaseWindowInput(session: session);
 
   @override
+  bool windowLift(int session, {required bool screen, required bool input}) =>
+      _baton.windowLift(session: session, screen: screen, input: input);
+
+  @override
   Future<List<Received>> inbox() => _baton.inbox();
 
   @override
