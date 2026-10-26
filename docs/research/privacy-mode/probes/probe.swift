@@ -13,6 +13,7 @@ import AppKit
 import Carbon.HIToolbox
 import CoreGraphics
 import Foundation
+import ScreenCaptureKit
 import ServiceManagement
 
 /// Where the app and run.sh leave each other's notes. The sandbox of the app lets it use this folder
@@ -23,7 +24,11 @@ let begun = Date()
 // MARK: - What is written down
 
 final class Report {
-  private var text = ""
+  /// What earlier launches of the app wrote, since run.sh starts the app once for each stage, so that
+  /// a stage that ends the app does not take the others with it.
+  private var text = (try? String(contentsOfFile: dir + "/report.txt", encoding: .utf8)) ?? ""
+
+  var isEmpty: Bool { text.isEmpty }
 
   func line(_ line: String) {
     let seconds = String(format: "%6.1f", Date().timeIntervalSince(begun))
@@ -581,9 +586,11 @@ var savedBrightness: [(CGDirectDisplayID, Float)] = []
 func restoreWhatIsLeft() {
   for (id, value) in savedBrightness { _ = setBrightness(value, of: id) }
   savedBrightness = []
+  CGDisplayRestoreColorSyncSettings()
 }
 
 func restoreFromFile() {
+  CGDisplayRestoreColorSyncSettings()
   guard let text = try? String(contentsOfFile: dir + "/brightness", encoding: .utf8) else { return }
   for line in text.split(separator: "\n") {
     let parts = line.split(separator: " ")
@@ -722,10 +729,10 @@ func sendDatagram(_ text: String) -> Bool {
 
 func stageGuard() {
   phase("guard")
-  report.line("== guard: an agent that the system starts for the person, outside the sandbox")
+  report.line("== guard: an agent that the system starts for the person, sandboxed as the app is")
   panel.hide()
   let files = FileManager.default
-  for file in ["guard-kill.txt", "lease", "private-flag"] {
+  for file in ["guard-kill.txt", "lease", "private-flag", "lock-request", "lock-result"] {
     try? files.removeItem(atPath: dir + "/" + file)
   }
   let service = SMAppService.agent(plistName: "io.github.jayunewal.baton.probe.guard.plist")
@@ -810,12 +817,372 @@ func stageGuard() {
   report.line("guard: the new agent says: \(guardLine(guardState()))")
   try? files.removeItem(atPath: dir + "/private-flag")
 
+  // The agent locks the Mac when it is asked to, each way in turn, as a guard would when the app is
+  // gone: from the session of the person, with the consents of the agent and not of this app.
+  for method in ["keys", "sac", "pmset"] {
+    try? files.removeItem(atPath: dir + "/lock-result")
+    panel.show(
+      "Guard check, \(method): in 5 seconds the agent tries to lock the Mac. Unlock it when it "
+        + "locks or its display goes dark; the check goes on once you are back. If nothing happens, "
+        + "wait 10 seconds.")
+    spin(5)
+    panel.hide()
+    try? method.write(toFile: dir + "/lock-request", atomically: true, encoding: .utf8)
+    var answer: String?
+    for _ in 0..<880 {
+      spin(0.25)
+      answer = try? String(contentsOfFile: dir + "/lock-result", encoding: .utf8)
+      if answer != nil { break }
+    }
+    report.line(
+      "guard: locked by the agent, \(answer?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "no answer from the agent")")
+  }
+  report.line("guard: the agent says: \(guardLine(guardState()))")
+
   do {
     try service.unregister()
     report.line("guard: unregistered")
   } catch {
     report.line("guard: unregister failed: \(error)")
   }
+}
+
+// MARK: - Locking the Mac from inside the sandbox
+
+/// Whether the session says that the screen is locked. This is the key that Baton reads.
+func sessionLocked() -> Bool {
+  guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+  return (session["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue == true
+}
+
+typealias LockScreen = @convention(c) () -> Int32
+
+/// Control, Command and Q, which is the shortcut of the system for locking the screen, posted as a
+/// person's keys would be.
+func lockByKeys() -> String {
+  guard CGPreflightPostEventAccess() else { return "this app may not post events" }
+  let source = CGEventSource(stateID: .hidSystemState)
+  let steps: [(CGKeyCode, Bool, CGEventFlags)] = [
+    (59, true, [.maskControl]),
+    (55, true, [.maskControl, .maskCommand]),
+    (12, true, [.maskControl, .maskCommand]),
+    (12, false, [.maskControl, .maskCommand]),
+    (55, false, [.maskControl]),
+    (59, false, []),
+  ]
+  for (code, down, flags) in steps {
+    let event = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down)
+    event?.flags = flags
+    event?.post(tap: .cghidEventTap)
+    spin(0.02)
+  }
+  return "posted"
+}
+
+func lockByCall() -> String {
+  guard let handle = dlopen("/System/Library/PrivateFrameworks/login.framework/login", RTLD_NOW),
+    let symbol = dlsym(handle, "SACLockScreenImmediate")
+  else { return "the call is not there" }
+  return "returned \(unsafeBitCast(symbol, to: LockScreen.self)())"
+}
+
+func lockByPmset() -> String {
+  let process = Process()
+  process.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+  process.arguments = ["displaysleepnow"]
+  do { try process.run() } catch { return "could not be run: \(error)" }
+  process.waitUntilExit()
+  return "exited with \(process.terminationStatus)"
+}
+
+/// Waits for the person to unlock the Mac and wake the display, for up to three minutes.
+func waitForThePerson() -> Double {
+  let waited = Date()
+  while Date().timeIntervalSince(waited) < 180 {
+    if !sessionLocked() && CGDisplayIsAsleep(CGMainDisplayID()) == 0 { break }
+    spin(0.5)
+  }
+  return Date().timeIntervalSince(waited)
+}
+
+func stageSandboxLock() {
+  phase("sblock")
+  report.line("== sblock: locking the Mac from inside the sandbox of this app, three ways")
+  report.line("sblock: access: \(accessLine())")
+  for method in ["keys", "sac", "pmset"] {
+    panel.show(
+      "Check sblock, \(method): in 5 seconds the Mac tries to lock itself. Unlock it when it locks "
+        + "or its display goes dark; the check goes on once you are back. If nothing happens, "
+        + "wait 10 seconds.")
+    spin(5)
+    panel.hide()
+    let before = sessionLocked()
+    let began = Date()
+    let result: String
+    switch method {
+    case "keys": result = lockByKeys()
+    case "sac": result = lockByCall()
+    default: result = lockByPmset()
+    }
+    var after: Double?
+    for _ in 0..<80 {
+      if sessionLocked() {
+        after = Date().timeIntervalSince(began)
+        break
+      }
+      spin(0.1)
+    }
+    let asleep = CGDisplayIsAsleep(CGMainDisplayID()) != 0
+    report.line(
+      "sblock: \(method): locked before \(before), the call \(result), the session says locked "
+        + "\(after.map { "after \(seconds($0)) s" } ?? "never within 8 s"), display asleep \(asleep)")
+    if after != nil || asleep {
+      report.line("sblock: \(method): the person was back after \(seconds(waitForThePerson())) s")
+    }
+  }
+}
+
+// MARK: - Black by the table of the display
+
+func activeDisplays() -> [CGDirectDisplayID] {
+  var ids = [CGDirectDisplayID](repeating: 0, count: 16)
+  var count: UInt32 = 0
+  CGGetActiveDisplayList(16, &ids, &count)
+  return Array(ids.prefix(Int(count)))
+}
+
+/// Sets the output of every display to nought, which is black whatever a window shows. The system
+/// puts it back when the program that set it ends.
+func blackByTable() -> [String] {
+  activeDisplays().map { id in "display \(id) \(CGSetDisplayTransferByFormula(id, 0, 0, 1, 0, 0, 1, 0, 0, 1).rawValue)" }
+}
+
+/// The highest output that the tables of the displays give now, from 0 to 1.
+func tableMaximum() -> Float {
+  var highest: Float = 0
+  for id in activeDisplays() {
+    var redMin: Float = 0, redMax: Float = 0, redGamma: Float = 0
+    var greenMin: Float = 0, greenMax: Float = 0, greenGamma: Float = 0
+    var blueMin: Float = 0, blueMax: Float = 0, blueGamma: Float = 0
+    CGGetDisplayTransferByFormula(
+      id, &redMin, &redMax, &redGamma, &greenMin, &greenMax, &greenGamma, &blueMin, &blueMax,
+      &blueGamma)
+    highest = max(highest, redMax, greenMax, blueMax)
+  }
+  return highest
+}
+
+func stageGamma() {
+  phase("gamma")
+  report.line("== gamma: the screens turned black by the table of each display, with no window")
+  panel.show(
+    "Check gamma. In 8 seconds every screen goes black for 20 seconds, by itself, and comes back by "
+      + "itself. While it is black, one after the other: Command+Space (Spotlight), then Escape; "
+      + "Control+Up Arrow (Mission Control), then Escape; the pointer to the top edge and to the "
+      + "bottom edge. You cannot read this while it is black, so remember it.")
+  spin(8)
+  panel.hide()
+  report.line("gamma: set the tables: \(blackByTable().joined(separator: ", "))")
+  var highest: Float = 0
+  var resets = 0
+  let end = Date(timeIntervalSinceNow: 20)
+  while Date() < end {
+    spin(1)
+    let now = tableMaximum()
+    highest = max(highest, now)
+    if now > 0.01 {
+      resets += 1
+      _ = blackByTable()
+    }
+  }
+  CGDisplayRestoreColorSyncSettings()
+  report.line("gamma: the highest output read back was \(highest), put back \(resets) times, restored")
+  ask(
+    "While the screens were black by the table of the display:",
+    ["Fully black the whole time", "Black but something showed", "Only dimmed", "Black for a moment only"])
+  ask(
+    "Spotlight (Command+Space) and Mission Control (Control+Up Arrow) in that time:",
+    ["Neither showed", "Spotlight showed", "Mission Control showed", "Both showed", "Neither opened"])
+}
+
+// MARK: - What the capture shows
+
+/// An answer that arrives on a thread of the system, for the run loop to wait for.
+final class Slot<T> {
+  private let lock = NSLock()
+  private var stored: T?
+  private var finished = false
+
+  func put(_ value: T?) {
+    lock.lock()
+    stored = value
+    finished = true
+    lock.unlock()
+  }
+
+  var done: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return finished
+  }
+
+  var value: T? {
+    lock.lock()
+    defer { lock.unlock() }
+    return stored
+  }
+}
+
+func received<T>(_ slot: Slot<T>, seconds time: Double = 10) -> T? {
+  let end = Date(timeIntervalSinceNow: time)
+  while !slot.done && Date() < end { spin(0.05) }
+  return slot.value
+}
+
+func shareableContent(onScreenOnly: Bool = true) -> SCShareableContent? {
+  let slot = Slot<SCShareableContent>()
+  SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: onScreenOnly) { content, _ in
+    slot.put(content)
+  }
+  return received(slot)
+}
+
+func screenshot(_ filter: SCContentFilter, cursor: Bool) -> CGImage? {
+  let configuration = SCStreamConfiguration()
+  let scale = Double(filter.pointPixelScale)
+  configuration.width = max(1, Int((Double(filter.contentRect.width) * scale).rounded()))
+  configuration.height = max(1, Int((Double(filter.contentRect.height) * scale).rounded()))
+  configuration.showsCursor = cursor
+  let slot = Slot<CGImage>()
+  SCScreenshotManager.captureImage(contentFilter: filter, configuration: configuration) { image, _ in
+    slot.put(image)
+  }
+  return received(slot)
+}
+
+/// The picture, or a part of it, as `size` by `size` grey values.
+func grey(_ image: CGImage, crop: CGRect?, size: Int) -> [UInt8]? {
+  var pixels = [UInt8](repeating: 0, count: size * size)
+  var drawn = image
+  if let crop {
+    let inside = crop.intersection(CGRect(x: 0, y: 0, width: image.width, height: image.height))
+    guard !inside.isNull, let part = image.cropping(to: inside) else { return nil }
+    drawn = part
+  }
+  let made = pixels.withUnsafeMutableBytes { buffer -> Bool in
+    guard
+      let context = CGContext(
+        data: buffer.baseAddress, width: size, height: size, bitsPerComponent: 8, bytesPerRow: size,
+        space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)
+    else { return false }
+    context.interpolationQuality = .medium
+    context.draw(drawn, in: CGRect(x: 0, y: 0, width: size, height: size))
+    return true
+  }
+  return made ? pixels : nil
+}
+
+/// How light the picture is, from 0 (black) to 255.
+func lightness(_ image: CGImage?) -> String {
+  guard let image, let pixels = grey(image, crop: nil, size: 16) else { return "no picture" }
+  return String(format: "%.1f", Double(pixels.reduce(0) { $0 + Int($1) }) / Double(pixels.count))
+}
+
+/// How far two pictures differ in the square round a place, in grey values from 0 to 255.
+func difference(_ first: CGImage?, _ second: CGImage?, around place: CGPoint) -> String {
+  let square = CGRect(x: place.x - 16, y: place.y - 16, width: 96, height: 96)
+  guard let first, let second, let one = grey(first, crop: square, size: 48),
+    let two = grey(second, crop: square, size: 48)
+  else { return "no picture" }
+  var total = 0
+  for index in one.indices { total += abs(Int(one[index]) - Int(two[index])) }
+  return String(format: "%.2f", Double(total) / Double(one.count))
+}
+
+func stageCapture() {
+  phase("capture")
+  report.line("== capture: what the capture of the screen shows while the covers are up")
+  guard CGPreflightScreenCaptureAccess() else {
+    _ = CGRequestScreenCaptureAccess()
+    report.line(
+      "capture: this app may not record the screen yet. Turn on BatonProbe under Privacy & "
+        + "Security, Screen & System Audio Recording, open the checks again, and run: "
+        + "sh run.sh capture")
+    return
+  }
+  guard let content = shareableContent(),
+    let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() })
+  else {
+    report.line("capture: the system did not list the screens")
+    return
+  }
+  panel.show("Check capture: leave the pointer and the keys alone for about 40 seconds.")
+  spin(2)
+  panel.hide()
+  let everything = SCContentFilter(display: display, excludingWindows: [])
+  let scale = Double(everything.pointPixelScale)
+  let base = screenshot(everything, cursor: false)
+  report.line("capture: no cover, lightness of the picture: \(lightness(base)) (0 is black, 255 white)")
+
+  let covers = NSScreen.screens.map { makeCover(on: $0) }
+  spin(1.5)
+  let after = shareableContent()
+  var me = after?.applications.first(where: { $0.processID == getpid() })
+  if me == nil {
+    // The list of what is on screen may leave out a program whose windows sit this high.
+    me = shareableContent(onScreenOnly: false)?.applications.first(where: { $0.processID == getpid() })
+    report.line("capture: this app was not in the list of what is on screen; in the full list: \(me != nil)")
+  }
+  let ours = Set(covers.map { CGWindowID($0.windowNumber) })
+  let theirs = after?.windows.filter { ours.contains($0.windowID) } ?? []
+  report.line(
+    "capture: its covers are in the list of windows: \(theirs.count) of \(covers.count)")
+  report.line(
+    "capture: cover up, nothing left out: \(lightness(screenshot(everything, cursor: false)))")
+  var without: SCContentFilter?
+  if let me {
+    let filter = SCContentFilter(display: display, excludingApplications: [me], exceptingWindows: [])
+    without = filter
+    report.line(
+      "capture: cover up, this application left out: \(lightness(screenshot(filter, cursor: false)))")
+  }
+  if !theirs.isEmpty {
+    let filter = SCContentFilter(display: display, excludingWindows: theirs)
+    report.line("capture: cover up, its windows left out: \(lightness(screenshot(filter, cursor: false)))")
+  }
+
+  // The tables of the displays black too: does the capture see what the tables hide?
+  if let without {
+    _ = blackByTable()
+    spin(1)
+    report.line(
+      "capture: cover up and the tables black, application left out: "
+        + "\(lightness(screenshot(without, cursor: false)))")
+    CGDisplayRestoreColorSyncSettings()
+    spin(0.5)
+  }
+
+  // The pointer: is it in the capture when the pointer of the Mac is hidden?
+  if let without {
+    let bounds = CGDisplayBounds(CGMainDisplayID())
+    let middle = CGPoint(x: bounds.midX, y: bounds.midY)
+    CGWarpMouseCursorPosition(middle)
+    spin(0.6)
+    let place = CGPoint(x: middle.x * CGFloat(scale), y: middle.y * CGFloat(scale))
+    let plain = screenshot(without, cursor: false)
+    let shown = screenshot(without, cursor: true)
+    report.line(
+      "capture: pointer showing: the capture with the pointer differs from the one without near the "
+        + "pointer by \(difference(shown, plain, around: place)) (above about 2 means it is drawn)")
+    _ = CGDisplayHideCursor(CGMainDisplayID())
+    spin(0.6)
+    let hidden = screenshot(without, cursor: true)
+    report.line(
+      "capture: pointer hidden with CGDisplayHideCursor: the capture with the pointer differs from the "
+        + "one without by \(difference(hidden, plain, around: place))")
+    _ = CGDisplayShowCursor(CGMainDisplayID())
+  }
+  covers.forEach { $0.orderOut(nil) }
 }
 
 // MARK: - The helper that has the keyboard
@@ -890,8 +1257,8 @@ let wanted =
   .split(whereSeparator: { $0 == " " || $0 == "\n" }).map(String.init)
 
 DispatchQueue.main.async {
+  if report.isEmpty { describeTheMac() }
   report.line("stages: \(wanted.joined(separator: " "))")
-  describeTheMac()
   for stage in wanted {
     switch stage {
     case "tap":
@@ -905,6 +1272,9 @@ DispatchQueue.main.async {
     case "shield": stageShield()
     case "cursor": stageCursor()
     case "guard": stageGuard()
+    case "gamma": stageGamma()
+    case "capture": stageCapture()
+    case "sblock": stageSandboxLock()
     default: report.line("no stage called \(stage)")
     }
   }

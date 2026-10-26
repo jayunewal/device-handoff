@@ -1,21 +1,23 @@
 # Privacy mode on a Mac: what has to be measured
 
-Privacy mode is for a person who uses their own Mac from a phone or a tablet while other people are at home. While the session lasts the screen of the Mac shows nothing and gives no light, nobody at the Mac can use its keys or its pointer, and when the session ends or the connection is lost the Mac is locked again. The sourced facts that the design starts from are in the notes of the project (the lock screen takes posted keys, a sandboxed app cannot use the Accessibility interface, secure input blinds event taps, nothing can be captured while a display sleeps). None of them was tested on macOS 27, and the design branches on some of them, so the first step is to measure.
+Privacy mode is for a person who uses their own Mac from a phone or a tablet while other people are at home. While the session lasts the screen of the Mac shows nothing and gives no light, nobody at the Mac can use its keys or its pointer, and when the session ends or the connection is lost the Mac is locked again. The facts that the design starts from came from the notes of the project (the lock screen takes posted keys, secure input blinds event taps, nothing can be captured while a display sleeps). None of them was tested on macOS 27, and the design branches on some of them, so the first step is to measure.
 
 The checks here are a small app, built and run by `probes/run.sh` on a Mac with a person at it. It is sandboxed as the app of Baton is, so that what it finds is what the app can do. It asks the person what it cannot see for itself. It is not part of the app and nothing in the app depends on it.
 
 ## Running the checks
 
 ```sh
-sh docs/research/privacy-mode/probes/run.sh              # tap, secure, shield and cursor
-sh docs/research/privacy-mode/probes/run.sh shield tap   # these stages, in this order
-sh docs/research/privacy-mode/probes/run.sh guard lock   # the helper, and the ways to lock the Mac
-sh docs/research/privacy-mode/probes/run.sh clean        # take away what a run left
+sh docs/research/privacy-mode/probes/run.sh                # capture, gamma, sblock and guard
+sh docs/research/privacy-mode/probes/run.sh capture        # one stage, for example after the first run asked for a consent
+sh docs/research/privacy-mode/probes/run.sh tap shield     # these stages, in this order
+sh docs/research/privacy-mode/probes/run.sh clean          # take away what a run left
 ```
 
-The first run asks to allow the app under Privacy & Security (Input Monitoring and Accessibility), once the tap cannot be made without. The app is signed with the identity that a free Apple ID gives when the Mac has one, and ad hoc when it does not; the report says which. A person has to stay at the Mac, and Focus has to be off for the banners. Each hold of the keys and the pointer lasts ten seconds, a cover of black lasts at most forty, and Escape pressed three times ends a hold. Everything ends by itself, and `run.sh` puts the backlight and the pointer back if the app dies. The `lock` stage locks the Mac three times and needs the person to unlock it each time, so it is only run when it is named. The app is built into `/tmp/baton-probe`, or into the folder in `BATON_PROBE_APPS` (the system may want the helper of the `guard` stage to be in an Applications folder). It prints the report at the end, and leaves it in `/tmp/baton-probe/report.txt`.
+The app is built into `~/Applications` (or into `BATON_PROBE_APPS`): the system does not let a program in `/tmp` be allowed for the keys and the pointer. The first run asks to allow the app under Privacy & Security (Input Monitoring and Accessibility for the stages that hold the keys, Screen & System Audio Recording for `capture`), once. The app is signed with the identity that a free Apple ID gives when the Mac has one, and ad hoc when it does not; the report says which. A person has to stay at the Mac, and Focus has to be off for the banners. Each hold of the keys and the pointer lasts ten seconds, a cover of black lasts at most forty, and Escape pressed three times ends a hold. Everything ends by itself, and `run.sh` puts the screens and the pointer back if the app dies. The stages `sblock` and `guard` lock the Mac three times each and need the person to unlock it each time. The report is left in `/tmp/baton-probe/report.txt`, with what the system logged about the sandbox and the background items at its end.
 
 ## What each stage settles
+
+First round:
 
 | Stage | What it does | What the design takes from it |
 | --- | --- | --- |
@@ -23,9 +25,29 @@ The first run asks to allow the app under Privacy & Security (Input Monitoring a
 | `secure` | The same with a password field, in another process, that has the keyboard | Whether the tap is blind to keys then, as the guidance for secure input says, whether the keys still reach the field, and whether the counters see them |
 | `shield` | Covers every screen with black at the shielding level and lists the windows of other programs that stay above or at that level while the person tries Spotlight, Mission Control, the edges of the screen and two banners | Whether the cover is enough, or whether the keys that open these are also held, and which windows could show the activity of the remote person |
 | `cursor` | Hides the pointer over the cover while it moves, with the plain call and with the call that lets a program that is not in front do it, and turns the backlight to zero and back | Whether the pointer can be hidden with public calls, and whether the backlight can be turned off and restored from the sandbox |
-| `guard` | Registers a helper that is inside the app (`SMAppService`, a launch agent that the system keeps alive), waits for the person to approve it in the login items, reads what the helper says of itself, renews a lease with it in a file and in datagrams on the loopback, kills it, and times how long the system takes to start it again | Whether the helper can be installed with the identity of a free Apple ID, how the person is asked, which consents the helper needs of its own, whether the app can keep the lease with datagrams on the loopback, which the sandbox allows without an exception (the file of the lease works only because the checks have an exception for their folder), how long the Mac stays unguarded when the helper dies, and whether a flag that a crash leaves is found at the start |
-| `lock` | Locks the Mac with the three calls that need no consent (`SACLockScreenImmediate`, `CGSession -suspend`, `pmset displaysleepnow`) from a program outside the sandbox, and times how long the session takes to say that it is locked | Which call the guard uses to lock the Mac when a session ends, since posting the keys for it needs a consent that a rebuild takes away |
+
+Second round, after the first one showed what is left open:
+
+| Stage | What it does | What the design takes from it |
+| --- | --- | --- |
+| `capture` | With the app allowed to record the screen, takes pictures of the main display with the cover up: with nothing left out, with this application left out, with the windows of the cover left out, and with the tables of the displays black as well. Then compares a picture with the pointer against one without, with the pointer of the Mac showing and hidden | Whether the capture can be kept free of the cover by leaving the application out (so that a cover that is added later, on a screen that is plugged in, is left out too), whether the capture is the same while the tables are black, and whether the viewer still gets a pointer when the pointer of the Mac is hidden |
+| `gamma` | Turns the output of every display to nought, which is black whatever a window shows, for twenty seconds while the person tries Spotlight and Mission Control | Whether this closes the hole that the cover leaves (the windows of the system that show over it), and whether the system keeps the tables at nought |
+| `sblock` | From inside the sandbox of the app, locks the Mac with posted keys (Control, Command and Q), with `SACLockScreenImmediate`, and with `pmset displaysleepnow`, and times how long the session takes to say that it is locked | Whether the app can lock the Mac itself when a session ends, and with which call. The sandbox denials of the log say what an exception for a call would have to name |
+| `guard` | Registers a helper that is inside the app and sandboxed (`SMAppService`, a launch agent that the system keeps alive), waits for the person to approve it in the login items, reads what the helper says of itself, renews a lease with it in a file and in datagrams on the loopback, kills it and times how long the system takes to start it again, and then asks it to lock the Mac with each of the three calls | Whether the helper can be installed with the identity of a free Apple ID, how the person is asked, which consents the helper needs of its own, how long the Mac stays unguarded when the helper dies, whether a flag that a crash leaves is found at the start, and whether a helper that the system starts can lock the Mac |
 
 ## What came out
+
+### First round (macOS 27.0.1, a built-in display and an external one, signed with a free Apple ID's identity)
+
+- **The input block can live in the app.** The checks were allowed Accessibility, Input Monitoring and post events, and then an active tap at the hid level was made inside the sandbox and held for 10.2 s. It saw the keys (21 key downs, 21 key ups), the pointer (401 moves) and the scroll wheel (2), dropped them all, and no character reached the field that had the keyboard. The tap was never made from `/tmp`: Accessibility could not be added for a program there (neither dragging it in nor the plus button did anything), and with Input Monitoring alone the tap was refused. Which of the three consents the tap needs by itself was not separated.
+- **The moves that the app posts pass its own tap.** 74 were posted, the tap saw 50 of them, and 70 moved the pointer. The tap lets them through because the window server names the process that posted an event.
+- **Secure input blinds the tap to keys, as the guidance says, and the counters of the system catch what got past it.** With a password field in another process, the tap saw only pointer moves, and 41 characters reached the field. The counter of the keys (`CGEventSource.secondsSinceLastEventType` for the hid state) read 0 presses while the tap held the keys and 11 presses while it was blind, so unexplained local keys can be told from the app's own by comparing the counter with the app's last post.
+- **The cover hides a lot and not all.** It sat at layer 2147483628, and banners, the menu bar and the Dock stayed under it. Spotlight and Mission Control showed over it, although the windows of the system that are listed (Window Server at layer 24, Siri at 23 with the size of the screen, Notification Centre at 21, the Dock at 20) are below it, so the layer does not decide which is on top.
+- **The pointer can be hidden with a public call.** `CGDisplayHideCursor` kept the pointer invisible while it moved over the cover, from a program that is not in front, with and without the private call that is meant for that.
+- **The backlight could not be read** (`DisplayServicesGetBrightness` failed), so nothing was set and nothing needed putting back. The person judged the Mac fully dark with the cover alone.
+- **The helper could not be registered**, from `/tmp`, `~/Applications` and `/Applications`: `SMAppServiceErrorDomain` code 1, "Operation not permitted", status "not found". Apple's release notes for macOS 14.2 give the reason: the executable of an agent or a daemon that is registered by an app must be sandboxed if the app is. The helper of this round was not.
+- **The Mac can be locked at once from a program outside the sandbox.** `SACLockScreenImmediate` returned 0 and the session said locked after 0.1 s. `pmset displaysleepnow` locked it after 0.2 s with the display asleep (the setting for the password was "immediately"). `CGSession -suspend` is not on macOS 27. Whether any of them works from inside the sandbox is the question of `sblock`.
+
+### Second round
 
 Not run yet.

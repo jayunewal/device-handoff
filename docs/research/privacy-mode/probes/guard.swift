@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // The helper of the checks for the privacy mode of a Mac (docs/research/privacy-mode/README.md). It is
-// not sandboxed, and the system starts it for the person: the app of the checks registers it with
+// sandboxed, since the system refuses to register an agent that is not when the app is (macOS 14.2
+// and later), and the system starts it for the person: the app of the checks registers it with
 // SMAppService, so that it is what a guard of the privacy mode would be.
 //
 //   guard                 the agent: writes what it sees to a file once a second, makes a tap now and
-//                         then to see whether it may, and takes a lease that the app renews, in a file
-//                         and in a datagram on the loopback
-//   guard lock <method>   one try at locking the Mac without the consent of the person: sac, cgsession
-//                         or displaysleep, and how long the session takes to say that it is locked
+//                         then to see whether it may, takes a lease that the app renews, in a file
+//                         and in a datagram on the loopback, and locks the Mac when the app leaves a
+//                         request for it
+//   guard lock <method>   one try at locking the Mac without the consent of the person: keys, sac or
+//                         pmset, and how long the session takes to say that it is locked
 
 import ApplicationServices
 import CoreGraphics
@@ -42,24 +44,47 @@ func run(_ path: String, _ arguments: [String]) -> String {
   return "exited with \(process.terminationStatus)"
 }
 
+/// Control, Command and Q, which is the shortcut of the system for locking the screen, posted as a
+/// person's keys would be.
+func postLockKeys() -> String {
+  guard CGPreflightPostEventAccess() else { return "this program may not post events" }
+  let source = CGEventSource(stateID: .hidSystemState)
+  let steps: [(CGKeyCode, Bool, CGEventFlags)] = [
+    (59, true, [.maskControl]),
+    (55, true, [.maskControl, .maskCommand]),
+    (12, true, [.maskControl, .maskCommand]),
+    (12, false, [.maskControl, .maskCommand]),
+    (55, false, [.maskControl]),
+    (59, false, []),
+  ]
+  for (code, down, flags) in steps {
+    let event = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down)
+    event?.flags = flags
+    event?.post(tap: .cghidEventTap)
+    Thread.sleep(forTimeInterval: 0.02)
+  }
+  return "posted"
+}
+
 func lock(method: String) -> String {
   switch method {
+  case "keys":
+    return postLockKeys()
   case "sac":
     guard let handle = dlopen("/System/Library/PrivateFrameworks/login.framework/login", RTLD_NOW),
       let symbol = dlsym(handle, "SACLockScreenImmediate")
     else { return "the call is not there" }
     return "returned \(unsafeBitCast(symbol, to: LockScreen.self)())"
-  case "cgsession":
-    return run(
-      "/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession", ["-suspend"])
-  case "displaysleep":
+  case "pmset":
     return run("/usr/bin/pmset", ["displaysleepnow"])
   default:
     return "no such method"
   }
 }
 
-func tryLock(method: String) {
+/// One try at locking the Mac with `method`, and what came of it as a line. When the Mac locked, or
+/// the display went to sleep, it waits for the person to be back.
+func tryLock(method: String) -> String {
   let before = sessionLocked()
   let began = Date()
   let result = lock(method: method)
@@ -72,17 +97,18 @@ func tryLock(method: String) {
     Thread.sleep(forTimeInterval: 0.1)
   }
   let asleep = CGDisplayIsAsleep(CGMainDisplayID()) != 0
-  print(
+  var line =
     "lock \(method): locked before \(before), the call \(result), the session says locked "
-      + "\(after.map { "after \(seconds($0)) s" } ?? "never within 8 s"), display asleep \(asleep)")
-  guard after != nil || asleep else { return }
+    + "\(after.map { "after \(seconds($0)) s" } ?? "never within 8 s"), display asleep \(asleep)"
+  guard after != nil || asleep else { return line }
   // The person wakes the Mac and unlocks it, and the next try waits for that.
   let waited = Date()
   while Date().timeIntervalSince(waited) < 180 {
     if !sessionLocked() && CGDisplayIsAsleep(CGMainDisplayID()) == 0 { break }
     Thread.sleep(forTimeInterval: 0.5)
   }
-  print("lock \(method): the person was back after \(seconds(Date().timeIntervalSince(waited))) s")
+  line += "; the person was back after \(seconds(Date().timeIntervalSince(waited))) s"
+  return line
 }
 
 // MARK: - The agent
@@ -137,6 +163,8 @@ func runAgent() -> Never {
   var tap = false
   var tapChecked = Date.distantPast
   var written = Date.distantPast
+  var locking = false
+  let lockQueue = DispatchQueue(label: "lock")
   // The system asks the person once to allow what a guard would use.
   _ = CGRequestListenEventAccess()
   _ = CGRequestPostEventAccess()
@@ -168,6 +196,18 @@ func runAgent() -> Never {
       lapsedAfter = now.timeIntervalSince(lastRenewal ?? now)
     }
     leased = on
+    // A request to lock the Mac, which the app leaves in a file. The lock is done off this loop,
+    // since it waits for the person to unlock the Mac, and the heartbeat goes on meanwhile.
+    if !locking, let request = try? String(contentsOfFile: dir + "/lock-request", encoding: .utf8) {
+      try? FileManager.default.removeItem(atPath: dir + "/lock-request")
+      let method = request.trimmingCharacters(in: .whitespacesAndNewlines)
+      locking = true
+      lockQueue.async {
+        let line = tryLock(method: method)
+        note("lock-result", line + "\n")
+        locking = false
+      }
+    }
     if now.timeIntervalSince(tapChecked) > 4 {
       tap = tapMakes()
       tapChecked = now
@@ -202,7 +242,7 @@ func runAgent() -> Never {
 
 let arguments = CommandLine.arguments
 if arguments.count > 2, arguments[1] == "lock" {
-  tryLock(method: arguments[2])
+  print(tryLock(method: arguments[2]))
   exit(0)
 }
 runAgent()
