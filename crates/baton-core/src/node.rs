@@ -80,8 +80,8 @@ use crate::{
     slots::{MAX_PAIRING_CONNECTIONS, PairSlots},
     streaming::{
         CONTROL_STREAMS, FRAME_STREAMS, Offered, Reservation, SETTLE, SOUND_STREAMS, ShareOutcome,
-        Sharer, SourceEvents, StartHandler, StartOutcome, StartSlot, Starter, Streaming, Takes,
-        Viewer, Viewing, Wanted, WhyNot, WindowHandler, WindowShare, Withdraw, ask,
+        Sharer, SoundPlan, SourceEvents, StartHandler, StartOutcome, StartSlot, Starter, Streaming,
+        Takes, Viewer, Viewing, Wanted, WhyNot, WindowHandler, WindowShare, Withdraw, ask,
     },
     transfer::{
         incoming::{FINISH_WAIT, Incoming, LANE_STREAMS, TransferHandler},
@@ -251,6 +251,8 @@ pub struct NodeBuilder {
     sends_sound: bool,
     /// Whether this device plays the sound of the screens it is shown.
     plays_sound: bool,
+    /// Whether this device keeps its screen private while a paired device controls it.
+    private_sessions: bool,
     /// What the application does when a paired device asks this one to start a session, if it
     /// starts them.
     starts: Option<Arc<dyn StartHandler>>,
@@ -286,6 +288,7 @@ impl NodeBuilder {
             sharing: None,
             sends_sound: false,
             plays_sound: false,
+            private_sessions: false,
             starts: None,
             holds: None,
             clock: Arc::new(SystemClock),
@@ -335,6 +338,7 @@ impl NodeBuilder {
     pub fn share_windows(mut self, control: bool) -> Self {
         self.sharing = Some(Sharer {
             control,
+            private: false,
             starter: None,
             sound: false,
         });
@@ -363,6 +367,20 @@ impl NodeBuilder {
     #[must_use]
     pub fn play_sound(mut self) -> Self {
         self.plays_sound = true;
+        self
+    }
+
+    /// Has this device keep its screen private while a paired device controls it: the platform
+    /// makes it dark and takes the keyboard and the pointer out of use, and the viewer can have the
+    /// screen shown and the keys and the pointer put to use, and put either back, with
+    /// [`ViewHandle::lift`](crate::streaming::ViewHandle::lift). A window is offered with
+    /// [`WindowShare::with_private`](crate::streaming::WindowShare::with_private).
+    ///
+    /// It needs [`share_windows`](Self::share_windows) with `control`, and [`bind`](Self::bind)
+    /// fails without them. With it the device advertises `stream.private`.
+    #[must_use]
+    pub fn private_sessions(mut self) -> Self {
+        self.private_sessions = true;
         self
     }
 
@@ -449,6 +467,10 @@ impl NodeBuilder {
         self.config.validate()?;
         let missing = if self.starts.is_some() && self.sharing.is_none() {
             "a handler for starting sessions needs the device to share its windows"
+        } else if self.private_sessions
+            && !self.sharing.as_ref().is_some_and(|sharer| sharer.control)
+        {
+            "private sessions need the device to share its windows and take input"
         } else if self.sends_sound && self.sharing.is_none() {
             "sending sound needs the device to share its windows"
         } else if self.plays_sound && self.windows.is_none() {
@@ -476,6 +498,7 @@ impl NodeBuilder {
             sharing,
             sends_sound,
             plays_sound,
+            private_sessions,
             starts,
             holds,
             clock,
@@ -497,6 +520,7 @@ impl NodeBuilder {
             Viewer::new(handler, intake.item_charge(), tuning.approval_timeout).hearing(plays_sound)
         });
         let sharing = sharing.map(|sharer| Sharer {
+            private: private_sessions,
             sound: sends_sound,
             ..sharer
         });
@@ -1117,8 +1141,12 @@ impl Node {
             hold,
             session: id,
             control: window.control(),
-            display: window.is_display(),
-            plays: session.peer.supports(capability::STREAM_HEAR),
+            private: window.private(),
+            sound: SoundPlan::of(
+                streaming.sounds(),
+                session.peer.supports(capability::STREAM_HEAR),
+                window.is_display(),
+            ),
         };
         streaming.begin(offered, reply, events, choose).await
     }

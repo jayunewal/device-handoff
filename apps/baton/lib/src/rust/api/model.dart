@@ -1223,6 +1223,13 @@ class WindowSession {
   /// Whether the viewer may control the window.
   final bool control;
 
+  /// Whether the screen is kept private at the device that shares it: dark, and with its
+  /// keyboard and trackpad out of use, while this device controls it. If it is, the person here
+  /// can switch each of the two on and off with `Baton.windowLift`, and both are off when the
+  /// session starts. `false` for a screen that this device does not control, and for a device
+  /// that cannot keep a screen private or let it be lifted.
+  final bool private;
+
   /// What to draw the picture with when the window is shown on this device: the number of
   /// the screen, which on Flutter is the id of a `Texture`. `null` when the window is shared
   /// from this device.
@@ -1239,6 +1246,7 @@ class WindowSession {
     required this.width,
     required this.height,
     required this.control,
+    required this.private,
     this.screen,
   });
 
@@ -1254,6 +1262,7 @@ class WindowSession {
       width.hashCode ^
       height.hashCode ^
       control.hashCode ^
+      private.hashCode ^
       screen.hashCode;
 
   @override
@@ -1271,6 +1280,7 @@ class WindowSession {
           width == other.width &&
           height == other.height &&
           control == other.control &&
+          private == other.private &&
           screen == other.screen;
 }
 

@@ -952,6 +952,164 @@ void main() {
     });
   });
 
+  group('what the person lifts of the privacy of a screen', () {
+    const dark = (screen: false, input: false);
+
+    test('is off when the session starts', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(control: true, private: true);
+      await _begin(session, window);
+
+      expect(controller.liftedOf(window), dark);
+      expect(session.windowLifts, isEmpty);
+    });
+
+    test('is switched one side at a time, and each switch tells the other device both', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(id: 5, control: true, private: true);
+      await _begin(session, window);
+
+      expect(controller.lift(window, screen: true), isTrue);
+      expect(controller.liftedOf(window), (screen: true, input: false));
+      expect(controller.lift(window, input: true), isTrue);
+      expect(controller.liftedOf(window), (screen: true, input: true));
+      expect(controller.lift(window, screen: false), isTrue);
+      expect(controller.liftedOf(window), (screen: false, input: true));
+      expect(controller.lift(window, input: false), isTrue);
+      expect(controller.liftedOf(window), dark);
+
+      expect(session.windowLifts, [
+        (session: 5, screen: true, input: false),
+        (session: 5, screen: true, input: true),
+        (session: 5, screen: false, input: true),
+        (session: 5, screen: false, input: false),
+      ]);
+    });
+
+    test(
+      'can be switched on and off any number of times in one session',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        final window = sampleWindowSession(control: true, private: true);
+        await _begin(session, window);
+
+        for (var round = 0; round < 6; round++) {
+          expect(controller.lift(window, screen: true, input: true), isTrue);
+          expect(controller.liftedOf(window), (screen: true, input: true));
+          expect(controller.lift(window, screen: false, input: false), isTrue);
+          expect(controller.liftedOf(window), dark);
+        }
+
+        expect(session.windowLifts.length, 12);
+        expect(controller.sessions, [window]);
+      },
+    );
+
+    test(
+      'tells the other device nothing when it says what already is',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        final window = sampleWindowSession(control: true, private: true);
+        await _begin(session, window);
+        var told = 0;
+        controller.addListener(() => told++);
+
+        expect(controller.lift(window), isTrue);
+        expect(controller.lift(window, screen: false, input: false), isTrue);
+        expect(controller.lift(window, screen: true), isTrue);
+        expect(controller.lift(window, screen: true), isTrue);
+        expect(controller.lift(window, screen: true, input: false), isTrue);
+
+        expect(session.windowLifts, [(session: 1, screen: true, input: false)]);
+        expect(told, 1, reason: 'the screens are told of the one change');
+      },
+    );
+
+    test('stays as it was when the other device could not be told', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(control: true, private: true);
+      await _begin(session, window);
+      var told = 0;
+      controller.addListener(() => told++);
+
+      session.windowLiftTaken = false;
+      expect(controller.lift(window, screen: true), isFalse);
+      expect(controller.liftedOf(window), dark);
+      expect(told, 0);
+      // Not being told is not the end of the window.
+      expect(controller.sessions, [window]);
+      expect(controller.notes, isEmpty);
+
+      // The same switch again tells it once more, and works when it can.
+      session.windowLiftTaken = true;
+      expect(controller.lift(window, screen: true), isTrue);
+      expect(controller.liftedOf(window), (screen: true, input: false));
+      expect(session.windowLifts, [
+        (session: 1, screen: true, input: false),
+        (session: 1, screen: true, input: false),
+      ]);
+    });
+
+    test('goes to the window that it is for, and to no other', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final first = sampleWindowSession(id: 1, control: true, private: true);
+      final second = sampleWindowSession(id: 2, control: true, private: true);
+      await _begin(session, first);
+      await _begin(session, second);
+
+      controller.lift(second, input: true);
+
+      expect(controller.liftedOf(second), (screen: false, input: true));
+      expect(controller.liftedOf(first), dark);
+      expect(session.windowLifts, [(session: 2, screen: false, input: true)]);
+    });
+
+    test(
+      'is off again for the next session, whichever way the last one ended',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        final first = sampleWindowSession(id: 1, control: true, private: true);
+        final second = sampleWindowSession(id: 2, control: true, private: true);
+        await _begin(session, first);
+        await _begin(session, second);
+        controller.lift(first, screen: true, input: true);
+        controller.lift(second, screen: true, input: true);
+
+        // The other device ended one, and the person ended the other.
+        await _end(session, 1, const WindowEnd.otherDevice());
+        controller.end(second);
+        expect(controller.liftedOf(first), dark);
+        expect(controller.liftedOf(second), dark);
+
+        // A session that begins with the same number, as a new one does for a device that was
+        // asked for its screen again, starts with both off: nothing is remembered.
+        final again = sampleWindowSession(id: 1, control: true, private: true);
+        await _begin(session, again);
+        expect(controller.liftedOf(again), dark);
+        expect(session.windowLifts.length, 2);
+      },
+    );
+
+    test('is not for a window that was not asked for as private', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(control: true);
+      await _begin(session, window);
+
+      // Baton is the one that knows which windows may be lifted, and it says no.
+      session.windowLiftTaken = false;
+      expect(controller.lift(window, screen: true), isFalse);
+      expect(controller.liftedOf(window), dark);
+    });
+  });
+
   group('what the other device did not do', () {
     Future<void> say(
       FakeSession session,

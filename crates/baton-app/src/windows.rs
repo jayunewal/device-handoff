@@ -308,6 +308,17 @@ pub trait WindowSharer: Send + Sync + 'static {
         let _ = privacy;
         Box::pin(std::future::ready(Err(ScreenError::Unsupported)))
     }
+
+    /// Whether the device that controls a screen that this platform gave as [`Privacy::Private`]
+    /// can lift what keeps it private, in the part that it likes and as often as it likes: the
+    /// screen shown to the people here, and the keyboard and the pointer of this device put to
+    /// use. The platform hears what the device says through [`SourceEvents::lift`]. A device
+    /// where it can says so to the devices it is paired with; one where it cannot gives its
+    /// private screen as it did, with nothing for the device that controls it to lift. The same
+    /// each time.
+    fn can_lift(&self) -> bool {
+        false
+    }
 }
 
 /// A window that the person picked, and everything that the platform keeps for it. Dropping it
@@ -317,6 +328,14 @@ pub trait PickedWindow: Send + 'static {
     /// window. The size is then that of the display, and the title is its name, if the platform
     /// knows one. A platform that cannot share a display leaves this as it is.
     fn display(&self) -> bool {
+        false
+    }
+
+    /// Whether the screen was given as [`Privacy::Private`] by a platform whose sharer
+    /// [`can_lift`](WindowSharer::can_lift). The device that controls it is told, and can lift
+    /// what keeps it private; for a screen that is not, it can lift nothing. A platform that
+    /// cannot lift leaves this as it is.
+    fn private(&self) -> bool {
         false
     }
 

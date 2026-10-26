@@ -434,6 +434,18 @@ class FakeSession implements Session {
   @override
   void releaseWindowInput(int session) => windowInputsReleased.add(session);
 
+  /// What `windowLift` was given, in order.
+  final List<({int session, bool screen, bool input})> windowLifts = [];
+
+  /// What `windowLift` says: whether the message was taken.
+  bool windowLiftTaken = true;
+
+  @override
+  bool windowLift(int session, {required bool screen, required bool input}) {
+    windowLifts.add((session: session, screen: screen, input: input));
+    return windowLiftTaken;
+  }
+
   /// What `inbox` gives, newest first.
   List<Received> received = [];
 
@@ -676,6 +688,7 @@ WindowSession sampleWindowSession({
   int width = 1440,
   int height = 900,
   bool control = false,
+  bool private = false,
   bool display = false,
   int? screen,
 }) => WindowSession(
@@ -689,6 +702,7 @@ WindowSession sampleWindowSession({
   width: width,
   height: height,
   control: control,
+  private: private,
   screen: screen ?? (role == WindowRole.viewing ? 7 : null),
 );
 

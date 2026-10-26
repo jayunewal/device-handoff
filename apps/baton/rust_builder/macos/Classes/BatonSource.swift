@@ -151,11 +151,21 @@ protocol SharedWindow: AnyObject {
   /// Puts one thing that the person did to the window. false if it could not be done, and that
   /// event is dropped. A window that cannot be steered says false.
   func post(_ post: InputPost) -> Bool
+
+  /// The person at the other device switched what keeps this device private, for a screen that was
+  /// given as `ScreenPrivacy.private`: `screen` lets the screens show what is on them, and `input`
+  /// lets the keyboard and the pointer be used at this device. Both are given every time, and each
+  /// call replaces the one before; a session starts with both off, and the person may switch either
+  /// on and off as often as they like. Called after a `start` that worked, and not after `ended`. A
+  /// part that cannot be put back ends the session, with the device locked, and is not reported
+  /// here. A window that keeps nothing private has nothing to lift.
+  func lift(screen: Bool, input: Bool)
 }
 
 extension SharedWindow {
   func surroundings() -> WindowSurroundings? { nil }
   func post(_ post: InputPost) -> Bool { false }
+  func lift(screen: Bool, input: Bool) {}
 }
 
 // MARK: - The answer to a pick
@@ -449,6 +459,13 @@ private func sharerPost(
   return window.post(input) ? ok : platformFailure
 }
 
+/// The person at the other device switched what keeps this device private: `lifted` is all that is
+/// lifted now. A bit that this version does not know lifts nothing here, which is the safe side.
+private func sharerLift(_ picked: UnsafeMutableRawPointer?, _ lifted: UInt32) {
+  windowOf(picked)?.lift(
+    screen: lifted & UInt32(BATON_LIFT_SCREEN) != 0, input: lifted & UInt32(BATON_LIFT_INPUT) != 0)
+}
+
 /// Gives the Rust side the platform's sharer: a device that has registered one lets the person
 /// share a window, and a device that has not shares none. Call it once, at launch, before the app
 /// starts. Returns what `baton_stream_register_sharer` returned.
@@ -470,11 +487,14 @@ func registerSharer(_ platform: SharerPlatform) -> Int32 {
     release: sharerRelease,
     surroundings: sharerSurroundings,
     post: sharerPost,
-    screen: nil)
-  // A device that cannot give its screen leaves the entry out, and its paired devices are not told
-  // that they can ask for it.
+    screen: nil,
+    lift: nil)
+  // A device that cannot give its screen leaves the entries out, and its paired devices are not
+  // told that they can ask for it. The screen is the one thing that is given private, so what
+  // lifts the privacy goes with it.
   if platform.canGiveScreen {
     table.screen = sharerScreen
+    table.lift = sharerLift
   }
   let code = baton_stream_register_sharer(&table)
   if code != ok {

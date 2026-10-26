@@ -72,7 +72,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -1392359679;
+  int get rustContentHash => -1140062780;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -209,6 +209,13 @@ abstract class RustLibApi extends BaseApi {
     required Baton that,
     required PlatformInt64 session,
     required WindowInput input,
+  });
+
+  bool crateApiBatonBatonWindowLift({
+    required Baton that,
+    required PlatformInt64 session,
+    required bool screen,
+    required bool input,
   });
 
   void crateApiBatonFileSendCancel({required FileSend that});
@@ -1281,6 +1288,43 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  bool crateApiBatonBatonWindowLift({
+    required Baton that,
+    required PlatformInt64 session,
+    required bool screen,
+    required bool input,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBaton(
+            that,
+            serializer,
+          );
+          sse_encode_i_64(session, serializer);
+          sse_encode_bool(screen, serializer);
+          sse_encode_bool(input, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 31)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiBatonBatonWindowLiftConstMeta,
+        argValues: [that, session, screen, input],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiBatonBatonWindowLiftConstMeta =>
+      const TaskConstMeta(
+        debugName: "Baton_window_lift",
+        argNames: ["that", "session", "screen", "input"],
+      );
+
+  @override
   void crateApiBatonFileSendCancel({required FileSend that}) {
     return handler.executeSync(
       SyncTask(
@@ -1290,7 +1334,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 31)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 32)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_unit,
@@ -1319,7 +1363,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 32,
+            funcId: 33,
             port: port_,
           );
         },
@@ -1347,7 +1391,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 33)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 34)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_file_progress,
@@ -1373,7 +1417,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 34,
+            funcId: 35,
             port: port_,
           );
         },
@@ -1400,7 +1444,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 35,
+            funcId: 36,
             port: port_,
           );
         },
@@ -1424,7 +1468,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 36)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 37)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_list_String,
@@ -1454,7 +1498,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 37,
+            funcId: 38,
             port: port_,
           );
         },
@@ -1481,7 +1525,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(url, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 38)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 39)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_opt_String,
@@ -1506,7 +1550,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 39,
+            funcId: 40,
             port: port_,
           );
         },
@@ -2330,8 +2374,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   WindowSession dco_decode_window_session(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 11)
-      throw Exception('unexpected arr length: expect 11 but see ${arr.length}');
+    if (arr.length != 12)
+      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
     return WindowSession(
       id: dco_decode_i_64(arr[0]),
       role: dco_decode_window_role(arr[1]),
@@ -2343,7 +2387,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       width: dco_decode_u_32(arr[7]),
       height: dco_decode_u_32(arr[8]),
       control: dco_decode_bool(arr[9]),
-      screen: dco_decode_opt_box_autoadd_i_64(arr[10]),
+      private: dco_decode_bool(arr[10]),
+      screen: dco_decode_opt_box_autoadd_i_64(arr[11]),
     );
   }
 
@@ -3307,6 +3352,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_width = sse_decode_u_32(deserializer);
     var var_height = sse_decode_u_32(deserializer);
     var var_control = sse_decode_bool(deserializer);
+    var var_private = sse_decode_bool(deserializer);
     var var_screen = sse_decode_opt_box_autoadd_i_64(deserializer);
     return WindowSession(
       id: var_id,
@@ -3319,6 +3365,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       width: var_width,
       height: var_height,
       control: var_control,
+      private: var_private,
       screen: var_screen,
     );
   }
@@ -4189,6 +4236,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_32(self.width, serializer);
     sse_encode_u_32(self.height, serializer);
     sse_encode_bool(self.control, serializer);
+    sse_encode_bool(self.private, serializer);
     sse_encode_opt_box_autoadd_i_64(self.screen, serializer);
   }
 
@@ -4456,6 +4504,26 @@ class BatonImpl extends RustOpaque implements Baton {
   }) => RustLib.instance.api.crateApiBatonBatonWindowInput(
     that: this,
     session: session,
+    input: input,
+  );
+
+  /// Tells the device that shares the window `session`, which is shown here, what the people at
+  /// that device may do while this one controls it: see its screen (`screen`) and use its
+  /// keyboard and trackpad (`input`). It is for a window whose `WindowSession.private` is set.
+  /// Both are off when the session starts, and each call says both, so the last one is how
+  /// things stand: switch either on and off as often as you like, in one session. The device
+  /// that shares the window locks itself and puts both back when the session ends, whatever
+  /// the reason. Returns whether the message was taken, which is not so for a window that is not
+  /// shown here, one that is not private, and a session whose other device has stopped reading,
+  /// so that the person can be told that things are as they were.
+  bool windowLift({
+    required PlatformInt64 session,
+    required bool screen,
+    required bool input,
+  }) => RustLib.instance.api.crateApiBatonBatonWindowLift(
+    that: this,
+    session: session,
+    screen: screen,
     input: input,
   );
 }

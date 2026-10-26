@@ -101,7 +101,7 @@ pub(crate) use start::Starter;
 pub use start::{StartHandler, StartOutcome, StartRequest, StartSlot, StartVerdict};
 pub(crate) use view::ViewParams;
 pub use view::{DecodeError, Decoder, DecoderState, ViewHandle, ViewStats};
-use view::{Grants, View};
+use view::{Granted, View};
 
 /// What a viewer said it can take, in `Accepted`. The source keeps within it, and a source that
 /// sends a picture beyond it has broken the session.
@@ -276,26 +276,28 @@ impl Streaming {
         session: SessionId,
         viewing: Viewing,
         control: bool,
+        private: bool,
     ) -> Result<ViewHandle> {
-        let grants = Grants {
+        let granted = Granted {
             control,
+            private,
             sound: false,
         };
-        self.view_granted(peer, connection, session, viewing, grants)
+        self.view_granted(peer, connection, session, viewing, granted)
     }
 
     /// The same, for a source that said what it sends.
     #[cfg(test)]
-    pub(crate) fn view_granted(
+    fn view_granted(
         self: &Arc<Self>,
         peer: &PairedDevice,
         connection: Connection,
         session: SessionId,
         viewing: Viewing,
-        grants: Grants,
+        granted: Granted,
     ) -> Result<ViewHandle> {
         let mut table = lock(&self.table);
-        self.view_in(&mut table, peer, connection, session, viewing, grants)
+        self.view_in(&mut table, peer, connection, session, viewing, granted)
     }
 
     /// Starts the viewer's side of a session that the person accepted: `peer` is the source, and
@@ -304,12 +306,12 @@ impl Streaming {
     ///
     /// The decoder is given the pictures in the order in which they are to be decoded, and the
     /// messages of the source. `viewing.takes` is what the viewer said it can take: a source that
-    /// describes a picture beyond it breaks a rule. `grants.control` is whether the offer granted
-    /// the viewer control of the window; only then does the session send what the person does.
-    /// `grants.sound` is whether the source advertised that it sends sound; only then can the
-    /// person ask to hear it. The session ends, and the decoder is told, when the source ends it,
-    /// when it breaks a rule, when the connection ends, when the returned handle is dropped and
-    /// when the source does not open its control stream in time.
+    /// describes a picture beyond it breaks a rule. `granted` is what the offer granted the viewer
+    /// and said of the source: control of the window, without which the session sends nothing that
+    /// the person does, a private screen, without which it sends no [`ViewHandle::lift`], and
+    /// sound, without which the person cannot ask to hear it. The session ends, and the decoder is
+    /// told, when the source ends it, when it breaks a rule, when the connection ends, when the
+    /// returned handle is dropped and when the source does not open its control stream in time.
     ///
     /// # Errors
     ///
@@ -321,7 +323,7 @@ impl Streaming {
         connection: Connection,
         session: SessionId,
         viewing: Viewing,
-        grants: Grants,
+        granted: Granted,
     ) -> Result<ViewHandle> {
         if table.sessions.contains_key(&session) {
             return Err(Error::protocol("the session id is in use"));
@@ -332,7 +334,7 @@ impl Streaming {
             peer.id,
             connection,
             viewing,
-            grants,
+            granted,
             self.hears(),
         );
         table.sessions.insert(session, Session::View(view));

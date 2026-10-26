@@ -271,6 +271,20 @@ impl Baton {
         }
     }
 
+    /// Tells the device that shares the window `session`, which is shown here, what the people at
+    /// that device may do while this one controls it: see its screen (`screen`) and use its
+    /// keyboard and trackpad (`input`). It is for a window whose `WindowSession.private` is set.
+    /// Both are off when the session starts, and each call says both, so the last one is how
+    /// things stand: switch either on and off as often as you like, in one session. The device
+    /// that shares the window locks itself and puts both back when the session ends, whatever
+    /// the reason. Returns whether the message was taken, which is not so for a window that is not
+    /// shown here, one that is not private, and a session whose other device has stopped reading,
+    /// so that the person can be told that things are as they were.
+    #[frb(sync)]
+    pub fn window_lift(&self, session: i64, screen: bool, input: bool) -> bool {
+        u64::try_from(session).is_ok_and(|session| self.app.window_lift(session, screen, input))
+    }
+
     /// Sends a web link to a paired device.
     pub async fn send_link(
         &self,

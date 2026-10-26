@@ -155,7 +155,19 @@ fn display_offer(session: SessionId, control: bool) -> StreamRequest {
         width: 3024,
         height: 1964,
         control,
+        private: false,
     })
+}
+
+/// The offer of a display that is controlled and kept private, written by hand.
+fn private_display_offer(session: SessionId) -> StreamRequest {
+    match display_offer(session, true) {
+        StreamRequest::Offer(offer) => StreamRequest::Offer(Offer {
+            private: true,
+            ..offer
+        }),
+        other => other,
+    }
 }
 
 fn viewing_of(outcome: Result<StartOutcome>) -> ViewHandle {
@@ -991,7 +1003,33 @@ async fn a_viewer_takes_no_more_control_than_the_person_wished_for() {
         request
     };
     let (outcome, _request) = tokio::join!(rig.start(false), offering);
-    assert!(!viewing_of(outcome).control());
+    let viewing = viewing_of(outcome);
+    assert!(!viewing.control());
+    // Nothing was said of a private screen either.
+    assert!(!viewing.private());
+}
+
+#[tokio::test]
+async fn a_screen_that_the_source_keeps_private_is_private_for_the_viewer_that_asked_for_it() {
+    let rig = Rig::new(Plan::Refuse, StartPolicy::Control).await;
+    let offering = async {
+        let request = rig.next_request().await;
+        assert!(request.control);
+        let reply = ask(
+            &rig.mac_connection().await,
+            private_display_offer(request.slot.session),
+        )
+        .await;
+        assert!(matches!(reply, StreamReply::Accepted(_)), "{reply:?}");
+        request
+    };
+    let (outcome, _request) = tokio::join!(rig.start(true), offering);
+    let viewing = viewing_of(outcome);
+    assert!(viewing.control());
+    assert!(viewing.private());
+    // The viewer can say what the people at the source may do.
+    assert!(viewing.lift(true, false));
+    assert!(viewing.lift(false, false));
 }
 
 #[tokio::test]

@@ -34,7 +34,7 @@ use baton_proto::{
 use iroh::endpoint::Connection;
 use tokio_util::sync::CancellationToken;
 
-use super::{Decoder, Speaker, Streaming, Takes, ViewHandle, ViewParams, view::Grants};
+use super::{Decoder, Granted, Speaker, Streaming, Takes, ViewHandle, ViewParams};
 use crate::{
     error::{Error, Result},
     transfer::incoming::Link,
@@ -69,6 +69,10 @@ pub struct WindowOffer {
     /// Whether the person at the other device granted this one control of the window. The viewer
     /// cannot ask for it and cannot turn it on later.
     pub control: bool,
+    /// Whether the other device keeps its screen private for the session: dark, and out of the
+    /// hands of the people there. This device can ask it to show the screen, and to let the people
+    /// there use its keys and pointer, and to put either back ([`ViewHandle::lift`]).
+    pub private: bool,
 }
 
 impl WindowOffer {
@@ -80,6 +84,7 @@ impl WindowOffer {
             width: offer.width,
             height: offer.height,
             control: offer.control,
+            private: offer.private,
         }
     }
 
@@ -96,6 +101,8 @@ impl WindowOffer {
             width: 0,
             height: 0,
             control,
+            // Said by the offer when it comes, and then by `ViewHandle::private`.
+            private: false,
         }
     }
 }
@@ -108,6 +115,7 @@ impl fmt::Debug for WindowOffer {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("control", &self.control)
+            .field("private", &self.private)
             .finish_non_exhaustive()
     }
 }
@@ -532,8 +540,9 @@ impl Streaming {
                         connection.clone(),
                         session,
                         viewing,
-                        Grants {
+                        Granted {
                             control: offer.control,
+                            private: offer.private,
                             sound: sounding,
                         },
                     )

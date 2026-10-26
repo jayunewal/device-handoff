@@ -116,6 +116,11 @@ pub(crate) fn our_hello(shared: &Shared) -> Hello {
     if shared.streaming.takes_control() {
         capabilities.push(capability::STREAM_CONTROL.to_owned());
     }
+    // A device that keeps its screen private while another device controls it, and shows it when
+    // that device asks.
+    if shared.streaming.keeps_private() {
+        capabilities.push(capability::STREAM_PRIVATE.to_owned());
+    }
     // A device that was set up to send the sound of the screen it shares, or to play the sound of
     // one it is shown, says so, so that the other side may use the messages and the streams.
     if shared.streaming.sounds() {

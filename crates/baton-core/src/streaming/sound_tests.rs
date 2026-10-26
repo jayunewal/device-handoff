@@ -30,7 +30,7 @@ use iroh::endpoint::{Connection, RecvStream, SendStream};
 use tokio::sync::mpsc;
 
 use super::{
-    End, Grants, NotSent, Play, ShareOutcome, SoundPacket, SoundPlan, SourceEvents, SourceHandle,
+    End, Granted, NotSent, Play, ShareOutcome, SoundPacket, SoundPlan, SourceEvents, SourceHandle,
     SourceParams, SourceSetup, Streaming, Takes, ViewHandle, ViewParams, Viewer, Viewing,
     WindowHandler, WindowOffer, WindowShare, WindowVerdict,
     answer_tests::{App, Plan, Platform, Speaking, Speech, Spoken, quick},
@@ -185,6 +185,7 @@ impl SourceRig {
         let setup = SourceSetup {
             config: format(),
             control: false,
+            private: false,
             takes: takes(),
             sound: plan,
             params,
@@ -650,12 +651,13 @@ impl ViewRig {
             viewing = viewing.with_speaker(Speaking(speech.clone()));
         }
         let paired = viewer.trust.get(&source.id).unwrap();
-        let grants = Grants {
+        let granted = Granted {
             control: false,
+            private: false,
             sound: source_sounds,
         };
         let handle = streaming
-            .view_granted(&paired, accepted, session_id(), viewing, grants)
+            .view_granted(&paired, accepted, session_id(), viewing, granted)
             .unwrap();
         Self {
             _viewer: viewer,

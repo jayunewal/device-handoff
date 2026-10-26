@@ -241,6 +241,11 @@ impl App {
         }
         if let Some(sharer) = sessions.sharer() {
             builder = builder.share_windows(sharer.control());
+            // A device that takes input, and whose platform can lift the privacy of a screen that
+            // it gave as private, lets the device that controls the screen do so, and says so.
+            if sharer.control() && sharer.can_lift() {
+                builder = builder.private_sessions();
+            }
         }
         // A device that can give its screen without the person picking it lets the devices it is
         // paired with ask for it, if the person allowed them to; a device that cannot says nothing
@@ -688,6 +693,21 @@ impl App {
     /// leave a button down for those ten seconds.
     pub fn release_window_input(&self, session: u64) {
         self.inner.sessions.release_input(session);
+    }
+
+    /// Tells the other device of the window `session`, which is shown here, what the people there
+    /// may do while it is controlled: see its screen (`screen`), and use its keyboard and pointer
+    /// (`input`). Both are off when the session starts, and each call says both, so the last one is
+    /// how things stand: it can be called as often as the person likes, and either one can be put
+    /// back. It is for a window whose `WindowSession::private` is set, the screen that a device
+    /// keeps private.
+    ///
+    /// Returns whether the message was queued. It is not for a window that is not shown here, a
+    /// window that is not private, and a session whose other device has stopped reading, so that
+    /// the person can be told that things are as they were. The other device does not answer; it
+    /// ends the session if it cannot take back what was lifted.
+    pub fn window_lift(&self, session: u64, screen: bool, input: bool) -> bool {
+        self.inner.sessions.lift(session, screen, input)
     }
 
     /// Sends a web link to a paired device.

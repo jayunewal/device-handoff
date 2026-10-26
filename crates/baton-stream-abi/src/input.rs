@@ -14,6 +14,12 @@
 //! 3. If the session is paused, or the Mac is locked or the window is gone from the screen, what
 //!    is still held down is released.
 //!
+//! What the viewer lifts of the privacy of a screen (`Lift`, which only a private session has) goes
+//! to the same thread, but not into the queue: it is how two switches stand, and not something
+//! that happened. The thread keeps the last one only, and tells the window of it before it goes on
+//! with the events that wait, so that a switch that is put back is not held up by a platform that
+//! was slow with a post.
+//!
 //! The same thread runs `start`, `ended` and `release` of the window, which is the one thread
 //! that the header promises for all the calls of a window. It holds the window from the start and
 //! lets go of it when the session is over, so a platform that is in the middle of a post when the
@@ -54,13 +60,14 @@ use std::{
 
 use baton_core::streaming::SourceEvents;
 use baton_stream::{
-    control::{InputBatch, Report, Want},
+    control::{InputBatch, Lift, Report, Want},
     gate::{Context, Decision, Gate, Keyboard, Post, Reason, Rect},
     input::{Event, PointerAction},
     sender::LtrToken,
 };
 
 use crate::{
+    abi::{LIFT_INPUT, LIFT_SCREEN},
     journal::{Journal, Named},
     platform::{Failure, PickedHandle, Surroundings},
     registry::{Links, lock},
@@ -126,12 +133,17 @@ struct Waiting {
     queue: VecDeque<Queued>,
     /// Something else changed: the session was paused, or went on.
     nudged: bool,
+    /// What the viewer lifted of the privacy of the screen since the window was last told, as
+    /// `LIFT_` bits: the last thing it said, whatever it said before.
+    lift: Option<u32>,
     phase: Phase,
 }
 
 /// What the thread does next.
 #[derive(Debug, PartialEq)]
 enum Step {
+    /// Tell the window that this is lifted of the privacy of the screen now.
+    Lift(u32),
     /// Put these events to the window.
     Batch(InputBatch, Duration, Instant),
     /// This many events were lost.
@@ -151,10 +163,16 @@ impl Waiting {
             Phase::Over | Phase::OverTold => {
                 self.queue.clear();
                 self.nudged = false;
+                self.lift = None;
                 let told = mem::replace(&mut self.phase, Phase::OverTold) == Phase::OverTold;
                 return (!told).then_some(Step::Over);
             }
             Phase::Running => {}
+        }
+        // Ahead of the events: it is how things stand now, and what the person put back is not to
+        // wait for the posts that were in the queue before it.
+        if let Some(lifted) = self.lift.take() {
+            return Some(Step::Lift(lifted));
         }
         match self.queue.pop_front() {
             Some(Queued::Batch(batch, arrived, queued)) => {
@@ -253,6 +271,18 @@ impl Input {
         self.wake.notify_one();
     }
 
+    /// The viewer lifts some of the privacy of the screen, or puts it back: `lifted` is all that
+    /// is lifted now. What the thread was not told yet of an earlier word is forgotten.
+    fn lift(&self, lifted: u32) {
+        let mut waiting = lock(&self.waiting);
+        if waiting.phase != Phase::Running {
+            return;
+        }
+        waiting.lift = Some(lifted);
+        drop(waiting);
+        self.wake.notify_one();
+    }
+
     /// The session is over.
     fn over(&self) {
         let mut waiting = lock(&self.waiting);
@@ -323,6 +353,12 @@ impl SourceEvents for Forward {
         self.input.push(batch, arrived);
     }
 
+    fn lift(&mut self, lift: Lift) {
+        let screen = if lift.screen { LIFT_SCREEN } else { 0 };
+        let input = if lift.input { LIFT_INPUT } else { 0 };
+        self.input.lift(screen | input);
+    }
+
     fn held(&mut self, _: Vec<LtrToken>) {}
 
     fn recovery(&mut self) {}
@@ -374,6 +410,8 @@ pub(crate) struct Worker {
     at: Rect,
     /// Whether what is shared is a whole display, which the rules judge as one piece.
     display: bool,
+    /// Whether the display was given as private, which is what the platform's `lift` is for.
+    private: bool,
     journal: Journal,
     log: Told,
 }
@@ -386,6 +424,7 @@ impl Worker {
             dropped,
             at: Rect::default(),
             display: false,
+            private: false,
             journal: Journal::default(),
             log: Box::new(|line| tracing::info!("{line}")),
         }
@@ -396,6 +435,14 @@ impl Worker {
     pub(crate) fn of_display(mut self, display: bool) -> Self {
         self.display = display;
         self.journal.of_display(display);
+        self
+    }
+
+    /// What is shared is a display that was given as private: the window is told what the viewer
+    /// lifts of that. The platform's `lift` is for no other window, so a word about any other is
+    /// not passed on, whatever the session says.
+    pub(crate) fn keeping_private(mut self, private: bool) -> Self {
+        self.private = private;
         self
     }
 
@@ -419,6 +466,11 @@ impl Worker {
         self.input.heard_now();
         loop {
             match self.input.next() {
+                Step::Lift(lifted) => {
+                    if self.private {
+                        self.window.lift(lifted);
+                    }
+                }
                 Step::Batch(batch, arrived, queued) => self.batch(&batch, arrived, queued),
                 Step::Lost(lost) => self.lost(lost),
                 Step::Over => {
@@ -848,6 +900,11 @@ mod tests {
             Self::shared(timing, delay, false, setup)
         }
 
+        /// As `with`, for a whole display that the platform gave as private.
+        fn private(timing: Timing) -> Self {
+            Self::build(timing, Duration::ZERO, true, true, |_| {})
+        }
+
         /// As `after`, for a window or, if `display` is true, for a whole display.
         fn shared(
             timing: Timing,
@@ -855,11 +912,25 @@ mod tests {
             display: bool,
             setup: impl FnOnce(&Arc<FakeSharer>),
         ) -> Self {
+            Self::build(timing, delay, display, false, setup)
+        }
+
+        /// As `shared`, for a display that the platform gave as private if `private` is true.
+        fn build(
+            timing: Timing,
+            delay: Duration,
+            display: bool,
+            private: bool,
+            setup: impl FnOnce(&Arc<FakeSharer>),
+        ) -> Self {
             let platform = FakeSharer::new();
             setup(&platform);
-            let mut window = platform
-                .platform()
-                .adopt(NonNull::new(platform.new_window()).unwrap());
+            let given = if private {
+                platform.new_private_window()
+            } else {
+                platform.new_window()
+            };
+            let mut window = platform.platform().adopt(NonNull::new(given).unwrap());
             window
                 .prepare(&Takes {
                     max_width: 1920,
@@ -882,6 +953,7 @@ mod tests {
                 Box::new(move |reason| lock(&sink).push(reason)),
             )
             .of_display(display)
+            .keeping_private(private)
             .telling(Box::new(move |line| {
                 if seen
                     .log()
@@ -927,6 +999,23 @@ mod tests {
 
         fn posts(&self) -> Vec<Post> {
             self.platform.posts(1)
+        }
+
+        /// What the platform was told is lifted, in order.
+        fn lifts(&self) -> Vec<u32> {
+            self.platform
+                .calls(1)
+                .into_iter()
+                .filter_map(|call| match call {
+                    SharerCall::Lift { lifted } => Some(lifted),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// The viewer lifts this much of the privacy of the screen.
+        fn lifts_up(&mut self, screen: bool, input: bool) {
+            self.forward.lift(Lift { screen, input });
         }
 
         fn told(&self) -> Vec<Reason> {
@@ -2468,5 +2557,95 @@ mod tests {
                 .any(|line| line.contains(", 1 event lost because the queue was full"))
         });
         assert_eq!(served.told(), [Reason::TooFast]);
+    }
+
+    #[test]
+    fn a_window_hears_what_the_viewer_lifts_as_the_bits_of_the_header_and_in_the_order_it_said() {
+        let mut served = Served::private(TIMING);
+        for (screen, input, bits) in [
+            (true, false, LIFT_SCREEN),
+            (true, true, LIFT_SCREEN | LIFT_INPUT),
+            (false, true, LIFT_INPUT),
+            (false, false, 0),
+        ] {
+            // Counted before the word is sent: the thread may tell the platform at once.
+            let heard = served.lifts().len();
+            served.lifts_up(screen, input);
+            // One word at a time, so that none is folded into the next.
+            wait_for("the platform to be told", || served.lifts().len() > heard);
+            assert_eq!(served.lifts().last(), Some(&bits));
+        }
+        assert_eq!(served.lifts(), [1, 3, 2, 0]);
+        served.close();
+        served.platform.assert_no_complaints();
+    }
+
+    #[test]
+    fn what_is_lifted_is_told_ahead_of_the_events_that_wait_and_only_the_last_word_is() {
+        let mut served = Served::private(TIMING);
+        served.knows_a_frame();
+        // The platform stops answering while the thread has the press, and the release waits.
+        let stall = Stall::on(&served.platform, |call| matches!(call, SharerCall::Post(_)));
+        served.hears(vec![pointer(
+            7,
+            (0.5, 0.5),
+            PointerAction::Down(Button::Left),
+        )]);
+        stall.wait_until_stuck();
+        served.hears(vec![pointer(
+            7,
+            (0.5, 0.5),
+            PointerAction::Up(Button::Left),
+        )]);
+        // Three words while it waits: the person lifts both, puts the screen back, and puts the
+        // keyboard back too.
+        served.lifts_up(true, true);
+        served.lifts_up(false, true);
+        served.lifts_up(false, false);
+        stall.let_go();
+        served.wait_for_posts(2);
+        let calls = served.platform.calls(1);
+        let at = |wanted: &SharerCall| calls.iter().position(|call| call == wanted).unwrap();
+        // Once, as the last word said, and before the release that was queued first.
+        assert_eq!(served.lifts(), [0]);
+        assert!(
+            at(&SharerCall::Lift { lifted: 0 }) < at(&SharerCall::Post(left_up(300.0, 200.0))),
+            "{calls:?}"
+        );
+        served.close();
+        served.platform.assert_no_complaints();
+    }
+
+    #[test]
+    fn what_the_viewer_lifts_when_the_session_is_over_is_not_told_to_the_window() {
+        let mut served = Served::private(TIMING);
+        served.lifts_up(true, false);
+        wait_for("the platform to be told", || !served.lifts().is_empty());
+        served.forward.ended();
+        served.lifts_up(true, true);
+        served.close();
+        // The second word came after the end: the window is told of the end, and of nothing else.
+        assert_eq!(served.lifts(), [LIFT_SCREEN]);
+        served.platform.assert_no_complaints();
+    }
+
+    #[test]
+    fn a_window_that_is_not_private_is_not_told_what_is_lifted() {
+        let mut served = Served::new(TIMING);
+        served.knows_a_frame();
+        served.lifts_up(true, true);
+        // A word is served ahead of the events that wait, so the thread is past it once it has
+        // posted this press. A close would not do: it comes before everything that is waiting.
+        served.hears(vec![pointer(
+            7,
+            (0.5, 0.5),
+            PointerAction::Down(Button::Left),
+        )]);
+        served.wait_for_posts(1);
+        served.close();
+        // The platform's `lift` is for a display that it gave as private. The session hands no word
+        // over for any other, and the thread does not pass one on if it is handed.
+        assert_eq!(served.lifts(), Vec::<u32>::new());
+        served.platform.assert_no_complaints();
     }
 }

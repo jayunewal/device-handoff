@@ -67,7 +67,10 @@ func testAPrivateScreenIsGivenOnlyToAnAppThatCanKeepItPrivateAndChangesNothingUn
     // Given only if the system let the app hold the keys and the pointer, and record the screen.
     let given = try sharer.screen(privacy: .private)
     check(given.info.display, "what was given is not a display")
-    // Given, and never started: it is let go of, and it raised nothing.
+    // Given, and never started: nothing is raised, so there is nothing to lift, and a lift does
+    // not change the screens.
+    given.window.lift(screen: true, input: true)
+    // Let go of, and it raised nothing.
     given.window.released()
   } catch let refusal as ScreenRefusal {
     // What the system has not allowed is told as such, and nothing is given in its place.

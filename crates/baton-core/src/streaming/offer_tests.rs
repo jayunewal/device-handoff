@@ -15,7 +15,7 @@ use baton_proto::{
     stream::{Codec, StreamRequest},
 };
 use baton_stream::{
-    control::{Config as Format, SourceMessage},
+    control::{Config as Format, Lift, SourceMessage},
     input::{Button, Event, Modifiers, PointerAction},
     input_queue::{Input, Refused},
 };
@@ -27,7 +27,7 @@ use super::{
 };
 use crate::{
     error::{Error, Result},
-    node::Tuning,
+    node::{NodeBuilder, Tuning},
     testing::{PATIENCE, QUIET, TestNode},
     util::lock,
 };
@@ -62,6 +62,23 @@ impl Rig {
     }
 
     async fn with(plan: Plan, tuning: Tuning, control: bool) -> Self {
+        Self::built(plan, tuning, |builder| builder.share_windows(control)).await
+    }
+
+    /// A rig whose source keeps the screens that it offers private, if they are to be.
+    async fn keeping_private(plan: Plan) -> Self {
+        Self::built(plan, Tuning::default(), |builder| {
+            builder.share_windows(true).private_sessions()
+        })
+        .await
+    }
+
+    /// A rig whose source is set up by `setup`.
+    async fn built(
+        plan: Plan,
+        tuning: Tuning,
+        setup: impl FnOnce(NodeBuilder) -> NodeBuilder,
+    ) -> Self {
         let app = App::new(plan);
         let viewer = TestNode::with(|builder| {
             builder
@@ -69,7 +86,7 @@ impl Rig {
                 .window_handler(Arc::clone(&app))
         })
         .await;
-        let source = TestNode::with(|builder| builder.tuning(tuning).share_windows(control)).await;
+        let source = TestNode::with(|builder| setup(builder.tuning(tuning))).await;
         source.pair_with(&viewer);
         Self {
             viewer,
@@ -140,6 +157,37 @@ async fn a_node_advertises_sharing_only_when_set_up_to_and_taking_input_only_the
     assert!(!of_viewer.peer.supports(capability::STREAM_SHARE));
     assert!(!of_viewer.peer.supports(capability::STREAM_CONTROL));
     assert!(!of_viewer.peer.supports(capability::STREAM_VIEW));
+}
+
+#[tokio::test]
+async fn a_node_advertises_private_sessions_only_when_set_up_to_keep_them() {
+    let viewer = TestNode::start().await;
+    let plain = TestNode::with(|builder| builder.share_windows(true)).await;
+    let private = TestNode::with(|builder| builder.share_windows(true).private_sessions()).await;
+    plain.pair_with(&viewer);
+    private.pair_with(&viewer);
+
+    let of_plain = viewer.node.pooled_session(&plain.id).await.unwrap();
+    assert!(of_plain.peer.supports(capability::STREAM_CONTROL));
+    assert!(!of_plain.peer.supports(capability::STREAM_PRIVATE));
+    let of_private = viewer.node.pooled_session(&private.id).await.unwrap();
+    assert!(of_private.peer.supports(capability::STREAM_CONTROL));
+    assert!(of_private.peer.supports(capability::STREAM_PRIVATE));
+
+    // The viewer shows windows and keeps nothing private.
+    let of_viewer = plain.node.pooled_session(&viewer.id).await.unwrap();
+    assert!(!of_viewer.peer.supports(capability::STREAM_PRIVATE));
+}
+
+#[tokio::test]
+async fn private_sessions_need_a_node_that_shares_its_windows_and_takes_input() {
+    // A device that keeps a screen private is one that another device controls.
+    for refused in [
+        TestNode::refused(NodeBuilder::private_sessions).await,
+        TestNode::refused(|builder| builder.share_windows(false).private_sessions()).await,
+    ] {
+        assert!(matches!(refused, Error::Config(_)), "{refused:?}");
+    }
 }
 
 #[tokio::test]
@@ -258,6 +306,71 @@ async fn a_window_that_grants_control_says_so_to_the_person() {
     let (outcome, _) = rig.share(window().with_control()).await;
     assert!(matches!(outcome.unwrap(), ShareOutcome::Started(_)));
     assert!(rig.app.asked()[0].control);
+}
+
+#[tokio::test]
+async fn a_private_screen_is_offered_as_private_and_the_viewer_lifts_what_it_likes() {
+    let rig = Rig::keeping_private(Plan::Accept).await;
+    let (outcome, heard) = rig.share(window().with_control().with_private()).await;
+    let ShareOutcome::Started(handle) = outcome.unwrap() else {
+        panic!("the window was not shared");
+    };
+    assert!(rig.app.asked()[0].private);
+    let viewing = rig.app.handle(0);
+    assert!(viewing.private());
+    // The viewer lifts the screen, then the keys and the pointer as well, then puts both back, and
+    // the platform hears each of them.
+    let said = [(true, false), (true, true), (false, true), (false, false)];
+    for (screen, input) in said {
+        assert!(viewing.lift(screen, input));
+    }
+    let deadline = Instant::now() + PATIENCE;
+    while heard.lifts().len() < said.len() {
+        assert!(Instant::now() < deadline, "the source heard too few lifts");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(
+        heard.lifts(),
+        said.map(|(screen, input)| Lift { screen, input })
+    );
+    drop(handle);
+}
+
+#[tokio::test]
+async fn a_screen_that_is_not_private_cannot_be_lifted_even_on_a_node_that_keeps_one() {
+    let rig = Rig::keeping_private(Plan::Accept).await;
+    let (outcome, heard) = rig.share(window().with_control()).await;
+    let ShareOutcome::Started(_handle) = outcome.unwrap() else {
+        panic!("the window was not shared");
+    };
+    assert!(!rig.app.asked()[0].private);
+    let viewing = rig.app.handle(0);
+    assert!(!viewing.private());
+    assert!(!viewing.lift(true, true));
+    tokio::time::sleep(QUIET).await;
+    assert_eq!(heard.lifts(), []);
+}
+
+#[tokio::test]
+async fn a_private_screen_is_not_offered_by_a_node_that_was_not_set_up_to_keep_one() {
+    let rig = Rig::new(Plan::Accept).await;
+    let (outcome, _) = rig.share(window().with_control().with_private()).await;
+    assert!(matches!(outcome, Err(Error::Config(_))), "{outcome:?}");
+    // Nothing reached the person, and the place is free for a window that is not private.
+    assert_eq!(rig.app.asked().len(), 0);
+    let (outcome, _) = rig.share(window().with_control()).await;
+    assert!(
+        matches!(outcome, Ok(ShareOutcome::Started(_))),
+        "{outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_private_screen_is_for_a_session_that_is_controlled() {
+    let rig = Rig::keeping_private(Plan::Accept).await;
+    let (outcome, _) = rig.share(window().with_private()).await;
+    assert!(matches!(outcome, Err(Error::Config(_))), "{outcome:?}");
+    assert_eq!(rig.app.asked().len(), 0);
 }
 
 /// A picture is sent and shown, so that a position on the viewer has a picture to be in.

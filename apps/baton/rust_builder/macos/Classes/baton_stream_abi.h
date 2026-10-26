@@ -124,6 +124,10 @@ extern "C" {
 /* The flags of screen. */
 #define BATON_SCREEN_PRIVATE 1u
 
+/* The bits of lift. */
+#define BATON_LIFT_SCREEN 1u
+#define BATON_LIFT_INPUT 2u
+
 /* The flags of a frame. */
 #define BATON_FRAME_KEY 1u
 #define BATON_FRAME_RECOVERY 2u
@@ -598,7 +602,7 @@ typedef struct BatonViewerVTable {
 
 /*
  * The functions of the platform that shares windows. All of them are mandatory but the last
- * three. The first three are about the device and take the context of the table; the others are
+ * four. The first three are about the device and take the context of the table; the others are
  * about one window, and take the pointer that baton_stream_pick_done gave. BatonEndedFn and
  * BatonReleaseFn are the types of ended and release above, with the pointer of the window in
  * place of the one of the screen.
@@ -693,6 +697,33 @@ typedef struct BatonViewerVTable {
  *                the session is over, whatever the cause, the device is locked again. A display
  *                that is released without start changes nothing at the device. A flag that the
  *                platform does not know makes the call fail.
+ *
+ * The last one is about a screen that was given with BATON_SCREEN_PRIVATE, and takes the pointer
+ * of the window. A platform that cannot let the device that controls the screen lift what keeps
+ * it private leaves it NULL (a table that ends at screen is accepted): the screen then stays as
+ * the promise of screen says for the whole session, and the device that controls it is not told
+ * that it can lift anything.
+ *
+ *   lift:        the person at the device that controls the screen switched what keeps this
+ *                device private. lifted is all that is lifted now, a sum of BATON_LIFT_SCREEN
+ *                (what is on the screens may be seen at this device) and BATON_LIFT_INPUT (the
+ *                keyboard and the pointer of this device may be used at it), and each call
+ *                replaces the one before. A session starts with 0, which is the promise of
+ *                screen, and the person may switch either bit on and off as often as they like:
+ *                the platform puts a bit back as readily as it lifts it. Called after a start
+ *                that returned BATON_OK and not after ended, from the one thread that also calls
+ *                start, ended, release, surroundings and post, and ahead of the events that wait
+ *                for that thread. Calls that wait together are folded into the last, so a
+ *                platform that was slow to answer hears how things stand and not each step on
+ *                the way. A bit that is not listed above is never set.
+ *
+ *                Nothing else of the promise of screen changes. While BATON_LIFT_INPUT is lifted
+ *                the platform does not take what is typed or moved at this device for a reason
+ *                to end the session, since the person at the other device let it be used. A
+ *                session that ends, whatever the cause and whatever is lifted, puts everything
+ *                back and then locks the device. A lift that cannot be put back is not reported
+ *                here: the platform ends the session with baton_stream_source_end, from a thread
+ *                of its own, and the device is locked.
  */
 typedef uint32_t (*BatonControlFn)(void *context);
 typedef int32_t (*BatonPickFn)(void *context, uint64_t request, BatonMessage *message);
@@ -703,12 +734,15 @@ typedef int32_t (*BatonSurroundingsFn)(void *picked, BatonSurroundings *surround
 typedef int32_t (*BatonPostFn)(void *picked, const BatonPost *post);
 typedef int32_t (*BatonScreenFn)(void *context, uint32_t flags, BatonPicked *picked,
                                  BatonMessage *message);
+typedef void (*BatonLiftFn)(void *picked, uint32_t lifted);
 
 /*
  * What the platform registers to share windows, as the table above does to show them. A table of
- * the size it had before input was carried (72 bytes, ending at release) is accepted: the three
+ * the size it had before input was carried (72 bytes, ending at release) is accepted: the four
  * functions it lacks read as NULL. So is one of the size it had before the screen could be given
- * without a picker (88 bytes, ending at post): the function it lacks reads as NULL.
+ * without a picker (88 bytes, ending at post): the two functions it lacks read as NULL. So is one
+ * of the size it had before the privacy of a screen could be lifted (96 bytes, ending at screen):
+ * the function it lacks reads as NULL.
  */
 typedef struct BatonSharerVTable {
     uint32_t version;
@@ -724,6 +758,7 @@ typedef struct BatonSharerVTable {
     BatonSurroundingsFn surroundings;
     BatonPostFn post;
     BatonScreenFn screen;
+    BatonLiftFn lift;
 } BatonSharerVTable;
 
 /* The version of the interface that the library was built with, for the platform to compare. */
@@ -1059,7 +1094,7 @@ BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, state) == 56, "BatonViewerVTable
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, ended) == 64, "BatonViewerVTable.ended");
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, release) == 72, "BatonViewerVTable.release");
 
-BATON_STATIC_ASSERT(sizeof(BatonSharerVTable) == 96, "BatonSharerVTable");
+BATON_STATIC_ASSERT(sizeof(BatonSharerVTable) == 104, "BatonSharerVTable");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, version) == 0, "BatonSharerVTable.version");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, size) == 4, "BatonSharerVTable.size");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, context) == 8, "BatonSharerVTable.context");
@@ -1075,6 +1110,7 @@ BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, surroundings) == 72,
                     "BatonSharerVTable.surroundings");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, post) == 80, "BatonSharerVTable.post");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, screen) == 88, "BatonSharerVTable.screen");
+BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, lift) == 96, "BatonSharerVTable.lift");
 
 #ifdef __cplusplus
 }

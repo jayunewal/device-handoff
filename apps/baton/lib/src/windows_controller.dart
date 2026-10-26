@@ -47,6 +47,11 @@ final class WindowFailed extends WindowNote {
 /// How large the picture of a window is, in pixels.
 typedef PictureSize = ({int width, int height});
 
+/// What the person has lifted of the privacy of a screen of another device that this one controls:
+/// whether its screens show what is on them ([screen]), and whether its keyboard and trackpad can
+/// be used at it ([input]). Both are off when the session starts.
+typedef LiftedPrivacy = ({bool screen, bool input});
+
 /// What the other device did not do of what the person did on a window that is shown here: it
 /// dropped [count] events, and [reason] is the rule that dropped the most of them.
 typedef WindowDropped = ({
@@ -93,6 +98,7 @@ class WindowsController extends ChangeNotifier {
   bool _askingControl = false;
   final List<WindowSession> _sessions = [];
   final Map<int, PictureSize> _pictures = {};
+  final Map<int, LiftedPrivacy> _lifted = {};
   final List<WindowNote> _notes = [];
 
   /// What this device does with windows. Offer only what is possible.
@@ -131,6 +137,13 @@ class WindowsController extends ChangeNotifier {
   /// lays out the picture by this and not by `WindowSession.width` and `height`.
   PictureSize? pictureOf(WindowSession session) =>
       _pictures[session.id.toInt()];
+
+  /// What the person has lifted of the privacy of [session], which is a screen of another device
+  /// that this one controls (`WindowSession.private`): whether its screens show what is on them,
+  /// and whether its keyboard and trackpad can be used at it. Both are off when the session
+  /// starts, whatever they were in the last one: nothing is remembered for a device.
+  LiftedPrivacy liftedOf(WindowSession session) =>
+      _lifted[session.id.toInt()] ?? (screen: false, input: false);
 
   /// Each offer as it comes, so that a screen that covers the list can say that one waits.
   Stream<WindowRequest> get asked => _asked.stream;
@@ -213,6 +226,7 @@ class WindowsController extends ChangeNotifier {
         final index = _sessions.indexWhere((s) => s.id == id);
         if (index < 0) return;
         _pictures.remove(id.toInt());
+        _lifted.remove(id.toInt());
         final session = _sessions.removeAt(index);
         // The person who ended it knows.
         if (end is! WindowEnd_ThisDevice) _note(WindowOver(session, end));
@@ -313,6 +327,7 @@ class WindowsController extends ChangeNotifier {
     final kept = _sessions.length;
     _sessions.removeWhere((s) => s.id == session.id);
     _pictures.remove(session.id.toInt());
+    _lifted.remove(session.id.toInt());
     if (_sessions.length != kept) _settle();
     return running;
   }
@@ -330,6 +345,29 @@ class WindowsController extends ChangeNotifier {
   /// leaves the screen with a finger on it.
   void releaseInput(WindowSession session) =>
       _session.releaseWindowInput(session.id.toInt());
+
+  /// Switches what the people at the device that shares [session] may do while this one controls
+  /// it: [screen] is whether they see its screens, [input] whether they use its keyboard and
+  /// trackpad. A side that is left out stays as it is, and either may be switched on and off as
+  /// often as the person likes. Returns whether the other device was told. When it was not (the
+  /// session is not private, it is over, or the other device has stopped reading) things stay as
+  /// they were, and [liftedOf] says so. Saying what already is tells the other device nothing. The
+  /// other device puts both back when the session ends, and so does this one. The rules of what
+  /// may be sent are kept in Rust, once, and not repeated here.
+  bool lift(WindowSession session, {bool? screen, bool? input}) {
+    final now = liftedOf(session);
+    final next = (screen: screen ?? now.screen, input: input ?? now.input);
+    if (next == now) return true;
+    final told = _session.windowLift(
+      session.id.toInt(),
+      screen: next.screen,
+      input: next.input,
+    );
+    if (!told) return false;
+    _lifted[session.id.toInt()] = next;
+    notifyListeners();
+    return true;
+  }
 
   /// How [session] ended, if it ended some other way than the person ending it and the person
   /// has not put it away.
