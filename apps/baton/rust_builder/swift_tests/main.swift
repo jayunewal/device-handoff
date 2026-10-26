@@ -1193,6 +1193,18 @@ tests += [
     "a decoder or an output that cannot be made ends the run quietly",
     testADecoderOrAnOutputThatCannotBeMadeEndsTheRunQuietly
   ),
+  (
+    "a run that could not be made is tried again on a packet after a second",
+    testARunThatCouldNotBeMadeIsTriedAgainOnAPacketAfterASecond
+  ),
+  (
+    "a run that keeps failing is tried again once per second",
+    testARunThatKeepsFailingIsTriedAgainOncePerSecond
+  ),
+  (
+    "a run stopped before it was made is not tried again, and a new run takes its place",
+    testARunThatWasStoppedBeforeItWasMadeIsNotTriedAgainAndANewOneIsTriedInItsForm
+  ),
   ("the packet is copied before play returns", testThePacketIsCopiedBeforePlayReturns),
   (
     "closing does not wait for the output to start and stops it afterwards",

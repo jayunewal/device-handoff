@@ -293,18 +293,36 @@ final class SoundRing {
 /// the output, decodes the packets one after the other and writes them to the ring, which the
 /// device reads from a thread of its own. A call that comes when the speaker has been closed does
 /// nothing.
+///
+/// A run that cannot be made or started is not given up: what stopped it may be over in a moment
+/// (a phone call holds the audio session of the phone, and an output may come back), so the form
+/// is kept, and the next packet that comes a second or more after the last try makes it again.
 final class ScreenSpeaker {
   private let queue = DispatchQueue(
     label: "io.github.jayunewal.baton.speaker", qos: .userInteractive)
   private let makeDecoder: (SoundForm) throws -> SoundDecoder
   private let makeOutput: (SoundForm, SoundRing) throws -> SoundOutput
   private let levels: SoundLevels
+  private let retryAfter: TimeInterval
+  private let clock: () -> TimeInterval
 
   private let lock = NSLock()
   private var closed = false
 
   /// The run that goes, or nil. Only the queue touches it.
   private var run: Run?
+
+  /// The run that could not be made or started, and is tried again, or nil. Only the queue touches
+  /// it.
+  private var waiting: Waiting?
+
+  private struct Waiting {
+    var form: SoundForm
+    /// How many times it has been tried.
+    var tries: Int
+    /// The time on the clock from which the next try is made.
+    var at: TimeInterval
+  }
 
   /// What belongs to one run of sound, from a `sound` to the call that ends it.
   private final class Run {
@@ -331,12 +349,18 @@ final class ScreenSpeaker {
 
   /// `makeDecoder` makes the decoder for a form, and `makeOutput` the output that plays a ring of
   /// it; either one throws when the device cannot. Both are called from the queue of the speaker.
+  /// A run that could not be made is tried again `retryAfter` seconds after the last try, on a
+  /// packet, by `clock`.
   init(
     levels: SoundLevels = .standard,
+    retryAfter: TimeInterval = 1,
+    clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
     makeDecoder: @escaping (SoundForm) throws -> SoundDecoder,
     makeOutput: @escaping (SoundForm, SoundRing) throws -> SoundOutput
   ) {
     self.levels = levels
+    self.retryAfter = retryAfter
+    self.clock = clock
     self.makeDecoder = makeDecoder
     self.makeOutput = makeOutput
   }
@@ -392,13 +416,13 @@ final class ScreenSpeaker {
     return closed
   }
 
-  private func startRun(_ form: SoundForm) {
+  /// Makes the run, or keeps the form to try again. `tries` is how many times it was tried before.
+  private func startRun(_ form: SoundForm, tries: Int = 0) {
     let decoder: SoundDecoder
     do {
       decoder = try makeDecoder(form)
     } catch {
-      report("make the decoder", error)
-      return
+      return failed(form, tries: tries, "make the decoder", error)
     }
     let ring = SoundRing(rate: Int(form.rate), channels: Int(form.channels), levels: levels)
     let output: SoundOutput
@@ -406,21 +430,33 @@ final class ScreenSpeaker {
       output = try makeOutput(form, ring)
     } catch {
       decoder.invalidate()
-      report("make the output", error)
-      return
+      return failed(form, tries: tries, "make the output", error)
     }
     do {
       try output.start()
     } catch {
       output.stop()
       decoder.invalidate()
-      report("start the output", error)
-      return
+      return failed(form, tries: tries, "start the output", error)
     }
+    waiting = nil
     run = Run(form: form, decoder: decoder, ring: ring, output: output)
+    if tries > 0 {
+      NSLog("Baton: the sound of a screen plays now, after %ld tries.", tries + 1)
+    }
+  }
+
+  /// The run could not be made: it is told in the log the first time, and tried again after a
+  /// while.
+  private func failed(_ form: SoundForm, tries: Int, _ step: String, _ error: Error) {
+    if tries == 0 { report(step, error) }
+    waiting = Waiting(form: form, tries: tries + 1, at: clock() + retryAfter)
   }
 
   private func decode(_ bytes: Data, first: Bool, lost: UInt64) {
+    if run == nil, let again = waiting, clock() >= again.at {
+      startRun(again.form, tries: again.tries)
+    }
     guard let run else { return }
     run.owed = first ? 0 : run.owed &+ min(lost, ScreenSpeaker.mostCovered)
     // A decoder goes on from the packet before, and these do not: the first of a run, and the one
@@ -444,6 +480,7 @@ final class ScreenSpeaker {
   }
 
   private func endRun() {
+    waiting = nil
     guard let old = run else { return }
     run = nil
     // The output first, so that nothing reads the ring when the decoder is let go of.
