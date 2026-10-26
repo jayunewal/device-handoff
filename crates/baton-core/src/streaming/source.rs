@@ -24,6 +24,12 @@
 //! encoding, because no one may be watching, and one that has had none for longer ends the
 //! session. A session ends once: the platform is told, the frames in flight are reset, and later
 //! streams of the session are stopped with code 499.
+//!
+//! The sound of a display goes the same way, a packet on a stream of its own, and follows the rules
+//! of `baton_stream::sound::send`. The viewer asks for it ([`SourceEvents::hear`]), the platform
+//! answers with [`SourceHandle::begin_sound`] when it captures, or [`SourceHandle::silent`] when
+//! it cannot, and hands over the packets with [`SourceHandle::sound`]. A session of a window has no
+//! sound, and the source says so itself.
 
 use std::{
     collections::HashMap,
@@ -36,24 +42,34 @@ use std::{
 };
 
 use baton_proto::{
-    DeviceId, close_code, id::SessionId, limits::MAX_PICTURE_BYTES, message::Message,
+    DeviceId, close_code,
+    id::SessionId,
+    limits::{MAX_PICTURE_BYTES, MAX_SOUND_PACKET_BYTES},
+    message::Message,
     stream::StopReason,
 };
 use baton_stream::{
-    MAX_FRAME_STREAMS,
+    MAX_FRAME_STREAMS, MAX_SOUND_STREAMS,
     control::{
-        Config, InputBatch, KeyFrame, Pause, PauseReason, Report, SourceMessage, ViewerMessage,
-        Want,
+        Config, Hear, InputBatch, KeyFrame, Pause, PauseReason, Report, Silent, SilentReason,
+        Sound, SourceMessage, ViewerMessage, Want,
     },
     gate::{Notices, Reason},
     header::{FrameHeader, FrameKind},
     sender::{Encoded, LtrToken, Params as Rules, Path, Sender, Sent, Stats},
+    sound::{
+        PacketHeader,
+        send::{Params as SoundRules, Sent as SoundSent, Stats as SoundStats},
+    },
 };
 use iroh::endpoint::{Connection, SendStream, WriteError};
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
-use super::{ControlEnd, End, Streaming, Takes, WriteEnd, read_control, stop, write_control};
+use super::{
+    ControlEnd, End, SoundPacket, SoundPlan, Streaming, Takes, WriteEnd, read_control, sound, stop,
+    write_control,
+};
 use crate::{
     error::{Error, Result},
     gate::code,
@@ -66,6 +82,10 @@ use crate::{
 /// A frame goes after the requests and the control streams, which are at 0, and before the
 /// lanes of a file transfer, which are at -2. See ADR 0009.
 const FRAME_PRIORITY: i32 = -1;
+
+/// A packet of sound goes at the priority of the requests and the control streams, so that it
+/// never waits behind a frame or a lane. See ADR 0012.
+const SOUND_PRIORITY: i32 = 0;
 
 /// How many messages to the viewer wait to be written. A message that finds the queue full is
 /// dropped: a viewer that reads nothing for this long is not going to read it.
@@ -123,6 +143,23 @@ pub trait SourceEvents: Send + 'static {
     /// again on its own frame clock.
     fn recovery(&mut self);
 
+    /// Whether the sound of the screen is wanted: the viewer asked to hear it and has not turned
+    /// it off, and has not gone quiet. Only in a session of a whole display, on a device that was
+    /// set up to send sound ([`NodeBuilder::share_sound`](crate::NodeBuilder::share_sound)).
+    ///
+    /// On `true` the platform captures the sound, and says what its packets are with
+    /// [`SourceHandle::begin_sound`], or says why it cannot with [`SourceHandle::silent`]. This is
+    /// said again, with nothing in between, when the viewer asks again to hear while no run of
+    /// sound is going, as it does to try again after a `Silent`. On `false` it stops capturing and
+    /// lets the screen's sound play again. A viewer that has gone quiet, with no report for ten
+    /// seconds, does not hear, so the sound of the screen is not held back for a viewer that is not
+    /// there.
+    ///
+    /// The default does nothing: a platform that cannot capture sound is not asked.
+    fn hear(&mut self, on: bool) {
+        let _ = on;
+    }
+
     /// The session is over. The platform lets go of everything it holds for it, and is called no
     /// more.
     fn ended(&mut self);
@@ -149,6 +186,10 @@ impl SourceEvents for Box<dyn SourceEvents> {
         (**self).recovery();
     }
 
+    fn hear(&mut self, on: bool) {
+        (**self).hear(on);
+    }
+
     fn ended(&mut self) {
         (**self).ended();
     }
@@ -160,6 +201,8 @@ impl SourceEvents for Box<dyn SourceEvents> {
 pub(crate) struct SourceParams {
     /// The rules for the frames in flight.
     pub(crate) rules: Rules,
+    /// The rules for the packets of sound in flight.
+    pub(crate) sound: SoundRules,
     /// How often the source looks at the clock, to give up on frames that are late.
     pub(crate) tick_every: Duration,
     /// Without a report for this long nothing is encoded.
@@ -174,6 +217,7 @@ impl Default for SourceParams {
     fn default() -> Self {
         Self {
             rules: Rules::default(),
+            sound: SoundRules::default(),
             tick_every: Duration::from_millis(100),
             quiet_after: Duration::from_secs(10),
             silent_after: Duration::from_secs(30),
@@ -192,6 +236,8 @@ pub(crate) struct SourceSetup {
     /// What the viewer said it can take. The first picture format and every later one stay
     /// within it.
     pub(crate) takes: Takes,
+    /// What the session does about sound.
+    pub(crate) sound: SoundPlan,
     /// The limits.
     pub(crate) params: SourceParams,
 }
@@ -222,9 +268,10 @@ pub struct Picture {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum NotSent {
-    /// The picture is larger than a viewer takes. Nothing was sent, and the next frame is made
-    /// again as the same kind of frame; the encoder is to make smaller ones.
-    #[error("the picture is larger than the protocol allows")]
+    /// The picture, or the packet of sound, is larger than a viewer takes. Nothing was sent, and
+    /// the next frame is made again as the same kind of frame; the encoder is to make smaller
+    /// pictures.
+    #[error("the picture or the packet is larger than the protocol allows")]
     TooLarge,
     /// The session is over.
     #[error("the session is over")]
@@ -239,6 +286,10 @@ pub struct SourceStats {
     pub frames: Stats,
     /// The frame streams that are open or being reset.
     pub streams: usize,
+    /// What the rules for the packets of sound have counted.
+    pub sound: SoundStats,
+    /// The packet streams that are open or being reset.
+    pub sound_streams: usize,
 }
 
 /// How a frame's stream ended.
@@ -256,6 +307,7 @@ enum Outcome {
 
 struct Core {
     sender: Sender,
+    sound: sound::Sounding,
     events: Box<dyn SourceEvents>,
     notices: Notices,
     /// The frame streams that are open or being reset, by the number of the frame. Cancelling a
@@ -289,6 +341,36 @@ impl Core {
         }
         self.recovery_told = pending;
     }
+
+    /// The viewer sent a `Hear`, in a session of a display.
+    fn heard(&mut self, on: bool) {
+        self.sound.hear = on;
+        if !on {
+            self.sound.running = false;
+        }
+        // A `Hear` that is on asks the platform to try again when no run goes, also when it was
+        // told to listen already: the last try may have ended in a `Silent`.
+        let again = on && self.sound.told && !self.sound.running && !self.quiet;
+        self.check_listening();
+        if again {
+            self.events.hear(true);
+        }
+    }
+
+    /// Tells the platform whether the sound of the screen is wanted, when that has changed: the
+    /// viewer wants to hear and has not gone quiet. A viewer that has gone quiet does not keep the
+    /// screen's sound from playing, and the run it had is over.
+    fn check_listening(&mut self) {
+        let listening = self.sound.hear && !self.quiet;
+        if listening == self.sound.told {
+            return;
+        }
+        self.sound.told = listening;
+        if !listening {
+            self.sound.running = false;
+        }
+        self.events.hear(listening);
+    }
 }
 
 /// The source's side of one session.
@@ -304,6 +386,8 @@ pub(super) struct Source {
     control: bool,
     /// What the viewer takes, which the pictures stay within.
     takes: Takes,
+    /// What the session does about sound.
+    sound: SoundPlan,
     began: Instant,
     core: Mutex<Core>,
     /// What the source says to the viewer, in the order in which it says it.
@@ -466,7 +550,94 @@ impl SourceHandle {
         SourceStats {
             frames: core.sender.stats(),
             streams: core.frames.len(),
+            sound: core.sound.sender.stats(),
+            sound_streams: core.sound.packets.len(),
         }
+    }
+
+    /// The platform captures the sound of the screen and has encoded the first of it: says what
+    /// the packets that follow are, and begins a run of sound. The platform asks for this when
+    /// [`SourceEvents::hear`] said `true`. Nothing happens if the viewer has turned sound off
+    /// meanwhile (the platform is told that with `hear(false)`), or the session is over.
+    ///
+    /// A session has one form of sound: the first call that is acted on fixes it, and a later run
+    /// has to be in the same form. A platform whose capture changes, because the person chose
+    /// another output on the Mac, say, converts the sound.
+    ///
+    /// # Errors
+    ///
+    /// `sound` is beyond a limit of the protocol, or differs from the form of an earlier run of
+    /// the session. Nothing changed.
+    pub fn begin_sound(&self, sound: Sound) -> Result<()> {
+        sound::check(sound)?;
+        let source = &self.source;
+        let mut core = lock(&source.core);
+        if source.end.get().is_some() || !core.sound.hear || core.quiet {
+            return Ok(());
+        }
+        if core.sound.format.is_some_and(|format| format != sound) {
+            return Err(Error::Config(
+                "the sound is not in the form that the session began with".to_owned(),
+            ));
+        }
+        core.sound.format = Some(sound);
+        core.sound.running = true;
+        core.sound.sender.begin_run();
+        drop(core);
+        source.say(SourceMessage::Sound(sound));
+        Ok(())
+    }
+
+    /// The platform cannot send the sound that the viewer asked for, or can no more: says why and
+    /// ends the run, if one goes. The viewer can ask again with another `Hear`, which the platform
+    /// is told ([`SourceEvents::hear`]). Nothing is said to a viewer that does not want to hear.
+    pub fn silent(&self, reason: SilentReason) {
+        let source = &self.source;
+        let mut core = lock(&source.core);
+        if source.end.get().is_some() || !core.sound.hear {
+            return;
+        }
+        core.sound.running = false;
+        drop(core);
+        source.say(SourceMessage::Silent(Silent { reason }));
+    }
+
+    /// The platform encoded a packet of sound: writes it on a stream of its own. Returns the
+    /// number it got, or `None` if it was not sent because no run of sound is going (the viewer
+    /// turned sound off, or has not been told yet what the packets are), or because the viewer
+    /// takes no more streams just now. A packet that is not sent because there is no room still
+    /// takes a number, so that the viewer sees that it is missing.
+    ///
+    /// # Errors
+    ///
+    /// The packet is larger than a viewer takes, or the session is over. Nothing was sent.
+    pub fn sound(&self, packet: SoundPacket) -> std::result::Result<Option<u64>, NotSent> {
+        let source = &self.source;
+        let rtt = source.path().rtt;
+        let now = source.now();
+        let mut core = lock(&source.core);
+        if source.end.get().is_some() {
+            return Err(NotSent::Over);
+        }
+        if packet.bytes.len() > MAX_SOUND_PACKET_BYTES {
+            return Err(NotSent::TooLarge);
+        }
+        if !core.sound.running {
+            return Ok(None);
+        }
+        if core.sound.packets.len() >= MAX_SOUND_STREAMS {
+            core.sound.sender.skip();
+            return Ok(None);
+        }
+        let SoundSent { header, reset } = core.sound.sender.sent(now, packet.capture_time, rtt);
+        core.sound.reset(&reset);
+        let cancel = source.ended.child_token();
+        core.sound.packets.insert(header.number, cancel.clone());
+        drop(core);
+        source
+            .runtime
+            .spawn(Arc::clone(source).send_packet(header, packet.bytes, cancel));
+        Ok(Some(header.number))
     }
 
     /// The time since the session began. It is the clock of the capture times of the pictures
@@ -515,6 +686,7 @@ impl Source {
             mut config,
             control,
             takes,
+            sound,
             params,
         } = setup;
         let sender = Sender::new(whom.session, params.rules);
@@ -536,9 +708,11 @@ impl Source {
             params,
             control,
             takes,
+            sound,
             began: Instant::now(),
             core: Mutex::new(Core {
                 sender,
+                sound: sound::Sounding::new(whom.session, params.sound),
                 events,
                 notices: Notices::new(),
                 frames: HashMap::new(),
@@ -676,9 +850,9 @@ impl Source {
         }
     }
 
-    /// Looks at the clock: gives up on the frames that are late, says what the viewer's events
-    /// were dropped for, and ends the session of a viewer that has gone quiet. `Break` once the
-    /// session is over.
+    /// Looks at the clock: gives up on the frames and the packets that are late, says what the
+    /// viewer's events were dropped for, and ends the session of a viewer that has gone quiet.
+    /// `Break` once the session is over.
     fn on_tick(&self) -> ControlFlow<()> {
         let now = self.now();
         let mut core = lock(&self.core);
@@ -689,9 +863,12 @@ impl Source {
         let reset = core.sender.poll(now);
         core.reset(&reset);
         core.check_recovery();
+        let reset = core.sound.sender.poll(now);
+        core.sound.reset(&reset);
         let notice = core.notices.poll(now);
         let silence = now.saturating_sub(core.last_report);
         core.quiet = silence > self.params.quiet_after;
+        core.check_listening();
         drop(core);
         if let Some(notice) = notice {
             self.say(SourceMessage::Notice(notice));
@@ -739,6 +916,7 @@ impl Source {
             ViewerMessage::Report(report) => {
                 core.last_report = now;
                 core.quiet = false;
+                core.check_listening();
                 core.events.report(report);
             }
             ViewerMessage::Want(want) => core.events.want(want),
@@ -758,9 +936,20 @@ impl Source {
                     }
                 }
             }
-            // A viewer sends a `Hear` only to a source that advertised `stream.sound`, and this
-            // source does not yet (protocol.md section 9).
-            ViewerMessage::Hear(_) => return ControlFlow::Break(()),
+            ViewerMessage::Hear(Hear { on }) => match self.sound {
+                // A viewer sends a `Hear` only to a source that advertised `stream.sound`, and
+                // only if it advertised `stream.hear` itself (protocol.md section 9).
+                SoundPlan::None => return ControlFlow::Break(()),
+                // Sound goes with a whole display and with nothing smaller.
+                SoundPlan::Window => {
+                    if on {
+                        self.say(SourceMessage::Silent(Silent {
+                            reason: SilentReason::Window,
+                        }));
+                    }
+                }
+                SoundPlan::Display => core.heard(on),
+            },
         }
         ControlFlow::Continue(())
     }
@@ -787,6 +976,32 @@ impl Source {
             self.end(End::Internal);
             return Outcome::Gone;
         };
+        self.write_stream(&start, picture, FRAME_PRIORITY, cancel)
+            .await
+    }
+
+    /// Writes one packet of sound on a stream of its own, and settles what became of it.
+    async fn send_packet(
+        self: Arc<Self>,
+        header: PacketHeader,
+        packet: Vec<u8>,
+        cancel: CancellationToken,
+    ) {
+        let outcome = self
+            .write_stream(&header.encode(), packet, SOUND_PRIORITY, &cancel)
+            .await;
+        self.settle_packet(header.number, outcome);
+    }
+
+    /// Opens a stream, writes `start` and then `body` on it, finishes it, and waits until the
+    /// viewer's transport has all of it. Resets the stream when `cancel` says so, at any point.
+    async fn write_stream(
+        &self,
+        start: &[u8],
+        body: Vec<u8>,
+        priority: i32,
+        cancel: &CancellationToken,
+    ) -> Outcome {
         let opened = tokio::select! {
             () = cancel.cancelled() => return Outcome::Reset,
             opened = self.connection.open_uni() => opened,
@@ -795,13 +1010,13 @@ impl Source {
             return Outcome::Gone;
         };
         // Nothing to be done if the stream is gone already: the writes say so.
-        let _ = send.set_priority(FRAME_PRIORITY);
+        let _ = send.set_priority(priority);
         let written = tokio::select! {
             () = cancel.cancelled() => None,
-            written = write_all_of(&mut send, &start, &picture) => Some(written),
+            written = write_all_of(&mut send, start, &body) => Some(written),
         };
-        // The transport has what it needs, and the picture is not kept for the wait.
-        drop(picture);
+        // The transport has what it needs, and the body is not kept for the wait.
+        drop(body);
         match written {
             None => return reset_and_wait(&self.connection, send, self.params.tick_every).await,
             Some(Ok(())) => {}
@@ -844,16 +1059,32 @@ impl Source {
             Outcome::Reset | Outcome::Gone => {}
         }
     }
+
+    /// The stream of a packet of sound has stopped counting at the viewer.
+    fn settle_packet(&self, number: u64, outcome: Outcome) {
+        let mut core = lock(&self.core);
+        core.sound.packets.remove(&number);
+        if self.end.get().is_some() {
+            return;
+        }
+        match outcome {
+            Outcome::Acked => core.sound.sender.acked(number),
+            // A packet that the viewer stopped did not arrive, and the next one is not held back
+            // for it: the viewer plays what it has.
+            Outcome::Stopped => core.sound.sender.stopped(number),
+            Outcome::Reset | Outcome::Gone => {}
+        }
+    }
 }
 
-/// Writes the header and the picture.
+/// Writes the start and then the rest of the stream.
 async fn write_all_of(
     send: &mut SendStream,
     start: &[u8],
-    picture: &[u8],
+    body: &[u8],
 ) -> std::result::Result<(), WriteError> {
     send.write_all(start).await?;
-    send.write_all(picture).await
+    send.write_all(body).await
 }
 
 /// Resets the stream, and waits until the viewer's transport has acknowledged the reset, which is
@@ -998,6 +1229,7 @@ mod tests {
             config: config(),
             control,
             takes: takes(),
+            sound: SoundPlan::None,
             params,
         }
     }

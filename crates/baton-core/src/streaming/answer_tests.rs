@@ -17,7 +17,7 @@ use baton_proto::{
     stream::{Codec, Offer, SourceKind, Stop, StopReason, StreamReply, StreamRequest},
 };
 use baton_stream::{
-    control::{InputBatch, Report, SourceMessage, Thermal, Want},
+    control::{InputBatch, Report, SilentReason, Sound, SourceMessage, Thermal, Want},
     header::FrameHeader,
 };
 use iroh::endpoint::Connection;
@@ -65,6 +65,59 @@ impl Log {
 
     pub(super) fn has(&self, told: &Told) -> bool {
         self.all().contains(told)
+    }
+}
+
+/// What a speaker of a test was told.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Spoken {
+    Sound(Sound),
+    Play(Play, Vec<u8>),
+    Stopped(Option<SilentReason>),
+    Ended,
+}
+
+#[derive(Clone, Default)]
+pub(super) struct Speech(Arc<Mutex<Vec<Spoken>>>);
+
+impl Speech {
+    pub(super) fn all(&self) -> Vec<Spoken> {
+        lock(&self.0).clone()
+    }
+
+    /// The packets that were played, in order: the number, whether the decoder starts afresh, how
+    /// many were skipped before it, and the packet.
+    pub(super) fn played(&self) -> Vec<(u64, bool, u64, Vec<u8>)> {
+        self.all()
+            .into_iter()
+            .filter_map(|spoken| match spoken {
+                Spoken::Play(play, packet) => {
+                    Some((play.number, play.first, play.lost_before, packet))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+/// A speaker that writes down what it is told.
+pub(super) struct Speaking(pub(super) Speech);
+
+impl Speaker for Speaking {
+    fn sound(&mut self, sound: Sound) {
+        lock(&(self.0).0).push(Spoken::Sound(sound));
+    }
+
+    fn play(&mut self, play: Play, packet: Vec<u8>) {
+        lock(&(self.0).0).push(Spoken::Play(play, packet));
+    }
+
+    fn stopped(&mut self, why: Option<SilentReason>) {
+        lock(&(self.0).0).push(Spoken::Stopped(why));
+    }
+
+    fn ended(&mut self) {
+        lock(&(self.0).0).push(Spoken::Ended);
     }
 }
 
@@ -116,6 +169,8 @@ pub(super) struct App {
     handles: Mutex<Vec<ViewHandle>>,
     /// What the decoders of those sessions were told.
     pub(super) log: Log,
+    /// What the speakers of those sessions were told.
+    pub(super) speech: Speech,
 }
 
 impl App {
@@ -126,6 +181,7 @@ impl App {
             taken_back: AtomicUsize::new(0),
             handles: Mutex::default(),
             log: Log::default(),
+            speech: Speech::default(),
         })
     }
 
@@ -155,6 +211,7 @@ impl App {
         )
         .unwrap()
         .within(quick())
+        .with_speaker(Speaking(self.speech.clone()))
     }
 }
 
@@ -673,6 +730,10 @@ impl SourceEvents for Platform {
     fn held(&mut self, _: Vec<baton_stream::sender::LtrToken>) {}
 
     fn recovery(&mut self) {}
+
+    fn hear(&mut self, on: bool) {
+        lock(&(self.0).lines).push(if on { "hear" } else { "hush" }.to_owned());
+    }
 
     fn ended(&mut self) {
         lock(&(self.0).lines).push("ended".to_owned());

@@ -318,7 +318,7 @@ The reference implementation also applies the following by default. They are not
 | How late a packet of sound may be before the source resets its stream, counted from when the stream was written | 200 milliseconds and two round trips, at most 1 second |
 | How long a viewer holds a packet of sound that comes before the one it expects, before it goes on without the ones that did not come | 40 milliseconds |
 | Packets of sound that wait for an earlier one. Beyond that the viewer goes on without what is missing before the hold is over | 64 |
-| Time that a frame stream may deliver nothing, and that the rest of a message of a control stream may take to arrive once its length has. A stream that is slower is stopped with code 408 | 10 seconds |
+| Time that a frame stream or a packet stream may deliver nothing, and that the rest of a message of a control stream may take to arrive once its length has. A stream that is slower is stopped with code 408 | 10 seconds |
 | Time that a source has to open its control stream once the viewer has accepted. A viewer that has not taken one by then ends the session | 10 seconds |
 | Time between two reports of a viewer | 500 milliseconds |
 | Connection attempts let through before a QUIC retry token is asked for, from addresses, and relayed keys that are not paired, that have not proven themselves | 64 a second, together |

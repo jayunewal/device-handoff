@@ -46,7 +46,8 @@ use iroh::endpoint::Connection;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    SourceEvents, SourceHandle, SourceParams, SourceSetup, Streaming, Table, Takes, start::Starter,
+    SoundPlan, SourceEvents, SourceHandle, SourceParams, SourceSetup, Streaming, Table, Takes,
+    start::Starter,
 };
 use crate::{
     error::{Error, Result},
@@ -71,6 +72,9 @@ pub(crate) struct Sharer {
     /// What it needs to start a session when a paired device asks it to, if it does, which is
     /// whether it advertises `stream.start`.
     pub(crate) starter: Option<Starter>,
+    /// Whether the device sends the sound of a display it shares, which is whether it advertises
+    /// `stream.sound`.
+    pub(crate) sound: bool,
 }
 
 /// The place of the one session that a device has as a source, from the offer to the session.
@@ -207,6 +211,11 @@ impl WindowShare {
     pub(crate) fn control(&self) -> bool {
         self.control
     }
+
+    /// Whether what is shared is a whole display.
+    pub(crate) fn is_display(&self) -> bool {
+        self.source == SourceKind::Display
+    }
 }
 
 // What a window is called can name a document, a person or a page.
@@ -253,12 +262,22 @@ pub(crate) struct Offered<'a> {
     pub(crate) session: SessionId,
     /// Whether the viewer is to control the window.
     pub(crate) control: bool,
+    /// Whether what is offered is a whole display.
+    pub(crate) display: bool,
+    /// Whether the viewer advertised `stream.hear`.
+    pub(crate) plays: bool,
 }
 
 impl Streaming {
     /// Whether this device takes part as a source, which is whether it advertises `stream.share`.
     pub(crate) fn shares(&self) -> bool {
         self.sharer.is_some()
+    }
+
+    /// Whether this device sends the sound of a display it shares, which is whether it advertises
+    /// `stream.sound`.
+    pub(crate) fn sounds(&self) -> bool {
+        self.sharer.as_ref().is_some_and(|sharer| sharer.sound)
     }
 
     /// Whether this device takes input from a viewer, which is whether it advertises
@@ -359,6 +378,7 @@ impl Streaming {
             config,
             control: offered.control,
             takes,
+            sound: SoundPlan::of(self.sounds(), offered.plays, offered.display),
             params: SourceParams::default(),
         };
         let started = self.source(

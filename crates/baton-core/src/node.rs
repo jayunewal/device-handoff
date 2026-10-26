@@ -79,9 +79,9 @@ use crate::{
     shared::Shared,
     slots::{MAX_PAIRING_CONNECTIONS, PairSlots},
     streaming::{
-        CONTROL_STREAMS, FRAME_STREAMS, Offered, Reservation, SETTLE, ShareOutcome, Sharer,
-        SourceEvents, StartHandler, StartOutcome, StartSlot, Starter, Streaming, Takes, Viewer,
-        Viewing, Wanted, WhyNot, WindowHandler, WindowShare, Withdraw, ask,
+        CONTROL_STREAMS, FRAME_STREAMS, Offered, Reservation, SETTLE, SOUND_STREAMS, ShareOutcome,
+        Sharer, SourceEvents, StartHandler, StartOutcome, StartSlot, Starter, Streaming, Takes,
+        Viewer, Viewing, Wanted, WhyNot, WindowHandler, WindowShare, Withdraw, ask,
     },
     transfer::{
         incoming::{FINISH_WAIT, Incoming, LANE_STREAMS, TransferHandler},
@@ -120,12 +120,12 @@ fn incoming_table(
 
 /// Installs what takes the unidirectional streams of the kinds that this node takes part in: the
 /// lanes of a transfer when it receives files, the frames of window streaming when it shows
-/// windows, and the control streams of the sessions it has, as a viewer or as a source. Returns
-/// them with the windows of the node.
+/// windows, the packets of sound when it plays them, and the control streams of the sessions it
+/// has, as a viewer or as a source. Returns them with the windows of the node.
 fn take_streams(
     sinks: Sinks,
     incoming: Option<&Incoming>,
-    windows: Option<Arc<dyn WindowHandler>>,
+    viewer: Option<Viewer>,
     sharer: Option<Sharer>,
     starts: Option<Arc<dyn StartHandler>>,
     intake: &Intake,
@@ -139,8 +139,6 @@ fn take_streams(
         ),
         None => sinks,
     };
-    let viewer =
-        windows.map(|handler| Viewer::new(handler, intake.item_charge(), tuning.approval_timeout));
     let sharer = sharer.map(|sharer| Sharer {
         starter: starts
             .map(|handler| Starter::new(handler, intake.item_charge(), tuning.start_prepare)),
@@ -149,6 +147,11 @@ fn take_streams(
     let streaming = Streaming::taking_part(viewer, sharer);
     let sinks = if streaming.views() {
         sinks.install(Kind::Video, FRAME_STREAMS, streaming.clone())
+    } else {
+        sinks
+    };
+    let sinks = if streaming.hears() {
+        sinks.install(Kind::Sound, SOUND_STREAMS, streaming.clone())
     } else {
         sinks
     };
@@ -244,6 +247,10 @@ pub struct NodeBuilder {
     windows: Option<Arc<dyn WindowHandler>>,
     /// Whether this device shows its own windows to others, and takes input if it does.
     sharing: Option<Sharer>,
+    /// Whether this device sends the sound of the screens it shares.
+    sends_sound: bool,
+    /// Whether this device plays the sound of the screens it is shown.
+    plays_sound: bool,
     /// What the application does when a paired device asks this one to start a session, if it
     /// starts them.
     starts: Option<Arc<dyn StartHandler>>,
@@ -277,6 +284,8 @@ impl NodeBuilder {
             transfers: None,
             windows: None,
             sharing: None,
+            sends_sound: false,
+            plays_sound: false,
             starts: None,
             holds: None,
             clock: Arc::new(SystemClock),
@@ -327,7 +336,33 @@ impl NodeBuilder {
         self.sharing = Some(Sharer {
             control,
             starter: None,
+            sound: false,
         });
+        self
+    }
+
+    /// Has this device send the sound that it plays along with a whole display that it shares,
+    /// when the viewer asks to hear it ([`SourceEvents::hear`]).
+    ///
+    /// It needs [`share_windows`](Self::share_windows), and [`bind`](Self::bind) fails without it.
+    /// Without it, a device sends no sound and says nothing about it. With it, the device
+    /// advertises `stream.sound`. It sends sound only to a device that advertised `stream.hear`.
+    #[must_use]
+    pub fn share_sound(mut self) -> Self {
+        self.sends_sound = true;
+        self
+    }
+
+    /// Has this device play the sound of a screen that a paired device shares with it, when the
+    /// application asks for it ([`ViewHandle::hear`](crate::streaming::ViewHandle::hear)) and gave
+    /// the session a [`Speaker`](crate::streaming::Speaker) ([`Viewing::with_speaker`]).
+    ///
+    /// It needs [`window_handler`](Self::window_handler), and [`bind`](Self::bind) fails without
+    /// it. Without it, a device plays no sound and says nothing about it. With it, the device
+    /// advertises `stream.hear`.
+    #[must_use]
+    pub fn play_sound(mut self) -> Self {
+        self.plays_sound = true;
         self
     }
 
@@ -409,12 +444,28 @@ impl NodeBuilder {
         self
     }
 
+    /// Checks the settings, and that each part of the device that needs another part has it.
+    fn check(&self) -> Result<()> {
+        self.config.validate()?;
+        let missing = if self.starts.is_some() && self.sharing.is_none() {
+            "a handler for starting sessions needs the device to share its windows"
+        } else if self.sends_sound && self.sharing.is_none() {
+            "sending sound needs the device to share its windows"
+        } else if self.plays_sound && self.windows.is_none() {
+            "playing sound needs the device to show the windows of others"
+        } else {
+            return Ok(());
+        };
+        Err(Error::Config(missing.to_owned()))
+    }
+
     /// Starts the node: binds the network endpoint and begins serving.
     ///
     /// # Errors
     ///
     /// If the settings are invalid or the endpoint cannot be bound.
     pub async fn bind(self) -> Result<Node> {
+        self.check()?;
         let Self {
             secret,
             trust,
@@ -423,6 +474,8 @@ impl NodeBuilder {
             transfers,
             windows,
             sharing,
+            sends_sound,
+            plays_sound,
             starts,
             holds,
             clock,
@@ -432,12 +485,6 @@ impl NodeBuilder {
             #[cfg(any(test, feature = "test-support"))]
             before_registering,
         } = self;
-        config.validate()?;
-        if starts.is_some() && sharing.is_none() {
-            return Err(Error::Config(
-                "a handler for starting sessions needs the device to share its windows".to_owned(),
-            ));
-        }
         let holds = holds.unwrap_or_else(Holds::memory);
 
         let id = DeviceId::from_bytes(*secret.public().as_bytes());
@@ -446,10 +493,17 @@ impl NodeBuilder {
         let stop = CancellationToken::new();
         let intake = Intake::new(&config.handoff);
         let incoming = incoming_table(transfers, &intake, &tuning);
+        let viewer = windows.map(|handler| {
+            Viewer::new(handler, intake.item_charge(), tuning.approval_timeout).hearing(plays_sound)
+        });
+        let sharing = sharing.map(|sharer| Sharer {
+            sound: sends_sound,
+            ..sharer
+        });
         let (sinks, streaming) = take_streams(
             sinks,
             incoming.as_ref(),
-            windows,
+            viewer,
             sharing,
             starts,
             &intake,
@@ -1063,6 +1117,8 @@ impl Node {
             hold,
             session: id,
             control: window.control(),
+            display: window.is_display(),
+            plays: session.peer.supports(capability::STREAM_HEAR),
         };
         streaming.begin(offered, reply, events, choose).await
     }
