@@ -212,6 +212,15 @@ func testLockingGoesRoundTheWaysUntilTheMacIsLocked() {
   check(lines == ["locking the Mac, way 0", "locking the Mac, way 1"], "\(lines)")
 }
 
+func testASessionBeatsSeveralTimesInTheLapseOfItsGuard() {
+  // The times that the real session and the real guard use are used by nothing else: every test
+  // here gives its own. A beat that is slow against the lapse would end each private session in the
+  // lock of its guard, on a Mac, a moment after it began.
+  let beat = PrivacyTiming().beat
+  let lapse = GuardTiming().lapse
+  check(beat * 4 <= lapse, "a beat every \(beat) s against a lapse of \(lapse) s")
+}
+
 // MARK: - The program, with pipes
 
 /// The guard, run in a thread of this program, with pipes for its input and output.
@@ -226,14 +235,25 @@ private final class ChildRig: @unchecked Sendable {
   private var result: Int32?
   private var heard: Lines?
   private var parentNumber: pid_t = 100
+  private var looks = 0
 
   init(timing: GuardTiming, mac: FakeMac = FakeMac(locksAtAttempt: 0)) {
     self.timing = timing
     self.mac = mac
   }
 
-  /// The program that started the guard is another one from now on.
+  /// Whether the guard has looked at its parent: the first look is where it learns which one is its
+  /// own.
+  private var looked: Bool {
+    mutex.lock()
+    defer { mutex.unlock() }
+    return looks > 0
+  }
+
+  /// The program that started the guard is another one from now on. A change before the guard has
+  /// looked would be taken for the parent that it started with, so this waits for the look.
   func changeParent() {
+    check(eventually { looked }, "the guard did not look at its parent")
     mutex.lock()
     parentNumber = 1
     mutex.unlock()
@@ -248,6 +268,7 @@ private final class ChildRig: @unchecked Sendable {
       parent: { [self] in
         mutex.lock()
         defer { mutex.unlock() }
+        looks += 1
         return parentNumber
       })
     let thread = Thread { [self] in
@@ -522,13 +543,34 @@ private final class AppRig {
     lines = Lines(output.fileHandleForReading.fileDescriptor)
   }
 
-  /// Starts the app and waits until it has handed the Mac to its guard.
+  /// Starts the app and waits until it has handed the Mac to its guard. When it has not, the test
+  /// has failed and has nothing left to look at, so it ends: `guard app.start() else { return }`.
   func start() -> Bool {
+    let handed = launch()
+    check(handed, "the app did not hand the Mac to its guard")
+    return handed
+  }
+
+  private func launch() -> Bool {
     do { try process.run() } catch { return false }
     try? output.fileHandleForWriting.close()
     guard let armed = lines.next(within: 10), armed.hasPrefix("armed ") else { return false }
     guardID = Int32(armed.dropFirst(6)) ?? -1
     return guardID > 0
+  }
+
+  /// Sends a signal to the app if it is running, and to nobody else. `kill` takes 0 for the group
+  /// of this program and -1 for every process that it may signal, which is what the numbers of an
+  /// app and a guard that did not start would be.
+  func signalApp(_ signal: Int32) {
+    guard process.isRunning, process.processIdentifier > 0 else { return }
+    kill(process.processIdentifier, signal)
+  }
+
+  /// Sends a signal to the guard if the app handed the Mac to one, and to nobody else.
+  func signalGuard(_ signal: Int32) {
+    guard guardID > 0 else { return }
+    kill(guardID, signal)
   }
 
   func line(within seconds: TimeInterval = 5) -> String? {
@@ -553,8 +595,8 @@ private final class AppRig {
   }
 
   func clean() {
-    if process.isRunning { kill(process.processIdentifier, SIGKILL) }
-    if guardID > 0 { kill(guardID, SIGKILL) }
+    signalApp(SIGKILL)
+    signalGuard(SIGKILL)
     try? FileManager.default.removeItem(atPath: lockFile)
   }
 }
@@ -575,11 +617,11 @@ private func isZombie(_ number: Int32) -> Bool {
 func testAnAppThatIsKilledLeavesAGuardThatLocksTheMac() {
   let app = AppRig()
   defer { app.clean() }
-  check(app.start(), "the app did not hand the Mac to its guard")
+  guard app.start() else { return }
   Thread.sleep(forTimeInterval: 0.3)
   check(!app.locked, "the Mac was locked while the app was well")
   let began = Date()
-  kill(app.process.processIdentifier, SIGKILL)
+  app.signalApp(SIGKILL)
   let took = app.waitForTheLock(from: began)
   check(took != nil, "the guard did not lock the Mac when the app was killed")
   check((took ?? 99) < 2, "the guard was slow to lock the Mac: \(took ?? 99)")
@@ -589,7 +631,7 @@ func testAnAppThatIsKilledLeavesAGuardThatLocksTheMac() {
 func testAnAppThatEndsTheSessionLeavesAGuardThatLocksNothing() {
   let app = AppRig(disarmAfter: 0.3)
   defer { app.clean() }
-  check(app.start(), "the app did not hand the Mac to its guard")
+  guard app.start() else { return }
   check(app.line() == "disarmed")
   check(AppRig.gone(app.guardID), "the guard did not end with the session")
   Thread.sleep(forTimeInterval: 0.5)
@@ -599,23 +641,23 @@ func testAnAppThatEndsTheSessionLeavesAGuardThatLocksNothing() {
 func testAnAppThatHangsLeavesAGuardThatLocksTheMacWhenTheLapseIsOver() {
   let app = AppRig(lapse: 0.6)
   defer { app.clean() }
-  check(app.start(), "the app did not hand the Mac to its guard")
+  guard app.start() else { return }
   let began = Date()
   // A stopped process is one that hangs: it holds its pipes and says nothing.
-  kill(app.process.processIdentifier, SIGSTOP)
+  app.signalApp(SIGSTOP)
   let took = app.waitForTheLock(from: began)
   check(took != nil, "the guard did not lock the Mac when the app hung")
   check((took ?? 0) >= 0.3, "the guard locked the Mac before the lapse: \(took ?? 0)")
   check((took ?? 99) < 4, "the guard was slow to lock the Mac: \(took ?? 99)")
-  kill(app.process.processIdentifier, SIGKILL)
+  app.signalApp(SIGKILL)
 }
 
 func testAGuardThatIsTerminatedWhileItHoldsTheMacLocksIt() {
   let app = AppRig()
   defer { app.clean() }
-  check(app.start(), "the app did not hand the Mac to its guard")
+  guard app.start() else { return }
   let began = Date()
-  kill(app.guardID, SIGTERM)
+  app.signalGuard(SIGTERM)
   check(app.waitForTheLock(from: began) != nil, "a terminated guard did not lock the Mac")
   // The app is told that its guard is gone.
   check(app.line() == "lost", "the app was not told that its guard locked the Mac")
@@ -624,8 +666,8 @@ func testAGuardThatIsTerminatedWhileItHoldsTheMacLocksIt() {
 func testAGuardThatIsKilledWhileItHoldsTheMacIsReportedToTheApp() {
   let app = AppRig()
   defer { app.clean() }
-  check(app.start(), "the app did not hand the Mac to its guard")
-  kill(app.guardID, SIGKILL)
+  guard app.start() else { return }
+  app.signalGuard(SIGKILL)
   check(app.line() == "lost", "the app was not told that its guard is gone")
   check(app.line(within: 0.5) == nil, "the app was told twice")
 }
@@ -635,7 +677,7 @@ func testAGuardWhosePipeBreaksWhileItStaysIsReportedToTheApp() {
   // is an error to deal with and not the end of the app.
   let app = AppRig(deaf: true)
   defer { app.clean() }
-  check(app.start(), "the app did not hand the Mac to its guard")
+  guard app.start() else { return }
   check(app.line() == "lost", "the app was not told that its guard is gone")
   check(app.line(within: 0.5) == nil, "the app was told twice")
   check(app.process.isRunning, "the app was ended by a write to a pipe that nobody reads")

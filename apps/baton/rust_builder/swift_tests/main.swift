@@ -925,6 +925,10 @@ tests += [
     testLockingGoesRoundTheWaysUntilTheMacIsLocked
   ),
   (
+    "a session beats several times in the lapse of its guard",
+    testASessionBeatsSeveralTimesInTheLapseOfItsGuard
+  ),
+  (
     "a guard says it is ready, is handed the Mac and ends when the session ends",
     testAGuardSaysItIsReadyIsHandedTheMacAndEndsWhenTheSessionEnds
   ),
