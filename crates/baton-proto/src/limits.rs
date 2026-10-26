@@ -101,6 +101,26 @@ pub const MAX_CODECS: usize = 8;
 /// Largest message on a control stream of a session, header excluded.
 pub const MAX_CONTROL_MESSAGE_BYTES: usize = 64 * 1024;
 
+/// Largest packet of sound, header excluded, in bytes. AAC-LC allows 6144 bits in a packet for
+/// each channel, which is 1536 bytes for two.
+pub const MAX_SOUND_PACKET_BYTES: usize = 8 * 1024;
+
+/// Lowest sampling rate of sound that is sent, in hertz.
+pub const MIN_SOUND_RATE: u32 = 8_000;
+
+/// Highest sampling rate of sound that is sent, in hertz.
+pub const MAX_SOUND_RATE: u32 = 96_000;
+
+/// Most channels of sound that are sent.
+pub const MAX_SOUND_CHANNELS: u8 = 2;
+
+/// Fewest samples of each channel that one packet of sound holds. It bounds how many packets a
+/// second there can be.
+pub const MIN_SOUND_PACKET_SAMPLES: u16 = 256;
+
+/// Most samples of each channel that one packet of sound holds.
+pub const MAX_SOUND_PACKET_SAMPLES: u16 = 2048;
+
 /// A field that does not satisfy the protocol's limits.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LimitError {

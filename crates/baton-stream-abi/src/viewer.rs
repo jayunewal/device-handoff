@@ -197,8 +197,10 @@ impl Decoder for AbiDecoder {
     }
 
     fn source(&mut self, message: SourceMessage) {
-        if !self.over {
-            self.screen.source(&source_message(&message));
+        if !self.over
+            && let Some(message) = source_message(&message)
+        {
+            self.screen.source(&message);
         }
     }
 
@@ -248,8 +250,10 @@ fn thermal(state: u32) -> Thermal {
     }
 }
 
-/// What the source said, in the form of the interface.
-fn source_message(message: &SourceMessage) -> BatonSourceMessage {
+/// What the source said about the pictures, in the form of the interface. What it said about sound
+/// does not go through here: sound reaches the platform by calls of its own, and a session does
+/// not hand a viewer that does not take sound a message about it.
+fn source_message(message: &SourceMessage) -> Option<BatonSourceMessage> {
     let mut out = BatonSourceMessage {
         size: size_of_u32::<BatonSourceMessage>(),
         kind: 0,
@@ -288,8 +292,9 @@ fn source_message(message: &SourceMessage) -> BatonSourceMessage {
             out.reason = dropped(notice.reason);
             out.count = notice.count;
         }
+        SourceMessage::Sound(_) | SourceMessage::Silent(_) => return None,
     }
-    out
+    Some(out)
 }
 
 /// The `DROPPED_` number of a reason for dropping events.
@@ -330,7 +335,7 @@ mod tests {
 
     use baton_proto::id::SessionId;
     use baton_stream::{
-        control::{Config, Pause},
+        control::{Config, Pause, Silent, SilentReason, Sound, SoundCodec},
         gate::Notice,
         header::Flags,
     };
@@ -789,6 +794,36 @@ mod tests {
             rig.fake.complaints().is_empty(),
             "{:?}",
             rig.fake.complaints()
+        );
+    }
+
+    #[test]
+    fn what_the_source_said_about_sound_does_not_reach_the_source_call_of_the_platform() {
+        let mut rig = rig(WIDTH, HEIGHT);
+        rig.decoder.source(SourceMessage::Sound(Sound {
+            codec: SoundCodec::Aac,
+            rate: 48_000,
+            channels: 2,
+            samples: 1024,
+        }));
+        rig.decoder.source(SourceMessage::Silent(Silent {
+            reason: SilentReason::NoPermission,
+        }));
+        rig.decoder.source(SourceMessage::Resume);
+        assert_eq!(
+            rig.fake.calls(1),
+            vec![Call::Source(BatonSourceMessage {
+                size: size_of_u32::<BatonSourceMessage>(),
+                kind: SOURCE_RESUME,
+                epoch: 0,
+                codec: 0,
+                width: 0,
+                height: 0,
+                fps: 0,
+                reason: 0,
+                count: 0,
+                reserved: 0,
+            })]
         );
     }
 

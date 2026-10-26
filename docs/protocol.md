@@ -86,6 +86,8 @@ Capabilities defined so far:
 | `stream.view` | Can show the window of a paired device: accepts an `Offer` (section 9), and takes part in the session that follows as the viewer; accepts a `Stop` for that session |
 | `stream.control` | Takes input from a viewer, in a session where the person at the source granted control (section 9) |
 | `stream.start` | Starts a session when a paired device asks it to: accepts a `Start` (section 9), answers it, and then makes the offer as the source. Only a device that advertises `stream.share` advertises it |
+| `stream.sound` | Sends the sound of the screen it shares, as the source of a session of a `Display`: accepts a `Hear` and writes `Sound`, `Silent` and the streams of kind 4 (section 9). Only a device that advertises `stream.share` advertises it |
+| `stream.hear` | Plays the sound of a screen, as the viewer: accepts `Sound`, `Silent` and the streams of kind 4, and sends a `Hear` (section 9). Only a device that advertises `stream.view` advertises it |
 
 A sender MUST NOT send an item whose capability the receiver did not advertise. A receiver that gets one anyway answers `Declined(Unsupported)`. A kind of item the receiver does not know at all cannot be decoded, and is answered with `Error { code: Malformed }`: the capability exchange is how new kinds are introduced, not an unannounced request.
 
@@ -287,6 +289,10 @@ Anything else, including a new variant of a non-extensible enum without a capabi
 | The frame rate that a viewer says it can take or wants, and that a source sends | 1 to 120 a second |
 | Codecs in an `Accepted` | 8 |
 | A message on a control stream | 64 KiB |
+| A packet of sound, header excluded | 8 KiB |
+| The sampling rate of sound | 8000 to 96000 hertz |
+| The channels of sound | 1 or 2 |
+| The samples of each channel in a packet of sound | 256 to 2048 |
 | Events in one batch of input | 64 |
 | Events of input that a viewer sends | 240 a second |
 | The text that a key produced | 20 UTF-16 units |
@@ -402,6 +408,10 @@ Their hash, BLAKE3 in its key derivation mode with the context `baton 2026-10-15
 | Start of a frame stream for session `a0 a1 … af` | `02a0a1a2a3a4a5a6a7a8a9aaabacadaeaf` |
 | Header of key frame 5 (depends on itself), chain 1, epoch 0, captured at 200000 µs, flags `05` (key frame, referenced), for that session | the start above, then `0000000000000005` `0000000000000005` `00000001` `00000000` `0000000000030d40` `05` |
 | Header of frame `0102030405060708`, depends on `0102030405060707`, chain `0a0b0c0d`, epoch `11121314`, captured at `2122232425262728` µs, flags `04` (referenced), for that session | the start above, then `0102030405060708` `0102030405060707` `0a0b0c0d` `11121314` `2122232425262728` `04` |
+| Start of a packet stream for the same session | `04a0a1a2a3a4a5a6a7a8a9aaabacadaeaf` |
+| Header of packet 0, the first of a run, captured at 0 µs, flags `01` (first), for that session | the start above, then `0000000000000000` `0000000000000000` `01` |
+| Header of packet 1, captured at 21333 µs, flags `00`, for that session | the start above, then `0000000000000001` `0000000000005355` `00` |
+| Header of packet `0102030405060708`, captured at `2122232425262728` µs, flags `01`, for that session | the start above, then `0102030405060708` `2122232425262728` `01` |
 
 The frame of an `Offer` for session `a0 a1 … af` that shows the window `Report.pdf` of `Preview`, 1440 by 900 pixels, with control granted. Without control the key `control` and its value are left out, which makes the frame nine bytes shorter, and it starts `00000067`:
 
@@ -439,6 +449,10 @@ The frames of the messages on the control streams. Each is a frame of section 2,
 | `Input`: a left button went down at 0.5 across and 0.25 down the picture of frame 7, no modifier down | `00000048a165496e707574a1666576656e747381a167506f696e746572a5656672616d65076178f938006179f93400696d6f646966696572730066616374696f6ea164446f776e644c656674` |
 | `Input`: the key `a` went down, no modifier, and no text was attached, so `text` is left out and is not null | `00000035a165496e707574a1666576656e747381a1634b6579a464636f64650464646f776ef5696d6f646966696572730066726570656174f4` |
 | `Input`: the same key with the text `a` attached | `0000003ca165496e707574a1666576656e747381a1634b6579a564636f64650464646f776ef5696d6f646966696572730066726570656174f464746578746161` |
+| `Sound`: the source sends AAC-LC at 48000 hertz in 2 channels, 1024 samples to a packet | `0000002fa165536f756e64a465636f64656363416163647261746519bb80686368616e6e656c73026773616d706c6573190400` |
+| `Silent`: the operating system of the source has not let its program record the sound | `0000001da16653696c656e74a166726561736f6e6c4e6f5065726d697373696f6e` |
+| `Hear`: the viewer wants to hear the source | `0000000ba16448656172a1626f6ef5` |
+| `Hear`: the viewer does not want to hear it any more | `0000000ba16448656172a1626f6ef4` |
 
 ## 8. File transfer
 
@@ -582,7 +596,7 @@ This revision has no way to say which spans the receiver holds, so a transfer th
 
 ## 9. Window streaming
 
-A device can show one of its windows to a paired device. The **source** (a Mac) sends the picture of the window as a run of encoded **frames**, one unidirectional stream for each frame, and the **viewer** (an iPhone or an iPad) decodes them and shows the newest. A frame that is late is reset and replaced, and never sent again. [ADR 0009](adr/0009-window-streaming.md) records the design and why it is shaped this way. This section specifies the offer that starts a session, the request with which a viewer asks a source to make one, the request that ends a session, the start of every unidirectional stream, how a receiver takes a stream, the header of a frame of video, and the messages on the control streams. A device takes part as a viewer when it advertises `stream.view`, and as a source when it advertises `stream.share`; a source that also makes its offer when a viewer asks it to advertises `stream.start`. A device that takes part in neither advertises none of `stream.share`, `stream.view`, `stream.control` and `stream.start`, answers every valid request of this section with `Declined(Unsupported)`, the reply that this section defines for it, and stops a stream of kind 2 or 3 with code 400, like a stream of any other kind it does not take (see Taking a stream). A device of a version before this section cannot read the request and answers `Error { code: Malformed }` (section 3), as it does for a transfer, so a source that ignored the capability is still told, not cut off.
+A device can show one of its windows to a paired device. The **source** (a Mac) sends the picture of the window as a run of encoded **frames**, one unidirectional stream for each frame, and the **viewer** (an iPhone or an iPad) decodes them and shows the newest. A frame that is late is reset and replaced, and never sent again. [ADR 0009](adr/0009-window-streaming.md) records the design and why it is shaped this way. This section specifies the offer that starts a session, the request with which a viewer asks a source to make one, the request that ends a session, the start of every unidirectional stream, how a receiver takes a stream, the header of a frame of video, the messages on the control streams, and the sound of a screen. A device takes part as a viewer when it advertises `stream.view`, and as a source when it advertises `stream.share`; a source that also makes its offer when a viewer asks it to advertises `stream.start`, and one that can send the sound of a screen advertises `stream.sound`, as a viewer that plays it advertises `stream.hear`. A device that takes part in neither advertises none of `stream.share`, `stream.view`, `stream.control`, `stream.start`, `stream.sound` and `stream.hear`, answers every valid request of this section with `Declined(Unsupported)`, the reply that this section defines for it, and stops a stream of kind 2, 3 or 4 with code 400, like a stream of any other kind it does not take (see Taking a stream). A device of a version before this section cannot read the request and answers `Error { code: Malformed }` (section 3), as it does for a transfer, so a source that ignored the capability is still told, not cut off.
 
 ### The offer and the end of a session
 
@@ -679,6 +693,7 @@ start = kind u8 | session [16]
 
 kind 2  a frame of video   start | rest of the frame header | the encoded picture
 kind 3  a control stream   start | messages, each a length and one CBOR item (section 2)
+kind 4  a packet of sound  start | rest of the packet header | the packet
 ```
 
 Numbers are big-endian. `kind` is the first byte of the stream, as in section 8, where kind 1 is a lane of a transfer and the 16 bytes after it are the id of the transfer. `session` is 16 random bytes chosen when the offer is made, by the source or, for an offer that answers a `Start`, by the viewer. Every stream of the session carries it, so that a receiver can recognise a stream of a session that is not running, which can arrive late, after the session has ended.
@@ -690,12 +705,12 @@ A receiver reads the 17 bytes of the start of a unidirectional stream before it 
 - **Paired.** A receiver MUST check that the peer is still paired when it takes a stream, and not only when the connection was made, as it does for a request (section 3). If the peer is not paired it closes the connection with code 403.
 - **In time.** A stream whose start has not arrived whole within the time that a receiver allows for it is stopped with code 408. The reference implementation allows 10 seconds from when it accepted the stream.
 - **A kind that is not taken.** A stream of a kind that the receiver does not take, because it does not know the kind or does not take part in what the kind is for, is stopped with code 400 and not read any further.
-- **The count of a kind.** QUIC has one limit for the unidirectional streams of every kind and does not know what they carry, so a receiver also counts the open streams of each kind, and stops one beyond the count of its kind, which would take the place of a stream of another kind. A frame of video beyond the count is stopped with code 499, because the sender cannot see when the receiver stops counting a stream that it reset, so a frame can arrive just as the count is reached and no one is at fault. A stream of any other kind beyond the count is a violation and is stopped with code 400. How many streams of a kind are allowed is for the rules of the kind (section 8 for lanes, ADR 0009 for the others), and the limit that a receiver announces to QUIC is the sum of them.
+- **The count of a kind.** QUIC has one limit for the unidirectional streams of every kind and does not know what they carry, so a receiver also counts the open streams of each kind, and stops one beyond the count of its kind, which would take the place of a stream of another kind. A frame of video or a packet of sound beyond the count is stopped with code 499, because the sender cannot see when the receiver stops counting a stream that it reset, so one can arrive just as the count is reached and no one is at fault. A stream of any other kind beyond the count is a violation and is stopped with code 400. How many streams of a kind are allowed is for the rules of the kind (section 8 for lanes, ADR 0009 for frames and control streams, ADR 0012 for packets of sound), and the limit that a receiver announces to QUIC is the sum of them.
 - **Letting go.** A receiver lets go of a stream's place in the count before it answers anything that ends what the stream belongs to: `Done` or `Cancelled` for the lanes of a transfer, the end of the session for a control stream. The limit that it announces has room for the other kinds, so QUIC no longer holds back a sender that opens the next stream of the kind as soon as the end of the last is acknowledged, and a place that is still taken would make that stream one beyond the count.
 
 ### The session of a stream
 
-A frame and a control stream belong to the session that their start names. A device takes one only if it has that session, if the stream comes from the device that the session is with, and if it comes on the connection that the session began on, since a session lives and dies with its connection. Any other stream of kind 2 or 3 is stopped with code 499 and not read. That is no one's fault, because a frame can arrive after its session has ended.
+A frame, a packet of sound and a control stream belong to the session that their start names. A device takes one only if it has that session, if the stream comes from the device that the session is with, and if it comes on the connection that the session began on, since a session lives and dies with its connection. Any other stream of kind 2, 3 or 4 is stopped with code 499 and not read. That is no one's fault, because a frame or a packet can arrive after its session has ended.
 
 ### Frames
 
@@ -718,7 +733,7 @@ A receiver MUST treat a header as a violation (code 400) if it is cut short, if 
 
 ### Control streams
 
-After the viewer has accepted, each side opens one unidirectional stream of kind 3 to the other and keeps it open for as long as the session runs. The source's stream carries what the source has to say about the picture, and the viewer's carries how the viewer is doing, what it needs and, when the person at the source granted control, what the person did. Behind the 17 bytes of its start a control stream is a run of messages, each framed as in section 2: a length and one CBOR item, at most 64 KiB. These are not requests. Nothing answers a message, and none counts against the limits on requests (the 16 streams and the 30 seconds of section 6).
+After the viewer has accepted, each side opens one unidirectional stream of kind 3 to the other and keeps it open for as long as the session runs. The source's stream carries what the source has to say about the picture and, to a viewer that plays sound, about the sound, and the viewer's carries how the viewer is doing, what it needs, whether it wants to hear the source and, when the person at the source granted control, what the person did. Behind the 17 bytes of its start a control stream is a run of messages, each framed as in section 2: a length and one CBOR item, at most 64 KiB. These are not requests. Nothing answers a message, and none counts against the limits on requests (the 16 streams and the 30 seconds of section 6).
 
 The source opens its control stream first. A viewer MUST NOT open its own before it has taken the source's, because until then it cannot tell that the source has made its side of the session, and a stream that reached the source before that would name a session that the source does not have (see the session of a stream, above). The same holds the other way round: a viewer MUST make its side of the session before it sends `Accepted`, because the source opens its control stream and its first frames as soon as it reads the answer, and a stream that reached a viewer with no session yet would be stopped with code 499 and the session would be over before it began. A viewer allows the source a time to open it, 10 seconds from its `Accepted` in the reference implementation, and ends the session if the stream has not come by then. Each side has one control stream in a session, and a second one from the same side is a violation (code 400). The end of a control stream is the end of the session: a side that finishes or resets its control stream has ended it, and the other side ends its own. A side that ends the session because the other broke a rule resets its control stream with code 400, and a side that cannot go on because of a fault of its own resets it with code 500. Any other end finishes the stream.
 
@@ -729,10 +744,13 @@ Source: {"Config": {"epoch": 1, "codec": "H264", "width": 1440, "height": 900, "
         {"Pause": {"reason": "Locked"}}
         "Resume"
         {"Notice": {"reason": "Covered", "count": 3}}
+        {"Sound": {"codec": "Aac", "rate": 48000, "channels": 2, "samples": 1024}}
+        {"Silent": {"reason": "NoPermission"}}
 Viewer: {"Report": {"shown": 41, "decode_us": 2500, "dropped": 3, "thermal": "Fair"}}
         {"Want": {"width": 2796, "height": 1290, "fps": 120}}
         {"KeyFrame": {"tried": 5}}
         {"Input": {"events": [ ... ]}}
+        {"Hear": {"on": true}}
 ```
 
 | Message | Meaning |
@@ -745,6 +763,9 @@ Viewer: {"Report": {"shown": 41, "decode_us": 2500, "dropped": 3, "thermal": "Fa
 | `Want` | The largest picture and the highest frame rate that the viewer can take now, which change when the phone is turned. `width` and `height` are each from 1 to 3840 and `fps` is from 1 to 120. The source never sends more than the viewer said in `Accepted`, whatever this says. |
 | `KeyFrame` | The viewer cannot decode and needs a key frame. `tried` is the number of the newest frame that the viewer handed to its decoder, whether the decoder took it or not. A key frame numbered above it answers the request, and one at or below it does not. |
 | `Input` | What the person did on the viewer, in the order in which it happened: `events`, from 1 to 64 of them. Only in a session whose offer set `control`: a source drops the events of any other session and says `ControlOff`. |
+| `Sound` | The sound that the source sends from now on, in packets on streams of kind 4 (see Sound, below). `codec` is `Aac`, or `Other` for a codec that the reader does not know, which a viewer cannot play. `rate` is the sampling rate in hertz, from 8000 to 96000. `channels` is 1 or 2. `samples` is how many samples of each channel one packet holds, from 256 to 2048, so a packet lasts that many samples at the rate. The first version sends `Aac` at 48000 hertz in 2 channels with 1024 samples in a packet, which lasts 21.3 milliseconds. Only to a viewer that advertised `stream.hear`. |
+| `Silent` | The source sends no sound, and says why. `reason` is `Window` (the session is of a window, and sound goes only with a whole screen), `NoPermission` (the operating system of the source has not let its program record the sound of the source, and the person there has to allow it), `Failed` (something went wrong at the source that the viewer did not cause), or `Other` from a later version. Only to a viewer that advertised `stream.hear`. |
+| `Hear` | The viewer wants to hear the source (`on` is true), or does not any more (`on` is false). Only to a source that advertised `stream.sound`. |
 
 The reasons of a `Notice` are the rules that drop an event:
 
@@ -774,6 +795,28 @@ An event is one of two kinds. A pointer event is `{"Pointer": {"frame", "x", "y"
 A sender MUST NOT send a message that breaks a limit of this section, and a receiver MUST treat one as a violation (code 400), also a message that it cannot read and a message of a kind that it does not know. The rate of events is not a property of a message: the source counts events from the time they arrive, and drops those over 240 and one batch of 64 in a second (the viewer counts 240 by its own clock, and a stall on the way bunches events that it sent apart) with a `Notice` (`TooFast`) and without a violation, since a viewer that sends too fast has lost events and has not broken the format. A later version adds a kind of message only with a capability that the other side advertised (section 5), so a receiver has nothing to skip. A later version may add reasons and states as unit variants of the enums above, which an older reader takes as `Other`, and optional fields, which it ignores. Typed text and key codes are secrets, since a password is typed one key at a time: a device MUST NOT write them to a log, and the reference implementation prints a key event without its code and without its text.
 
 A receiver waits as long as it takes for a message to begin, because a control stream can be quiet. Once the length of a message has arrived, the rest of it has the time that a receiver allows for a stream that delivers nothing (10 seconds in the reference implementation), and a control stream that is slower is stopped with code 408 and the session ends. That is no violation, since the time is a receiver's own choice: the side that stopped the stream finishes its own. A session whose other side has gone quiet is ended by a rule of its own. A viewer sends a `Report` at least every 2 seconds for as long as the session runs, which the reference implementation does every 500 milliseconds from when it has taken the source's control stream. A source that has had no report for 10 seconds stops encoding, so that it does not fill a link that nobody is watching, and one that has had none for 30 seconds ends the session.
+
+### Sound
+
+When a source shares a whole screen, the sound that the source plays can go with it. [ADR 0012](adr/0012-sound.md) records the design and why it is shaped this way. A source that can send it advertises `stream.sound`, and a viewer that plays it advertises `stream.hear`. A viewer MUST NOT send a `Hear` to a device that did not advertise `stream.sound`, and a source MUST NOT write a `Sound` or a `Silent` to a device that did not advertise `stream.hear`, nor open a stream of kind 4 to it. A device of a version before this subsection cannot read these messages and treats one as a message of a kind that it does not know, which is a violation (code 400), so the capability has to come first.
+
+Sound goes with a session of a `Display` and with no other. The sound of a source is the sound of every program on it, and the person who shares one window has not agreed to that. A source answers a `Hear` that is `on`, in a session of a `Window`, with a `Silent` whose reason is `Window`.
+
+**Runs of sound.** A viewer sends a `Hear` with `on` true when its person wants to hear the source, and one with `on` false when they do not any more. Until it has sent the first, the source sends nothing. Sound goes in runs. A `Hear` with `on` true asks the source to begin a run if none is going: the source writes a `Sound` and then packets, or, if it cannot, a `Silent` that says why. While a run goes, another `Hear` with `on` true changes nothing. A `Hear` with `on` false ends the run, if there is one, and the source writes nothing. A source ends a run of its own accord with a `Silent` when the cause comes up during the run, such as the person at the source taking the permission away, and no packet follows a `Silent` until the next `Sound`. While the latest `Hear` is `on`, a source MAY begin a run again with a `Sound` when the cause is gone, and the viewer can ask it to try again with another `Hear` that is `on`. A viewer whose latest `Hear` is `off`, or that has sent none, plays nothing: it drops a `Sound` and a `Silent` that arrive, and stops a packet with code 499, which is no one's fault, since a packet can be on its way when the viewer turns off.
+
+**Packets.** The sound of a run is cut into packets of the codec, `samples` samples of each channel to a packet, and each packet is one unidirectional stream of kind 4: a header of 34 bytes, the start included, and then the packet up to the end of the stream.
+
+```
+header = start (kind 4) | number u64 | capture time u64 | flags u8
+```
+
+| Field | Meaning |
+| --- | --- |
+| `number` | Counts the packets of a session from 0, one for each packet that the encoder made, including those that were reset later. A packet that is reset is not sent again, so a number is never used twice. |
+| `capture time` | When the first sample of the packet was captured, in microseconds since the session began, on the source's clock, which is the clock of the `capture time` of a frame of video. |
+| `flags` | Bit 0 (value 1): the first packet of a run, or of a run that began again after the capture of the source started afresh. The decoder forgets what it held before it. |
+
+A receiver MUST treat a header as a violation (code 400) if it is cut short or if a bit of `flags` other than bit 0 is set, and a packet as a violation if the receiver holds a packet with the same number. A packet that arrives after the receiver has played a later one, or has given it up for lost and gone on, is dropped as late. The packet is at most the limit of section 6, and a stream whose packet goes beyond it is stopped with code 413 and not read any further. A packet and the `Sound` that describes it travel on streams of their own and arrive in any order, so a packet can arrive before its `Sound`, and a viewer that has not read the `Sound` yet drops the packet as if it had been lost. What a packet holds is what the latest `Sound` said: for `Aac`, one access unit as the encoder makes it, with no ADTS header and no other framing, and the viewer describes the stream to its decoder from `rate`, `channels` and `samples`.
 
 ## 10. Planned extensions
 

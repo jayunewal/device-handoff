@@ -27,6 +27,7 @@ use baton_stream::{
     control::{SourceMessage, ViewerMessage},
     h264,
     header::{FrameHeader, PREFIX_LEN, decode_prefix, encode_prefix},
+    sound::PacketHeader,
 };
 
 #[path = "../../baton-proto/tests/support/strict_cbor.rs"]
@@ -117,10 +118,20 @@ const SEEDS: &[(&str, Outcome)] = &[
     ("source-pause-reason-of-a-later-version", Read),
     ("source-resume", Written),
     ("source-resume-as-a-map", Read),
+    ("source-sends-a-hear", Refused),
     ("source-sends-a-message-of-the-viewer", Refused),
+    ("source-silent", Written),
+    ("source-silent-reason-of-a-later-version", Read),
+    ("source-sound", Written),
+    ("source-sound-a-field-of-a-later-version", Read),
+    ("source-sound-channels-3", Refused),
+    ("source-sound-codec-of-a-later-version", Read),
+    ("source-sound-rate-too-low", Refused),
+    ("source-sound-samples-too-many", Refused),
     ("start-control-stream", Written),
     ("start-frame-of-video", Written),
     ("start-lane-of-a-transfer", Written),
+    ("start-sound-packet", Written),
     ("viewer-input-64-events", Written),
     ("viewer-input-65-events", Refused),
     ("viewer-input-key", Written),
@@ -140,12 +151,21 @@ const SEEDS: &[(&str, Outcome)] = &[
     ("viewer-input-text-only-without-text", Refused),
     ("viewer-input-text-too-long", Refused),
     ("viewer-input-text-with-a-control-character", Refused),
+    ("sound-first-packet", Written),
+    ("sound-header-cut-short", Refused),
+    ("sound-header-of-a-frame-of-video", Refused),
+    ("sound-packet-and-the-sound-behind-it", Written),
+    ("sound-reserved-flag", Refused),
+    ("viewer-hear", Written),
+    ("viewer-hear-off", Written),
+    ("viewer-hear-without-saying-whether", Refused),
     ("viewer-keyframe", Written),
     ("viewer-keyframe-of-the-biggest-frame", Written),
     ("viewer-report", Written),
     ("viewer-report-before-the-first-picture", Written),
     ("viewer-report-thermal-state-of-a-later-version", Read),
     ("viewer-sends-a-message-of-the-source", Refused),
+    ("viewer-sends-a-sound", Refused),
     ("viewer-want", Written),
     ("viewer-want-width-0", Refused),
 ];
@@ -160,6 +180,7 @@ fn part(name: &str) -> u8 {
         Some("picture") => 4,
         Some("sample") => 5,
         Some("size") => 6,
+        Some("sound") => 7,
         _ => panic!("the seed {name} has a name that says nothing about what it is for"),
     }
 }
@@ -183,6 +204,17 @@ fn header(data: &[u8]) -> Outcome {
         .expect("a header that was read can be written");
     assert_eq!(written.as_slice(), &data[..FrameHeader::LEN]);
     assert_eq!(FrameHeader::parse(&written).unwrap().0, header);
+    Written
+}
+
+fn packet(data: &[u8]) -> Outcome {
+    let Ok((header, rest)) = PacketHeader::parse(data) else {
+        return Refused;
+    };
+    assert_eq!(rest.len(), data.len() - PacketHeader::LEN);
+    let written = header.encode();
+    assert_eq!(written.as_slice(), &data[..PacketHeader::LEN]);
+    assert_eq!(PacketHeader::parse(&written).unwrap().0, header);
     Written
 }
 
@@ -302,15 +334,16 @@ fn the_committed_fuzz_seeds_are_still_what_they_are_named_for() {
     for (name, expected) in SEEDS {
         let bytes = std::fs::read(directory.join(name)).unwrap();
         let (mode, data) = bytes.split_first().expect("a seed is not empty");
-        assert_eq!(mode % 7, part(name), "the seed {name} picks another part");
-        let got = match mode % 7 {
+        assert_eq!(mode % 8, part(name), "the seed {name} picks another part");
+        let got = match mode % 8 {
             0 => start(data),
             1 => header(data),
             2 => message::<SourceMessage>(data),
             3 => message::<ViewerMessage>(data),
             4 => picture(data),
             5 => sample(data),
-            _ => size(data),
+            6 => size(data),
+            _ => packet(data),
         };
         assert_eq!(
             got, *expected,
