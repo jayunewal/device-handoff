@@ -408,6 +408,8 @@ pub enum WindowRole {
 }
 
 /// A window, or a whole display, that is shown on this device or shared from it.
+// Four facts about a session, each of its own: see `baton_app::WindowSession`.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct WindowSession {
     /// Names this session when ending it with `Baton.endWindow`, and in `Event.windowEnded`.
@@ -440,6 +442,11 @@ pub struct WindowSession {
     /// session starts. `false` for a screen that this device does not control, and for a device
     /// that cannot keep a screen private or let it be lifted.
     pub private: bool,
+    /// Whether the person here can ask to hear the sound of the screen with `Baton.hearWindow`:
+    /// what is shown here is a whole screen, this device plays sound, and the device that shares
+    /// the screen sends it. That device may still have none to send, which `Event.windowSound`
+    /// says. Sound is off when the session starts. `false` for a window that this device shares.
+    pub sound: bool,
     /// What to draw the picture with when the window is shown on this device: the number of
     /// the screen, which on Flutter is the id of a `Texture`. `null` when the window is shared
     /// from this device.
@@ -457,9 +464,31 @@ impl std::fmt::Debug for WindowSession {
             .field("height", &self.height)
             .field("control", &self.control)
             .field("private", &self.private)
+            .field("sound", &self.sound)
             .field("screen", &self.screen)
             .finish_non_exhaustive()
     }
+}
+
+/// How the sound of a screen that is shown here stands, as `Event.windowSound` tells it. Sound is
+/// off until the person asks for it with `Baton.hearWindow`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowSound {
+    /// The other device sends the sound of its screen, and it plays on this one. The other
+    /// device keeps its own speakers quiet for as long as it does.
+    Playing,
+    /// There is no sound because the person turned it off.
+    Off,
+    /// The other device sends none: what it shares is a window, and only a whole screen has
+    /// sound.
+    Window,
+    /// The other device sends none: its system has not let Baton record the sound, and the
+    /// person there has to allow it. The other device goes on by itself when they have.
+    NoPermission,
+    /// The other device sends none: something went wrong there, where the sound is recorded.
+    Failed,
+    /// The other device sends none, for a reason that this version does not know.
+    Other,
 }
 
 /// How a window session ended.
@@ -815,6 +844,19 @@ pub enum Event {
         reason: WindowNoticeReason,
         /// How many events it dropped, at least 1.
         count: u32,
+    },
+    /// The sound of a screen that is shown here changed: it plays, the person turned it off, or
+    /// the other device says why it sends none. Show the person how it stands. It comes only
+    /// for a session whose `WindowSession.sound` is set, and only after the person asked to
+    /// hear it with `Baton.hearWindow`, so it comes after the `Event.windowStarted` of the same
+    /// window. A device that said it sends none can begin by itself when the cause is gone (the
+    /// person there allowed it to record the sound), and then `WindowSound.playing` follows; a
+    /// person who asks again with `Baton.hearWindow` makes it try at once.
+    WindowSound {
+        /// The `WindowSession.id` whose sound this is.
+        id: i64,
+        /// How the sound stands now.
+        sound: WindowSound,
     },
     /// A window that was shown or shared is over.
     WindowEnded {

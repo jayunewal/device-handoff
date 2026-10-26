@@ -69,7 +69,7 @@ pub use model::{
     PreviewName, Reach, Received, ReceivedItem, Receiving, Route, ScreenStarted, SendStage,
     StartAccess, TransferEnd, TransferRequest, TransferResult, WindowAbilities, WindowButton,
     WindowEnd, WindowInput, WindowModifiers, WindowNoticeReason, WindowPointer, WindowRequest,
-    WindowRole, WindowSession, WindowShared, web_address,
+    WindowRole, WindowSession, WindowShared, WindowSound, web_address,
 };
 pub use windows::Windows;
 

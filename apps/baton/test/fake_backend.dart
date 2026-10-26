@@ -446,6 +446,18 @@ class FakeSession implements Session {
     return windowLiftTaken;
   }
 
+  /// What `hearWindow` was given, in order.
+  final List<({int session, bool listen})> windowHears = [];
+
+  /// What `hearWindow` says: whether the request was made.
+  bool windowHearTaken = true;
+
+  @override
+  bool hearWindow(int session, {required bool listen}) {
+    windowHears.add((session: session, listen: listen));
+    return windowHearTaken;
+  }
+
   /// What `inbox` gives, newest first.
   List<Received> received = [];
 
@@ -689,6 +701,7 @@ WindowSession sampleWindowSession({
   int height = 900,
   bool control = false,
   bool private = false,
+  bool sound = false,
   bool display = false,
   int? screen,
 }) => WindowSession(
@@ -703,6 +716,7 @@ WindowSession sampleWindowSession({
   height: height,
   control: control,
   private: private,
+  sound: sound,
   screen: screen ?? (role == WindowRole.viewing ? 7 : null),
 );
 

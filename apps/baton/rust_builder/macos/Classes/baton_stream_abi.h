@@ -663,7 +663,8 @@ typedef struct BatonSoundPacket {
  * three NULL: a table that ends at release is accepted, and so is one that gives some of the
  * three and not all, which reads as none. They are called after the person at this device turned
  * the sound on with the app, one after the other, as the calls above are. Only a screen that
- * shows a whole display gets sound and play; a window has no sound, and its stopped says so.
+ * shows a whole display gets sound and play: the app does not offer the sound of a window, so
+ * none of the three is called for a screen that shows one.
  *
  *   sound:   the source sends sound from now on, in this form (BatonSound), which is one that the
  *            screen plays: a run of sound begins. Make a decoder for the form and get ready to
@@ -674,11 +675,15 @@ typedef struct BatonSoundPacket {
  *            the platform; there is no failure to report, since the Rust side has nothing to do
  *            about it.
  *   stopped: no sound is wanted or sent. why is a BATON_SILENT_ number: BATON_SILENT_OFF if the
- *            person turned the sound off, BATON_SILENT_WINDOW for a screen that shows a window,
- *            and otherwise the reason that the source gave. No packet follows until the next
- *            sound. Let go of the decoder and stop playing; what is queued need not be played
- *            out. It can come when no sound did, and then there is nothing to let go of. A run
- *            that is going when the session ends is not stopped: ended ends it.
+ *            person turned the sound off, and otherwise the reason that the source gave. A form
+ *            that the library does not play (it plays AAC-LC in packets of 1024 or 960 samples)
+ *            never reaches sound: the library says BATON_SILENT_OTHER itself and turns the sound
+ *            off, so the person has to turn it on again. BATON_SILENT_WINDOW, the reason for a
+ *            screen that shows a window, is not given: the app does not ask for the sound of
+ *            one. No packet follows until the next sound. Let go of the decoder and stop
+ *            playing; what is queued need not be played out. It can come when no sound did, and
+ *            then there is nothing to let go of. A run that is going when the session ends is
+ *            not stopped: ended ends it.
  */
 typedef int32_t (*BatonLimitsFn)(void *context, BatonLimits *limits);
 typedef int32_t (*BatonOpenFn)(void *context, const BatonWindow *window, uint64_t link,

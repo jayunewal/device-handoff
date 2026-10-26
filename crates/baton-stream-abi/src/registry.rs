@@ -692,8 +692,8 @@ mod tests {
         .unwrap();
         assert!(!registry.viewer().unwrap().plays_sound());
 
-        // The same for a sharer table that ends at `screen`, and one that is longer than this
-        // version knows.
+        // The same for a sharer table that ends at `lift`, which is where it ended before sound,
+        // and one that is longer than this version knows.
         let registry = Registry::new();
         let platform = FakeSharer::new();
         let table = platform.vtable();

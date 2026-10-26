@@ -3299,18 +3299,18 @@ async fn a_platform_that_cannot_record_says_why_and_the_person_can_ask_again() {
 }
 
 #[tokio::test]
-async fn the_sound_of_a_window_is_not_asked_of_the_platform_and_the_other_device_is_told_why() {
+async fn the_sound_of_a_window_is_asked_of_nobody_and_what_the_platform_hands_over_goes_nowhere() {
     let mut rig = Rig::new().await;
     let shown = rig.share(false).await;
     let (link, window, session) = (shown.link, shown.window, shown.viewing.id);
 
-    assert!(rig.viewing.app.hear_window(session, true));
-    until("the speaker to be told that a window has no sound", || {
-        rig.sound_calls(1) == [Call::Stopped(SILENT_WINDOW)]
-    })
-    .await;
-    // The platform was not asked, and what it hands over anyway goes nowhere.
+    // Sound goes with a whole screen. The session of a window says so (its `sound` is not set),
+    // and the app asks no one for it: neither the platform of the source nor its device.
+    assert!(!shown.viewing.sound);
+    assert!(!rig.viewing.app.hear_window(session, true));
+    assert!(!rig.viewing.app.hear_window(session, true));
     assert_eq!(rig.platform.hear_calls(window), []);
+    // What the platform hands over anyway goes nowhere.
     assert_eq!(
         sound_begin(&rig.registry, link, &aac(48_000, 2, 1024)),
         Ok(())
@@ -3320,20 +3320,10 @@ async fn the_sound_of_a_window_is_not_asked_of_the_platform_and_the_other_device
         Ok((SOUND_DROPPED, 0))
     );
 
-    // Asking again is answered the same way.
-    assert!(rig.viewing.app.hear_window(session, true));
-    until("the speaker to be told again", || {
-        rig.sound_calls(1).len() == 2
-    })
-    .await;
-    assert_eq!(
-        rig.sound_calls(1),
-        [Call::Stopped(SILENT_WINDOW), Call::Stopped(SILENT_WINDOW)]
-    );
-    assert_eq!(rig.platform.hear_calls(window), []);
-
-    assert!(rig.viewing.app.end_window(session));
+    // The speaker was never called.
+    rig.close_at_viewer(&shown).await;
     rig.nothing_is_left().await;
+    assert_eq!(rig.sound_calls(1), []);
 }
 
 #[tokio::test]

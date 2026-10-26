@@ -9,6 +9,7 @@ import '../backend.dart';
 import '../control_keyboard.dart';
 import '../format.dart';
 import '../window_control.dart';
+import '../window_sound.dart';
 import '../windows_controller.dart';
 import 'windows_panel.dart';
 
@@ -27,6 +28,11 @@ import 'windows_panel.dart';
 /// keyboard and trackpad out of use) has settings for the session, which the person opens from the
 /// bar: two switches, to show the screen at the other device and to let its keyboard and trackpad
 /// be used, each on and off as often as they like. Both are off when the session starts.
+///
+/// A whole screen whose device can send its sound has a speaker in the bar, which turns the sound
+/// on and off and shows how it stands. When the other device says that it sends none, a line over
+/// the picture says why, until the person tries again with the speaker or turns the sound off with
+/// the button in the line.
 ///
 /// The screen of a phone stays on for as long as the window shows. Nobody touches it while a
 /// window is watched, so the hold is renewed every [renewEvery] and not left to run out.
@@ -204,6 +210,14 @@ class _WindowScreenState extends State<WindowScreen> {
       listenable: widget.controller,
       builder: (context, _) {
         final running = _running;
+        // Why the other device sends no sound, while the person wants it and it says so.
+        final sound = widget.controller.soundOf(session);
+        final silence = running && sound.stage == SoundStage.silent
+            ? describeSilence(
+                sound.why ?? WindowSound.other,
+                session.deviceName,
+              )
+            : null;
         return PopScope(
           canPop: !running,
           onPopInvokedWithResult: (didPop, _) {
@@ -244,6 +258,8 @@ class _WindowScreenState extends State<WindowScreen> {
                 ],
               ),
               actions: [
+                if (running && session.sound)
+                  _SoundButton(controller: widget.controller, session: session),
                 if (running && session.private)
                   Builder(
                     builder: (context) {
@@ -310,12 +326,28 @@ class _WindowScreenState extends State<WindowScreen> {
                                       onTyped: _control.type,
                                     ),
                                   ),
-                                if (_control.notice != null)
+                                if (_control.notice != null || silence != null)
                                   Positioned(
                                     left: 16,
                                     right: 16,
                                     top: 8,
-                                    child: _Notice(text: _control.notice!),
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      spacing: 8,
+                                      children: [
+                                        if (_control.notice != null)
+                                          _Notice(text: _control.notice!),
+                                        if (silence != null)
+                                          _Notice(
+                                            text: silence,
+                                            action: (
+                                              label: 'Turn off the sound',
+                                              onPressed: () => widget.controller
+                                                  .hear(session, listen: false),
+                                            ),
+                                          ),
+                                      ],
+                                    ),
                                   ),
                               ],
                             ),
@@ -336,6 +368,51 @@ class _WindowScreenState extends State<WindowScreen> {
                       onClose: () =>
                           unawaited(Navigator.of(context).maybePop()),
                     ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// The speaker in the bar of a screen that can be heard: it turns the sound on and off, and shows
+/// how the sound stands. When the other device sends none, it asks again.
+class _SoundButton extends StatelessWidget {
+  const _SoundButton({required this.controller, required this.session});
+
+  final WindowsController controller;
+  final WindowSession session;
+
+  @override
+  Widget build(BuildContext context) {
+    final stage = controller.soundOf(session).stage;
+    final name = visibleText(session.deviceName);
+    final wanted = stage == SoundStage.asking || stage == SoundStage.playing;
+    return IconButton(
+      isSelected: stage == SoundStage.playing,
+      icon: Icon(switch (stage) {
+        SoundStage.off => Icons.volume_off_outlined,
+        SoundStage.asking => Icons.volume_up_outlined,
+        SoundStage.playing => Icons.volume_up,
+        SoundStage.silent => Icons.volume_off,
+      }),
+      selectedIcon: const Icon(Icons.volume_up),
+      color: stage == SoundStage.silent
+          ? Theme.of(context).colorScheme.error
+          : null,
+      tooltip: switch (stage) {
+        SoundStage.off => 'Hear the sound of $name',
+        SoundStage.asking => 'Waiting for the sound of $name, tap to stop',
+        SoundStage.playing => 'Turn off the sound of $name',
+        SoundStage.silent => 'No sound from $name, tap to try again',
+      },
+      onPressed: () {
+        if (controller.hear(session, listen: !wanted)) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Baton could not ask $name for its sound. Try again.',
             ),
           ),
         );
@@ -539,33 +616,54 @@ class _Picture extends StatelessWidget {
   }
 }
 
-/// What the other device did not do of what the person did, over the top of the picture. It lets
-/// the touches through to the picture.
+/// A line over the top of the picture: what the other device did not do of what the person did,
+/// which lets the touches through to the picture, or why it sends no sound, which has a button.
 class _Notice extends StatelessWidget {
-  const _Notice({required this.text});
+  const _Notice({required this.text, this.action});
 
   final String text;
+
+  /// What the line offers the person, with the words for it. A line that offers something takes
+  /// the touches that land on it; one that does not lets them through to the picture.
+  final ({String label, VoidCallback onPressed})? action;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return IgnorePointer(
-      child: Semantics(
-        liveRegion: true,
-        child: Material(
-          color: scheme.inverseSurface,
-          borderRadius: BorderRadius.circular(8),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: Text(
-              text,
-              textAlign: TextAlign.center,
-              style: TextStyle(color: scheme.onInverseSurface),
-            ),
-          ),
+    final action = this.action;
+    final words = Text(
+      text,
+      textAlign: TextAlign.center,
+      style: TextStyle(color: scheme.onInverseSurface),
+    );
+    final line = Semantics(
+      liveRegion: true,
+      child: Material(
+        color: scheme.inverseSurface,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: action == null
+              ? words
+              : Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    words,
+                    TextButton(
+                      onPressed: action.onPressed,
+                      style: TextButton.styleFrom(
+                        foregroundColor: scheme.inversePrimary,
+                      ),
+                      child: Text(action.label),
+                    ),
+                  ],
+                ),
         ),
       ),
     );
+    // The material of a line takes the touches that land on it, so a line that offers something
+    // keeps them from the window below; one that offers nothing lets them through.
+    return action == null ? IgnorePointer(child: line) : line;
   }
 }
 

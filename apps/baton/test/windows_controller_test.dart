@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import 'package:baton/src/backend.dart';
+import 'package:baton/src/window_sound.dart';
 import 'package:baton/src/windows_controller.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -1107,6 +1108,260 @@ void main() {
       session.windowLiftTaken = false;
       expect(controller.lift(window, screen: true), isFalse);
       expect(controller.liftedOf(window), dark);
+    });
+  });
+
+  group('the sound of a screen', () {
+    Future<void> hearOf(FakeSession session, int id, WindowSound sound) async {
+      session.emit(Event.windowSound(id: id, sound: sound));
+      await pumpEventQueue();
+    }
+
+    const asking = (stage: SoundStage.asking, why: null);
+    const playing = (stage: SoundStage.playing, why: null);
+
+    test('is off when the session starts, and nothing is asked', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(display: true, sound: true);
+      await _begin(session, window);
+
+      expect(controller.soundOf(window), soundOff);
+      expect(session.windowHears, isEmpty);
+    });
+
+    test('is asked for, plays, and is turned off by the person', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(id: 5, display: true, sound: true);
+      await _begin(session, window);
+      var told = 0;
+      controller.addListener(() => told++);
+
+      expect(controller.hear(window, listen: true), isTrue);
+      expect(controller.soundOf(window), asking);
+      await hearOf(session, 5, WindowSound.playing);
+      expect(controller.soundOf(window), playing);
+      expect(controller.hear(window, listen: false), isTrue);
+      expect(controller.soundOf(window), soundOff);
+      // Baton says so too, once the speaker has stopped: nothing new to show.
+      await hearOf(session, 5, WindowSound.off);
+
+      expect(session.windowHears, [
+        (session: 5, listen: true),
+        (session: 5, listen: false),
+      ]);
+      expect(told, 3, reason: 'asking, playing and off, each once');
+    });
+
+    test('asks nothing when it says what already is', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(display: true, sound: true);
+      await _begin(session, window);
+
+      expect(controller.hear(window, listen: false), isTrue);
+      expect(controller.hear(window, listen: true), isTrue);
+      expect(controller.hear(window, listen: true), isTrue);
+      await hearOf(session, 1, WindowSound.playing);
+      expect(controller.hear(window, listen: true), isTrue);
+
+      expect(session.windowHears, [(session: 1, listen: true)]);
+    });
+
+    test('is told why the other device sends none, and asks again when the person does', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(display: true, sound: true);
+      await _begin(session, window);
+      controller.hear(window, listen: true);
+
+      await hearOf(session, 1, WindowSound.noPermission);
+      expect(controller.soundOf(window), (
+        stage: SoundStage.silent,
+        why: WindowSound.noPermission,
+      ));
+
+      // Asking again is asking again, though the sound is wanted already.
+      expect(controller.hear(window, listen: true), isTrue);
+      expect(controller.soundOf(window), asking);
+      await hearOf(session, 1, WindowSound.failed);
+      expect(controller.soundOf(window), (
+        stage: SoundStage.silent,
+        why: WindowSound.failed,
+      ));
+      await hearOf(session, 1, WindowSound.playing);
+      expect(controller.soundOf(window), playing);
+
+      expect(session.windowHears, [
+        (session: 1, listen: true),
+        (session: 1, listen: true),
+      ]);
+    });
+
+    test(
+      'can be turned off while the other device says it sends none',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        final window = sampleWindowSession(display: true, sound: true);
+        await _begin(session, window);
+        controller.hear(window, listen: true);
+        await hearOf(session, 1, WindowSound.other);
+
+        expect(controller.hear(window, listen: false), isTrue);
+
+        expect(controller.soundOf(window), soundOff);
+        expect(session.windowHears.last, (session: 1, listen: false));
+      },
+    );
+
+    test('stays as it was when the other device could not be asked', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(display: true, sound: true);
+      await _begin(session, window);
+      var told = 0;
+      controller.addListener(() => told++);
+
+      session.windowHearTaken = false;
+      expect(controller.hear(window, listen: true), isFalse);
+      expect(controller.soundOf(window), soundOff);
+      expect(told, 0);
+      // Not being asked is not the end of the window.
+      expect(controller.sessions, [window]);
+      expect(controller.notes, isEmpty);
+
+      session.windowHearTaken = true;
+      expect(controller.hear(window, listen: true), isTrue);
+      expect(controller.soundOf(window), asking);
+    });
+
+    test('goes to the window that it is for, and to no other', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final first = sampleWindowSession(id: 1, display: true, sound: true);
+      final second = sampleWindowSession(id: 2, display: true, sound: true);
+      await _begin(session, first);
+      await _begin(session, second);
+
+      controller.hear(second, listen: true);
+      await hearOf(session, 2, WindowSound.playing);
+
+      expect(controller.soundOf(second), playing);
+      expect(controller.soundOf(first), soundOff);
+      expect(session.windowHears, [(session: 2, listen: true)]);
+    });
+
+    test(
+      'is asked for at once in a private session, and in no other',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        final private = sampleWindowSession(
+          id: 1,
+          display: true,
+          control: true,
+          private: true,
+          sound: true,
+        );
+        final plain = sampleWindowSession(id: 2, display: true, sound: true);
+        final mute = sampleWindowSession(
+          id: 3,
+          display: true,
+          control: true,
+          private: true,
+        );
+        final shared = sampleWindowSession(
+          id: 4,
+          role: WindowRole.sharing,
+          display: true,
+          private: true,
+          sound: true,
+        );
+        await _begin(session, private);
+        await _begin(session, plain);
+        await _begin(session, mute);
+        await _begin(session, shared);
+
+        // The first has sound to ask for and is private. The second is not private. The third has
+        // no sound to ask for, and the fourth is a screen that this device shares.
+        expect(controller.soundOf(private), asking);
+        expect(controller.soundOf(plain), soundOff);
+        expect(controller.soundOf(mute), soundOff);
+        expect(controller.soundOf(shared), soundOff);
+        expect(session.windowHears, [(session: 1, listen: true)]);
+      },
+    );
+
+    test(
+      'is not shown for a screen that is not here, or that is over',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        final shared = sampleWindowSession(
+          id: 1,
+          role: WindowRole.sharing,
+          display: true,
+        );
+        await _begin(session, shared);
+        var told = 0;
+        controller.addListener(() => told++);
+
+        await hearOf(session, 1, WindowSound.playing);
+        await hearOf(session, 9, WindowSound.playing);
+
+        expect(controller.soundOf(shared), soundOff);
+        expect(told, 0);
+      },
+    );
+
+    test(
+      'is off again for the next session, whichever way the last one ended',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        final first = sampleWindowSession(id: 1, display: true, sound: true);
+        final second = sampleWindowSession(id: 2, display: true, sound: true);
+        await _begin(session, first);
+        await _begin(session, second);
+        controller.hear(first, listen: true);
+        controller.hear(second, listen: true);
+        await hearOf(session, 1, WindowSound.playing);
+        await hearOf(session, 2, WindowSound.playing);
+
+        // The other device ended one, and the person ended the other.
+        await _end(session, 1, const WindowEnd.otherDevice());
+        controller.end(second);
+        expect(controller.soundOf(first), soundOff);
+        expect(controller.soundOf(second), soundOff);
+
+        // A sound event that is late for a window that is gone changes nothing.
+        await hearOf(session, 1, WindowSound.playing);
+        expect(controller.soundOf(first), soundOff);
+
+        // A session that begins with the same number starts with sound off.
+        final again = sampleWindowSession(id: 1, display: true, sound: true);
+        await _begin(session, again);
+        expect(controller.soundOf(again), soundOff);
+      },
+    );
+
+    test('is told to the screens once for each change, not for the same state again', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(display: true, sound: true);
+      await _begin(session, window);
+      controller.hear(window, listen: true);
+      var told = 0;
+      controller.addListener(() => told++);
+
+      await hearOf(session, 1, WindowSound.playing);
+      await hearOf(session, 1, WindowSound.playing);
+      await hearOf(session, 1, WindowSound.noPermission);
+      await hearOf(session, 1, WindowSound.noPermission);
+
+      expect(told, 2);
     });
   });
 
