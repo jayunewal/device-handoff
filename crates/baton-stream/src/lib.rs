@@ -5,7 +5,9 @@
 //! A source (a Mac) sends a picture of one window to a viewer (an iPhone or an iPad) as a run
 //! of encoded frames, one QUIC stream for each frame, and a frame that is late is reset and
 //! replaced. The design is in `docs/adr/0009-window-streaming.md` and the wire format in
-//! `docs/protocol.md`; the code here is the reference for both.
+//! `docs/protocol.md`; the code here is the reference for both. When the screen of a source is
+//! shared whole, the sound that it plays can go with it, in packets that travel the same way
+//! (`docs/adr/0012-sound.md`).
 //!
 //! This crate has no platform code, no network code and no clock of its own. What it will hold
 //! is state machines that are told what happened and say what to do, so that they can be tested
@@ -14,6 +16,7 @@
 //! control may do and how it sends it:
 //!
 //! - [`header`] holds the first bytes of a stream and the header of a frame of video.
+//! - [`sound`] holds the header of a packet of sound.
 //! - [`sender`] holds the source's accounting of frames in flight, and when to give up on one.
 //! - [`viewer`] holds the viewer's choice of which frame to decode next, and its limits on the
 //!   frame streams it reads and the pictures it holds.
@@ -38,6 +41,7 @@ pub mod header;
 pub mod input;
 pub mod input_queue;
 pub mod sender;
+pub mod sound;
 pub mod viewer;
 
 #[cfg(test)]
@@ -47,11 +51,15 @@ pub use baton_proto::id::SessionId;
 
 /// First byte of a unidirectional stream that carries one frame of video.
 ///
-/// The other kinds are 1, a lane of a file transfer (ADR 0008), and [`KIND_CONTROL`].
+/// The other kinds are 1, a lane of a file transfer (ADR 0008), [`KIND_CONTROL`] and
+/// [`KIND_SOUND`].
 pub const KIND_VIDEO: u8 = 2;
 
 /// First byte of a unidirectional stream that carries control messages.
 pub const KIND_CONTROL: u8 = 3;
+
+/// First byte of a unidirectional stream that carries one packet of sound.
+pub const KIND_SOUND: u8 = 4;
 
 /// How many frame streams a viewer reads at once, and so how many a source keeps open or is
 /// resetting: six in flight, and up to six more that were reset and that the viewer still counts
@@ -60,10 +68,13 @@ pub const MAX_FRAME_STREAMS: usize = 12;
 
 // A receiver tells the kinds apart by this byte alone, and stops a stream whose kind it does not
 // know (docs/protocol.md section 8). The kinds live in two crates, so the check that no two of
-// them are the same is here, where all three can be seen, and fails to compile when a kind is
+// them are the same is here, where all four can be seen, and fails to compile when a kind is
 // added with a value that is taken.
 const _: () = {
     assert!(baton_proto::transfer::lane::KIND_LANE != KIND_VIDEO);
     assert!(baton_proto::transfer::lane::KIND_LANE != KIND_CONTROL);
+    assert!(baton_proto::transfer::lane::KIND_LANE != KIND_SOUND);
     assert!(KIND_VIDEO != KIND_CONTROL);
+    assert!(KIND_VIDEO != KIND_SOUND);
+    assert!(KIND_CONTROL != KIND_SOUND);
 };

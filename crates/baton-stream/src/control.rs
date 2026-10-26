@@ -14,11 +14,12 @@
 //! travel on streams of their own:
 //!
 //! - from the source, the picture it is sending ([`Config`]), a pause and the end of it
-//!   ([`SourceMessage::Pause`] and [`SourceMessage::Resume`]) and the reason an event from the
-//!   viewer was dropped ([`gate::Notice`]);
+//!   ([`SourceMessage::Pause`] and [`SourceMessage::Resume`]), the reason an event from the
+//!   viewer was dropped ([`gate::Notice`]) and, to a viewer that plays sound, the sound it sends
+//!   ([`Sound`]) or why it sends none ([`Silent`]);
 //! - from the viewer, how it is doing ([`Report`]), what it can take now ([`Want`]), a request
-//!   for a key frame ([`KeyFrame`]) and, when the person at the source granted control, input
-//!   ([`InputBatch`]).
+//!   for a key frame ([`KeyFrame`]), whether it wants to hear the source ([`Hear`]) and, when
+//!   the person at the source granted control, input ([`InputBatch`]).
 //!
 //! Everything here is checked when it is encoded and when it is decoded, because the other
 //! device is not trusted: a number out of range or a list that is too long is a violation.
@@ -26,7 +27,11 @@
 //! messages, and lives with the session.
 
 use baton_proto::{
-    limits::{LimitError, MAX_CONTROL_MESSAGE_BYTES, MAX_FRAME_RATE, MAX_PICTURE_EDGE},
+    limits::{
+        LimitError, MAX_CONTROL_MESSAGE_BYTES, MAX_FRAME_RATE, MAX_PICTURE_EDGE,
+        MAX_SOUND_CHANNELS, MAX_SOUND_PACKET_SAMPLES, MAX_SOUND_RATE, MIN_SOUND_PACKET_SAMPLES,
+        MIN_SOUND_RATE,
+    },
     message::Message,
     stream::Codec,
 };
@@ -77,6 +82,66 @@ pub struct Pause {
     pub reason: PauseReason,
 }
 
+/// How the sound is coded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SoundCodec {
+    /// AAC-LC. A packet is one access unit, as the encoder makes it, with no ADTS header and no
+    /// other framing. The viewer describes the stream to its decoder from the rate, the channels
+    /// and the samples of [`Sound`].
+    Aac,
+    /// Any codec this version does not know about.
+    #[serde(other)]
+    Other,
+}
+
+/// The sound that the source sends from now on, in packets on streams of kind
+/// [`KIND_SOUND`](crate::KIND_SOUND).
+///
+/// The source sends one before the first packet of a run of sound. Packets and control messages
+/// travel on streams of their own, so a packet can arrive before the message that describes it;
+/// a viewer that has not read the message yet drops the packet as if it had been lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sound {
+    /// How the packets are coded.
+    pub codec: SoundCodec,
+    /// The sampling rate in hertz, from [`MIN_SOUND_RATE`] to [`MAX_SOUND_RATE`].
+    pub rate: u32,
+    /// How many channels there are: 1 or 2.
+    pub channels: u8,
+    /// How many samples of each channel one packet holds, from [`MIN_SOUND_PACKET_SAMPLES`] to
+    /// [`MAX_SOUND_PACKET_SAMPLES`]. A packet lasts this many samples at the rate: 1024 at 48000
+    /// hertz is 21.3 milliseconds.
+    pub samples: u16,
+}
+
+/// Why the source sends no sound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SilentReason {
+    /// The session is of a window. Sound goes only with a whole screen.
+    Window,
+    /// The operating system of the source has not allowed its program to record the sound of the
+    /// source, and the person at the source has to allow it.
+    NoPermission,
+    /// Something went wrong at the source that the viewer did not cause.
+    Failed,
+    /// Any reason this version does not know about.
+    #[serde(other)]
+    Other,
+}
+
+/// The source sends no sound, and says why.
+///
+/// It answers a [`Hear`] that it cannot carry out, and it ends a run of sound that was going
+/// when the cause comes up during the run, for example when the person at the source takes the
+/// permission away. No packet follows it until the next [`Sound`]. The source may begin that run
+/// by itself when the cause is gone and the last [`Hear`] was `on`, and the viewer can ask it to
+/// try again with another [`Hear`] that is `on`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Silent {
+    /// Why, so that the viewer can say it.
+    pub reason: SilentReason,
+}
+
 /// A message from the source to the viewer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SourceMessage {
@@ -88,6 +153,12 @@ pub enum SourceMessage {
     Resume,
     /// Events from the viewer were dropped, and why. At most one in a second.
     Notice(gate::Notice),
+    /// The sound that follows. Only to a viewer that advertised
+    /// [`capability::STREAM_HEAR`](baton_proto::message::capability::STREAM_HEAR).
+    Sound(Sound),
+    /// There is no sound, and why. Only to a viewer that advertised
+    /// [`capability::STREAM_HEAR`](baton_proto::message::capability::STREAM_HEAR).
+    Silent(Silent),
 }
 
 /// How hot the viewer's device is.
@@ -157,6 +228,17 @@ pub struct InputBatch {
     pub events: Vec<Event>,
 }
 
+/// The viewer wants to hear the source, or does not any more.
+///
+/// A viewer that has not said it wants to hear gets no sound. An `on` asks the source to begin a
+/// run of sound if none is going, and to say why with [`Silent`] if it cannot; while a run goes
+/// it changes nothing. An `off` ends the run, if there is one, and the source says nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hear {
+    /// Whether to send sound.
+    pub on: bool,
+}
+
 /// A message from the viewer to the source.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ViewerMessage {
@@ -168,6 +250,9 @@ pub enum ViewerMessage {
     KeyFrame(KeyFrame),
     /// What the person did.
     Input(InputBatch),
+    /// It wants to hear the source, or it does not. Only to a source that advertised
+    /// [`capability::STREAM_SOUND`](baton_proto::message::capability::STREAM_SOUND).
+    Hear(Hear),
 }
 
 impl Config {
@@ -183,6 +268,24 @@ impl Want {
         check_edge("wanted picture width", self.width)?;
         check_edge("wanted picture height", self.height)?;
         check_rate(self.fps)
+    }
+}
+
+impl Sound {
+    fn validate(self) -> Result<(), LimitError> {
+        check_between("sound rate", self.rate, MIN_SOUND_RATE, MAX_SOUND_RATE)?;
+        check_between(
+            "sound channels",
+            u32::from(self.channels),
+            1,
+            u32::from(MAX_SOUND_CHANNELS),
+        )?;
+        check_between(
+            "samples in a packet of sound",
+            u32::from(self.samples),
+            u32::from(MIN_SOUND_PACKET_SAMPLES),
+            u32::from(MAX_SOUND_PACKET_SAMPLES),
+        )
     }
 }
 
@@ -231,6 +334,17 @@ fn check_rate(fps: u16) -> Result<(), LimitError> {
     }
 }
 
+fn check_between(field: &'static str, value: u32, least: u32, most: u32) -> Result<(), LimitError> {
+    if (least..=most).contains(&value) {
+        Ok(())
+    } else {
+        Err(LimitError::Invalid {
+            field,
+            reason: "is not between the least and the most there may be",
+        })
+    }
+}
+
 /// What is wrong with an event, in words that are the same for every event, so that a log says
 /// what the problem was and nothing of what the person did.
 const fn input_problem(error: InputError) -> &'static str {
@@ -253,11 +367,12 @@ impl Message for SourceMessage {
     fn validate(&self) -> Result<(), LimitError> {
         match self {
             Self::Config(config) => config.validate(),
+            Self::Sound(sound) => sound.validate(),
             Self::Notice(notice) if notice.count == 0 => Err(LimitError::Invalid {
                 field: "number of dropped events",
                 reason: "is 0",
             }),
-            Self::Pause(_) | Self::Resume | Self::Notice(_) => Ok(()),
+            Self::Pause(_) | Self::Resume | Self::Notice(_) | Self::Silent(_) => Ok(()),
         }
     }
 }
@@ -267,7 +382,7 @@ impl Message for ViewerMessage {
 
     fn validate(&self) -> Result<(), LimitError> {
         match self {
-            Self::Report(_) | Self::KeyFrame(_) => Ok(()),
+            Self::Report(_) | Self::KeyFrame(_) | Self::Hear(_) => Ok(()),
             Self::Want(want) => want.validate(),
             Self::Input(batch) => batch.validate(),
         }
@@ -326,6 +441,16 @@ mod tests {
             width: 1440,
             height: 900,
             fps: 60,
+        }
+    }
+
+    /// What the first version sends: AAC-LC at 48000 hertz in two channels, 1024 samples a packet.
+    fn sound() -> Sound {
+        Sound {
+            codec: SoundCodec::Aac,
+            rate: 48_000,
+            channels: 2,
+            samples: 1024,
         }
     }
 
@@ -398,6 +523,29 @@ mod tests {
             // {"Notice": {"reason": "Covered", "count": 3}}
             "0000001fa1664e6f74696365a266726561736f6e67436f766572656465636f756e7403"
         );
+        assert_eq!(
+            encoded(&SourceMessage::Sound(sound())),
+            concat!(
+                "0000002f",           // the frame: 47 bytes follow
+                "a165536f756e64",     // {"Sound":
+                "a4",                 //   map of 4
+                "65636f646563",       //   "codec":
+                "63416163",           //     "Aac",
+                "6472617465",         //   "rate":
+                "19bb80",             //     48000,
+                "686368616e6e656c73", //   "channels":
+                "02",                 //     2,
+                "6773616d706c6573",   //   "samples":
+                "190400",             //     1024
+            )
+        );
+        assert_eq!(
+            encoded(&SourceMessage::Silent(Silent {
+                reason: SilentReason::NoPermission
+            })),
+            // {"Silent": {"reason": "NoPermission"}}
+            "0000001da16653696c656e74a166726561736f6e6c4e6f5065726d697373696f6e"
+        );
     }
 
     #[test]
@@ -436,6 +584,16 @@ mod tests {
             encoded(&ViewerMessage::KeyFrame(KeyFrame { tried: 5 })),
             // {"KeyFrame": {"tried": 5}}
             "00000012a1684b65794672616d65a165747269656405"
+        );
+        assert_eq!(
+            encoded(&ViewerMessage::Hear(Hear { on: true })),
+            // {"Hear": {"on": true}}
+            "0000000ba16448656172a1626f6ef5"
+        );
+        assert_eq!(
+            encoded(&ViewerMessage::Hear(Hear { on: false })),
+            // {"Hear": {"on": false}}
+            "0000000ba16448656172a1626f6ef4"
         );
         assert_eq!(
             encoded(&batch(vec![press(7)])),
@@ -579,6 +737,26 @@ mod tests {
                 fps: 30
             }))
         );
+        // The same for sound: a reason and a codec of a later version are read, as `Other`.
+        assert_eq!(
+            decode(cbor!({ "Silent" => { "reason" => "Muted" } }).unwrap()),
+            Ok(SourceMessage::Silent(Silent {
+                reason: SilentReason::Other
+            }))
+        );
+        assert_eq!(
+            decode(
+                cbor!({ "Sound" => { "codec" => "Opus", "rate" => 48000, "channels" => 2,
+                                      "samples" => 960 } })
+                .unwrap()
+            ),
+            Ok(SourceMessage::Sound(Sound {
+                codec: SoundCodec::Other,
+                rate: 48_000,
+                channels: 2,
+                samples: 960
+            }))
+        );
         let report =
             cbor!({ "Report" => { "decode_us" => 1, "dropped" => 0, "thermal" => "Scorching" } })
                 .unwrap();
@@ -611,6 +789,95 @@ mod tests {
         assert!(frame::decode_payload::<SourceMessage>(&tried).is_err());
         let resume = cbor_bytes(&Value::Text("Resume".into()));
         assert!(frame::decode_payload::<ViewerMessage>(&resume).is_err());
+        let hear = cbor_bytes(&cbor!({ "Hear" => { "on" => true } }).unwrap());
+        assert!(frame::decode_payload::<SourceMessage>(&hear).is_err());
+        let silent = cbor_bytes(&cbor!({ "Silent" => { "reason" => "Failed" } }).unwrap());
+        assert!(frame::decode_payload::<ViewerMessage>(&silent).is_err());
+        let sound = cbor_bytes(
+            &cbor!({ "Sound" => { "codec" => "Aac", "rate" => 48000, "channels" => 2,
+                                   "samples" => 1024 } })
+            .unwrap(),
+        );
+        assert!(frame::decode_payload::<ViewerMessage>(&sound).is_err());
+    }
+
+    #[test]
+    fn a_hear_that_does_not_say_whether_is_not_read() {
+        // `on` has no default: a message that leaves it out says nothing, and is refused.
+        let payload = cbor_bytes(&cbor!({ "Hear" => {} }).unwrap());
+        assert!(matches!(
+            frame::decode_payload::<ViewerMessage>(&payload),
+            Err(FrameError::Decode(_))
+        ));
+        // And it is a boolean, not a number.
+        let payload = cbor_bytes(&cbor!({ "Hear" => { "on" => 1 } }).unwrap());
+        assert!(matches!(
+            frame::decode_payload::<ViewerMessage>(&payload),
+            Err(FrameError::Decode(_))
+        ));
+    }
+
+    #[test]
+    fn the_format_of_sound_is_checked_when_it_is_written_and_when_it_is_read() {
+        let limit = |result: Result<Vec<u8>, FrameError>| {
+            matches!(result, Err(FrameError::Limit(LimitError::Invalid { .. })))
+        };
+        let said = |rate, channels, samples| {
+            frame::encode(&SourceMessage::Sound(Sound {
+                rate,
+                channels,
+                samples,
+                ..sound()
+            }))
+        };
+        assert!(said(48_000, 2, 1024).is_ok());
+        assert!(said(44_100, 1, 960).is_ok());
+        assert!(said(MIN_SOUND_RATE, 1, MIN_SOUND_PACKET_SAMPLES).is_ok());
+        assert!(said(MAX_SOUND_RATE, MAX_SOUND_CHANNELS, MAX_SOUND_PACKET_SAMPLES).is_ok());
+        assert!(limit(said(MIN_SOUND_RATE - 1, 2, 1024)));
+        assert!(limit(said(0, 2, 1024)));
+        assert!(limit(said(MAX_SOUND_RATE + 1, 2, 1024)));
+        assert!(limit(said(48_000, 0, 1024)));
+        assert!(limit(said(48_000, MAX_SOUND_CHANNELS + 1, 1024)));
+        assert!(limit(said(48_000, 2, MIN_SOUND_PACKET_SAMPLES - 1)));
+        assert!(limit(said(48_000, 2, 0)));
+        assert!(limit(said(48_000, 2, MAX_SOUND_PACKET_SAMPLES + 1)));
+
+        // A format that a later version could send is still checked on the way in.
+        let payload = cbor_bytes(
+            &cbor!({ "Sound" => { "codec" => "Aac", "rate" => 48000, "channels" => 6,
+                                   "samples" => 1024 } })
+            .unwrap(),
+        );
+        assert!(matches!(
+            frame::decode_payload::<SourceMessage>(&payload),
+            Err(FrameError::Limit(LimitError::Invalid { .. }))
+        ));
+        // A number that does not fit the field is not read as a smaller one.
+        let payload = cbor_bytes(
+            &cbor!({ "Sound" => { "codec" => "Aac", "rate" => 48000, "channels" => 258,
+                                   "samples" => 1024 } })
+            .unwrap(),
+        );
+        assert!(matches!(
+            frame::decode_payload::<SourceMessage>(&payload),
+            Err(FrameError::Decode(_))
+        ));
+    }
+
+    #[test]
+    fn a_silent_message_and_a_hear_have_no_limits_to_break() {
+        for reason in [
+            SilentReason::Window,
+            SilentReason::NoPermission,
+            SilentReason::Failed,
+            SilentReason::Other,
+        ] {
+            assert!(frame::encode(&SourceMessage::Silent(Silent { reason })).is_ok());
+        }
+        for on in [false, true] {
+            assert!(frame::encode(&ViewerMessage::Hear(Hear { on })).is_ok());
+        }
     }
 
     #[test]
@@ -874,6 +1141,27 @@ mod tests {
                     count,
                 })
             }),
+            (
+                prop_oneof![Just(SoundCodec::Aac), Just(SoundCodec::Other)],
+                MIN_SOUND_RATE..=MAX_SOUND_RATE,
+                1..=MAX_SOUND_CHANNELS,
+                MIN_SOUND_PACKET_SAMPLES..=MAX_SOUND_PACKET_SAMPLES
+            )
+                .prop_map(|(codec, rate, channels, samples)| {
+                    SourceMessage::Sound(Sound {
+                        codec,
+                        rate,
+                        channels,
+                        samples,
+                    })
+                }),
+            prop_oneof![
+                Just(SilentReason::Window),
+                Just(SilentReason::NoPermission),
+                Just(SilentReason::Failed),
+                Just(SilentReason::Other)
+            ]
+            .prop_map(|reason| SourceMessage::Silent(Silent { reason })),
         ]
     }
 
@@ -905,6 +1193,7 @@ mod tests {
                 })),
             any::<u64>().prop_map(|tried| ViewerMessage::KeyFrame(KeyFrame { tried })),
             proptest::collection::vec(event(), 1..=input::MAX_BATCH).prop_map(batch),
+            any::<bool>().prop_map(|on| ViewerMessage::Hear(Hear { on })),
         ]
     }
 

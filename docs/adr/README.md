@@ -15,3 +15,4 @@ Short notes on decisions that are expensive to reverse, written when the decisio
 | [0009](0009-window-streaming.md) | Window streaming: the Mac offers, late frames are dropped, input stays in the window |
 | [0010](0010-sessions-that-the-viewer-starts.md) | Sessions that the viewer starts: allowed once at the Mac, asked for from the phone |
 | [0011](0011-privacy-mode.md) | Privacy mode: a Mac that another device controls shows nothing, takes no input, and locks when the session ends |
+| [0012](0012-sound.md) | Sound: the Mac sends what it plays, and is quiet while the other device listens |

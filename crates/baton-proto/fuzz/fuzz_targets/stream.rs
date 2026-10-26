@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Feeds arbitrary bytes to the parts of window streaming that read what a device on the network
-//! sends: the start of a stream, the header of a frame of video, the messages on the two control
-//! streams, and the picture of a frame. It also feeds the sample of an encoder to the part that
-//! makes a picture of it, which is the only part of the source that takes bytes it did not write,
-//! and the parameter set of a key frame to the part that reads the size of its pictures.
+//! sends: the start of a stream, the header of a frame of video, the header of a packet of sound,
+//! the messages on the two control streams, and the picture of a frame. It also feeds the sample of
+//! an encoder to the part that makes a picture of it, which is the only part of the source that
+//! takes bytes it did not write, and the parameter set of a key frame to the part that reads the
+//! size of its pictures.
 //!
 //! The first byte of the input picks the part. Besides "never panics", each part is checked for
 //! what it promises:
 //!
-//! - a start or a header that is read can be written again, to the same bytes, and read again, to
-//!   the same value;
+//! - a start or a header, of a frame or of a packet of sound, that is read can be written again, to
+//!   the same bytes, and read again, to the same value;
 //! - a message is accepted only if an independent CBOR checker agrees that its payload is exactly
 //!   one well-formed item, what decodes passes its own checks, and it can be written again and
 //!   read again, to the same message;
@@ -29,6 +30,7 @@ use baton_stream::{
     control::{SourceMessage, ViewerMessage},
     h264,
     header::{FrameHeader, PREFIX_LEN, decode_prefix, encode_prefix},
+    sound::PacketHeader,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -39,14 +41,15 @@ fuzz_target!(|data: &[u8]| {
     let Some((mode, data)) = data.split_first() else {
         return;
     };
-    match mode % 7 {
+    match mode % 8 {
         0 => start(data),
         1 => header(data),
         2 => message::<SourceMessage>(data),
         3 => message::<ViewerMessage>(data),
         4 => picture(data),
         5 => sample(data),
-        _ => size(data),
+        6 => size(data),
+        _ => packet(data),
     }
 });
 
@@ -73,6 +76,17 @@ fn header(data: &[u8]) {
         .expect("a header that was read can be written");
     assert_eq!(written.as_slice(), &data[..FrameHeader::LEN]);
     let again = FrameHeader::parse(&written).expect("a header that was written can be read");
+    assert_eq!(again.0, header);
+}
+
+fn packet(data: &[u8]) {
+    let Ok((header, rest)) = PacketHeader::parse(data) else {
+        return;
+    };
+    assert_eq!(rest.len(), data.len() - PacketHeader::LEN);
+    let written = header.encode();
+    assert_eq!(written.as_slice(), &data[..PacketHeader::LEN]);
+    let again = PacketHeader::parse(&written).expect("a header that was written can be read");
     assert_eq!(again.0, header);
 }
 

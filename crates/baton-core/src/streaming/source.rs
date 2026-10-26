@@ -758,6 +758,9 @@ impl Source {
                     }
                 }
             }
+            // A viewer sends a `Hear` only to a source that advertised `stream.sound`, and this
+            // source does not yet (protocol.md section 9).
+            ViewerMessage::Hear(_) => return ControlFlow::Break(()),
         }
         ControlFlow::Continue(())
     }
@@ -873,7 +876,7 @@ mod tests {
     use baton_proto::stream::Codec;
     use baton_stream::{
         KIND_CONTROL, KIND_VIDEO,
-        control::Thermal,
+        control::{Hear, Thermal},
         header::{Flags, PREFIX_LEN, encode_prefix},
         input::{Event, Modifiers, PointerAction},
     };
@@ -1590,6 +1593,22 @@ mod tests {
         let mut send = rig.open_viewer_control().await;
         let tried = KeyFrame { tried: 99 };
         write_message(&mut send, &ViewerMessage::KeyFrame(tried))
+            .await
+            .unwrap();
+        assert_eq!(rig.ended().await, End::Violation);
+        assert_eq!(stopped_with(&send).await, 400);
+        // The source says so by resetting its own control stream.
+        assert_eq!(reset_with(&mut control).await, 400);
+        assert!(rig.log.has(&Heard::Ended));
+    }
+
+    #[tokio::test]
+    async fn a_hear_is_a_violation_while_the_source_does_not_send_sound() {
+        let mut rig = Rig::new().await;
+        let mut control = rig.source_control().await;
+        read_source_message(&mut control).await;
+        let mut send = rig.open_viewer_control().await;
+        write_message(&mut send, &ViewerMessage::Hear(Hear { on: true }))
             .await
             .unwrap();
         assert_eq!(rig.ended().await, End::Violation);

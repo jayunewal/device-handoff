@@ -358,6 +358,15 @@ fn a_device_that_takes_part_in_window_streaming_says_so_in_its_capabilities() {
 }
 
 #[test]
+fn a_device_that_sends_or_plays_the_sound_of_a_screen_says_so_in_its_capabilities() {
+    // A new kind of stream and new control messages are sent only to a device that advertised
+    // the capability (section 5): a source checks `stream.hear` before it writes `Sound`, `Silent`
+    // or a packet, and a viewer checks `stream.sound` before it writes `Hear`.
+    assert_eq!(capability::STREAM_SOUND, "stream.sound");
+    assert_eq!(capability::STREAM_HEAR, "stream.hear");
+}
+
+#[test]
 fn a_display_is_a_kind_of_source_that_this_version_knows() {
     // The kind is the name of the variant, as text, and it is not the kind that is read for a
     // name this version does not know.

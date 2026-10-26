@@ -613,6 +613,11 @@ impl View {
         }
         self.control_taken.cancel();
         let ended = read_control(recv, self.params.stall, &self.ended, |message| {
+            // A source sends sound messages only to a viewer that advertised `stream.hear`, and
+            // this viewer does not yet (protocol.md section 9).
+            if matches!(message, SourceMessage::Sound(_) | SourceMessage::Silent(_)) {
+                return ControlFlow::Break(());
+            }
             // The source keeps within what the viewer said it can take.
             if let SourceMessage::Config(config) = &message
                 && !self.takes.allows(config)
@@ -756,7 +761,9 @@ mod tests {
     use baton_proto::stream::Codec;
     use baton_stream::{
         KIND_CONTROL,
-        control::{Config, InputBatch, Pause, PauseReason},
+        control::{
+            Config, InputBatch, Pause, PauseReason, Silent, SilentReason, Sound, SoundCodec,
+        },
         header::Flags,
         input::{Button, Event, Modifiers, NO_KEY, PointerAction},
     };
@@ -1584,6 +1591,28 @@ mod tests {
             assert_eq!(rig.ended().await, End::Violation, "{what}");
             assert_eq!(stopped_with(&send).await, 400, "{what}");
             assert!(rig.log.source().is_empty(), "{what}");
+        }
+    }
+
+    #[tokio::test]
+    async fn sound_from_a_source_is_a_violation_while_the_viewer_does_not_take_it() {
+        for message in [
+            SourceMessage::Sound(Sound {
+                codec: SoundCodec::Aac,
+                rate: 48_000,
+                channels: 2,
+                samples: 1024,
+            }),
+            SourceMessage::Silent(Silent {
+                reason: SilentReason::Failed,
+            }),
+        ] {
+            let rig = Rig::new().await;
+            let mut send = rig.open_source_control().await;
+            write_message(&mut send, &message).await.unwrap();
+            assert_eq!(rig.ended().await, End::Violation, "{message:?}");
+            assert_eq!(stopped_with(&send).await, 400, "{message:?}");
+            assert!(rig.log.source().is_empty(), "{message:?}");
         }
     }
 

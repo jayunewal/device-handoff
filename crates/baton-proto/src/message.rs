@@ -47,6 +47,15 @@ pub mod capability {
     /// the offer, as the source. Only a device that advertises [`STREAM_SHARE`] advertises it
     /// (section 9 of `docs/protocol.md`).
     pub const STREAM_START: &str = "stream.start";
+    /// Can send the sound of the screen it shares, as the source of a session of a `Display`:
+    /// takes a `Hear` from the viewer, and writes `Sound` and `Silent` and the streams of kind 4
+    /// (section 9 of `docs/protocol.md`). Only a device that advertises [`STREAM_SHARE`]
+    /// advertises it.
+    pub const STREAM_SOUND: &str = "stream.sound";
+    /// Plays the sound of a screen, as the viewer: takes `Sound` and `Silent` from the source and
+    /// the streams of kind 4, and sends a `Hear`. Only a device that advertises [`STREAM_VIEW`]
+    /// advertises it.
+    pub const STREAM_HEAR: &str = "stream.hear";
 }
 
 /// A message with a defined maximum size and field limits.
