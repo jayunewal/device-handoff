@@ -82,7 +82,7 @@ extern "C" {
 #endif
 
 /* The version of this interface. It changes only when something is taken away or moved. */
-#define BATON_STREAM_ABI_VERSION 1u
+#define BATON_STREAM_ABI_VERSION 2u
 
 /* What a function of this interface returns, and what a call of the vtable returns. */
 #define BATON_OK 0
@@ -111,11 +111,18 @@ extern "C" {
 
 /*
  * What screen returns when it did not give the display, besides BATON_OK: the system has not let
- * the program capture the screen, or there is no display to give now. Any other value is a
- * failure, with the sentence in message if the platform wrote one.
+ * the program capture the screen, there is no display to give now, or the display was asked for
+ * with BATON_SCREEN_PRIVATE and the system has not let the program hold the keyboard and the
+ * pointer. The last one means nothing for a display that was not asked for so, and counts as a
+ * failure then. Any other value is a failure, with the sentence in message if the platform wrote
+ * one.
  */
 #define BATON_SCREEN_NEEDS_PERMISSION 1
 #define BATON_SCREEN_UNAVAILABLE 2
+#define BATON_SCREEN_NEEDS_INPUT_PERMISSION 3
+
+/* The flags of screen. */
+#define BATON_SCREEN_PRIVATE 1u
 
 /* The flags of a frame. */
 #define BATON_FRAME_KEY 1u
@@ -674,6 +681,18 @@ typedef struct BatonViewerVTable {
  *                (the Mac has none on), or another value for a failure, with the sentence in
  *                message if the platform can write one. Nothing is given then, and nothing is
  *                released.
+ *
+ *                flags is 0, or BATON_SCREEN_PRIVATE: the device that asked will also control
+ *                the screen, and nobody at this device may see what happens on it or use the
+ *                device meanwhile. The platform checks beforehand that it can promise that, and
+ *                if it cannot it gives nothing: it returns BATON_SCREEN_NEEDS_INPUT_PERMISSION
+ *                if the system has not let it hold the keyboard and the pointer, or another
+ *                failure. It never gives the display open in its place. The promise holds from
+ *                start until the session is over: the screen of the device stays dark, its
+ *                keyboard and its pointer stay out of anyone's hands but the session's, and when
+ *                the session is over, whatever the cause, the device is locked again. A display
+ *                that is released without start changes nothing at the device. A flag that the
+ *                platform does not know makes the call fail.
  */
 typedef uint32_t (*BatonControlFn)(void *context);
 typedef int32_t (*BatonPickFn)(void *context, uint64_t request, BatonMessage *message);
@@ -682,7 +701,8 @@ typedef int32_t (*BatonPrepareFn)(void *picked, const BatonTakes *takes, BatonFo
 typedef int32_t (*BatonStartFn)(void *picked, uint64_t link, BatonMessage *message);
 typedef int32_t (*BatonSurroundingsFn)(void *picked, BatonSurroundings *surroundings);
 typedef int32_t (*BatonPostFn)(void *picked, const BatonPost *post);
-typedef int32_t (*BatonScreenFn)(void *context, BatonPicked *picked, BatonMessage *message);
+typedef int32_t (*BatonScreenFn)(void *context, uint32_t flags, BatonPicked *picked,
+                                 BatonMessage *message);
 
 /*
  * What the platform registers to share windows, as the table above does to show them. A table of

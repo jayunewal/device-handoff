@@ -45,7 +45,8 @@ use crate::{
         BatonGeometry, BatonMessage, BatonPicked, BatonPicture, BatonPost, BatonRect,
         BatonSharerVTable, BatonSurroundings, BatonTakes, CODEC_H264, FRONTS_MAX, KEYBOARD_SHARED,
         KEYBOARD_UNKNOWN, MESSAGE_MAX, OK, PICKED_DISPLAY, PICKED_WINDOW, POINTER_DOWN,
-        POINTER_MOVE, POINTER_SCROLL, POINTER_UP, POST_KEY, POST_POINTER, size_of_u32,
+        POINTER_MOVE, POINTER_SCROLL, POINTER_UP, POST_KEY, POST_POINTER, SCREEN_PRIVATE,
+        size_of_u32,
     },
     platform::SharerCalls,
 };
@@ -60,8 +61,10 @@ pub(crate) enum SharerCall {
     CancelPick {
         request: u64,
     },
-    /// The platform was asked for its main display.
-    Screen,
+    /// The platform was asked for its main display, with these flags.
+    Screen {
+        flags: u32,
+    },
     /// What the other device takes: the widest and the highest picture, the rate and the codecs.
     Prepare {
         takes: (u32, u32, u32, u32),
@@ -829,6 +832,7 @@ unsafe extern "C" fn cancel_pick(context: *mut c_void, request: u64) {
 
 unsafe extern "C" fn screen(
     context: *mut c_void,
+    flags: u32,
     picked: *mut BatonPicked,
     message: *mut BatonMessage,
 ) -> i32 {
@@ -849,7 +853,12 @@ unsafe extern "C" fn screen(
     {
         fake.complain(format!("screen: the display is not empty: {given:?}"));
     }
-    fake.heard(0, &SharerCall::Screen);
+    if flags & !SCREEN_PRIVATE != 0 {
+        fake.complain(format!(
+            "screen: a flag that the header does not have: {flags}"
+        ));
+    }
+    fake.heard(0, &SharerCall::Screen { flags });
     let plan = {
         let mut state = fake.state();
         let plan = state.screen.clone();

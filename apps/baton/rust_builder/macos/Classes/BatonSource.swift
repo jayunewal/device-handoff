@@ -63,8 +63,24 @@ enum ScreenRefusal: Error, Equatable {
   /// The system has not let the app capture the screen. The person at this device has to allow it,
   /// and may have to open the app again after that.
   case needsPermission
+  /// The screen was asked for as private, and the system has not let the app hold the keyboard and
+  /// the pointer of this device. The person at this device has to allow it, and may have to open the
+  /// app again after that.
+  case needsInputPermission
   /// There is no screen to give now, for example because none is on.
   case unavailable
+}
+
+/// What the person at this device is promised while another device uses its screen.
+enum ScreenPrivacy: Equatable {
+  /// The screen is given as it is.
+  case open
+  /// The other device also controls the screen, and nobody at this device may see what happens on
+  /// it or use the device meanwhile. From the start of the session until it is over the screen
+  /// stays dark and the keyboard and the pointer stay out of anyone's hands, and when the session
+  /// is over, whatever the cause, the device is locked again. A device that cannot promise that
+  /// refuses the screen, and never gives it open in its place.
+  case `private`
 }
 
 /// The part of the platform that shares windows: one for the life of the process.
@@ -89,16 +105,18 @@ protocol SharerPlatform: AnyObject {
   /// The main screen, now, with nobody choosing it: a device that the person at this one allowed
   /// beforehand asked for it. It may wait for the system for a few seconds, and is not called from
   /// the main thread. Throws `ScreenRefusal` when the system has not let the app capture the
-  /// screen or there is none to give, and `SharerFailure` with a sentence for any other reason.
-  /// What it gives is let go of like a picked window, with `released`, also if it is never used.
-  /// Only the size and the kind of the info are read: a screen given this way is not named.
-  func screen() throws -> (window: SharedWindow, info: PickedWindowInfo)
+  /// screen (or hold the keyboard and the pointer, for a private screen) or there is none to give,
+  /// and `SharerFailure` with a sentence for any other reason. What it gives is let go of like a
+  /// picked window, with `released`, also if it is never used, and a window that was never started
+  /// changes nothing at the device. Only the size and the kind of the info are read: a screen given
+  /// this way is not named.
+  func screen(privacy: ScreenPrivacy) throws -> (window: SharedWindow, info: PickedWindowInfo)
 }
 
 extension SharerPlatform {
   var canGiveScreen: Bool { false }
 
-  func screen() throws -> (window: SharedWindow, info: PickedWindowInfo) {
+  func screen(privacy: ScreenPrivacy) throws -> (window: SharedWindow, info: PickedWindowInfo) {
     throw SharerFailure(sentence: "This device cannot give its screen without asking.")
   }
 }
@@ -253,15 +271,18 @@ private func sharerCancelPick(_ context: UnsafeMutableRawPointer?, _ request: UI
 
 /// The main screen, as the answer to a pick would give it, but now and from the same call.
 private func sharerScreen(
-  _ context: UnsafeMutableRawPointer?, _ picked: UnsafeMutablePointer<BatonPicked>?,
+  _ context: UnsafeMutableRawPointer?, _ flags: UInt32, _ picked: UnsafeMutablePointer<BatonPicked>?,
   _ message: UnsafeMutablePointer<BatonMessage>?
 ) -> Int32 {
+  // A flag that this version does not know may promise something that it cannot keep.
   guard let platform = sharerOf(context), let picked, let message,
+    flags & ~UInt32(BATON_SCREEN_PRIVATE) == 0,
     picked.pointee.size >= UInt32(MemoryLayout<BatonPicked>.size),
     message.pointee.size >= UInt32(MemoryLayout<BatonMessage>.size)
   else { return badArgument }
   do {
-    let given = try platform.screen()
+    let given = try platform.screen(
+      privacy: flags & UInt32(BATON_SCREEN_PRIVATE) != 0 ? .private : .open)
     // The Rust side owns the screen from here, and gives it back with `release`. The title and the
     // application stay empty, as they came: a screen given this way is not named.
     picked.pointee.width = given.info.width
@@ -271,6 +292,8 @@ private func sharerScreen(
     return ok
   } catch ScreenRefusal.needsPermission {
     return Int32(BATON_SCREEN_NEEDS_PERMISSION)
+  } catch ScreenRefusal.needsInputPermission {
+    return Int32(BATON_SCREEN_NEEDS_INPUT_PERMISSION)
   } catch ScreenRefusal.unavailable {
     return Int32(BATON_SCREEN_UNAVAILABLE)
   } catch let failure as SharerFailure {

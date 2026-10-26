@@ -14,3 +14,4 @@ Short notes on decisions that are expensive to reverse, written when the decisio
 | [0008](0008-file-transfer.md) | File transfer: one offer, lanes of their own, hashing while sending |
 | [0009](0009-window-streaming.md) | Window streaming: the Mac offers, late frames are dropped, input stays in the window |
 | [0010](0010-sessions-that-the-viewer-starts.md) | Sessions that the viewer starts: allowed once at the Mac, asked for from the phone |
+| [0011](0011-privacy-mode.md) | Privacy mode: a Mac that another device controls shows nothing, takes no input, and locks when the session ends |

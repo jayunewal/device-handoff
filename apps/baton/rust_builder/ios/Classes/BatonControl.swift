@@ -103,19 +103,20 @@ final class MacDisplayListing: DisplayListing {
 
 // MARK: - The Mac
 
+/// Whether the session says that the screen is locked, or that another user switched the session
+/// away from the console. A session that cannot be read is not said to be locked.
+func macSessionLocked() -> Bool {
+  guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+  // The key for the lock screen is not documented, and has been there as long as the lock screen
+  // has.
+  if (session["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue == true { return true }
+  return (session[kCGSessionOnConsoleKey as String] as? NSNumber)?.boolValue == false
+}
+
 /// What the system says of the Mac, and the way to bring an application to the front.
 final class MacActivityReader: MacActivity {
   var locked: Bool {
-    if let session = CGSessionCopyCurrentDictionary() as? [String: Any] {
-      // The key for the lock screen is not documented, and has been there as long as the lock
-      // screen has. A session that is not on the console is one that another user switched away
-      // from.
-      if (session["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue == true { return true }
-      if (session[kCGSessionOnConsoleKey as String] as? NSNumber)?.boolValue == false {
-        return true
-      }
-    }
-    return CGDisplayIsAsleep(CGMainDisplayID()) != 0
+    macSessionLocked() || CGDisplayIsAsleep(CGMainDisplayID()) != 0
   }
 
   var frontmostProcess: Int32? {
@@ -265,8 +266,15 @@ final class MacEventPoster: EventPoster {
   private var pointerChecked = false
   /// Where the last mouse event was, for the movement that the next one carries.
   private var previous: CGPoint?
+  /// Told when a key is handed to the system, in a session where nobody at the Mac may press one
+  /// (BatonPrivacy.swift): the system counts that key as one of the Mac's.
+  private let ledger: PostLedger?
 
-  init(now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+  init(
+    ledger: PostLedger? = nil,
+    now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+  ) {
+    self.ledger = ledger
     // Events for the system are those of a keyboard and a mouse that are there, and have the state
     // of those. The person at this Mac keeps their own pointer and keys: the system would
     // otherwise ignore them for a moment after each event that is posted, and a person who wants
@@ -279,6 +287,7 @@ final class MacEventPoster: EventPoster {
 
   func post(_ event: SyntheticEvent) -> Bool {
     guard consentGiven(), let source, let made = cgEvent(for: event, source) else { return false }
+    if case .key(let key) = event, key.down { ledger?.notedKeyDown() }
     made.post(tap: .cghidEventTap)
     if !posted {
       posted = true
@@ -444,15 +453,16 @@ func makeWindowControl(window: UInt32, process: Int32) -> WindowControl {
 
 /// What the Rust side asks of a whole display that is shared with control, for the display with
 /// this number. Its events go to the system, as if the person at this Mac did them, and so do the
-/// shortcuts that the system keeps for itself.
-func makeDisplayControl(display: UInt32) -> WindowControl {
+/// shortcuts that the system keeps for itself. `ledger` is given for a private session, where the
+/// keys that are handed to the system have to be told from those of somebody at the Mac.
+func makeDisplayControl(display: UInt32, ledger: PostLedger? = nil) -> WindowControl {
   noteControlSetUp(of: "screen")
   return WindowControl(
     reader: DisplayReader(
       display: display, listing: MacDisplayListing(), activity: MacActivityReader()),
     translator: InputTranslator(
       doubleClickInterval: NSEvent.doubleClickInterval, movesPointerToScroll: true),
-    poster: MacEventPoster())
+    poster: MacEventPoster(ledger: ledger))
 }
 
 #endif

@@ -642,6 +642,7 @@ Response {"Stream": {"NotStarted": {"session": h'<same id>', "why": "NotAllowed"
 | `Invalid` | the request is not one that a source can act on, for example the id was used before |
 | `Unavailable` | there is nothing to show now, for example no display is on |
 | `NeedsPermission` | the operating system of the source has not let its program capture the screen, and the person there has to allow it |
+| `NeedsInputPermission` | the operating system of the source has not let its program hold the keys and the pointer, which a session with control needs so that nobody at the source can see or use it meanwhile (ADR 0011), and the person there has to allow it |
 | `Failed` | something went wrong at the source that the viewer did not cause, or it did not get ready in time |
 | `Other` | a reason of a later version, which a viewer shows as a no |
 
@@ -655,7 +656,7 @@ A source SHOULD check a `Start` in this order:
 4. whether this is a repeat of a start that is going (below);
 5. whether the device is sending too many items (`RateLimited`). A start counts as one item;
 6. whether the id is that of a session that runs (`Invalid`), and whether the source is offering or sharing something already (`Busy`);
-7. whether its application can share what is wanted, which is for the application to say (`Unavailable`, `NeedsPermission` or `Failed`). It has a time to get ready, 20 seconds in the reference implementation, so that its answer comes inside the 30 seconds that the viewer waits for one. When the time is up the answer is `NotStarted(Failed)`.
+7. whether its application can share what is wanted, which is for the application to say (`Unavailable`, `NeedsPermission`, `NeedsInputPermission` or `Failed`). It has a time to get ready, 20 seconds in the reference implementation, so that its answer comes inside the 30 seconds that the viewer waits for one. When the time is up the answer is `NotStarted(Failed)`.
 
 From step 6 the source holds its place for the session, and lets go of it when the start is refused, when the application gives up or is cut off, when the start is taken back, and when the device goes away.
 

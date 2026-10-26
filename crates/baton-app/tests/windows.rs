@@ -18,8 +18,8 @@ use baton_app::{
     WindowButton, WindowEnd, WindowInput, WindowModifiers, WindowNoticeReason, WindowPointer,
     WindowRequest, WindowRole, WindowSession, WindowShared, Windows,
     windows::{
-        PickedWindow, PlatformError, Screen, ScreenError, ScreenLink, SharingFailure, ShowLimits,
-        WindowSharer, WindowViewer,
+        PickedWindow, PlatformError, Privacy, Screen, ScreenError, ScreenLink, SharingFailure,
+        ShowLimits, WindowSharer, WindowViewer,
     },
 };
 use baton_core::{
@@ -233,6 +233,8 @@ struct Sharer {
     screen_gate: Mutex<Option<oneshot::Receiver<()>>>,
     /// How many times the screen was asked for.
     screens: AtomicUsize,
+    /// What the screen was asked for as, each time.
+    privacies: Mutex<Vec<Privacy>>,
     /// How many times the person was given a picker.
     picks: AtomicUsize,
 }
@@ -275,8 +277,14 @@ impl Sharer {
             screen_plan: Mutex::new(ScreenPlan::Gives(whole_display())),
             screen_gate: Mutex::new(None),
             screens: AtomicUsize::new(0),
+            privacies: Mutex::new(Vec::new()),
             picks: AtomicUsize::new(0),
         })
+    }
+
+    /// What the screen was asked for as, in order.
+    fn privacies(&self) -> Vec<Privacy> {
+        self.privacies.lock().unwrap().clone()
     }
 
     /// What the platform was given of what the person at the other device did, in order.
@@ -354,8 +362,12 @@ impl WindowSharer for Sharer {
         self.gives_screen
     }
 
-    fn screen(&self) -> BoxFuture<'static, Result<Box<dyn PickedWindow>, ScreenError>> {
+    fn screen(
+        &self,
+        privacy: Privacy,
+    ) -> BoxFuture<'static, Result<Box<dyn PickedWindow>, ScreenError>> {
         self.screens.fetch_add(1, Ordering::Relaxed);
+        self.privacies.lock().unwrap().push(privacy);
         let plan = self.screen_plan.lock().unwrap().clone();
         let gate = self.screen_gate.lock().unwrap().take();
         let picked = match plan {
@@ -2370,6 +2382,52 @@ async fn control_is_not_granted_when_the_platform_can_no_longer_post_input() {
     let shared = started_at(&mut events).await;
 
     assert_eq!((handle.control(), shared.control), (false, false));
+    // The phone only looks, so the screen is not asked for as private either.
+    assert_eq!(screens.sharer.privacies(), [Privacy::Open]);
+}
+
+#[tokio::test]
+async fn a_screen_that_a_phone_controls_is_asked_for_as_private_and_one_it_only_looks_at_is_not() {
+    // What the platform is asked for follows what the phone is granted, not what it wished for.
+    for (wish, access, platform, privacy) in [
+        (true, StartAccess::Control, true, Privacy::Private),
+        (false, StartAccess::Control, true, Privacy::Open),
+        (true, StartAccess::Look, true, Privacy::Open),
+        (true, StartAccess::Control, false, Privacy::Open),
+    ] {
+        let screens = Screens::new(platform).await;
+        screens.allow(access);
+        let _handle = screens.started(wish).await;
+        assert_eq!(
+            screens.sharer.privacies(),
+            [privacy],
+            "the phone wished for control: {wish}, the person allowed {access:?}, the platform \
+             can post input: {platform}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_screen_that_cannot_be_private_is_not_given_open_to_a_phone_that_controls_it() {
+    // The platform has not been allowed to hold the keyboard and the pointer, which a controlled
+    // screen needs, so the phone is told that, and the Mac shares nothing.
+    let screens = Screens::new(true).await;
+    screens.allow(StartAccess::Control);
+    *screens.sharer.screen_plan.lock().unwrap() =
+        ScreenPlan::Refuses(ScreenError::NeedsInputPermission);
+    let mut events = screens.mac.app.events();
+
+    assert_eq!(screens.refused(true).await, WhyNot::NeedsInputPermission);
+    let started = tokio::time::timeout(QUIET, started_at(&mut events)).await;
+    assert!(started.is_err(), "a session started with no privacy");
+
+    // The phone can still look, which asks for nothing of the keyboard or the pointer.
+    *screens.sharer.screen_plan.lock().unwrap() = ScreenPlan::Gives(whole_display());
+    let _handle = screens.started(false).await;
+    assert_eq!(
+        screens.sharer.privacies(),
+        [Privacy::Private, Privacy::Open]
+    );
 }
 
 /// A platform written before the screen could be asked for: it picks windows and says nothing
@@ -2390,7 +2448,7 @@ impl WindowSharer for Silent {
 async fn a_platform_that_says_nothing_of_the_screen_cannot_give_it() {
     assert!(!Silent.can_give_screen());
     assert!(matches!(
-        Silent.screen().await,
+        Silent.screen(Privacy::Open).await,
         Err(ScreenError::Unsupported)
     ));
 
@@ -2407,6 +2465,10 @@ async fn why_the_platform_cannot_give_the_screen_is_what_the_phone_is_told() {
     let reasons = [
         (ScreenError::Unsupported, WhyNot::Unsupported),
         (ScreenError::NeedsPermission, WhyNot::NeedsPermission),
+        (
+            ScreenError::NeedsInputPermission,
+            WhyNot::NeedsInputPermission,
+        ),
         (ScreenError::Unavailable, WhyNot::Unavailable),
         (
             ScreenError::Failed(PlatformError::new("No window server.")),
@@ -2417,7 +2479,7 @@ async fn why_the_platform_cannot_give_the_screen_is_what_the_phone_is_told() {
         *screens.sharer.screen_plan.lock().unwrap() = ScreenPlan::Refuses(error.clone());
         assert_eq!(screens.refused(false).await, why, "{error}");
     }
-    assert_eq!(screens.screens(), 4);
+    assert_eq!(screens.screens(), 5);
 
     // No asking left the Mac busy: once the platform can give the screen, the phone gets it.
     *screens.sharer.screen_plan.lock().unwrap() = ScreenPlan::Gives(whole_display());
@@ -2807,6 +2869,10 @@ async fn why_the_mac_has_no_screen_to_give_is_told_in_words_that_name_it() {
             ScreenError::NeedsPermission,
             "Screen & System Audio Recording",
         ),
+        (
+            ScreenError::NeedsInputPermission,
+            "Accessibility and Input Monitoring",
+        ),
         (ScreenError::Unavailable, "no screen to give right now"),
         (
             ScreenError::Failed(PlatformError::new("No window server.")),
@@ -2819,7 +2885,7 @@ async fn why_the_mac_has_no_screen_to_give_is_told_in_words_that_name_it() {
         assert!(why.contains("Studio Mac"), "{error}: {why}");
         assert!(why.contains(words), "{error}: {why}");
     }
-    assert_eq!(asking.screens(), 4);
+    assert_eq!(asking.screens(), 5);
 
     // No asking left the Mac or the phone busy: once the Mac has a screen, the phone shows it.
     *asking.sharer.screen_plan.lock().unwrap() = ScreenPlan::Gives(whole_display());

@@ -20,7 +20,7 @@ void main() {
     final version = library.lookupFunction<Uint32 Function(), int Function()>(
       'baton_stream_abi_version',
     );
-    expect(version(), 1);
+    expect(version(), 2);
 
     // Called with what a platform could get wrong, the two others answer with a number and do
     // nothing: no table to register, and a link that is not open.

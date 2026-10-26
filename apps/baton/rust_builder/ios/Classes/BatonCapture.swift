@@ -16,7 +16,10 @@
 // taken without the picker, and that is where the permission to record the screen is needed.
 //
 // A window or a whole screen can be steered by the person at the other device too
-// (BatonInput.swift, and BatonControl.swift for the calls of the system).
+// (BatonInput.swift, and BatonControl.swift for the calls of the system). A screen that a paired
+// device steers, after it started the session, is private (BatonPrivacy.swift and
+// BatonPrivacyMac.swift): it is dark for the people at this Mac, and they cannot use its keys or its
+// pointer, until the session is over and the Mac is locked again.
 //
 // An iPhone or an iPad cannot share a window, so there is nothing here for them.
 
@@ -89,6 +92,8 @@ final class MacSharer: NSObject, SharerPlatform, SCContentSharingPickerObserver 
   private var observing = false
   /// Whether the system was asked, in this run of the app, to let it record the screen.
   private var askedToRecordTheScreen = false
+  /// Whether the system was asked, in this run of the app, to let it hold the keys and the pointer.
+  private var askedToHoldTheInput = false
 
   func pick(request: UInt64) throws {
     lock.lock()
@@ -131,7 +136,7 @@ final class MacSharer: NSObject, SharerPlatform, SCContentSharingPickerObserver 
 
   // MARK: - The main screen, with no picker
 
-  func screen() throws -> (window: SharedWindow, info: PickedWindowInfo) {
+  func screen(privacy: ScreenPrivacy) throws -> (window: SharedWindow, info: PickedWindowInfo) {
     // A window or a screen that the person picked is captured with no permission to record the
     // screen. One that nobody picked is not: the system wants that permission, and the person at
     // this Mac gives it in System Settings. The call does not wait for them, and the permission
@@ -139,6 +144,12 @@ final class MacSharer: NSObject, SharerPlatform, SCContentSharingPickerObserver 
     guard CGPreflightScreenCaptureAccess() else {
       askToRecordTheScreen()
       throw ScreenRefusal.needsPermission
+    }
+    // A private screen is given only to an app that can keep it private. The cover goes up when the
+    // session starts, and not now, so that a screen that is given and never used changes nothing.
+    if privacy == .private, !macCanHoldTheInput() {
+      askToHoldTheInput()
+      throw ScreenRefusal.needsInputPermission
     }
     let display = try mainDisplay()
     let filter = SCContentFilter(display: display, excludingWindows: [])
@@ -148,7 +159,9 @@ final class MacSharer: NSObject, SharerPlatform, SCContentSharingPickerObserver 
     // A screen that is given this way is not named: Rust reads no title and no application.
     let info = PickedWindowInfo(
       width: size.width, height: size.height, title: "", app: "", display: true)
-    return (MacSharedWindow(filter: filter, info: info, target: .display(display.displayID)), info)
+    let window = MacSharedWindow(
+      filter: filter, info: info, target: .display(display.displayID), privacy: privacy)
+    return (window, info)
   }
 
   /// Asks the system to show its question about recording the screen. It shows its own question
@@ -161,6 +174,18 @@ final class MacSharer: NSObject, SharerPlatform, SCContentSharingPickerObserver 
     lock.unlock()
     guard first else { return }
     DispatchQueue.main.async { _ = CGRequestScreenCaptureAccess() }
+  }
+
+  /// Asks the system to show its questions about holding the keys and the pointer. As for the
+  /// recording of the screen, they are shown once, they do not wait for the person, and they are
+  /// asked once in each run of the app.
+  private func askToHoldTheInput() {
+    lock.lock()
+    let first = !askedToHoldTheInput
+    askedToHoldTheInput = true
+    lock.unlock()
+    guard first else { return }
+    requestMacInputHoldAccess()
   }
 
   /// The display that has the menu bar. The system is waited for a few seconds at most.
@@ -281,11 +306,19 @@ final class MacSharedWindow: SharedWindow {
   /// What the Rust side asks of a window that is steered. It is made by `start` on the thread that
   /// calls `surroundings` and `post`, one after the other, and that is the only one that uses it.
   private var control: WindowControl?
+  /// Whether the people at this Mac may see the screen and use the Mac while it is shared.
+  private let privacy: ScreenPrivacy
+  /// The privacy of a session that is private, made by `start`.
+  private var privateSession: PrivateSession?
 
-  fileprivate init(filter: SCContentFilter, info: PickedWindowInfo, target: PickedTarget?) {
+  fileprivate init(
+    filter: SCContentFilter, info: PickedWindowInfo, target: PickedTarget?,
+    privacy: ScreenPrivacy = .open
+  ) {
     self.filter = filter
     self.info = info
     self.target = target
+    self.privacy = privacy
   }
 
   func prepare(takes: ViewerTakes) throws -> PictureFormat {
@@ -309,6 +342,20 @@ final class MacSharedWindow: SharedWindow {
     guard let format, let encoder, capture == nil else {
       throw SharerFailure(sentence: "This device could not start sharing the \(info.noun).")
     }
+    let librarySession = LibrarySourceSession(link: link)
+    // A private screen goes dark and out of reach of the people at this Mac now, before the first
+    // picture and before the first event can arrive, and stays so until the session is over and
+    // the Mac is locked. What is left of it when this fails is let go of by `released`.
+    var ledger: PostLedger?
+    if privacy == .private {
+      let posts = PostLedger()
+      let started = makePrivateSession(ledger: posts) { sentence in
+        librarySession.end(sentence: sentence)
+      }
+      try started.begin()
+      ledger = posts
+      privateSession = started
+    }
     // The window server and the system are asked about the window, or the display, while it is
     // shared: where it is in each picture, and whether it can be seen. A display is never hidden.
     let listing = MacWindowListing()
@@ -328,11 +375,11 @@ final class MacSharedWindow: SharedWindow {
       break
     }
     let made = Capture(
-      session: LibrarySourceSession(link: link), encoder: encoder, format: format, layout: layout,
+      session: librarySession, encoder: encoder, format: format, layout: layout,
       look: { [window] in watchedState(window: window, listing: listing, activity: activity) })
     switch target {
     case .window(let id, let process): control = makeWindowControl(window: id, process: process)
-    case .display(let id): control = makeDisplayControl(display: id)
+    case .display(let id): control = makeDisplayControl(display: id, ledger: ledger)
     case nil: break
     }
     do {
@@ -350,12 +397,18 @@ final class MacSharedWindow: SharedWindow {
   func ended() {
     capture?.stop()
     encoder?.invalidate()
+    // The Mac is locked before this returns, if it can be, and the screens and the keys come back
+    // only then.
+    privateSession?.finish(.sessionOver)
   }
 
   func released() {
     // The capture and the encoder were stopped by `ended`, if the window ever ran. A window that
     // was prepared and never started has an encoder to let go of.
     encoder?.invalidate()
+    // A private screen that was raised and then did not start is locked and given back here. One
+    // that was given and never started raised nothing, and changes nothing.
+    privateSession?.finish(.released)
   }
 
   func surroundings() -> WindowSurroundings? {
