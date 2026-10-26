@@ -1,0 +1,60 @@
+# 0011: Privacy mode: a Mac that another device controls shows nothing, takes no input, and locks when the session ends
+
+Status: proposed
+
+## Context
+
+[ADR 0010](0010-sessions-that-the-viewer-starts.md) lets a phone or a tablet start a session on the person's own Mac and control it. The Mac is awake and unlocked while it is used so, and it is used while other people are at home. Three things follow that the person does not want:
+
+- The screens of the Mac light up and show what the person does, and the pointer moves by itself.
+- Anyone who walks up to the Mac can read it and use it, since it is unlocked.
+- When the session ends, or the connection drops, the Mac is left unlocked, and so it is if the app dies.
+
+The person asked for these, in this order of importance. While they work from another device the Mac must not light up or show their activity. If the Mac was unlocked from afar, nobody else may use it. Ending the session, or losing the connection, locks it again, and a Mac that stays unlocked is a security failure. Looking at the Mac in the picture of the other device must stay as it is.
+
+None of what the design depends on was known for macOS 27, so it was measured first, on a Mac, with a sandboxed program that has the limits of the app (docs/research/privacy-mode). What came out:
+
+- An active tap on the keys and the pointer can be made inside the sandbox, drops what it is told to, and lets through what the app itself posts, since the window server names the process that posted an event.
+- A program that has the keyboard to itself, such as a password field, blinds a tap to keys. The count of key presses that the system keeps still goes up, so a key that nobody posted can be found.
+- A cover made of windows hides the banners, the menu bar and the Dock, and not Spotlight or Mission Control. Setting the table of every display to nought makes every display black whatever a window shows, hides those too, and the capture does not see it.
+- The Mac can lock itself from inside the sandbox, with a call of the system, with the shortcut for the lock posted as keys, and with the sleep of the display on a Mac that asks for its password at once. The lock was seen by the session within a third of a second each way.
+- A sandboxed helper that the system keeps alive can be registered by the app, can see the same consents, restarts about half a second after it is killed, and finds the flag of a session that its predecessor left. That is the means to lock a Mac whose app died.
+
+## Decision
+
+**A session is private when a paired device started it and has control.** In that case, and only then, the app asks the platform for the screen as `Private`. A session that only looks is not private, since it moves nothing at the Mac, and a session that the person started at the Mac is not, since the person is there. A look-only session can be made private by the same means later, without changing the interface.
+
+**The platform promises, from the start of the session until it is over, three things.** The screens of the Mac are dark. The keys and the pointer of the Mac are out of anyone's hands but the session's. When the session is over, whatever the cause, the Mac is locked again, and only then do the screens and the keys come back. A platform that cannot promise this refuses the screen. It never gives the screen open instead, so a Mac that lacks a consent, or lacks the means, starts nothing, and the device that asked is told why. The interface of the platform changes for this (`BATON_STREAM_ABI_VERSION` 2): `screen` takes flags, with `BATON_SCREEN_PRIVATE`, and can answer that the app has not been let hold the keys and the pointer. A platform of version 1 is refused at registration, since it would be called with arguments that it does not read.
+
+**The cover is the table of each display.** The output of every display that shows something is set to nought, black whatever a window shows, and set again four times a second, which covers a display that is plugged in or wakes (it can light for up to a quarter second). A display that does not take the table, twice in a row, ends the session. A display that is asleep shows nothing and is left alone. The capture is of the screen as it is, so the other device sees the Mac as before. No window is used for the cover, since the windows of the system show over it.
+
+**The hold is a tap that drops everything the app did not post.** The tap is active, at the lowest level that the system allows, on a thread of its own, and it drops the events of the keys, the pointer, the wheel, a tablet and the gestures of a trackpad, except those that the window server says this process posted. Three presses of Escape in two seconds at the Mac end the session and lock the Mac; they are the way out of a Mac that shows nothing and answers nothing, and the presses that the other device sends do not count. A tap that the system switches off is switched on again. A tap that cannot be kept on ends the session. The tripwire for what the tap cannot see watches the count of key presses of the system four times a second: a key that went down after the hold began and after the last key that the app posted ends the session, and the Mac locks.
+
+**The Mac is locked by the first of three ways that works, and the cover stays until it is.** The call of the system that locks the screen, then the shortcut for the lock posted as keys, then the sleep of the display. Each way is given two seconds, and the next is tried when the session does not say that the screen is locked. The cover and the hold come down a second after the session says so, so that the lock screen is drawn first. A Mac that cannot be locked keeps its cover and its hold and goes on trying, since a screen that shows the desktop is the way of failing that the person said is not acceptable. The person at the Mac has the power button.
+
+**The device that asked is told what ended the session.** A session that something at the Mac ended ends with a sentence that says what, and that the Mac locks, in the same way as a capture that stopped. A session that the other device ended, or that dropped, ends as it does, and the Mac locks all the same.
+
+**The consents are those of the hold.** The app needs Accessibility and Input Monitoring. The platform does not rely on the list of consents; it makes the tap, and lets go of it, when it is asked for a private screen, and the system's answer to that is the answer. When the tap cannot be made, the platform asks the system for the consents once in each run of the app, opens the list that lacks the app, and answers `NeedsInputPermission`, which the device that asked is told as a sentence about Accessibility and Input Monitoring. Asking when the person saves the setting for a device, as for recording the screen, is for a later change.
+
+## Alternatives considered
+
+- **A cover made of windows.** It is cheaper to build, and Spotlight and Mission Control show over it. A table that is set to nought has neither fault.
+- **The lock screen as the cover.** It hides everything, and a locked Mac takes no clicks, so the other device could do nothing, and it lights the screens. Unlocking from afar is a later record.
+- **Let the displays sleep.** A display that sleeps is not captured, and the session would end.
+- **Turn the backlight to nought.** The brightness of the built-in display could not be read from the sandbox, so none could be set and put back, and the person judged the Mac dark enough with the table alone.
+- **A helper outside the sandbox to hold the keys.** The tap works inside the sandbox, so none is needed for this.
+- **Lock when the session has been idle for a while.** A Mac that is covered and held shows nothing and takes nothing, and a lock that the other device cannot undo would end every long reading of a page. It can be added with a setting.
+- **Hide the pointer too.** The table hides it at the Mac. Hiding it with the call that exists could take it out of the picture of the other device, and what the picture shows of the pointer was not settled by the checks.
+
+## Consequences
+
+- The app needs one consent more than for control: Input Monitoring. Accessibility is the list that control already needs. A build that is signed ad hoc may lose them with each build, as it loses the consent to post input events. Without them a start from a phone is refused with a sentence, and the Mac does nothing.
+- **Until the guard exists, an app that dies during a private session leaves the Mac unlocked and its screens lit.** The system puts the tables back when the process ends, and the tap goes with it. The guard is the sandboxed helper that the checks showed to work: the app renews a lease with it while a session is private, and a helper that finds the lease lapsed, or finds the flag of a session at its start, locks the Mac. It is the next change. Until then this record only half-delivers the security rule, and that is said wherever the mode is described.
+- A key that is typed at the Mac in a password field of another program reaches that field before the tripwire sees it, which can be a character or two. The session then ends and the Mac locks.
+- The gestures of a trackpad that the system handles without events, such as the swipe between spaces, are not held. They act on a Mac that shows nothing, and cannot be seen. The power button, Siri and Voice Control, if the person turned them on, are not held either.
+- Whether a display that shows HDR content takes the table was not tried, and a display that is lit at nought still glows a little.
+- A Mac that locks itself during the session, or that the other device locks, stays covered until the session ends. The other device cannot unlock it; that is the next record.
+- A Mac that stays covered because it cannot be locked is a Mac that its person cannot use until they press the power button. It is the failure that was chosen over the one in which it shows the desktop.
+- Looking and controlling are separate in the setting for a device (ADR 0010), and privacy follows control. A device that is allowed only to look sees the Mac as it is, and the people at the Mac see it too.
+- The rules (when the cover goes up and comes down, what ends a session, how the Mac is locked until it says so, the counters) are Swift that builds and is tested on any computer with a compiler. What the Mac does is `BatonPrivacyMac.swift`, built on a Mac and checked on one by the steps in the pull request.
+- The work is split so that each pull request can be read on its own: this one (the interface, the reason, the cover, the hold, the lock when the session ends), then the guard, then a switch that lifts the cover for a session while the keys and the pointer stay held, which is for a person who sits at the Mac and wants to see what the other device does.
