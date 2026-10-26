@@ -31,7 +31,8 @@ import 'windows_panel.dart';
 ///
 /// A whole screen whose device can send its sound has a speaker in the bar, which turns the sound
 /// on and off and shows how it stands. When the other device says that it sends none, a line over
-/// the picture says why, until the person tries again or turns the sound off.
+/// the picture says why, until the person tries again with the speaker or turns the sound off with
+/// the button in the line.
 ///
 /// The screen of a phone stays on for as long as the window shows. Nobody touches it while a
 /// window is watched, so the hold is renewed every [renewEvery] and not left to run out.
@@ -337,7 +338,14 @@ class _WindowScreenState extends State<WindowScreen> {
                                         if (_control.notice != null)
                                           _Notice(text: _control.notice!),
                                         if (silence != null)
-                                          _Notice(text: silence),
+                                          _Notice(
+                                            text: silence,
+                                            action: (
+                                              label: 'Turn off the sound',
+                                              onPressed: () => widget.controller
+                                                  .hear(session, listen: false),
+                                            ),
+                                          ),
                                       ],
                                     ),
                                   ),
@@ -608,33 +616,54 @@ class _Picture extends StatelessWidget {
   }
 }
 
-/// What the other device did not do of what the person did, over the top of the picture. It lets
-/// the touches through to the picture.
+/// A line over the top of the picture: what the other device did not do of what the person did,
+/// which lets the touches through to the picture, or why it sends no sound, which has a button.
 class _Notice extends StatelessWidget {
-  const _Notice({required this.text});
+  const _Notice({required this.text, this.action});
 
   final String text;
+
+  /// What the line offers the person, with the words for it. A line that offers something takes
+  /// the touches that land on it; one that does not lets them through to the picture.
+  final ({String label, VoidCallback onPressed})? action;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return IgnorePointer(
-      child: Semantics(
-        liveRegion: true,
-        child: Material(
-          color: scheme.inverseSurface,
-          borderRadius: BorderRadius.circular(8),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: Text(
-              text,
-              textAlign: TextAlign.center,
-              style: TextStyle(color: scheme.onInverseSurface),
-            ),
-          ),
+    final action = this.action;
+    final words = Text(
+      text,
+      textAlign: TextAlign.center,
+      style: TextStyle(color: scheme.onInverseSurface),
+    );
+    final line = Semantics(
+      liveRegion: true,
+      child: Material(
+        color: scheme.inverseSurface,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: action == null
+              ? words
+              : Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    words,
+                    TextButton(
+                      onPressed: action.onPressed,
+                      style: TextButton.styleFrom(
+                        foregroundColor: scheme.inversePrimary,
+                      ),
+                      child: Text(action.label),
+                    ),
+                  ],
+                ),
         ),
       ),
     );
+    // The material of a line takes the touches that land on it, so a line that offers something
+    // keeps them from the window below; one that offers nothing lets them through.
+    return action == null ? IgnorePointer(child: line) : line;
   }
 }
 

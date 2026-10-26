@@ -1255,6 +1255,83 @@ void main() {
       },
     );
 
+    testWidgets(
+      'can be turned off from the line that says why the other device sends none',
+      (tester) async {
+        final shown = await _open(tester, window: screenWithSound());
+        final turnOff = find.text('Turn off the sound');
+        await tester.tap(off);
+        await tester.pumpAndSettle();
+        expect(turnOff, findsNothing);
+
+        hearOf(shown, WindowSound.noPermission);
+        await tester.pumpAndSettle();
+        expect(turnOff, findsOneWidget);
+
+        await tester.tap(turnOff);
+        await tester.pumpAndSettle();
+
+        // The line goes with the sound, the speaker is off, and the other device is told.
+        expect(turnOff, findsNothing);
+        expect(find.textContaining('has not let Baton record'), findsNothing);
+        expect(off, findsOneWidget);
+        expect(shown.session.windowHears, [
+          (session: 1, listen: true),
+          (session: 1, listen: false),
+        ]);
+
+        // Asking again afterwards is asking as at first.
+        await tester.tap(off);
+        await tester.pumpAndSettle();
+        expect(asking, findsOneWidget);
+        hearOf(shown, WindowSound.playing);
+        await tester.pumpAndSettle();
+        expect(turnOff, findsNothing);
+      },
+    );
+
+    testWidgets(
+      'keeps a touch on the line that says why from going through to the window',
+      (tester) async {
+        // A tall screen, so that the picture reaches the top of the view, under the line.
+        final shown = await _open(
+          tester,
+          window: sampleWindowSession(
+            display: true,
+            title: null,
+            app: null,
+            width: 900,
+            height: 4000,
+            control: true,
+            sound: true,
+          ),
+        );
+        await tester.tap(find.widgetWithText(FilterChip, 'Control'));
+        await tester.pump();
+        await tester.tap(off);
+        await tester.pumpAndSettle();
+        hearOf(shown, WindowSound.failed);
+        await tester.pumpAndSettle();
+        final line = find
+            .ancestor(
+              of: find.textContaining('could not record'),
+              matching: find.byType(Material),
+            )
+            .first;
+
+        // A touch on the picture is given to the window, so this test sees the difference.
+        await tester.tapAt(const Offset(450, 900));
+        await tester.pump();
+        expect(shown.session.windowInputs, isNotEmpty);
+        shown.session.windowInputs.clear();
+
+        // One at the edge of the line, where there are neither words nor button, is not.
+        await tester.tapAt(Offset(450, tester.getTopLeft(line).dy + 3));
+        await tester.pump();
+        expect(shown.session.windowInputs, isEmpty);
+      },
+    );
+
     testWidgets('has a sentence for each reason that the other device gives', (
       tester,
     ) async {
