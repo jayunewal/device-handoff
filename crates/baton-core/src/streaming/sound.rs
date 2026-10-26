@@ -377,3 +377,87 @@ pub(super) fn check(sound: Sound) -> Result<()> {
         .validate()
         .map_err(|error| Error::protocol(&error))
 }
+
+#[cfg(test)]
+mod tests {
+    use baton_proto::id::SessionId;
+    use baton_stream::sound::PacketFlags;
+
+    use super::*;
+
+    /// A speaker that plays nothing.
+    struct Quiet;
+
+    impl Speaker for Quiet {
+        fn sound(&mut self, _: Sound) {}
+
+        fn play(&mut self, _: Play, _: Vec<u8>) {}
+
+        fn stopped(&mut self, _: Option<SilentReason>) {}
+
+        fn ended(&mut self) {}
+    }
+
+    /// A viewer that wants to hear, and has been told the form.
+    fn listening() -> Hearing {
+        let mut hearing = Hearing::new(Box::new(Quiet), ReceiveRules::default());
+        hearing.turn(true);
+        let form = Sound {
+            codec: SoundCodec::Aac,
+            rate: 48_000,
+            channels: 2,
+            samples: 1024,
+        };
+        assert_eq!(hearing.sound(form), Said::Done);
+        hearing
+    }
+
+    /// The packet of a stream that was started now arrives whole. Says whether the speaker and
+    /// the rules agree.
+    fn arrives(hearing: &mut Hearing, number: u64, first: bool) -> bool {
+        let stream = hearing.receiver().stream_started().unwrap();
+        let header = PacketHeader {
+            session: SessionId::from_bytes([7; SessionId::LEN]),
+            number,
+            capture_time: number * 21_333,
+            flags: if first {
+                PacketFlags::FIRST
+            } else {
+                PacketFlags::NONE
+            },
+        };
+        hearing
+            .arrived(Duration::ZERO, stream, header, vec![0; 4])
+            .unwrap()
+    }
+
+    /// The packets kept here are as many as the ones that the rules hold.
+    fn keeps_what_the_rules_hold(hearing: &Hearing) {
+        assert_eq!(hearing.packets.len(), hearing.receiver.held());
+    }
+
+    #[test]
+    fn a_packet_that_waits_is_forgotten_when_the_run_ends() {
+        let mut hearing = listening();
+        // A packet that is not the first waits for the one before it.
+        assert!(arrives(&mut hearing, 1, false));
+        assert_eq!(hearing.packets.len(), 1);
+        keeps_what_the_rules_hold(&hearing);
+        hearing.turn(false);
+        assert!(hearing.packets.is_empty());
+        keeps_what_the_rules_hold(&hearing);
+        assert!(hearing.tick(Duration::ZERO));
+    }
+
+    #[test]
+    fn a_packet_that_comes_late_is_dropped_and_not_kept() {
+        let mut hearing = listening();
+        // The first is played at once, and one with its number is late after that.
+        assert!(arrives(&mut hearing, 0, true));
+        keeps_what_the_rules_hold(&hearing);
+        assert!(arrives(&mut hearing, 0, false));
+        assert!(hearing.packets.is_empty());
+        keeps_what_the_rules_hold(&hearing);
+        assert_eq!(hearing.counted().0.late, 1);
+    }
+}
