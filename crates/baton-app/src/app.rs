@@ -238,6 +238,9 @@ impl App {
             .holds(Holds::open(dir.holds_file()));
         if sessions.abilities().can_show {
             builder = builder.window_handler(Handler(Arc::clone(&sessions)));
+            if sessions.plays_sound() {
+                builder = builder.play_sound();
+            }
         }
         if let Some(sharer) = sessions.sharer() {
             builder = builder.share_windows(sharer.control());
@@ -245,6 +248,9 @@ impl App {
             // it gave as private, lets the device that controls the screen do so, and says so.
             if sharer.control() && sharer.can_lift() {
                 builder = builder.private_sessions();
+            }
+            if sharer.sends_sound() {
+                builder = builder.share_sound();
             }
         }
         // A device that can give its screen without the person picking it lets the devices it is
@@ -708,6 +714,19 @@ impl App {
     /// ends the session if it cannot take back what was lifted.
     pub fn window_lift(&self, session: u64, screen: bool, input: bool) -> bool {
         self.inner.sessions.lift(session, screen, input)
+    }
+
+    /// Asks the other device to send the sound of the screen `session`, which is shown here, or to
+    /// stop. The sound plays on this device, and the other device keeps its own speakers quiet for
+    /// as long as it is sent (`docs/adr/0012-sound.md`).
+    ///
+    /// Returns whether the request was made. It is not for a window that is not shown here, for a
+    /// session of a single window (sound goes with a whole screen only), when this device plays no
+    /// sound ([`WindowViewer::plays_sound`](crate::windows::WindowViewer::plays_sound)), or when the
+    /// other device sends none. A request to hear that is made again asks the other device to try
+    /// again, which a person does after it said that it could not: the speaker is told why.
+    pub fn hear_window(&self, session: u64, on: bool) -> bool {
+        self.inner.sessions.hear(session, on)
     }
 
     /// Sends a web link to a paired device.

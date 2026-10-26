@@ -147,10 +147,10 @@ impl WindowViewer for Viewer {
             control: window.control,
         });
         self.links.lock().unwrap().push(link);
-        Ok(Screen {
-            decoder: Box::new(Screening(Arc::clone(&self.heard))),
-            id: self.next_screen.fetch_add(1, Ordering::Relaxed),
-        })
+        Ok(Screen::new(
+            Box::new(Screening(Arc::clone(&self.heard))),
+            self.next_screen.fetch_add(1, Ordering::Relaxed),
+        ))
     }
 }
 

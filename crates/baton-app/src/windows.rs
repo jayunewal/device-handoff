@@ -30,8 +30,8 @@ use std::{
 
 use baton_core::{
     streaming::{
-        DecodeError, Decoder, DecoderState, SourceEvents, SourceHandle, Takes, ViewHandle, Viewing,
-        WindowOffer,
+        DecodeError, Decoder, DecoderState, SourceEvents, SourceHandle, Speaker, Takes, ViewHandle,
+        Viewing, WindowOffer,
     },
     util::BoxFuture,
 };
@@ -132,7 +132,8 @@ impl Decoder for Unused {
     fn ended(&mut self) {}
 }
 
-/// The decoder and the screen of a window that is shown.
+/// The decoder and the screen of a window that is shown, and what plays its sound if the platform
+/// plays sound.
 pub struct Screen {
     /// Takes the pictures in the order in which they are to be decoded, and shows them on the
     /// screen. It is given what the source says too, and is told when the session is over.
@@ -140,12 +141,37 @@ pub struct Screen {
     /// The number that the user interface draws the screen with: on Flutter, the id of the
     /// texture.
     pub id: i64,
+    /// Plays the sound of the screen, for a platform that plays sound.
+    pub(crate) speaker: Option<Box<dyn Speaker>>,
+}
+
+impl Screen {
+    /// A screen that plays no sound.
+    #[must_use]
+    pub fn new(decoder: Box<dyn Decoder>, id: i64) -> Self {
+        Self {
+            decoder,
+            id,
+            speaker: None,
+        }
+    }
+
+    /// The same, with the speaker that plays the sound of the screen when the person asks to hear
+    /// it ([`App::hear_window`](crate::App::hear_window)). A platform that gives a speaker says so
+    /// with [`WindowViewer::plays_sound`], so that the device tells the others that it plays sound
+    /// and a source that can send it does.
+    #[must_use]
+    pub fn with_speaker(mut self, speaker: impl Speaker) -> Self {
+        self.speaker = Some(Box::new(speaker));
+        self
+    }
 }
 
 impl fmt::Debug for Screen {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Screen")
             .field("id", &self.id)
+            .field("speaker", &self.speaker.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -206,6 +232,14 @@ pub trait WindowViewer: Send + Sync + 'static {
     ///
     /// The platform cannot show the window now.
     fn open(&self, window: &WindowOffer, link: ScreenLink) -> Result<Screen, PlatformError>;
+
+    /// Whether the screens that [`open`](Self::open) makes play sound: each has a [`Speaker`]
+    /// ([`Screen::with_speaker`]). A device where they do tells the devices it is paired with so,
+    /// and lets the person hear the sound of a screen that another device shares. A device where
+    /// they do not says nothing of the kind. The same each time.
+    fn plays_sound(&self) -> bool {
+        false
+    }
 }
 
 /// What is shared is called in a sentence of the app: a whole display is a screen.
@@ -285,6 +319,16 @@ pub trait WindowSharer: Send + Sync + 'static {
     /// ([`App::set_start_access`](crate::App::set_start_access)), and says so to them. A device
     /// where it cannot says nothing of the kind. The same each time.
     fn can_give_screen(&self) -> bool {
+        false
+    }
+
+    /// Whether the platform can send the sound that this device plays, along with a whole screen
+    /// that it shares: it captures and encodes the sound when the other device asks to hear it
+    /// ([`SourceEvents::hear`]), and hands it to the session
+    /// ([`SourceHandle::begin_sound`], [`SourceHandle::sound`]). A device where it can tells the
+    /// devices it is paired with so, and sends sound to those that play it. A device where it
+    /// cannot says nothing of the kind. The same each time.
+    fn sends_sound(&self) -> bool {
         false
     }
 

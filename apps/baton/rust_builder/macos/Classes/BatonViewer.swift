@@ -364,7 +364,12 @@ func registerViewer(_ platform: ViewerPlatform) -> Int32 {
     source: viewerSource,
     state: viewerState,
     ended: viewerEnded,
-    release: viewerRelease)
+    release: viewerRelease,
+    // This device plays no sound yet: the entries are left out, and the devices it is paired with
+    // are not told that it can.
+    sound: nil,
+    play: nil,
+    stopped: nil)
   let code = baton_stream_register_viewer(&table)
   if code != ok {
     context.release()

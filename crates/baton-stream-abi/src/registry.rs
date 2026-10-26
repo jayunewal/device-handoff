@@ -628,6 +628,100 @@ mod tests {
     }
 
     #[test]
+    fn the_app_is_told_whether_the_platform_plays_and_whether_it_sends_sound() {
+        // A platform with the functions of the sound plays and sends it.
+        let registry = Registry::new();
+        let (viewer, platform) = (Fake::new(), FakeSharer::new());
+        register(&registry, &viewer).unwrap();
+        platform.register_in(&registry).unwrap();
+        assert!(registry.viewer().unwrap().plays_sound());
+        assert!(registry.sharer().unwrap().sends_sound());
+        // The question is answered by the tables, and the platform is asked nothing about it.
+        assert_eq!(viewer.log(), [(0, Call::Limits)]);
+        assert_eq!(platform.log(), []);
+
+        // A platform from before the sound does neither, and is registered all the same.
+        let registry = Registry::new();
+        let (viewer, platform) = (Fake::new(), FakeSharer::new());
+        viewer.register_without_sound_in(&registry).unwrap();
+        platform.register_without_hear_in(&registry).unwrap();
+        assert!(!registry.viewer().unwrap().plays_sound());
+        assert!(!registry.sharer().unwrap().sends_sound());
+
+        // The two are told apart: a device may play sound and send none, or the other way round.
+        let registry = Registry::new();
+        let (viewer, platform) = (Fake::new(), FakeSharer::new());
+        register(&registry, &viewer).unwrap();
+        platform.register_without_hear_in(&registry).unwrap();
+        assert!(registry.viewer().unwrap().plays_sound());
+        assert!(!registry.sharer().unwrap().sends_sound());
+        let registry = Registry::new();
+        let (viewer, platform) = (Fake::new(), FakeSharer::new());
+        viewer.register_without_sound_in(&registry).unwrap();
+        platform.register_in(&registry).unwrap();
+        assert!(!registry.viewer().unwrap().plays_sound());
+        assert!(registry.sharer().unwrap().sends_sound());
+    }
+
+    #[test]
+    fn a_table_of_the_sound_that_is_not_whole_is_taken_without_it() {
+        // The part that every version has ends at `release`: a viewer table that ends there is
+        // taken, and one byte short of it is not.
+        let registry = Registry::new();
+        let fake = Fake::new();
+        let table = fake.vtable();
+        let before_sound = u32::try_from(offset_of!(BatonViewerVTable, sound)).unwrap();
+        assert_eq!(
+            register_table(
+                &registry,
+                &BatonViewerVTable {
+                    size: before_sound - 1,
+                    ..table
+                }
+            ),
+            Err(Error::Argument)
+        );
+        assert!(registry.viewer().is_none());
+        register_table(
+            &registry,
+            &BatonViewerVTable {
+                size: before_sound,
+                ..table
+            },
+        )
+        .unwrap();
+        assert!(!registry.viewer().unwrap().plays_sound());
+
+        // The same for a sharer table that ends at `screen`, and one that is longer than this
+        // version knows.
+        let registry = Registry::new();
+        let platform = FakeSharer::new();
+        let table = platform.vtable();
+        let before_hear = u32::try_from(offset_of!(BatonSharerVTable, hear)).unwrap();
+        fake_sharer::register_table(
+            &registry,
+            &BatonSharerVTable {
+                size: before_hear,
+                ..table
+            },
+        )
+        .unwrap();
+        assert!(!registry.sharer().unwrap().sends_sound());
+        let registry = Registry::new();
+        fake_sharer::register_table(
+            &registry,
+            &BatonSharerVTable {
+                size: table.size + 16,
+                ..table
+            },
+        )
+        .unwrap();
+        assert!(registry.sharer().unwrap().sends_sound());
+        assert!(fake.complaints().is_empty(), "{:?}", fake.complaints());
+        platform.assert_no_complaints();
+    }
+
+    #[test]
     fn a_sharer_table_that_is_not_whole_is_refused_and_leaves_nothing_registered() {
         let registry = Registry::new();
         let platform = FakeSharer::new();

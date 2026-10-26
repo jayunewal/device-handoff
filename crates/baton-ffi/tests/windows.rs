@@ -133,6 +133,10 @@ async fn the_app_is_started_with_the_viewer_and_the_sharer_that_the_platform_reg
         state: Some(state),
         ended: Some(ended),
         release: Some(release),
+        // This platform plays no sound.
+        sound: None,
+        play: None,
+        stopped: None,
     };
     // SAFETY: a vtable that is whole, with functions that keep to the header.
     assert_eq!(
@@ -161,9 +165,11 @@ async fn the_app_is_started_with_the_viewer_and_the_sharer_that_the_platform_reg
         release: Some(release),
         surroundings: Some(surroundings),
         post: Some(post),
-        // This platform cannot give its screen without a picker, and so cannot keep one private.
+        // This platform cannot give its screen without a picker, so it cannot keep one private,
+        // and it sends no sound.
         screen: None,
         lift: None,
+        hear: None,
     };
     // SAFETY: a vtable that is whole, with functions that keep to the header.
     assert_eq!(

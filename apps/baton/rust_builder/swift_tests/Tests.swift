@@ -215,6 +215,13 @@ func testRegistrationGivesTheRustSideAWholeTable() {
   check(table.context != nil)
   check(table.limits != nil && table.open != nil && table.decode != nil && table.show != nil)
   check(table.source != nil && table.state != nil && table.ended != nil && table.release != nil)
+  // A platform that plays no sound leaves out the last three entries, which are for the sound, and
+  // the devices it is paired with are not told that it can.
+  check(table.sound == nil && table.play == nil && table.stopped == nil)
+  check(MemoryLayout<BatonViewerVTable>.size == 104, "size \(MemoryLayout<BatonViewerVTable>.size)")
+  check(MemoryLayout<BatonViewerVTable>.offset(of: \.sound) == 80)
+  check(MemoryLayout<BatonViewerVTable>.offset(of: \.play) == 88)
+  check(MemoryLayout<BatonViewerVTable>.offset(of: \.stopped) == 96)
 }
 
 func testARegistrationThatFailsReturnsItsCodeAndLetsGoOfThePlatform() {

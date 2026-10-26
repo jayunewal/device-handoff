@@ -27,8 +27,11 @@ use tokio::sync::mpsc;
 use super::{
     End, Picture, ShareOutcome, SourceHandle, StartHandler, StartOutcome, StartRequest,
     StartVerdict, ViewHandle, Wanted, WhyNot, WindowShare,
-    answer_tests::{App, Heard, Plan, Platform, Told, ask, declined, session, stop, stopped},
+    answer_tests::{
+        App, Heard, Plan, Platform, Spoken, Told, ask, declined, session, stop, stopped,
+    },
     offer_tests::{fit, window},
+    sound_tests::{aac, packet},
 };
 use crate::{
     Config, Identity, NodeBuilder, StartPolicy, TrustStore,
@@ -224,19 +227,41 @@ impl Rig {
         takes_input: bool,
         configure: impl FnOnce(&mut Config),
     ) -> Self {
+        Self::build(plan, allowed, tuning, takes_input, false, configure).await
+    }
+
+    /// The same, with a phone that plays sound and a Mac that was set up to send it.
+    async fn sounding(plan: Plan, allowed: StartPolicy) -> Self {
+        Self::build(plan, allowed, Tuning::default(), true, true, |_| {}).await
+    }
+
+    async fn build(
+        plan: Plan,
+        allowed: StartPolicy,
+        tuning: Tuning,
+        takes_input: bool,
+        sound: bool,
+        configure: impl FnOnce(&mut Config),
+    ) -> Self {
         let app = App::new(plan);
         let (prepares, requests) = Prepares::new(Ready::Yes);
         let phone = TestNode::with(|builder| {
-            builder
+            let builder = builder
                 .tuning(tuning.clone())
-                .window_handler(Arc::clone(&app))
+                .window_handler(Arc::clone(&app));
+            if sound { builder.play_sound() } else { builder }
         })
         .await;
         let mac = TestNode::configured(configure, |builder| {
-            builder
+            let builder = builder
                 .tuning(tuning)
                 .share_windows(takes_input)
-                .start_handler(Arc::clone(&prepares))
+                .start_handler(Arc::clone(&prepares));
+            if sound {
+                builder.share_sound()
+            } else {
+                builder
+            }
         })
         .await;
         mac.pair_with(&phone);
@@ -781,6 +806,38 @@ async fn a_session_the_viewer_starts_runs_and_nobody_is_asked() {
             .expect("the source did not hear that the session ended"),
         End::Peer
     );
+}
+
+#[tokio::test]
+async fn sound_goes_through_a_session_the_viewer_starts() {
+    let rig = Rig::sounding(Plan::Refuse, StartPolicy::Look).await;
+    let (outcome, shared, heard) = rig.started(false).await;
+    let viewing = viewing_of(outcome);
+    let source = source_of(shared);
+
+    // The Mac advertised sound, and the start took the offer of a whole display as one with it.
+    assert!(viewing.can_hear());
+    assert!(viewing.hear(true));
+    rig.until("the platform to be asked for sound", |_| {
+        heard.count("hear") == 1
+    })
+    .await;
+    source.begin_sound(aac()).unwrap();
+    rig.until("the speaker to be told the form", |rig| {
+        rig.app.speech.all() == [Spoken::Sound(aac())]
+    })
+    .await;
+    assert_eq!(source.sound(packet(1, 0)).unwrap(), Some(0));
+    rig.until("the packet to be played", |rig| {
+        rig.app.speech.played().len() == 1
+    })
+    .await;
+    assert_eq!(rig.app.speech.played(), [(0, true, 0, vec![1; 300])]);
+
+    // The person turns it off, and the platform is told to let the sound of the screen play.
+    assert!(viewing.hear(false));
+    rig.until("the platform to be told", |_| heard.count("hush") == 1)
+        .await;
 }
 
 #[tokio::test]

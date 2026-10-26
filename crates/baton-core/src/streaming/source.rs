@@ -1136,7 +1136,7 @@ mod tests {
     use baton_proto::stream::Codec;
     use baton_stream::{
         KIND_CONTROL, KIND_VIDEO,
-        control::{Hear, Thermal},
+        control::{Hear, SoundCodec, Thermal},
         header::{Flags, PREFIX_LEN, encode_prefix},
         input::{Event, Modifiers, PointerAction},
     };
@@ -1409,6 +1409,47 @@ mod tests {
                 assert!(Instant::now() < deadline, "timed out waiting for {what}");
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
+        }
+
+        /// A rig whose source sends the sound of a display, for a viewer that has asked to hear
+        /// it, and whose platform has begun a run. The runtime of a test does not run what the
+        /// calls spawn before the test waits for something, so no stream of a packet is written or
+        /// let go of between the calls that follow.
+        async fn hearing(params: SourceParams) -> Self {
+            let setup = SourceSetup {
+                sound: SoundPlan::Display,
+                ..setup(true, params)
+            };
+            let rig = Self::with(setup, 1).await;
+            let said = rig
+                .handle
+                .source
+                .viewer_said(ViewerMessage::Hear(Hear { on: true }));
+            assert!(said.is_continue());
+            rig.handle.begin_sound(aac()).unwrap();
+            rig
+        }
+
+        /// The token that resets the stream of a packet of sound, if the session still counts it.
+        fn packet_token(&self, number: u64) -> CancellationToken {
+            lock(&self.handle.source.core).sound.packets[&number].clone()
+        }
+    }
+
+    /// The form of sound that the first version sends.
+    fn aac() -> Sound {
+        Sound {
+            codec: SoundCodec::Aac,
+            rate: 48_000,
+            channels: 2,
+            samples: 1024,
+        }
+    }
+
+    fn packet(byte: u8) -> SoundPacket {
+        SoundPacket {
+            bytes: vec![byte; 300],
+            capture_time: 0,
         }
     }
 
@@ -2374,5 +2415,66 @@ mod tests {
         let source = rig.streaming.sourcing(&session_id()).unwrap();
         let path = source.path();
         assert!(path.window > 0);
+    }
+
+    // The sound of a session: what the source does with the answers of the rules.
+
+    #[tokio::test]
+    async fn the_ninth_packet_in_flight_resets_the_stream_of_the_oldest() {
+        let rig = Rig::hearing(quick()).await;
+        for byte in 0..9_u8 {
+            assert_eq!(
+                rig.handle.sound(packet(byte)).unwrap(),
+                Some(u64::from(byte))
+            );
+        }
+        // Eight may be in flight, so the oldest makes room for the ninth, and no other is reset.
+        assert!(rig.packet_token(0).is_cancelled());
+        for number in 1..9 {
+            assert!(!rig.packet_token(number).is_cancelled(), "{number}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_packet_that_is_late_at_a_look_at_the_clock_has_its_stream_reset() {
+        let params = SourceParams {
+            sound: SoundRules {
+                grace: Duration::ZERO,
+                round_trips: 0,
+                ..SoundRules::default()
+            },
+            ..quick()
+        };
+        let rig = Rig::hearing(params).await;
+        rig.handle.sound(packet(1)).unwrap();
+        assert!(!rig.packet_token(0).is_cancelled());
+        // The clock goes on while nothing else runs, and the packet is late by the next look.
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(rig.handle.source.on_tick().is_continue());
+        assert!(rig.packet_token(0).is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn what_became_of_the_stream_of_a_packet_is_told_to_the_rules() {
+        let rig = Rig::hearing(quick()).await;
+        for byte in 0..3_u8 {
+            rig.handle.sound(packet(byte)).unwrap();
+        }
+        let source = &rig.handle.source;
+        source.settle_packet(0, Outcome::Acked);
+        source.settle_packet(1, Outcome::Stopped);
+        source.settle_packet(2, Outcome::Reset);
+        let stats = rig.handle.stats();
+        // A stream that was reset has nothing to tell the rules: they asked for the reset.
+        assert_eq!(
+            stats.sound,
+            SoundStats {
+                sent: 3,
+                acked: 1,
+                stopped: 1,
+                ..SoundStats::default()
+            }
+        );
+        assert_eq!(stats.sound_streams, 0);
     }
 }

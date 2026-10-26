@@ -358,10 +358,14 @@ func testTheTableHasALiftOnlyWhenThePlatformCanGiveTheScreenAndTheTableIsWhole()
   with.canGiveScreen = true
   guard let table = registeredSharing(with) else { return check(false) }
   check(table.lift != nil, "a platform that can give the screen")
-  // The lift is the last entry of the table, 96 bytes in, and the table is 104 bytes long.
-  check(MemoryLayout<BatonSharerVTable>.size == 104, "size \(MemoryLayout<BatonSharerVTable>.size)")
-  check(table.size == 104, "size \(table.size)")
+  // The lift is 96 bytes in, the entry for the sound follows it, and the table is 112 bytes long.
+  check(MemoryLayout<BatonSharerVTable>.size == 112, "size \(MemoryLayout<BatonSharerVTable>.size)")
+  check(table.size == 112, "size \(table.size)")
   check(MemoryLayout<BatonSharerVTable>.offset(of: \.lift) == 96)
+  check(MemoryLayout<BatonSharerVTable>.offset(of: \.hear) == 104)
+  // A platform that sends no sound leaves the entry out, and the devices it is paired with are not
+  // told that it can.
+  check(table.hear == nil, "an entry for the sound of a platform that sends none")
 }
 
 /// A platform from before the screen could be given: it says nothing of it.

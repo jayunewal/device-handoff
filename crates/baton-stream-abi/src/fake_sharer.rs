@@ -17,6 +17,11 @@
 //! compare it with what it expects. A window that was given as private also gets `lift`, which
 //! checks that the window was given so and that only the bits of the header are set.
 //!
+//! A display that is shared with sound also gets `hear`, which says whether the other device wants
+//! to hear it and is logged as [`SharerCall::Hear`]. The fake records it and does nothing else: a
+//! test plays the encoder of the sound with [`sound_begin`], [`sound`] and [`sound_silent`], the
+//! way the capture thread of a Mac would.
+//!
 //! The other half of a platform, the capture thread that asks `begin` and hands over what the
 //! encoder made, is a set of functions that call the library the way Swift would, with the same
 //! structs and pointers: [`begin`], [`sent`] and the others.
@@ -44,10 +49,10 @@ use crate::{
     abi::{
         ABI_VERSION, BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT, BatonBytes, BatonFormat, BatonFront,
         BatonGeometry, BatonMessage, BatonPicked, BatonPicture, BatonPost, BatonRect,
-        BatonSharerVTable, BatonSurroundings, BatonTakes, CODEC_H264, FRONTS_MAX, KEYBOARD_SHARED,
-        KEYBOARD_UNKNOWN, LIFT_INPUT, LIFT_SCREEN, MESSAGE_MAX, OK, PICKED_DISPLAY, PICKED_WINDOW,
-        POINTER_DOWN, POINTER_MOVE, POINTER_SCROLL, POINTER_UP, POST_KEY, POST_POINTER,
-        SCREEN_PRIVATE, size_of_u32,
+        BatonSharerVTable, BatonSound, BatonSoundPacket, BatonSurroundings, BatonTakes, CODEC_H264,
+        FRONTS_MAX, KEYBOARD_SHARED, KEYBOARD_UNKNOWN, LIFT_INPUT, LIFT_SCREEN, MESSAGE_MAX, OK,
+        PICKED_DISPLAY, PICKED_WINDOW, POINTER_DOWN, POINTER_MOVE, POINTER_SCROLL, POINTER_UP,
+        POST_KEY, POST_POINTER, SCREEN_PRIVATE, SOUND_CODEC_AAC, size_of_u32,
     },
     platform::SharerCalls,
 };
@@ -82,9 +87,19 @@ pub(crate) enum SharerCall {
     Lift {
         lifted: u32,
     },
+    /// The platform was told whether the sound of the screen is wanted.
+    Hear {
+        on: bool,
+    },
     Ended,
     Release,
 }
+
+/// The platform was told that the other device wants to hear the sound.
+pub(crate) const RECORD: SharerCall = SharerCall::Hear { on: true };
+
+/// The platform was told that the other device does not want to hear the sound.
+pub(crate) const STOP: SharerCall = SharerCall::Hear { on: false };
 
 /// What `pick` does.
 #[derive(Debug, Clone)]
@@ -253,6 +268,8 @@ struct State {
     post: i32,
     /// The platform registers a table that ends before `lift`.
     cannot_lift: bool,
+    /// Whether the platform registers as one that sends sound.
+    sound: bool,
     hook: Option<Hook>,
     /// The requests of picks that wait for an answer.
     waiting: BTreeSet<u64>,
@@ -334,6 +351,7 @@ impl FakeSharer {
                 around: AroundPlan::Says(Around::default()),
                 post: OK,
                 cannot_lift: false,
+                sound: true,
                 hook: None,
                 waiting: BTreeSet::new(),
             }),
@@ -360,6 +378,7 @@ impl FakeSharer {
             post: Some(post),
             screen: Some(screen),
             lift: Some(lift),
+            hear: Some(hear),
         }
     }
 
@@ -372,6 +391,7 @@ impl FakeSharer {
             post: None,
             screen: None,
             lift: None,
+            hear: None,
             ..self.vtable()
         }
     }
@@ -383,27 +403,51 @@ impl FakeSharer {
             size: u32::try_from(offset_of!(BatonSharerVTable, screen)).unwrap(),
             screen: None,
             lift: None,
+            hear: None,
             ..self.vtable()
         }
     }
 
     /// The vtable of a platform that was written before the privacy of a screen could be
-    /// lifted: it ends at `screen`, and the library reads the function that it lacks as missing.
+    /// lifted: it ends at `screen`, and the library reads the two functions that it lacks as
+    /// missing.
     pub(crate) fn vtable_without_lift(self: &Arc<Self>) -> BatonSharerVTable {
         BatonSharerVTable {
             size: u32::try_from(offset_of!(BatonSharerVTable, lift)).unwrap(),
             lift: None,
+            hear: None,
             ..self.vtable()
         }
     }
 
+    /// The vtable of a platform that was written before it could send sound: it ends at `lift`,
+    /// and the library reads the function that it lacks as missing.
+    pub(crate) fn vtable_without_hear(self: &Arc<Self>) -> BatonSharerVTable {
+        BatonSharerVTable {
+            size: u32::try_from(offset_of!(BatonSharerVTable, hear)).unwrap(),
+            hear: None,
+            ..self.vtable()
+        }
+    }
+
+    /// Registers this platform in `registry`, as one that sends no sound.
+    pub(crate) fn register_without_hear_in(
+        self: &Arc<Self>,
+        registry: &Registry,
+    ) -> Result<(), Error> {
+        register_table(registry, &self.vtable_without_hear())
+    }
+
     /// Registers this platform in `registry`: with the whole table, or with the one that ends
-    /// before `lift` if the test said that the platform cannot lift.
+    /// before `lift` if the test said that the platform cannot lift, or the one that ends before
+    /// `hear` if it said that the platform sends no sound ([`Self::sends_no_sound`]).
     pub(crate) fn register_in(self: &Arc<Self>, registry: &Registry) -> Result<(), Error> {
         let table = if self.state().cannot_lift {
             self.vtable_without_lift()
-        } else {
+        } else if self.state().sound {
             self.vtable()
+        } else {
+            self.vtable_without_hear()
         };
         register_table(registry, &table)
     }
@@ -444,6 +488,11 @@ impl FakeSharer {
     /// or 0.
     pub(crate) fn set_control_number(&self, number: u32) {
         self.state().control = number;
+    }
+
+    /// The platform registers as one that was written before it could send sound.
+    pub(crate) fn sends_no_sound(&self) {
+        self.state().sound = false;
     }
 
     pub(crate) fn plan_pick(&self, plan: PickPlan) {
@@ -510,6 +559,13 @@ impl FakeSharer {
                 _ => None,
             })
             .collect()
+    }
+
+    /// What the window was told about the sound, in order: [`RECORD`] and [`STOP`].
+    pub(crate) fn hear_calls(&self, window: u64) -> Vec<SharerCall> {
+        let mut calls = self.calls(window);
+        calls.retain(|call| matches!(call, SharerCall::Hear { .. }));
+        calls
     }
 
     /// The calls about one window, in order.
@@ -1297,6 +1353,16 @@ unsafe extern "C" fn lift(picked: *mut c_void, lifted: u32) {
     }
 }
 
+unsafe extern "C" fn hear(picked: *mut c_void, on: u32) {
+    // SAFETY: `picked` is a pointer that an answer gave.
+    let (cell, fake) = unsafe { window_of(picked) };
+    if on > 1 {
+        fake.complain(format!("hear: {on}"));
+    }
+    let _busy = about_window(cell, &fake, &SharerCall::Hear { on: on != 0 });
+    input_is_due(cell, &fake, "hear");
+}
+
 unsafe extern "C" fn ended(picked: *mut c_void) {
     // SAFETY: `picked` is a pointer that an answer gave.
     let (cell, fake) = unsafe { window_of(picked) };
@@ -1471,6 +1537,89 @@ pub(crate) unsafe fn sent_raw(
     // SAFETY: the caller's promise about the picture is this function's own, and the others are
     // null or point to values that live through the call.
     unsafe { registry.source_sent(link, picture, outcome, number) }
+}
+
+/// The form of sound that an AAC encoder makes: this many samples a second, in this many channels,
+/// with this many samples of each in a packet.
+pub(crate) fn aac(rate: u32, channels: u32, samples: u32) -> BatonSound {
+    BatonSound {
+        size: size_of_u32::<BatonSound>(),
+        codec: SOUND_CODEC_AAC,
+        rate,
+        channels,
+        samples,
+        reserved: 0,
+    }
+}
+
+/// Says what the packets of sound are.
+pub(crate) fn sound_begin(registry: &Registry, link: u64, sound: &BatonSound) -> Result<(), Error> {
+    // SAFETY: a struct of the interface that is whole.
+    unsafe { registry.source_sound_begin(link, sound) }
+}
+
+/// Says what the packets of sound are, with the struct as given: `None` is a null pointer.
+///
+/// # Safety
+///
+/// `sound` is a struct that lives through the call and is at least as long as its size says, or
+/// `None`.
+pub(crate) unsafe fn sound_begin_raw(
+    registry: &Registry,
+    link: u64,
+    sound: Option<&BatonSound>,
+) -> Result<(), Error> {
+    let pointer = sound.map_or(ptr::null(), ptr::from_ref);
+    // SAFETY: null, or a struct of the interface that lives through the call, as promised.
+    unsafe { registry.source_sound_begin(link, pointer) }
+}
+
+/// Says that the sound that is wanted cannot be sent, for a `SILENT_` reason.
+pub(crate) fn sound_silent(registry: &Registry, link: u64, reason: u32) -> Result<(), Error> {
+    registry.source_sound_silent(link, reason)
+}
+
+/// Hands over a packet of sound, and gives what became of it: a `SOUND_` number and the number of
+/// the packet.
+pub(crate) fn sound(
+    registry: &Registry,
+    link: u64,
+    capture_time: u64,
+    bytes: &[u8],
+) -> Result<(u32, u64), Error> {
+    let packet = BatonSoundPacket {
+        size: size_of_u32::<BatonSoundPacket>(),
+        reserved: 0,
+        capture_time,
+        bytes: BatonBytes::of(bytes),
+    };
+    let (mut outcome, mut number) = (u32::MAX, u64::MAX);
+    // SAFETY: a struct of the interface that is whole, with bytes that outlive the call, and
+    // pointers to a `u32` and a `u64` that live through it.
+    unsafe { registry.source_sound(link, &raw const packet, &raw mut outcome, &raw mut number) }?;
+    Ok((outcome, number))
+}
+
+/// Hands over a packet of sound as the struct stands, which may be wrong, with the pointers for
+/// what became of it that are given (`None` is a null pointer).
+///
+/// # Safety
+///
+/// The memory that `packet` describes can be read during the call if the library is to read it:
+/// the library reads no more of it than the header allows.
+pub(crate) unsafe fn sound_raw(
+    registry: &Registry,
+    link: u64,
+    packet: Option<&BatonSoundPacket>,
+    outcome: Option<&mut u32>,
+    number: Option<&mut u64>,
+) -> Result<(), Error> {
+    let packet = packet.map_or(ptr::null(), ptr::from_ref);
+    let outcome = outcome.map_or(ptr::null_mut(), ptr::from_mut);
+    let number = number.map_or(ptr::null_mut(), ptr::from_mut);
+    // SAFETY: the caller's promise about the packet is this function's own, and the others are
+    // null or point to values that live through the call.
+    unsafe { registry.source_sound(link, packet, outcome, number) }
 }
 
 /// The window changed at `capture_time`.
