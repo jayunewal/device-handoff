@@ -778,6 +778,30 @@ func testASecondRunKeepsTheFormOfTheSessionWhenTheMacChangesItsRate() {
   rig.pump.close()
 }
 
+func testThePumpKeepsTheResamplerWhereItWasFromBlockToBlock() {
+  let rig = SoundRig()
+  rig.taps.rate = 96_000
+  rig.pump.hear(true)
+  rig.pump.idle()
+  check(rig.session.begun == [form48], "\(rig.session.begun)")
+  // Every second frame of the Mac is taken. A block of an odd number of frames ends between two of
+  // the frames that are taken, and the next block goes on from there. The first packet is made of
+  // both blocks.
+  rig.feed(1501)
+  rig.feed(1501)
+  check(rig.session.packets.count == 1, "\(rig.session.packets.count) packets")
+  let first = rig.encoders.encoders.first?.received.first ?? []
+  // The frame at i of what was read has the samples 2i + 1 and 2i + 2, since they count up. The
+  // frame k of the packet is the frame 2k of what was read, over the border of the blocks as well.
+  var expected: [Float] = []
+  for frame in 0..<1024 {
+    expected.append(Float(4 * frame + 1))
+    expected.append(Float(4 * frame + 2))
+  }
+  check(first == expected, "the samples of the packet are not every second frame that was read")
+  rig.pump.close()
+}
+
 func testTheResamplerKeepsALineStraightAcrossBlocksOfAnySize() {
   guard var resampler = LinearResampler(from: 44_100, to: 48_000) else {
     return check(false, "no resampler")

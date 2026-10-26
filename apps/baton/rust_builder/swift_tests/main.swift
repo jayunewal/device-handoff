@@ -1098,6 +1098,10 @@ tests += [
     testASecondRunKeepsTheFormOfTheSessionWhenTheMacChangesItsRate
   ),
   (
+    "the pump keeps the resampler where it was from block to block",
+    testThePumpKeepsTheResamplerWhereItWasFromBlockToBlock
+  ),
+  (
     "the resampler keeps a line straight across blocks of any size",
     testTheResamplerKeepsALineStraightAcrossBlocksOfAnySize
   ),
