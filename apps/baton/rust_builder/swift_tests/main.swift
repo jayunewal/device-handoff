@@ -1082,6 +1082,10 @@ tests += [
     testAClockThatIsGoneEndsTheRunWithoutSayingWhy
   ),
   (
+    "a quiet screen stays quiet when the library says that the session is over",
+    testAQuietScreenStaysQuietWhenTheLibrarySaysThatTheSessionIsOver
+  ),
+  (
     "close is final and lets go of the tap and the encoder once",
     testCloseIsFinalAndLetsGoOfTheTapAndTheEncoderOnce
   ),

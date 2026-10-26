@@ -656,6 +656,54 @@ func testAClockThatIsGoneEndsTheRunWithoutSayingWhy() {
   rig.pump.close()
 }
 
+func testAQuietScreenStaysQuietWhenTheLibrarySaysThatTheSessionIsOver() {
+  // The session ends under the pump in three ways. On a screen that is not private each lets the
+  // Mac play again; on one that is private none does, since the Mac is dark and its keys are held
+  // until it is locked again, and the platform closes the pump then.
+  do {
+    // The form is answered with the end of the session.
+    let rig = SoundRig(quiet: true)
+    rig.pump.keepQuiet()
+    rig.session.answerBegin(.over)
+    rig.pump.hear(true)
+    rig.pump.idle()
+    check(rig.session.silences.isEmpty, "\(rig.session.silences)")
+    check(rig.encoders.encoders.first?.invalidated == 1)
+    check(rig.taps.taps.count == 1 && rig.taps.latest?.stops == 0, "the Mac played again")
+    rig.pump.close()
+    check(rig.taps.latest?.stops == 1)
+  }
+  do {
+    // The clock is gone.
+    let rig = SoundRig(quiet: true)
+    rig.pump.keepQuiet()
+    rig.pump.hear(true)
+    rig.pump.idle()
+    rig.session.answerClock(nil)
+    rig.feed(1024)
+    check(rig.session.packets.isEmpty, "a packet with no time")
+    check(rig.session.silences.isEmpty, "\(rig.session.silences)")
+    check(rig.taps.latest?.stops == 0, "the Mac played again")
+    rig.pump.close()
+    check(rig.taps.latest?.stops == 1)
+  }
+  do {
+    // A packet is answered with the end of the session. Nothing is sent after it, and what the tap
+    // reads is thrown away.
+    let rig = SoundRig(quiet: true)
+    rig.session.answerSends([.over])
+    rig.pump.keepQuiet()
+    rig.pump.hear(true)
+    rig.feed(2 * 1024)
+    rig.feed(1024)
+    check(rig.session.packets.count == 1, "\(rig.session.packets.count) packets")
+    check(rig.session.silences.isEmpty, "\(rig.session.silences)")
+    check(rig.taps.latest?.stops == 0, "the Mac played again")
+    rig.pump.close()
+    check(rig.taps.latest?.stops == 1)
+  }
+}
+
 func testCloseIsFinalAndLetsGoOfTheTapAndTheEncoderOnce() {
   let rig = SoundRig()
   rig.pump.hear(true)
