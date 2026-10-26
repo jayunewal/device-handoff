@@ -244,6 +244,8 @@ pub struct NodeBuilder {
     windows: Option<Arc<dyn WindowHandler>>,
     /// Whether this device shows its own windows to others, and takes input if it does.
     sharing: Option<Sharer>,
+    /// Whether this device keeps its screen private while a paired device controls it.
+    private_sessions: bool,
     /// What the application does when a paired device asks this one to start a session, if it
     /// starts them.
     starts: Option<Arc<dyn StartHandler>>,
@@ -277,6 +279,7 @@ impl NodeBuilder {
             transfers: None,
             windows: None,
             sharing: None,
+            private_sessions: false,
             starts: None,
             holds: None,
             clock: Arc::new(SystemClock),
@@ -326,8 +329,23 @@ impl NodeBuilder {
     pub fn share_windows(mut self, control: bool) -> Self {
         self.sharing = Some(Sharer {
             control,
+            private: false,
             starter: None,
         });
+        self
+    }
+
+    /// Has this device keep its screen private while a paired device controls it: the platform
+    /// makes it dark and takes the keyboard and the pointer out of use, and the viewer can have the
+    /// screen shown and the keys and the pointer put to use, and put either back, with
+    /// [`ViewHandle::lift`](crate::streaming::ViewHandle::lift). A window is offered with
+    /// [`WindowShare::with_private`](crate::streaming::WindowShare::with_private).
+    ///
+    /// It needs [`share_windows`](Self::share_windows) with `control`, and [`bind`](Self::bind)
+    /// fails without them. With it the device advertises `stream.private`.
+    #[must_use]
+    pub fn private_sessions(mut self) -> Self {
+        self.private_sessions = true;
         self
     }
 
@@ -423,6 +441,7 @@ impl NodeBuilder {
             transfers,
             windows,
             sharing,
+            private_sessions,
             starts,
             holds,
             clock,
@@ -438,6 +457,15 @@ impl NodeBuilder {
                 "a handler for starting sessions needs the device to share its windows".to_owned(),
             ));
         }
+        if private_sessions && !sharing.as_ref().is_some_and(|sharer| sharer.control) {
+            return Err(Error::Config(
+                "private sessions need the device to share its windows and take input".to_owned(),
+            ));
+        }
+        let sharing = sharing.map(|sharer| Sharer {
+            private: private_sessions,
+            ..sharer
+        });
         let holds = holds.unwrap_or_else(Holds::memory);
 
         let id = DeviceId::from_bytes(*secret.public().as_bytes());
@@ -1063,6 +1091,7 @@ impl Node {
             hold,
             session: id,
             control: window.control(),
+            private: window.private(),
         };
         streaming.begin(offered, reply, events, choose).await
     }

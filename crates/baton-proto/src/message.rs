@@ -56,6 +56,11 @@ pub mod capability {
     /// the streams of kind 4, and sends a `Hear`. Only a device that advertises [`STREAM_VIEW`]
     /// advertises it.
     pub const STREAM_HEAR: &str = "stream.hear";
+    /// Keeps its own screen private while a paired device controls it, dark and with its keys and
+    /// pointer out of use, until the viewer asks otherwise: sets `private` in an offer and takes
+    /// `Lift` on the control stream of that session (section 9 of `docs/protocol.md`). Only a
+    /// device that advertises [`STREAM_CONTROL`] advertises it.
+    pub const STREAM_PRIVATE: &str = "stream.private";
 }
 
 /// A message with a defined maximum size and field limits.

@@ -116,6 +116,11 @@ pub(crate) fn our_hello(shared: &Shared) -> Hello {
     if shared.streaming.takes_control() {
         capabilities.push(capability::STREAM_CONTROL.to_owned());
     }
+    // A device that keeps its screen private while another device controls it, and shows it when
+    // that device asks.
+    if shared.streaming.keeps_private() {
+        capabilities.push(capability::STREAM_PRIVATE.to_owned());
+    }
     // A device that was given someone to get ready when a paired device asks it to share starts
     // the session, instead of waiting to be told which window to offer.
     if shared.streaming.starts() {

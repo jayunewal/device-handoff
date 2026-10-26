@@ -354,6 +354,7 @@ impl From<app::WindowSession> for WindowSession {
             width,
             height,
             control,
+            private,
             screen,
         } = session;
         Self {
@@ -367,6 +368,7 @@ impl From<app::WindowSession> for WindowSession {
             width,
             height,
             control,
+            private,
             screen,
         }
     }
@@ -661,6 +663,7 @@ mod tests {
             width: 1440,
             height: 900,
             control: true,
+            private: true,
             screen: Some(7),
         }
     }
@@ -677,6 +680,7 @@ mod tests {
         assert_eq!(converted.app.as_deref(), Some("Numbers"));
         assert_eq!((converted.width, converted.height), (1440, 900));
         assert!(converted.control);
+        assert!(converted.private);
         assert_eq!(converted.screen, Some(7));
         let sharing = WindowSession::from(app::WindowSession {
             role: app::WindowRole::Sharing,

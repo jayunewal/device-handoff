@@ -34,8 +34,8 @@ use baton_stream_abi::{
         self, BatonBytes, BatonDecoderState, BatonFormat, BatonFrame, BatonFront, BatonGeometry,
         BatonLimits, BatonMessage, BatonPicked, BatonPicture, BatonPost, BatonRect, BatonScreen,
         BatonSharerVTable, BatonSourceMessage, BatonSurroundings, BatonTakes, BatonViewerVTable,
-        BatonWindow, CancelPickFn, ControlFn, DecodeFn, EndedFn, LimitsFn, OpenFn, PickFn, PostFn,
-        PrepareFn, ReleaseFn, ScreenFn, ShowFn, SourceFn, StartFn, StateFn, SurroundingsFn,
+        BatonWindow, CancelPickFn, ControlFn, DecodeFn, EndedFn, LiftFn, LimitsFn, OpenFn, PickFn,
+        PostFn, PrepareFn, ReleaseFn, ScreenFn, ShowFn, SourceFn, StartFn, StateFn, SurroundingsFn,
     },
     exports::{
         baton_stream_abi_version, baton_stream_link_decode_failed, baton_stream_pick_done,
@@ -662,6 +662,7 @@ fn tables_of_functions() -> Vec<RustStruct> {
             surroundings: Option<SurroundingsFn> = "BatonSurroundingsFn",
             post: Option<PostFn> = "BatonPostFn",
             screen: Option<ScreenFn> = "BatonScreenFn",
+            lift: Option<LiftFn> = "BatonLiftFn",
         }),
     ]
 }
@@ -736,6 +737,8 @@ fn rust_fn_types() -> Vec<CFunction> {
         rust_fn_type!(ScreenFn as "BatonScreenFn": "int32_t"
             ["void *", "uint32_t", "BatonPicked *", "BatonMessage *"]
             is unsafe extern "C" fn(*mut c_void, u32, *mut BatonPicked, *mut BatonMessage) -> i32),
+        rust_fn_type!(LiftFn as "BatonLiftFn": "void" ["void *", "uint32_t"]
+            is unsafe extern "C" fn(*mut c_void, u32)),
     ]
 }
 
@@ -854,6 +857,8 @@ fn rust_numbers() -> Vec<(String, i64)> {
         SCREEN_UNAVAILABLE,
         SCREEN_NEEDS_INPUT_PERMISSION,
         SCREEN_PRIVATE,
+        LIFT_SCREEN,
+        LIFT_INPUT,
         FRAME_KEY,
         FRAME_RECOVERY,
         FRAME_REFERENCED,
@@ -1298,6 +1303,13 @@ static int32_t screen(void *context, uint32_t flags, BatonPicked *picked, BatonM
     return BATON_OK;
 }
 
+static uint32_t lifted_now;
+
+static void lift(void *picked, uint32_t lifted) {
+    (void)picked;
+    lifted_now = lifted & (BATON_LIFT_SCREEN | BATON_LIFT_INPUT);
+}
+
 static void window_ended(void *picked) { (void)picked; }
 
 static void window_released(void *picked) { (void)picked; }
@@ -1317,6 +1329,7 @@ static int32_t register_sharer(void) {
     table.surroundings = surroundings;
     table.post = post_input;
     table.screen = screen;
+    table.lift = lift;
     return baton_stream_register_sharer(&table);
 }
 
@@ -1609,8 +1622,12 @@ fn a_compiler_refuses_a_header_whose_numbers_are_wrong() {
             "offsetof(BatonSharerVTable, screen) == 80",
         ),
         (
+            "offsetof(BatonSharerVTable, lift) == 96",
+            "offsetof(BatonSharerVTable, lift) == 88",
+        ),
+        (
+            "sizeof(BatonSharerVTable) == 104",
             "sizeof(BatonSharerVTable) == 96",
-            "sizeof(BatonSharerVTable) == 88",
         ),
     ] {
         assert_eq!(text.matches(right).count(), 1, "the header has `{right}`");

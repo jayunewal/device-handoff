@@ -195,6 +195,7 @@ void main() {
           width: 800,
           height: 600,
           control: false,
+          private: false,
         ),
       );
 
@@ -606,6 +607,7 @@ void main() {
           width: 800,
           height: 600,
           control: false,
+          private: false,
         ),
       );
 
@@ -850,6 +852,7 @@ void main() {
           width: 0,
           height: 0,
           control: false,
+          private: false,
         ),
       );
 
@@ -864,6 +867,248 @@ void main() {
 
       expect(find.text('This window cannot be shown here'), findsOneWidget);
       expect(find.byType(LinearProgressIndicator), findsNothing);
+    });
+  });
+
+  group('the settings for a session of a private screen', () {
+    WindowSession privateScreen({int id = 1}) => sampleWindowSession(
+      id: id,
+      display: true,
+      title: null,
+      app: null,
+      control: true,
+      private: true,
+    );
+
+    final settings = find.byTooltip('Settings for this session');
+    final settingsWithSomethingOn = find.byTooltip(
+      'Settings for this session, something is switched on',
+    );
+    final screenSwitch = find.widgetWithText(
+      SwitchListTile,
+      'Show screen on the Mac',
+    );
+    final inputSwitch = find.widgetWithText(
+      SwitchListTile,
+      'Allow the Mac’s keyboard and trackpad',
+    );
+
+    Future<void> openSettings(WidgetTester tester) async {
+      await tester.tap(find.byTooltip(RegExp('^Settings for this session')));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> closeSettings(WidgetTester tester) async {
+      // A tap on the dimmed part above the sheet puts it away.
+      await tester.tapAt(const Offset(450, 40));
+      await tester.pumpAndSettle();
+    }
+
+    bool on(WidgetTester tester, Finder tile) =>
+        tester.widget<SwitchListTile>(tile).value;
+
+    testWidgets(
+      'are there only for a screen that the other device keeps private',
+      (tester) async {
+        await _open(tester, window: sampleWindowSession(control: true));
+        expect(settings, findsNothing);
+
+        await tester.pumpWidget(const SizedBox());
+        await _open(tester, window: privateScreen());
+        expect(settings, findsOneWidget);
+      },
+    );
+
+    testWidgets('open over the picture with both switches off', (tester) async {
+      final shown = await _open(tester, window: privateScreen());
+
+      await openSettings(tester);
+
+      expect(find.text('Settings for this session'), findsOneWidget);
+      expect(screenSwitch, findsOneWidget);
+      expect(inputSwitch, findsOneWidget);
+      expect(on(tester, screenSwitch), isFalse);
+      expect(on(tester, inputSwitch), isFalse);
+      expect(
+        find.text(
+          'The Mac’s screen is dark, so nobody near it sees what you do.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Nobody at the Mac can use it.'), findsOneWidget);
+      expect(shown.session.windowLifts, isEmpty);
+    });
+
+    testWidgets(
+      'switch the screen and the keyboard and trackpad one at a time',
+      (tester) async {
+        final shown = await _open(tester, window: privateScreen(id: 4));
+        await openSettings(tester);
+
+        await tester.tap(screenSwitch);
+        await tester.pumpAndSettle();
+        expect(on(tester, screenSwitch), isTrue);
+        expect(on(tester, inputSwitch), isFalse);
+        expect(
+          find.text('Anyone near the Mac can see what you do on it.'),
+          findsOneWidget,
+        );
+
+        await tester.tap(inputSwitch);
+        await tester.pumpAndSettle();
+        expect(on(tester, screenSwitch), isTrue);
+        expect(on(tester, inputSwitch), isTrue);
+        expect(find.text('Anyone at the Mac can use it.'), findsOneWidget);
+
+        await tester.tap(screenSwitch);
+        await tester.pumpAndSettle();
+        await tester.tap(inputSwitch);
+        await tester.pumpAndSettle();
+        expect(on(tester, screenSwitch), isFalse);
+        expect(on(tester, inputSwitch), isFalse);
+
+        // Each switch said how both stand, and the last one is how things stand.
+        expect(shown.session.windowLifts, [
+          (session: 4, screen: true, input: false),
+          (session: 4, screen: true, input: true),
+          (session: 4, screen: false, input: true),
+          (session: 4, screen: false, input: false),
+        ]);
+      },
+    );
+
+    testWidgets(
+      'can be switched on and off any number of times in one session',
+      (tester) async {
+        final shown = await _open(tester, window: privateScreen());
+        await openSettings(tester);
+
+        for (var round = 0; round < 5; round++) {
+          await tester.tap(screenSwitch);
+          await tester.pumpAndSettle();
+          expect(on(tester, screenSwitch), isTrue);
+          await tester.tap(screenSwitch);
+          await tester.pumpAndSettle();
+          expect(on(tester, screenSwitch), isFalse);
+        }
+
+        expect(shown.session.windowLifts.length, 10);
+        expect(shown.session.windowLifts.last, (
+          session: 1,
+          screen: false,
+          input: false,
+        ));
+      },
+    );
+
+    testWidgets(
+      'are still as they were when the sheet is closed and opened again',
+      (tester) async {
+        await _open(tester, window: privateScreen());
+        await openSettings(tester);
+        await tester.tap(inputSwitch);
+        await tester.pumpAndSettle();
+
+        await closeSettings(tester);
+        expect(inputSwitch, findsNothing);
+        await openSettings(tester);
+
+        expect(on(tester, screenSwitch), isFalse);
+        expect(on(tester, inputSwitch), isTrue);
+      },
+    );
+
+    testWidgets('show in the bar that something is switched on', (
+      tester,
+    ) async {
+      await _open(tester, window: privateScreen());
+      expect(settingsWithSomethingOn, findsNothing);
+      expect(tester.widget<Badge>(find.byType(Badge)).isLabelVisible, isFalse);
+
+      await openSettings(tester);
+      await tester.tap(screenSwitch);
+      await tester.pumpAndSettle();
+      await closeSettings(tester);
+      expect(settingsWithSomethingOn, findsOneWidget);
+      expect(tester.widget<Badge>(find.byType(Badge)).isLabelVisible, isTrue);
+
+      await openSettings(tester);
+      await tester.tap(screenSwitch);
+      await tester.pumpAndSettle();
+      await closeSettings(tester);
+      expect(settingsWithSomethingOn, findsNothing);
+      expect(tester.widget<Badge>(find.byType(Badge)).isLabelVisible, isFalse);
+    });
+
+    testWidgets(
+      'keep a switch as it was, and say so, when the Mac was not told',
+      (tester) async {
+        final shown = await _open(tester, window: privateScreen());
+        await openSettings(tester);
+
+        shown.session.windowLiftTaken = false;
+        await tester.tap(screenSwitch);
+        await tester.pumpAndSettle();
+
+        expect(on(tester, screenSwitch), isFalse);
+        expect(
+          find.text('The Mac did not get that, so it is as it was. Try again.'),
+          findsOneWidget,
+        );
+        // The window goes on.
+        expect(shown.controller.sessions, [shown.window]);
+
+        // Once the Mac can be told, the switch works, and the sentence goes.
+        shown.session.windowLiftTaken = true;
+        await tester.tap(screenSwitch);
+        await tester.pumpAndSettle();
+        expect(on(tester, screenSwitch), isTrue);
+        expect(find.textContaining('did not get that'), findsNothing);
+      },
+    );
+
+    testWidgets('cannot be switched once the session is over', (tester) async {
+      final shown = await _open(tester, window: privateScreen());
+      await openSettings(tester);
+      await tester.tap(screenSwitch);
+      await tester.pumpAndSettle();
+      expect(
+        find.text(
+          'Both switch off again when this session ends, and the Mac locks.',
+        ),
+        findsOneWidget,
+      );
+
+      shown.session.emit(
+        Event.windowEnded(
+          id: shown.window.id.toInt(),
+          end: const WindowEnd.otherDevice(),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Both are off again, and the sheet says that the session is over.
+      expect(on(tester, screenSwitch), isFalse);
+      expect(find.text('This session is over.'), findsOneWidget);
+      final lifts = shown.session.windowLifts.length;
+      await tester.tap(inputSwitch, warnIfMissed: false);
+      await tester.pumpAndSettle();
+      expect(on(tester, inputSwitch), isFalse);
+      expect(shown.session.windowLifts.length, lifts);
+    });
+
+    testWidgets('are not offered once the session is over', (tester) async {
+      final shown = await _open(tester, window: privateScreen());
+
+      shown.session.emit(
+        Event.windowEnded(
+          id: shown.window.id.toInt(),
+          end: const WindowEnd.otherDevice(),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(settings, findsNothing);
     });
   });
 }

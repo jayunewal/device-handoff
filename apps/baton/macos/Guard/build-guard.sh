@@ -17,17 +17,18 @@ programs="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/MacOS"
 work="$DERIVED_FILE_DIR/baton-guard"
 mkdir -p "$programs" "$work"
 
-# One program for each kind of processor that the app is built for.
-slices=""
+# One program for each kind of processor that the app is built for. The programs are kept in the
+# arguments of this script and not in a string: the path of a checkout can have a space in it
+# ("Personal Projects"), and a string would fall apart there.
+set --
 for arch in ${ARCHS:-$(uname -m)}; do
   xcrun swiftc -O -swift-version 5 -sdk "$SDKROOT" \
     -target "$arch-apple-macos${MACOSX_DEPLOYMENT_TARGET:-12.0}" \
     "$here/main.swift" "$classes/BatonGuard.swift" "$classes/BatonLock.swift" \
     -o "$work/BatonGuard-$arch"
-  slices="$slices $work/BatonGuard-$arch"
+  set -- "$@" "$work/BatonGuard-$arch"
 done
-# shellcheck disable=SC2086
-lipo -create $slices -output "$programs/BatonGuard"
+lipo -create "$@" -output "$programs/BatonGuard"
 
 runtime=""
 if [ "${ENABLE_HARDENED_RUNTIME:-NO}" = "YES" ]; then

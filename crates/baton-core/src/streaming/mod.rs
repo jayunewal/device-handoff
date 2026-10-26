@@ -85,9 +85,9 @@ pub(crate) use source::{SourceParams, SourceSetup};
 use start::Pending;
 pub(crate) use start::Starter;
 pub use start::{StartHandler, StartOutcome, StartRequest, StartSlot, StartVerdict};
-use view::View;
 pub(crate) use view::ViewParams;
 pub use view::{DecodeError, Decoder, DecoderState, ViewHandle, ViewStats};
+use view::{Granted, View};
 
 /// What a viewer said it can take, in `Accepted`. The source keeps within it, and a source that
 /// sends a picture beyond it has broken the session.
@@ -262,9 +262,11 @@ impl Streaming {
         session: SessionId,
         viewing: Viewing,
         control: bool,
+        private: bool,
     ) -> Result<ViewHandle> {
         let mut table = lock(&self.table);
-        self.view_in(&mut table, peer, connection, session, viewing, control)
+        let granted = Granted { control, private };
+        self.view_in(&mut table, peer, connection, session, viewing, granted)
     }
 
     /// Starts the viewer's side of a session that the person accepted: `peer` is the source, and
@@ -273,8 +275,9 @@ impl Streaming {
     ///
     /// The decoder is given the pictures in the order in which they are to be decoded, and the
     /// messages of the source. `viewing.takes` is what the viewer said it can take: a source that
-    /// describes a picture beyond it breaks a rule. `control` is whether the offer granted the
-    /// viewer control of the window; only then does the session send what the person does. The
+    /// describes a picture beyond it breaks a rule. `granted` is what the offer granted the viewer
+    /// and said of the source: control of the window, without which the session sends nothing that
+    /// the person does, and a private screen, without which it sends no [`ViewHandle::lift`]. The
     /// session ends, and the decoder is told, when the source ends it, when it breaks a rule, when
     /// the connection ends, when the returned handle is dropped and when the source does not open
     /// its control stream in time.
@@ -289,7 +292,7 @@ impl Streaming {
         connection: Connection,
         session: SessionId,
         viewing: Viewing,
-        control: bool,
+        granted: Granted,
     ) -> Result<ViewHandle> {
         if table.sessions.contains_key(&session) {
             return Err(Error::protocol("the session id is in use"));
@@ -300,7 +303,7 @@ impl Streaming {
             peer.id,
             connection,
             viewing,
-            control,
+            granted,
         );
         table.sessions.insert(session, Session::View(view));
         Ok(handle)

@@ -328,6 +328,18 @@ void main() {
         expect(a.windowInput(session: session, input: input), isFalse);
       }
       a.releaseWindowInput(session: session);
+      // Nor is anything lifted of the privacy of a window that does not run.
+      for (final (screen, input) in [
+        (false, false),
+        (true, false),
+        (false, true),
+        (true, true),
+      ]) {
+        expect(
+          a.windowLift(session: session, screen: screen, input: input),
+          isFalse,
+        );
+      }
     }
     // And a device that is not paired is not offered a window, not asked for its screen, and is
     // not allowed anything.

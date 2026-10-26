@@ -353,6 +353,7 @@ fn a_device_that_takes_part_in_window_streaming_says_so_in_its_capabilities() {
     assert_eq!(capability::STREAM_SHARE, "stream.share");
     assert_eq!(capability::STREAM_VIEW, "stream.view");
     assert_eq!(capability::STREAM_CONTROL, "stream.control");
+    assert_eq!(capability::STREAM_PRIVATE, "stream.private");
     // And a source that starts a session when a paired device asks it to.
     assert_eq!(capability::STREAM_START, "stream.start");
 }
@@ -440,6 +441,7 @@ fn unknown_keys_are_ignored_in_the_messages_of_a_stream() {
     assert_eq!(offer.source, SourceKind::Window);
     assert_eq!((offer.width, offer.height), (1440, 900));
     assert!(!offer.control);
+    assert!(!offer.private);
 
     // The answer, in the same way.
     let accepted = encode(

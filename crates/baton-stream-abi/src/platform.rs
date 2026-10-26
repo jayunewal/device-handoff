@@ -21,7 +21,9 @@
 //!   that is shared with control also asks the platform what the Mac is doing around it
 //!   ([`PickedHandle::surroundings`]) and has it put what the person did there
 //!   ([`PickedHandle::post`]). A platform that can give its main display without a picker also
-//!   has `screen` ([`SharerCalls::screen`]), whose answer is a window of the same kind.
+//!   has `screen` ([`SharerCalls::screen`]), whose answer is a window of the same kind, and one
+//!   that can keep that display private also has `lift` ([`PickedHandle::lift`]), which tells it
+//!   what the other device lets be lifted of that.
 //!
 //! Every call is made inside [`within`], which marks the thread. The functions of the interface
 //! that the platform calls refuse to run on a thread that is inside a call into the platform,
@@ -48,11 +50,11 @@ use crate::{
         BatonPost, BatonRect, BatonScreen, BatonSharerVTable, BatonSourceMessage,
         BatonSurroundings, BatonTakes, BatonViewerVTable, BatonWindow, CancelPickFn, ControlFn,
         DecodeFn, EndedFn, FRONT_MENU, FRONT_SAME_APPLICATION, FRONTS_MAX, KEYBOARD_ELSEWHERE,
-        KEYBOARD_SHARED, KEYBOARD_UNKNOWN, LimitsFn, MESSAGE_MAX, OK, OpenFn, PICKED_DISPLAY,
-        POINTER_DOWN, POINTER_MOVE, POINTER_SCROLL, POINTER_UP, POST_KEY, POST_POINTER, PickFn,
-        PostFn, PrepareFn, ReleaseFn, SCREEN_NEEDS_INPUT_PERMISSION, SCREEN_NEEDS_PERMISSION,
-        SCREEN_PRIVATE, SCREEN_UNAVAILABLE, ScreenFn, ShowFn, SourceFn, StartFn, StateFn,
-        SurroundingsFn, size_of_u32,
+        KEYBOARD_SHARED, KEYBOARD_UNKNOWN, LiftFn, LimitsFn, MESSAGE_MAX, OK, OpenFn,
+        PICKED_DISPLAY, POINTER_DOWN, POINTER_MOVE, POINTER_SCROLL, POINTER_UP, POST_KEY,
+        POST_POINTER, PickFn, PostFn, PrepareFn, ReleaseFn, SCREEN_NEEDS_INPUT_PERMISSION,
+        SCREEN_NEEDS_PERMISSION, SCREEN_PRIVATE, SCREEN_UNAVAILABLE, ScreenFn, ShowFn, SourceFn,
+        StartFn, StateFn, SurroundingsFn, size_of_u32,
     },
     registry::Registry,
     sharer::Given,
@@ -497,6 +499,8 @@ pub(crate) struct SharerCalls {
     input: Option<(SurroundingsFn, PostFn)>,
     /// `screen`, which a platform that cannot give its screen without a picker leaves out.
     screen: Option<ScreenFn>,
+    /// `lift`, which a platform that cannot keep a screen private leaves out.
+    lift: Option<LiftFn>,
 }
 
 // SAFETY: a `SharerCalls` exists only for a vtable that the platform registered, and the header's
@@ -519,7 +523,8 @@ impl SharerCalls {
     /// missing. `surroundings` and `post` may be missing; a table that has only one of them has
     /// neither. `screen` may be missing too: a platform without it cannot give its screen, and a
     /// table that ends before it, as the tables of platforms older than the call do, reads as one
-    /// without it.
+    /// without it. So may `lift`, in the same way: a platform without it gives a private screen
+    /// that stays as it was given for the whole session.
     ///
     /// # Safety
     ///
@@ -556,6 +561,7 @@ impl SharerCalls {
                 release,
                 input: table.surroundings.zip(table.post),
                 screen: table.screen,
+                lift: table.lift,
             }),
             _ => Err(Error::Argument),
         }
@@ -594,9 +600,15 @@ impl SharerCalls {
         self.screen.is_some()
     }
 
+    /// Whether the platform gave the function that lifts what keeps a private screen private.
+    pub(crate) fn can_lift(&self) -> bool {
+        self.lift.is_some()
+    }
+
     /// Has the platform give its main display, without the person choosing it, and keep it
-    /// private from the start of the session if `private`. The call may wait for the system, so
-    /// it is not made on a thread that other work waits for.
+    /// private from the start of the session if `private`. The display is one that the other
+    /// device can lift the privacy of ([`Given::private`]) if the platform also gave `lift`. The
+    /// call may wait for the system, so it is not made on a thread that other work waits for.
     ///
     /// A display that the platform gave is the platform's until it is taken ([`adopt`]); an
     /// answer that is not whole is taken and released here, so that it is not lost.
@@ -655,6 +667,7 @@ impl SharerCalls {
                 app: String::new(),
                 width: picked.width.min(MAX_WINDOW_EDGE),
                 height: picked.height.min(MAX_WINDOW_EDGE),
+                private: private && self.lift.is_some(),
             }),
             (Some(context), false) => {
                 drop(self.adopt(context));
@@ -789,6 +802,17 @@ impl PickedHandle {
         // SAFETY: the struct, and the text that it points to, live until the call returns, and
         // `context` is the window the platform gave, not yet released.
         within(|| unsafe { call(self.context.as_ptr(), &raw const post) }) == OK
+    }
+
+    /// Tells the platform what the person at the other device lets be lifted of the privacy of
+    /// the screen: the `LIFT_` bits that are lifted now, all of them each time. Nothing happens if
+    /// the platform gave no function for it.
+    pub(crate) fn lift(&mut self, lifted: u32) {
+        let Some(call) = self.calls.lift else {
+            return;
+        };
+        // SAFETY: `context` is the window the platform gave, not yet released.
+        within(|| unsafe { call(self.context.as_ptr(), lifted) });
     }
 
     /// Tells the platform that the session is over.
@@ -997,8 +1021,8 @@ mod tests {
     use super::*;
     use crate::{
         abi::{
-            CODEC_H264, FRAME_KEY, FRAME_REFERENCED, MOD_CAPS_LOCK, MOD_COMMAND, MOD_CONTROL,
-            MOD_OPTION, MOD_SHIFT, SOURCE_RESUME, THERMAL_SERIOUS,
+            CODEC_H264, FRAME_KEY, FRAME_REFERENCED, LIFT_INPUT, LIFT_SCREEN, MOD_CAPS_LOCK,
+            MOD_COMMAND, MOD_CONTROL, MOD_OPTION, MOD_SHIFT, SOURCE_RESUME, THERMAL_SERIOUS,
         },
         fake::{Call, Fake, OpenPlan, Watchdog},
         fake_sharer::{
@@ -1437,7 +1461,16 @@ mod tests {
     /// A window of the sharing platform of the tests that was prepared and started, which is
     /// when the platform is asked about the Mac.
     fn started(fake: &Arc<FakeSharer>, calls: &SharerCalls) -> PickedHandle {
-        let mut window = calls.adopt(NonNull::new(fake.new_window()).unwrap());
+        started_from(calls, fake.new_window())
+    }
+
+    /// The same, for a display that the platform gave as private.
+    fn started_private(fake: &Arc<FakeSharer>, calls: &SharerCalls) -> PickedHandle {
+        started_from(calls, fake.new_private_window())
+    }
+
+    fn started_from(calls: &SharerCalls, window: *mut c_void) -> PickedHandle {
+        let mut window = calls.adopt(NonNull::new(window).unwrap());
         let takes = Takes {
             max_width: 1920,
             max_height: 1080,
@@ -1707,5 +1740,77 @@ mod tests {
         assert!(window.post(&pointer_post(1.0, 2.0, PointerAction::Move)));
         assert!(window.post(&key_post(4, true, None)));
         assert_eq!(fake.count(asked), 3);
+    }
+
+    #[test]
+    fn what_is_lifted_goes_to_a_platform_that_can_lift_and_to_no_other() {
+        let fake = FakeSharer::new();
+        // A table that ends at `screen`, and one that has no such function.
+        let ends_early = fake.vtable_without_lift();
+        let none = BatonSharerVTable {
+            lift: None,
+            ..fake.vtable()
+        };
+        for (what, table) in [
+            ("a table that ends early", ends_early),
+            ("a table with none", none),
+        ] {
+            let calls = read_table(&table).unwrap();
+            assert!(!calls.can_lift(), "{what}");
+            started_private(&fake, &calls).lift(LIFT_SCREEN | LIFT_INPUT);
+        }
+        let lifted = |call: &SharerCall| matches!(call, SharerCall::Lift { .. });
+        assert_eq!(fake.count(lifted), 0);
+
+        // The whole table hears each word whole, as the sum of the bits of the header.
+        let calls = fake.platform();
+        assert!(calls.can_lift());
+        let mut window = started_private(&fake, &calls);
+        for bits in [LIFT_SCREEN, LIFT_INPUT, LIFT_SCREEN | LIFT_INPUT, 0] {
+            window.lift(bits);
+        }
+        let heard: Vec<_> = fake
+            .calls(fake.windows_made() as u64)
+            .into_iter()
+            .filter_map(|call| match call {
+                SharerCall::Lift { lifted } => Some(lifted),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(heard, [1, 2, 3, 0]);
+        assert_eq!(fake.complaints(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_display_is_private_for_the_other_device_only_if_it_was_asked_so_and_the_platform_can_lift()
+    {
+        let fake = FakeSharer::new();
+        // Whether the display is one that the other device may lift the privacy of; it is let go
+        // of as soon as it is read.
+        let private = |calls: &SharerCalls, asked| {
+            let given = calls.screen(asked).unwrap();
+            let private = given.private;
+            drop(calls.adopt(given.context));
+            private
+        };
+        let calls = fake.platform();
+        assert!(private(&calls, true));
+        assert!(!private(&calls, false));
+        // A platform that cannot lift gives a private screen all the same, and the other device is
+        // not told that it may lift anything of it.
+        let without = read_table(&fake.vtable_without_lift()).unwrap();
+        assert!(!private(&without, true));
+        assert!(!private(&without, false));
+        let flags: Vec<_> = fake
+            .log()
+            .into_iter()
+            .filter_map(|(_, call)| match call {
+                SharerCall::Screen { flags } => Some(flags),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(flags, [SCREEN_PRIVATE, 0, SCREEN_PRIVATE, 0]);
+        assert_eq!(fake.live_windows(), 0);
+        assert_eq!(fake.complaints(), Vec::<String>::new());
     }
 }

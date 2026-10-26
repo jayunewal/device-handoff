@@ -42,8 +42,8 @@ use baton_proto::{
 use baton_stream::{
     MAX_FRAME_STREAMS,
     control::{
-        Config, InputBatch, KeyFrame, Pause, PauseReason, Report, SourceMessage, ViewerMessage,
-        Want,
+        Config, InputBatch, KeyFrame, Lift, Pause, PauseReason, Report, SourceMessage,
+        ViewerMessage, Want,
     },
     gate::{Notices, Reason},
     header::{FrameHeader, FrameKind},
@@ -111,6 +111,17 @@ pub trait SourceEvents: Send + 'static {
     /// The viewer holds these long-term references now, and the encoder may refer to them.
     fn held(&mut self, tokens: Vec<LtrToken>);
 
+    /// The viewer says what the people here may do while the session runs: see the screen, and
+    /// use the keys and the pointer of this device. Only in a session whose offer said that the
+    /// screen is private; the messages of any other session are dropped before they get here. The
+    /// viewer says the same thing again and again, so the platform sees what it already did, and
+    /// it is not told whether it worked: the platform ends the session if it cannot take back what
+    /// was lifted. A platform that keeps nothing private has nothing to lift, and leaves this as
+    /// it is.
+    fn lift(&mut self, lift: Lift) {
+        let _ = lift;
+    }
+
     /// The next frame has to begin a chain, so a picture is wanted for it even if the screen has
     /// not changed: without one a frame that was lost would never be replaced. The first frame of
     /// a session is one too, so a session that has sent nothing yet says so at once.
@@ -143,6 +154,10 @@ impl SourceEvents for Box<dyn SourceEvents> {
 
     fn held(&mut self, tokens: Vec<LtrToken>) {
         (**self).held(tokens);
+    }
+
+    fn lift(&mut self, lift: Lift) {
+        (**self).lift(lift);
     }
 
     fn recovery(&mut self) {
@@ -189,6 +204,9 @@ pub(crate) struct SourceSetup {
     pub(crate) config: Config,
     /// Whether the person at the source granted the viewer control of the window.
     pub(crate) control: bool,
+    /// Whether the screen is kept private for the session, and the viewer may lift the screen
+    /// cover and the hold of the keys and the pointer.
+    pub(crate) private: bool,
     /// What the viewer said it can take. The first picture format and every later one stay
     /// within it.
     pub(crate) takes: Takes,
@@ -302,6 +320,8 @@ pub(super) struct Source {
     params: SourceParams,
     /// Whether the viewer may control the window.
     control: bool,
+    /// Whether the screen is kept private, which the viewer may lift in part.
+    private: bool,
     /// What the viewer takes, which the pictures stay within.
     takes: Takes,
     began: Instant,
@@ -514,6 +534,7 @@ impl Source {
         let SourceSetup {
             mut config,
             control,
+            private,
             takes,
             params,
         } = setup;
@@ -535,6 +556,7 @@ impl Source {
             runtime: tokio::runtime::Handle::current(),
             params,
             control,
+            private,
             takes,
             began: Instant::now(),
             core: Mutex::new(Core {
@@ -761,6 +783,13 @@ impl Source {
             // A viewer sends a `Hear` only to a source that advertised `stream.sound`, and this
             // source does not yet (protocol.md section 9).
             ViewerMessage::Hear(_) => return ControlFlow::Break(()),
+            // The offer told the viewer whether it may ask. A message from a viewer that may not is
+            // dropped, and is no violation.
+            ViewerMessage::Lift(lift) => {
+                if self.private {
+                    core.events.lift(lift);
+                }
+            }
         }
         ControlFlow::Continue(())
     }
@@ -896,6 +925,7 @@ mod tests {
         Want(Want),
         Input(InputBatch),
         Held(Vec<LtrToken>),
+        Lift(Lift),
         Recovery,
         Ended,
     }
@@ -951,6 +981,10 @@ mod tests {
             self.note(Heard::Held(tokens));
         }
 
+        fn lift(&mut self, lift: Lift) {
+            self.note(Heard::Lift(lift));
+        }
+
         fn recovery(&mut self) {
             self.note(Heard::Recovery);
         }
@@ -997,8 +1031,17 @@ mod tests {
         SourceSetup {
             config: config(),
             control,
+            private: false,
             takes: takes(),
             params,
+        }
+    }
+
+    /// A session that controls the window and keeps the screen private.
+    fn private_setup() -> SourceSetup {
+        SourceSetup {
+            private: true,
+            ..setup(true, quick())
         }
     }
 
@@ -1516,6 +1559,99 @@ mod tests {
                 .iter()
                 .any(|heard| matches!(heard, Heard::Input(_)))
         );
+    }
+
+    #[tokio::test]
+    async fn what_the_viewer_lifts_in_a_private_session_reaches_the_platform_as_it_was_said() {
+        let mut rig = Rig::with(private_setup(), 1).await;
+        let mut control = rig.source_control().await;
+        read_source_message(&mut control).await;
+        let mut send = rig.open_viewer_control().await;
+        // Each message says both things, and the same thing said twice is heard twice: the
+        // platform is the one that sees it has done it. Putting each back is a message like any.
+        let said = [
+            Lift {
+                screen: true,
+                input: false,
+            },
+            Lift {
+                screen: true,
+                input: false,
+            },
+            Lift {
+                screen: true,
+                input: true,
+            },
+            Lift {
+                screen: false,
+                input: true,
+            },
+            Lift {
+                screen: false,
+                input: false,
+            },
+        ];
+        for lift in said {
+            write_message(&mut send, &ViewerMessage::Lift(lift))
+                .await
+                .unwrap();
+        }
+        rig.until("the platform to hear the last", |rig| {
+            rig.log.count(&Heard::Lift(Lift::default())) == 1
+        })
+        .await;
+        let heard: Vec<_> = rig
+            .log
+            .all()
+            .into_iter()
+            .filter(|heard| matches!(heard, Heard::Lift(_)))
+            .collect();
+        assert_eq!(heard, said.map(Heard::Lift));
+        // None of it is input, and the session goes on.
+        assert!(
+            rig.log
+                .all()
+                .iter()
+                .all(|heard| !matches!(heard, Heard::Input(_)))
+        );
+        assert!(!rig.log.has(&Heard::Ended));
+    }
+
+    #[tokio::test]
+    async fn a_lift_in_a_session_that_is_not_private_is_not_heard_and_is_no_violation() {
+        // The offer told the viewer that it may not, so this is a viewer that ignores it. The
+        // screen of such a source is as the person left it, and nothing is lifted.
+        let mut rig = Rig::new().await;
+        let mut control = rig.source_control().await;
+        read_source_message(&mut control).await;
+        let mut send = rig.open_viewer_control().await;
+        let want = Want {
+            width: 2796,
+            height: 1290,
+            fps: 120,
+        };
+        for message in [
+            ViewerMessage::Lift(Lift {
+                screen: true,
+                input: true,
+            }),
+            ViewerMessage::Want(want),
+        ] {
+            write_message(&mut send, &message).await.unwrap();
+        }
+        // The message after it is heard, so the lift was read and left alone.
+        rig.until("the platform to hear the want", |rig| {
+            rig.log.has(&Heard::Want(want))
+        })
+        .await;
+        assert!(
+            rig.log
+                .all()
+                .iter()
+                .all(|heard| !matches!(heard, Heard::Lift(_)))
+        );
+        assert!(!rig.log.has(&Heard::Ended));
+        assert!(rig.picture_wanted());
     }
 
     #[tokio::test]

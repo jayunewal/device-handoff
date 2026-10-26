@@ -434,6 +434,12 @@ pub struct WindowSession {
     pub height: u32,
     /// Whether the viewer may control the window.
     pub control: bool,
+    /// Whether the screen is kept private at the device that shares it: dark, and with its
+    /// keyboard and trackpad out of use, while this device controls it. If it is, the person here
+    /// can switch each of the two on and off with `Baton.windowLift`, and both are off when the
+    /// session starts. `false` for a screen that this device does not control, and for a device
+    /// that cannot keep a screen private or let it be lifted.
+    pub private: bool,
     /// What to draw the picture with when the window is shown on this device: the number of
     /// the screen, which on Flutter is the id of a `Texture`. `null` when the window is shared
     /// from this device.
@@ -450,6 +456,7 @@ impl std::fmt::Debug for WindowSession {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("control", &self.control)
+            .field("private", &self.private)
             .field("screen", &self.screen)
             .finish_non_exhaustive()
     }

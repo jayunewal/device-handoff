@@ -14,7 +14,8 @@
 //! A window that is shared with control also gets `surroundings` and `post`: the first answers
 //! with what the test says the Mac is doing ([`Around`]), the second checks the struct against
 //! the header and records what it says as the [`Post`] that the gate made, so that a test can
-//! compare it with what it expects.
+//! compare it with what it expects. A window that was given as private also gets `lift`, which
+//! checks that the window was given so and that only the bits of the header are set.
 //!
 //! The other half of a platform, the capture thread that asks `begin` and hands over what the
 //! encoder made, is a set of functions that call the library the way Swift would, with the same
@@ -44,9 +45,9 @@ use crate::{
         ABI_VERSION, BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT, BatonBytes, BatonFormat, BatonFront,
         BatonGeometry, BatonMessage, BatonPicked, BatonPicture, BatonPost, BatonRect,
         BatonSharerVTable, BatonSurroundings, BatonTakes, CODEC_H264, FRONTS_MAX, KEYBOARD_SHARED,
-        KEYBOARD_UNKNOWN, MESSAGE_MAX, OK, PICKED_DISPLAY, PICKED_WINDOW, POINTER_DOWN,
-        POINTER_MOVE, POINTER_SCROLL, POINTER_UP, POST_KEY, POST_POINTER, SCREEN_PRIVATE,
-        size_of_u32,
+        KEYBOARD_UNKNOWN, LIFT_INPUT, LIFT_SCREEN, MESSAGE_MAX, OK, PICKED_DISPLAY, PICKED_WINDOW,
+        POINTER_DOWN, POINTER_MOVE, POINTER_SCROLL, POINTER_UP, POST_KEY, POST_POINTER,
+        SCREEN_PRIVATE, size_of_u32,
     },
     platform::SharerCalls,
 };
@@ -77,6 +78,10 @@ pub(crate) enum SharerCall {
     /// The platform was told to put this to the window: what the struct said, as the rules made
     /// it.
     Post(Post),
+    /// The platform was told that this is lifted of the privacy of the screen now: `LIFT_` bits.
+    Lift {
+        lifted: u32,
+    },
     Ended,
     Release,
 }
@@ -246,6 +251,8 @@ struct State {
     around: AroundPlan,
     /// What `post` answers: `OK`, or a failure.
     post: i32,
+    /// The platform registers a table that ends before `lift`.
+    cannot_lift: bool,
     hook: Option<Hook>,
     /// The requests of picks that wait for an answer.
     waiting: BTreeSet<u64>,
@@ -262,6 +269,8 @@ struct Progress {
     /// The window stayed with the platform: the library refused the answer that gave it, so it
     /// may not be called.
     kept: bool,
+    /// The window is a display that was given with `SCREEN_PRIVATE`.
+    private: bool,
     link: u64,
 }
 
@@ -324,6 +333,7 @@ impl FakeSharer {
                 start: StartPlan::Works,
                 around: AroundPlan::Says(Around::default()),
                 post: OK,
+                cannot_lift: false,
                 hook: None,
                 waiting: BTreeSet::new(),
             }),
@@ -349,34 +359,53 @@ impl FakeSharer {
             surroundings: Some(surroundings),
             post: Some(post),
             screen: Some(screen),
+            lift: Some(lift),
         }
     }
 
     /// The vtable of a platform that was written before input was carried: it ends at `release`,
-    /// and the library reads the three functions that it lacks as missing.
+    /// and the library reads the four functions that it lacks as missing.
     pub(crate) fn vtable_without_input(self: &Arc<Self>) -> BatonSharerVTable {
         BatonSharerVTable {
             size: u32::try_from(offset_of!(BatonSharerVTable, surroundings)).unwrap(),
             surroundings: None,
             post: None,
             screen: None,
+            lift: None,
             ..self.vtable()
         }
     }
 
     /// The vtable of a platform that was written before it could give its screen: it ends at
-    /// `post`, and the library reads the function that it lacks as missing.
+    /// `post`, and the library reads the two functions that it lacks as missing.
     pub(crate) fn vtable_without_screen(self: &Arc<Self>) -> BatonSharerVTable {
         BatonSharerVTable {
             size: u32::try_from(offset_of!(BatonSharerVTable, screen)).unwrap(),
             screen: None,
+            lift: None,
             ..self.vtable()
         }
     }
 
-    /// Registers this platform in `registry`.
+    /// The vtable of a platform that was written before the privacy of a screen could be
+    /// lifted: it ends at `screen`, and the library reads the function that it lacks as missing.
+    pub(crate) fn vtable_without_lift(self: &Arc<Self>) -> BatonSharerVTable {
+        BatonSharerVTable {
+            size: u32::try_from(offset_of!(BatonSharerVTable, lift)).unwrap(),
+            lift: None,
+            ..self.vtable()
+        }
+    }
+
+    /// Registers this platform in `registry`: with the whole table, or with the one that ends
+    /// before `lift` if the test said that the platform cannot lift.
     pub(crate) fn register_in(self: &Arc<Self>, registry: &Registry) -> Result<(), Error> {
-        register_table(registry, &self.vtable())
+        let table = if self.state().cannot_lift {
+            self.vtable_without_lift()
+        } else {
+            self.vtable()
+        };
+        register_table(registry, &table)
     }
 
     /// The calls that registration makes of this platform.
@@ -452,6 +481,12 @@ impl FakeSharer {
     /// What `post` answers from now on.
     pub(crate) fn plan_post(&self, code: i32) {
         self.state().post = code;
+    }
+
+    /// The platform registers a table that ends at `screen`, as one written before the privacy
+    /// of a screen could be lifted does.
+    pub(crate) fn set_cannot_lift(&self) {
+        self.state().cannot_lift = true;
     }
 
     pub(crate) fn on_call(&self, hook: impl Fn(u64, &SharerCall) + Send + Sync + 'static) {
@@ -570,6 +605,16 @@ impl FakeSharer {
         });
         cells.push(Arc::clone(&cell));
         Arc::as_ptr(&cell).cast_mut().cast()
+    }
+
+    /// A display of the platform that was given with `SCREEN_PRIVATE`, as the pointer that an
+    /// answer gives.
+    pub(crate) fn new_private_window(self: &Arc<Self>) -> *mut c_void {
+        let window = self.new_window();
+        // SAFETY: a pointer that `new_window` gave; the cells live as long as the fake.
+        let cell = unsafe { &*window.cast_const().cast::<Cell>() };
+        locked(&cell.progress).private = true;
+        window
     }
 
     /// The platform keeps a window that the library did not take.
@@ -894,7 +939,12 @@ unsafe extern "C" fn screen(
     };
     let window = if window {
         // SAFETY: the context is the one `vtable` gave.
-        unsafe { arc_of(context) }.new_window()
+        let fake = unsafe { arc_of(context) };
+        if flags & SCREEN_PRIVATE != 0 {
+            fake.new_private_window()
+        } else {
+            fake.new_window()
+        }
     } else {
         ptr::null_mut()
     };
@@ -1227,6 +1277,24 @@ unsafe extern "C" fn post(picked: *mut c_void, post: *const BatonPost) -> i32 {
     let _busy = about_window(cell, &fake, &SharerCall::Post(post));
     input_is_due(cell, &fake, "post");
     fake.state().post
+}
+
+unsafe extern "C" fn lift(picked: *mut c_void, lifted: u32) {
+    // SAFETY: `picked` is a pointer that an answer gave.
+    let (cell, fake) = unsafe { window_of(picked) };
+    if lifted & !(LIFT_SCREEN | LIFT_INPUT) != 0 {
+        fake.complain(format!(
+            "lift: a bit that the header does not have: {lifted:#x}"
+        ));
+    }
+    let _busy = about_window(cell, &fake, &SharerCall::Lift { lifted });
+    input_is_due(cell, &fake, "lift");
+    if !locked(&cell.progress).private {
+        fake.complain(format!(
+            "lift on window {}, which was not given as private",
+            cell.number
+        ));
+    }
 }
 
 unsafe extern "C" fn ended(picked: *mut c_void) {

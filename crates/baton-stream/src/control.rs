@@ -18,8 +18,10 @@
 //!   viewer was dropped ([`gate::Notice`]) and, to a viewer that plays sound, the sound it sends
 //!   ([`Sound`]) or why it sends none ([`Silent`]);
 //! - from the viewer, how it is doing ([`Report`]), what it can take now ([`Want`]), a request
-//!   for a key frame ([`KeyFrame`]), whether it wants to hear the source ([`Hear`]) and, when
-//!   the person at the source granted control, input ([`InputBatch`]).
+//!   for a key frame ([`KeyFrame`]), whether it wants to hear the source ([`Hear`]), when the
+//!   person at the source granted control, input ([`InputBatch`]) and, when the source keeps its
+//!   screen private, whether the people at the source see the screen and use the keys and the
+//!   pointer there ([`Lift`]).
 //!
 //! Everything here is checked when it is encoded and when it is decoded, because the other
 //! device is not trusted: a number out of range or a list that is too long is a violation.
@@ -239,6 +241,30 @@ pub struct Hear {
     pub on: bool,
 }
 
+/// What the people at the source may do while a private session runs: see its screen, and use its
+/// keys and its pointer.
+///
+/// A source that keeps its screen private (the `private` of its offer) shows nothing at the source
+/// and ignores its own keys and pointer for as long as the session runs, and starts every session
+/// that way. The viewer can lift either one. The screen is for a person who wants someone at the
+/// source to see what happens in the session. The keys and the pointer are for a person who wants
+/// to use the source from both ends, and mean that anyone at the source can use it meanwhile.
+///
+/// A message says both, so the last one is how things stand. The viewer can say the same thing
+/// again, and put either back, as often as it likes. The source does not answer: it ends the
+/// session if it cannot take back what was lifted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Lift {
+    /// Whether the screen of the source shows the session. `false` is how a session starts. A
+    /// message that leaves it out says `false`.
+    #[serde(default)]
+    pub screen: bool,
+    /// Whether the keys and the pointer of the source itself work. `false` is how a session
+    /// starts. A message that leaves it out says `false`.
+    #[serde(default)]
+    pub input: bool,
+}
+
 /// A message from the viewer to the source.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ViewerMessage {
@@ -253,6 +279,9 @@ pub enum ViewerMessage {
     /// It wants to hear the source, or it does not. Only to a source that advertised
     /// [`capability::STREAM_SOUND`](baton_proto::message::capability::STREAM_SOUND).
     Hear(Hear),
+    /// What the people at the source may do. Only to a source that advertised `stream.private`, in
+    /// a session whose offer set `private`.
+    Lift(Lift),
 }
 
 impl Config {
@@ -382,7 +411,7 @@ impl Message for ViewerMessage {
 
     fn validate(&self) -> Result<(), LimitError> {
         match self {
-            Self::Report(_) | Self::KeyFrame(_) | Self::Hear(_) => Ok(()),
+            Self::Report(_) | Self::KeyFrame(_) | Self::Hear(_) | Self::Lift(_) => Ok(()),
             Self::Want(want) => want.validate(),
             Self::Input(batch) => batch.validate(),
         }
@@ -594,6 +623,30 @@ mod tests {
             encoded(&ViewerMessage::Hear(Hear { on: false })),
             // {"Hear": {"on": false}}
             "0000000ba16448656172a1626f6ef4"
+        );
+        assert_eq!(
+            encoded(&ViewerMessage::Lift(Lift {
+                screen: true,
+                input: false
+            })),
+            // {"Lift": {"screen": true, "input": false}}
+            "00000016a1644c696674a26673637265656ef565696e707574f4"
+        );
+        assert_eq!(
+            encoded(&ViewerMessage::Lift(Lift {
+                screen: false,
+                input: true
+            })),
+            // {"Lift": {"screen": false, "input": true}}
+            "00000016a1644c696674a26673637265656ef465696e707574f5"
+        );
+        assert_eq!(
+            encoded(&ViewerMessage::Lift(Lift {
+                screen: false,
+                input: false
+            })),
+            // {"Lift": {"screen": false, "input": false}}
+            "00000016a1644c696674a26673637265656ef465696e707574f4"
         );
         assert_eq!(
             encoded(&batch(vec![press(7)])),
@@ -891,6 +944,43 @@ mod tests {
             frame::decode_payload::<ViewerMessage>(&payload),
             Ok(ViewerMessage::KeyFrame(KeyFrame { tried: 5 }))
         );
+    }
+
+    #[test]
+    fn a_lift_lifts_only_what_it_says() {
+        // What a message leaves out stays as a session starts, which is the strict way: the
+        // screen dark and the keys and the pointer out of use. A later version may say more.
+        let read = |value: &Value| frame::decode_payload::<ViewerMessage>(&cbor_bytes(value));
+        assert_eq!(
+            read(&cbor!({ "Lift" => {} }).unwrap()),
+            Ok(ViewerMessage::Lift(Lift::default()))
+        );
+        assert_eq!(
+            read(&cbor!({ "Lift" => { "screen" => true } }).unwrap()),
+            Ok(ViewerMessage::Lift(Lift {
+                screen: true,
+                input: false
+            }))
+        );
+        assert_eq!(
+            read(&cbor!({ "Lift" => { "input" => true, "sound" => true } }).unwrap()),
+            Ok(ViewerMessage::Lift(Lift {
+                screen: false,
+                input: true
+            }))
+        );
+        // A word that is not a yes or a no is not a yes.
+        for wrong in [
+            cbor!(1).unwrap(),
+            cbor!("true").unwrap(),
+            cbor!(null).unwrap(),
+        ] {
+            let message = cbor!({ "Lift" => { "screen" => wrong } }).unwrap();
+            assert!(
+                matches!(read(&message), Err(FrameError::Decode(_))),
+                "{message:?}"
+            );
+        }
     }
 
     #[test]
@@ -1194,6 +1284,8 @@ mod tests {
                     fps
                 })),
             any::<u64>().prop_map(|tried| ViewerMessage::KeyFrame(KeyFrame { tried })),
+            (any::<bool>(), any::<bool>())
+                .prop_map(|(screen, input)| ViewerMessage::Lift(Lift { screen, input })),
             proptest::collection::vec(event(), 1..=input::MAX_BATCH).prop_map(batch),
             any::<bool>().prop_map(|on| ViewerMessage::Hear(Hear { on })),
         ]

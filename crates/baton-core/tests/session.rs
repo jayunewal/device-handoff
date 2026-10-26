@@ -447,6 +447,7 @@ async fn a_device_that_does_not_take_part_in_window_streaming_declines_every_req
             width: 1440,
             height: 900,
             control: true,
+            private: false,
         }),
         StreamRequest::Stop(Stop {
             session,

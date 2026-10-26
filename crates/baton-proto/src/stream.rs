@@ -143,6 +143,12 @@ pub struct Offer {
     /// cannot ask for it and cannot turn it on later. Left out when it is not granted.
     #[serde(default, skip_serializing_if = "is_default")]
     pub control: bool,
+    /// Whether the source keeps its own screen dark and its keys and pointer out of use for as
+    /// long as the session runs, until the viewer asks it to lift either with a `Lift` on the
+    /// control stream. Only a source that advertised `stream.private` sets it. Left out when the
+    /// screen is not kept private.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub private: bool,
 }
 
 // The title of a window can name a document, a person or a page, and the application tells
@@ -157,6 +163,7 @@ impl fmt::Debug for Offer {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("control", &self.control)
+            .field("private", &self.private)
             .finish()
     }
 }
@@ -376,6 +383,7 @@ mod tests {
             width: 1440,
             height: 900,
             control: true,
+            private: false,
         }
     }
 
@@ -411,6 +419,10 @@ mod tests {
             StreamRequest::Offer(offer()),
             StreamRequest::Offer(Offer {
                 control: false,
+                ..offer()
+            }),
+            StreamRequest::Offer(Offer {
+                private: true,
                 ..offer()
             }),
             StreamRequest::Stop(Stop {
@@ -483,6 +495,36 @@ mod tests {
         .unwrap();
         assert_eq!(view_only.len(), controlled.len() - 9);
         assert_eq!(view_only.get(..4), Some(&[0, 0, 0, 0x67][..]));
+
+        // A private session has one more key behind `control`, which is nine bytes more.
+        let private = frame::encode(&Request::Stream(StreamRequest::Offer(Offer {
+            private: true,
+            ..offer()
+        })))
+        .unwrap();
+        assert_eq!(
+            hex(&private),
+            concat!(
+                "00000079",                           // the frame: 121 bytes follow
+                "a16653747265616d",                   // {"Stream":
+                "a1654f66666572",                     //   {"Offer":
+                "a8",                                 //     map of 8
+                "6773657373696f6e",                   //     "session":
+                "50a0a1a2a3a4a5a6a7a8a9aaabacadaeaf", //       16 bytes
+                "66736f75726365",                     //     "source":
+                "6657696e646f77",                     //       "Window",
+                "657469746c65",                       //     "title":
+                "6a5265706f72742e706466",             //       "Report.pdf",
+                "63617070",                           //     "app":
+                "6750726576696577",                   //       "Preview",
+                "6577696474681905a0",                 //     "width": 1440,
+                "66686569676874190384",               //     "height": 900,
+                "67636f6e74726f6c",                   //     "control":
+                "f5",                                 //       true,
+                "6770726976617465",                   //     "private":
+                "f5",                                 //       true
+            )
+        );
 
         let accepted = frame::encode(&Response::Stream(StreamReply::Accepted(accepted()))).unwrap();
         assert_eq!(

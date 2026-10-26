@@ -34,7 +34,7 @@ use baton_proto::{
 use iroh::endpoint::Connection;
 use tokio::sync::oneshot;
 
-use super::{Reservation, Streaming, Table, ViewHandle, Viewing};
+use super::{Granted, Reservation, Streaming, Table, ViewHandle, Viewing};
 use crate::{
     error::{Error, Result},
     transfer::incoming::Link,
@@ -411,8 +411,12 @@ impl Streaming {
             let _ = done.send(Err(WhyNot::Failed));
             return declined(DeclineReason::Refused);
         };
-        let control = control && offer.control;
-        match self.view_in(table, paired, connection.clone(), session, viewing, control) {
+        // The viewer takes no more control than it wished for.
+        let granted = Granted {
+            control: control && offer.control,
+            private: offer.private,
+        };
+        match self.view_in(table, paired, connection.clone(), session, viewing, granted) {
             Ok(handle) => {
                 // A call that is dropped just now drops the handle in the channel with it, and
                 // that ends the session. The place in the table is gone already: the caller took

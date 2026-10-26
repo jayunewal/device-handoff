@@ -258,6 +258,13 @@ impl Sessions {
             .is_some_and(|handle| handle.input(input.into()).is_ok())
     }
 
+    /// Tells the other device of the window `id` what the people there may do. Returns whether
+    /// the message was queued: it is not for a window that is not shown here or not private.
+    pub(crate) fn lift(&self, id: u64, screen: bool, input: bool) -> bool {
+        self.viewing(id)
+            .is_some_and(|handle| handle.lift(screen, input))
+    }
+
     /// Lets go of every button and key that is down on the window `id`, if it is shown here.
     pub(crate) fn release_input(&self, id: u64) {
         if let Some(handle) = self.viewing(id) {
@@ -443,6 +450,7 @@ impl Sessions {
             width,
             height,
             control,
+            private: handle.private(),
             screen: Some(accepted.screen),
         };
         self.begin_viewing(session, handle, &accepted.link, &accepted.pictures);
@@ -505,6 +513,7 @@ impl Sessions {
                     width: 0,
                     height: 0,
                     control: handle.control(),
+                    private: handle.private(),
                     screen: Some(screen),
                 };
                 self.begin_viewing(session.clone(), handle, &link, &pictures);
@@ -536,12 +545,18 @@ impl Sessions {
         let (width, height) = picked.size();
         let (title, app) = (picked.title(), picked.app());
         let display = picked.display();
+        // A screen is private for a session that is controlled, and the device that controls it
+        // is told so that it can lift what keeps it private.
+        let private = control && picked.private();
         let mut window = WindowShare::new(title.clone(), app.clone(), width, height);
         if display {
             window = window.whole_display();
         }
         if control {
             window = window.with_control();
+        }
+        if private {
+            window = window.with_private();
         }
         let events = picked.events();
         // The platform's part is used twice, once to choose the picture and once to start the
@@ -575,6 +590,7 @@ impl Sessions {
                     width,
                     height,
                     control,
+                    private,
                     screen: None,
                 };
                 self.begin(
@@ -946,6 +962,7 @@ mod tests {
             width: 1440,
             height: 900,
             control: false,
+            private: false,
             screen: Some(100),
         }
     }

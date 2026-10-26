@@ -418,6 +418,12 @@ final class MacSharedWindow: SharedWindow {
   func post(_ post: InputPost) -> Bool {
     control?.post(post) ?? false
   }
+
+  func lift(screen: Bool, input: Bool) {
+    // A screen that is not private keeps nothing from the people at this Mac, and has nothing to
+    // lift.
+    privateSession?.lift(screen: screen, input: input)
+  }
 }
 
 /// The capture of one window, and what is done with the pictures it makes.

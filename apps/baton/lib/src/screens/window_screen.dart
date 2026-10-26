@@ -23,6 +23,11 @@ import 'windows_panel.dart';
 /// asking: it would have to be shared again. A window that ends by itself leaves the screen in
 /// place and says how, so that the person is not left wondering what happened.
 ///
+/// A screen that this device controls and that the other device keeps private (dark, with its
+/// keyboard and trackpad out of use) has settings for the session, which the person opens from the
+/// bar: two switches, to show the screen at the other device and to let its keyboard and trackpad
+/// be used, each on and off as often as they like. Both are off when the session starts.
+///
 /// The screen of a phone stays on for as long as the window shows. Nobody touches it while a
 /// window is watched, so the hold is renewed every [renewEvery] and not left to run out.
 class WindowScreen extends StatefulWidget {
@@ -143,6 +148,18 @@ class _WindowScreenState extends State<WindowScreen> {
     }
   }
 
+  /// Opens the settings for the session, over the picture: the touches of the person then go to
+  /// the switches and not to the other device.
+  Future<void> _showSettings() => showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    isScrollControlled: true,
+    builder: (context) => _SessionSettings(
+      controller: widget.controller,
+      session: widget.session,
+    ),
+  );
+
   /// Asks before the window is ended: the other device has to share it again to bring it back.
   Future<void> _confirmStop() async {
     final stop = await showDialog<bool>(
@@ -227,6 +244,25 @@ class _WindowScreenState extends State<WindowScreen> {
                 ],
               ),
               actions: [
+                if (running && session.private)
+                  Builder(
+                    builder: (context) {
+                      final lifted = widget.controller.liftedOf(session);
+                      final anything = lifted.screen || lifted.input;
+                      return IconButton(
+                        icon: Badge(
+                          isLabelVisible: anything,
+                          smallSize: 8,
+                          child: const Icon(Icons.settings_outlined),
+                        ),
+                        tooltip: anything
+                            ? 'Settings for this session, '
+                                  'something is switched on'
+                            : 'Settings for this session',
+                        onPressed: () => unawaited(_showSettings()),
+                      );
+                    },
+                  ),
                 if (running && session.control)
                   ListenableBuilder(
                     listenable: _control,
@@ -304,6 +340,115 @@ class _WindowScreenState extends State<WindowScreen> {
           ),
         );
       },
+    );
+  }
+}
+
+/// The settings for a session of a screen that the other device keeps private: what the people at
+/// that device may do while this one controls it. Only a Mac keeps its screen private for now
+/// (docs/adr/0011-privacy-mode.md), so the switches name it.
+///
+/// Each switch tells the other device at once, and shows how things stand only once it was told:
+/// when the other device could not be told, the switch stays as it was and the sheet says so.
+class _SessionSettings extends StatefulWidget {
+  const _SessionSettings({required this.controller, required this.session});
+
+  final WindowsController controller;
+  final WindowSession session;
+
+  @override
+  State<_SessionSettings> createState() => _SessionSettingsState();
+}
+
+class _SessionSettingsState extends State<_SessionSettings> {
+  /// What to tell the person after a switch that was not taken, or `null`.
+  String? _problem;
+
+  void _switch({bool? screen, bool? input}) {
+    final told = widget.controller.lift(
+      widget.session,
+      screen: screen,
+      input: input,
+    );
+    setState(() {
+      _problem = told
+          ? null
+          : 'The Mac did not get that, so it is as it was. Try again.';
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return SafeArea(
+      child: ListenableBuilder(
+        listenable: widget.controller,
+        builder: (context, _) {
+          final lifted = widget.controller.liftedOf(widget.session);
+          final running = widget.controller.sessions.any(
+            (s) => s.id == widget.session.id,
+          );
+          return SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  child: Text(
+                    'Settings for this session',
+                    style: theme.textTheme.titleMedium,
+                  ),
+                ),
+                SwitchListTile(
+                  title: const Text('Show screen on the Mac'),
+                  subtitle: Text(
+                    lifted.screen
+                        ? 'Anyone near the Mac can see what you do on it.'
+                        : 'The Mac’s screen is dark, so nobody near it sees '
+                              'what you do.',
+                  ),
+                  value: lifted.screen,
+                  onChanged: running ? (on) => _switch(screen: on) : null,
+                ),
+                SwitchListTile(
+                  title: const Text('Allow the Mac’s keyboard and trackpad'),
+                  subtitle: Text(
+                    lifted.input
+                        ? 'Anyone at the Mac can use it.'
+                        : 'Nobody at the Mac can use it.',
+                  ),
+                  value: lifted.input,
+                  onChanged: running ? (on) => _switch(input: on) : null,
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
+                  child: Text(
+                    running
+                        ? 'Both switch off again when this session ends, '
+                              'and the Mac locks.'
+                        : 'This session is over.',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+                if (_problem != null)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+                    child: Semantics(
+                      liveRegion: true,
+                      child: Text(
+                        _problem!,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: theme.colorScheme.error,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 }

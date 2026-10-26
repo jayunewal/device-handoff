@@ -68,6 +68,10 @@ pub(crate) struct Sharer {
     /// Whether the device takes input from a viewer in a session where the person granted
     /// control, which is whether it advertises `stream.control`.
     pub(crate) control: bool,
+    /// Whether the device keeps its screen private while a viewer controls it, and shows it to the
+    /// people there when the viewer asks, which is whether it advertises `stream.private`. Only
+    /// a device that takes input can.
+    pub(crate) private: bool,
     /// What it needs to start a session when a paired device asks it to, if it does, which is
     /// whether it advertises `stream.start`.
     pub(crate) starter: Option<Starter>,
@@ -146,6 +150,7 @@ pub struct WindowShare {
     width: u32,
     height: u32,
     control: bool,
+    private: bool,
 }
 
 impl WindowShare {
@@ -160,6 +165,7 @@ impl WindowShare {
             width,
             height,
             control: false,
+            private: false,
         }
     }
 
@@ -181,6 +187,17 @@ impl WindowShare {
         self
     }
 
+    /// The platform keeps the screen of this device private for as long as the session lasts: dark
+    /// and out of the hands of the people here. The viewer is told, and can have the screen shown
+    /// and the keys and the pointer put to use, and put either back, with
+    /// [`ViewHandle::lift`](super::ViewHandle::lift). The node must have been set up to do that
+    /// (`NodeBuilder::private_sessions`).
+    #[must_use]
+    pub fn with_private(mut self) -> Self {
+        self.private = true;
+        self
+    }
+
     /// The offer that asks a device to show this window under `session`.
     pub(crate) fn offer(&self, session: SessionId) -> Offer {
         Offer {
@@ -191,6 +208,7 @@ impl WindowShare {
             width: self.width,
             height: self.height,
             control: self.control,
+            private: self.private,
         }
     }
 
@@ -207,6 +225,11 @@ impl WindowShare {
     pub(crate) fn control(&self) -> bool {
         self.control
     }
+
+    /// Whether the screen is kept private for the session.
+    pub(crate) fn private(&self) -> bool {
+        self.private
+    }
 }
 
 // What a window is called can name a document, a person or a page.
@@ -217,6 +240,7 @@ impl fmt::Debug for WindowShare {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("control", &self.control)
+            .field("private", &self.private)
             .finish_non_exhaustive()
     }
 }
@@ -253,6 +277,8 @@ pub(crate) struct Offered<'a> {
     pub(crate) session: SessionId,
     /// Whether the viewer is to control the window.
     pub(crate) control: bool,
+    /// Whether the screen is kept private for the session.
+    pub(crate) private: bool,
 }
 
 impl Streaming {
@@ -267,12 +293,19 @@ impl Streaming {
         self.sharer.as_ref().is_some_and(|sharer| sharer.control)
     }
 
-    /// Whether this device can offer `window`: it takes part as a source, and takes input if the
-    /// person granted control.
+    /// Whether this device keeps its screen private while a viewer controls it, which is whether
+    /// it advertises `stream.private`.
+    pub(crate) fn keeps_private(&self) -> bool {
+        self.sharer.as_ref().is_some_and(|sharer| sharer.private)
+    }
+
+    /// Whether this device can offer `window`: it takes part as a source, takes input if the
+    /// person granted control, and keeps the screen private if it is to be.
     ///
     /// # Errors
     ///
-    /// The device was not set up to show its windows, or not to take input, or the window is
+    /// The device was not set up to show its windows, or not to take input, or not to keep a
+    /// screen private, or the screen is private and control is not granted, or the window is
     /// beyond a limit of the protocol.
     pub(crate) fn can_offer(&self, window: &WindowShare) -> Result<()> {
         if !self.shares() {
@@ -283,6 +316,19 @@ impl Streaming {
         if window.control() && !self.takes_control() {
             return Err(Error::Config(
                 "control of a window was granted, but this device was not set up to take input"
+                    .to_owned(),
+            ));
+        }
+        if window.private() && !self.keeps_private() {
+            return Err(Error::Config(
+                "a private screen was offered, but this device was not set up to keep one"
+                    .to_owned(),
+            ));
+        }
+        // A private screen is for a person who controls it from the other device.
+        if window.private() && !window.control() {
+            return Err(Error::Config(
+                "a private screen was offered without control, which it is kept private for"
                     .to_owned(),
             ));
         }
@@ -358,6 +404,7 @@ impl Streaming {
         let setup = SourceSetup {
             config,
             control: offered.control,
+            private: offered.private,
             takes,
             params: SourceParams::default(),
         };

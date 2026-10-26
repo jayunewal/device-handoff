@@ -17,7 +17,7 @@ use baton_proto::{
     stream::{Codec, Offer, SourceKind, Stop, StopReason, StreamReply, StreamRequest},
 };
 use baton_stream::{
-    control::{InputBatch, Report, SourceMessage, Thermal, Want},
+    control::{InputBatch, Lift, Report, SourceMessage, Thermal, Want},
     header::FrameHeader,
 };
 use iroh::endpoint::Connection;
@@ -206,6 +206,7 @@ pub(super) fn offer(byte: u8) -> Offer {
         width: 1440,
         height: 900,
         control: false,
+        private: false,
     }
 }
 
@@ -638,6 +639,7 @@ async fn a_connection_that_ends_gives_back_what_was_kept_for_it() {
 pub(super) struct Heard {
     lines: Arc<Mutex<Vec<String>>>,
     batches: Arc<Mutex<Vec<InputBatch>>>,
+    lifts: Arc<Mutex<Vec<Lift>>>,
 }
 
 impl Heard {
@@ -651,6 +653,11 @@ impl Heard {
     /// The batches of input that the viewer sent, in order.
     pub(super) fn batches(&self) -> Vec<InputBatch> {
         lock(&self.batches).clone()
+    }
+
+    /// What the viewer lifted, in the order in which it said so.
+    pub(super) fn lifts(&self) -> Vec<Lift> {
+        lock(&self.lifts).clone()
     }
 }
 
@@ -671,6 +678,11 @@ impl SourceEvents for Platform {
     }
 
     fn held(&mut self, _: Vec<baton_stream::sender::LtrToken>) {}
+
+    fn lift(&mut self, lift: Lift) {
+        lock(&(self.0).lines).push("lift".to_owned());
+        lock(&(self.0).lifts).push(lift);
+    }
 
     fn recovery(&mut self) {}
 

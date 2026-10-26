@@ -58,10 +58,11 @@ use crate::{
     abi::{
         BEGIN_DELTA, BEGIN_KEY, BEGIN_NOT_NOW, BatonBytes, BatonFormat, BatonFront, BatonGeometry,
         BatonPicked, BatonPicture, BatonRect, BatonSharerVTable, CODEC_H264, E_PLATFORM, FRAME_KEY,
-        FRAME_RECOVERY, FRAME_REFERENCED, KEYBOARD_ELSEWHERE, PAUSE_HIDDEN, PAUSE_LOCKED,
-        PAUSE_OTHER, PICKED_DISPLAY, PICKED_WINDOW, SCREEN_NEEDS_INPUT_PERMISSION,
-        SCREEN_NEEDS_PERMISSION, SCREEN_PRIVATE, SCREEN_UNAVAILABLE, SENT, SENT_OVER, SENT_STALE,
-        SENT_TOO_LARGE, SOURCE_CONFIG, SOURCE_PAUSE, SOURCE_RESUME, size_of_u32,
+        FRAME_RECOVERY, FRAME_REFERENCED, KEYBOARD_ELSEWHERE, LIFT_INPUT, LIFT_SCREEN,
+        PAUSE_HIDDEN, PAUSE_LOCKED, PAUSE_OTHER, PICKED_DISPLAY, PICKED_WINDOW,
+        SCREEN_NEEDS_INPUT_PERMISSION, SCREEN_NEEDS_PERMISSION, SCREEN_PRIVATE, SCREEN_UNAVAILABLE,
+        SENT, SENT_OVER, SENT_STALE, SENT_TOO_LARGE, SOURCE_CONFIG, SOURCE_PAUSE, SOURCE_RESUME,
+        size_of_u32,
     },
     fake::{Call, Decoded, Fake, Watchdog},
     fake_sharer::{
@@ -3113,6 +3114,7 @@ async fn a_platform_that_gives_its_screen_is_asked_for_it_and_the_display_is_rel
     let platform = FakeSharer::new();
     let sharer = sharer_of(&platform);
     assert!(sharer.can_give_screen());
+    assert!(sharer.can_lift());
 
     let picked = sharer.screen(Privacy::Open).await.unwrap();
     // A whole display of the size the platform said, with no name, no application and no picker.
@@ -3146,9 +3148,22 @@ async fn a_platform_that_cannot_give_its_screen_is_not_asked_for_it() {
         fake_sharer::register_table(&registry, &table(&platform)).unwrap();
         let sharer = registry.sharer().unwrap();
         assert!(!sharer.can_give_screen());
+        assert!(!sharer.can_lift());
         assert_eq!(screen_error(&sharer).await, ScreenError::Unsupported);
         assert_eq!(platform.log(), []);
     }
+}
+
+#[tokio::test]
+async fn a_platform_that_gives_its_screen_and_cannot_lift_says_so() {
+    // A table that ends at `screen` is a platform from before the privacy of a screen could be
+    // lifted. It gives the screen, and it says that it has nothing to lift with.
+    let platform = FakeSharer::new();
+    let registry = Registry::new();
+    fake_sharer::register_table(&registry, &platform.vtable_without_lift()).unwrap();
+    let sharer = registry.sharer().unwrap();
+    assert!(sharer.can_give_screen());
+    assert!(!sharer.can_lift());
 }
 
 #[tokio::test]
@@ -3559,6 +3574,9 @@ async fn a_phone_that_the_person_allowed_gets_the_screen_of_the_platform_through
     })
     .await;
     assert!(!handle.control());
+    // A screen that nobody controls is not one that is kept private, and has nothing to lift.
+    assert!(!handle.private());
+    assert!(!handle.lift(true, true));
 
     // The phone ends it, and everything is let go: the link is closed, the platform is told that
     // it is over, and the display is released.
@@ -3567,4 +3585,130 @@ async fn a_phone_that_the_person_allowed_gets_the_screen_of_the_platform_through
     let calls = rig.platform.calls(1);
     assert_eq!(calls.last(), Some(&SharerCall::Release));
     assert!(calls.contains(&SharerCall::Ended));
+}
+
+/// A phone that the person allowed to look at the screen of the Mac and control it, and has asked
+/// for it with control: the screen is given as private, and the session runs.
+async fn controlling_phone(rig: &Rig) -> (Phone, baton_core::streaming::ViewHandle) {
+    let phone = Phone::start("Pocket Phone").await;
+    pair_phone(&rig.sharing, &phone).await;
+    rig.sharing
+        .app
+        .set_start_access(&phone.id.to_string(), StartAccess::Control)
+        .unwrap();
+    let StartOutcome::Started(handle) = phone.asks(&rig.sharing, true).await.unwrap() else {
+        panic!("the screen was not started");
+    };
+    until("the platform to be started", || {
+        rig.platform
+            .calls(1)
+            .iter()
+            .any(|call| matches!(call, SharerCall::Start { .. }))
+    })
+    .await;
+    (phone, handle)
+}
+
+/// What the platform was told is lifted of the first window, in order.
+fn told_lifted(platform: &FakeSharer) -> Vec<u32> {
+    platform
+        .calls(1)
+        .into_iter()
+        .filter_map(|call| match call {
+            SharerCall::Lift { lifted } => Some(lifted),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn what_the_phone_lifts_of_the_privacy_of_the_screen_reaches_the_platform_as_the_header_says()
+{
+    let rig = Rig::with(|platform, _| platform.set_control(true)).await;
+    let (_phone, handle) = controlling_phone(&rig).await;
+
+    // The screen was asked for as private, and the phone is told that it can lift what keeps it
+    // so. Nothing is lifted when the session starts: the platform is not told anything.
+    assert!(handle.control());
+    assert!(handle.private());
+    assert_eq!(
+        rig.platform.calls(1)[0],
+        asked_to_prepare_within(1920, 1200, 60)
+    );
+    assert!(rig.platform.log().contains(&(
+        0,
+        SharerCall::Screen {
+            flags: SCREEN_PRIVATE
+        }
+    )));
+    assert_eq!(told_lifted(&rig.platform), Vec::<u32>::new());
+
+    // The person switches the two as often as they like, and the platform hears each one whole.
+    let mut heard = 0;
+    for (screen, input, bits) in [
+        (true, false, LIFT_SCREEN),
+        (true, true, LIFT_SCREEN | LIFT_INPUT),
+        (false, true, LIFT_INPUT),
+        (false, false, 0),
+        (true, false, LIFT_SCREEN),
+        (false, false, 0),
+    ] {
+        assert!(handle.lift(screen, input));
+        heard += 1;
+        until("the platform to hear it", || {
+            told_lifted(&rig.platform).len() >= heard
+        })
+        .await;
+        assert_eq!(told_lifted(&rig.platform).last(), Some(&bits));
+    }
+    assert_eq!(told_lifted(&rig.platform), [1, 3, 2, 0, 1, 0]);
+
+    // The session ends with something lifted, and the platform is told that it is over.
+    assert!(handle.lift(true, true));
+    until("the platform to hear it", || {
+        told_lifted(&rig.platform).len() > heard
+    })
+    .await;
+    handle.end();
+    rig.nothing_is_left().await;
+    let calls = rig.platform.calls(1);
+    assert_eq!(calls.last(), Some(&SharerCall::Release));
+    assert!(calls.contains(&SharerCall::Ended));
+    rig.platform.assert_no_complaints();
+}
+
+#[tokio::test]
+async fn a_platform_that_cannot_lift_gives_a_private_screen_that_the_phone_cannot_lift() {
+    let rig = Rig::with(|platform, _| {
+        platform.set_control(true);
+        platform.set_cannot_lift();
+    })
+    .await;
+    let (phone, handle) = controlling_phone(&rig).await;
+
+    // The screen is still given as private, and stays so for the whole session; the phone is not
+    // told that it may lift anything, and has no way to ask.
+    assert!(rig.platform.log().contains(&(
+        0,
+        SharerCall::Screen {
+            flags: SCREEN_PRIVATE
+        }
+    )));
+    assert!(handle.control());
+    assert!(!handle.private());
+    assert!(!handle.lift(true, true));
+    assert_eq!(told_lifted(&rig.platform), Vec::<u32>::new());
+
+    // A picture goes the whole way to the phone, so that both control streams are up. A phone
+    // that ends the session before that is noticed by the Mac only when it gives up waiting.
+    let link = rig.platform.link(1);
+    assert_eq!(rig.send(link, 0).await, (BEGIN_KEY, SENT, 0));
+    until("the phone to be given the picture", || {
+        phone.decoded.load(Ordering::Relaxed) == 1
+    })
+    .await;
+
+    handle.end();
+    rig.nothing_is_left().await;
+    rig.platform.assert_no_complaints();
 }
