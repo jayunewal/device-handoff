@@ -470,7 +470,7 @@ async fn a_device_that_does_not_take_part_in_window_streaming_declines_every_req
 }
 
 #[tokio::test]
-async fn a_device_that_keeps_no_password_for_unlocking_declines_every_request_of_it() {
+async fn a_device_that_approves_no_unlock_declines_every_request_for_its_key() {
     let a = device("Laptop").await;
     let (_raw, connection) = paired_raw(&a).await;
 

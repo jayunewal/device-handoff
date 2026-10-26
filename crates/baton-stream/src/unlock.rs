@@ -16,8 +16,8 @@
 //! 4. the source opens its box with the key, types the password, and says what came of it
 //!    ([`Done`]).
 //!
-//! The key and the challenge are the only secrets. They are never printed: their `Debug` shows
-//! nothing of them, so that a message can be logged whole.
+//! The key, the challenge and the sealed key are secrets. They are never printed: their `Debug`
+//! shows nothing of them but a length, so that a message can be logged whole.
 
 use baton_proto::unlock::{BoxKey, Challenge, SealedKey};
 use serde::{Deserialize, Serialize};
@@ -71,7 +71,7 @@ pub enum CancelReason {
 /// The viewer gives up on the question it holds, or on the one it asked for. Nothing is opened
 /// and no key follows.
 ///
-/// A source that has no question outstanding ignores it. It answers nothing.
+/// A source that has no attempt going ignores it. It answers nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cancelled {
     /// Why, so that the source can write it in its record.
@@ -101,7 +101,8 @@ pub enum Outcome {
     Rejected,
     /// The viewer did not answer in time.
     TimedOut,
-    /// The source could not do it for a reason of its own, such as not being allowed to post keys.
+    /// The source could not do it for a reason of its own, such as not being allowed to post keys,
+    /// or not being able to keep its new box.
     Failed,
     /// Any outcome this version does not know about.
     #[serde(other)]
