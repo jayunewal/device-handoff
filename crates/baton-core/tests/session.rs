@@ -18,6 +18,7 @@ use baton_proto::{
         Cancel, Declined, Finish, Offer, PreviewItem, Summary, TransferReply, TransferRequest,
         list::ListHash,
     },
+    unlock::{KeyRequest, UnlockReply, UnlockRequest},
 };
 use common::{Raw, Spec, device, eventually, pair};
 
@@ -448,6 +449,7 @@ async fn a_device_that_does_not_take_part_in_window_streaming_declines_every_req
             height: 900,
             control: true,
             private: false,
+            unlock: false,
         }),
         StreamRequest::Stop(Stop {
             session,
@@ -463,6 +465,41 @@ async fn a_device_that_does_not_take_part_in_window_streaming_declines_every_req
                 session,
                 reason: DeclineReason::Unsupported,
             }))
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_device_that_keeps_no_password_for_unlocking_declines_every_request_of_it() {
+    let a = device("Laptop").await;
+    let (_raw, connection) = paired_raw(&a).await;
+
+    // It does not say that it takes part in unlocks.
+    let hello = Request::Hello(Hello {
+        protocol_minor: 0,
+        device: common::info("Raw"),
+        capabilities: vec![],
+    });
+    let reply = exchange_raw(&connection, &framed(&hello)).await.unwrap();
+    let Response::Hello(hello) = baton_proto::frame::decode::<Response>(&reply).unwrap() else {
+        panic!("not a hello");
+    };
+    assert!(
+        !hello
+            .capabilities
+            .iter()
+            .any(|name| name.starts_with("unlock.")),
+        "{:?}",
+        hello.capabilities
+    );
+
+    // A device that asks anyway, with requests that are valid, is answered, not cut off.
+    for renew in [false, true] {
+        let request = Request::Unlock(UnlockRequest::Key(KeyRequest { renew }));
+        let reply = exchange_raw(&connection, &framed(&request)).await.unwrap();
+        assert_eq!(
+            baton_proto::frame::decode::<Response>(&reply).unwrap(),
+            Response::Unlock(UnlockReply::Declined(DeclineReason::Unsupported))
         );
     }
 }

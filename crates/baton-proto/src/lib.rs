@@ -15,6 +15,8 @@
 //!   the data and the hash of a file.
 //! - [`stream`] holds the requests of window streaming: the offer of a window and the end of a
 //!   session.
+//! - [`unlock`] holds the request with which a device that can be unlocked asks a paired device
+//!   for its key, and the byte strings of an unlock.
 //! - [`limits`] holds the size limits every message is checked against.
 
 // This crate parses bytes from strangers. An index or a slice range that is out of bounds
@@ -32,6 +34,7 @@ pub mod pair;
 pub mod stream;
 pub mod ticket;
 pub mod transfer;
+pub mod unlock;
 
 pub use device::{DeviceInfo, Platform};
 pub use id::{DeviceId, Fingerprint, ItemId, SessionId, TransferId};

@@ -368,6 +368,15 @@ fn a_device_that_sends_or_plays_the_sound_of_a_screen_says_so_in_its_capabilitie
 }
 
 #[test]
+fn a_device_that_can_be_unlocked_or_unlocks_with_a_face_says_so_in_its_capabilities() {
+    // Messages about an unlock are sent only to a device that advertised the capability
+    // (section 5): a viewer checks `unlock.target` before it writes `Unlock`, and a source checks
+    // `unlock.approve` before it asks for a key or sends a question.
+    assert_eq!(capability::UNLOCK_TARGET, "unlock.target");
+    assert_eq!(capability::UNLOCK_APPROVE, "unlock.approve");
+}
+
+#[test]
 fn a_display_is_a_kind_of_source_that_this_version_knows() {
     // The kind is the name of the variant, as text, and it is not the kind that is read for a
     // name this version does not know.
@@ -678,6 +687,142 @@ fn a_kind_of_stream_request_this_version_does_not_know_is_an_error() {
     let later =
         encode(&cbor!({ "Stream" => { "Paused" => { "session" => session_id() } } }).unwrap());
     assert!(frame::decode_payload::<Response>(&later).is_err());
+}
+
+fn offer_that_says(unlock: Option<Value>) -> Vec<u8> {
+    let mut offer = cbor!({
+        "session" => session_id(), "source" => "Display", "title" => "", "app" => "",
+        "width" => 3024, "height" => 1964, "control" => true, "private" => true,
+    })
+    .unwrap();
+    if let (Some(unlock), Value::Map(fields)) = (unlock, &mut offer) {
+        fields.push((Value::Text("unlock".into()), unlock));
+    }
+    encode(&cbor!({ "Stream" => { "Offer" => offer } }).unwrap())
+}
+
+#[test]
+fn an_offer_that_does_not_say_unlock_does_not_offer_one() {
+    // What a message leaves out stays as a session starts, which is the strict way: the viewer
+    // has no unlock to ask for.
+    let read = |unlock: Option<Value>| {
+        let Request::Stream(StreamRequest::Offer(offer)) =
+            frame::decode_payload::<Request>(&offer_that_says(unlock)).unwrap()
+        else {
+            panic!("not an offer");
+        };
+        offer
+    };
+    assert!(!read(None).unlock);
+    assert!(!read(Some(Value::Bool(false))).unlock);
+    assert!(read(Some(Value::Bool(true))).unlock);
+    // A word that is not a yes or a no is not a yes.
+    for wrong in [Value::from(1), Value::Text("true".into()), Value::Null] {
+        assert!(
+            frame::decode_payload::<Request>(&offer_that_says(Some(wrong.clone()))).is_err(),
+            "{wrong:?}"
+        );
+    }
+}
+
+#[test]
+fn unknown_keys_are_ignored_in_the_messages_of_an_unlock() {
+    use baton_proto::unlock::{KeyRequest, Sealing, UnlockReply, UnlockRequest};
+
+    // The request for a key, with a key from a later version, without `renew` (which means
+    // false) and with it.
+    let request = |renew: Option<bool>| {
+        let mut fields = vec![(Value::Text("later".into()), cbor!([1, 2]).unwrap())];
+        if let Some(renew) = renew {
+            fields.push((Value::Text("renew".into()), Value::Bool(renew)));
+        }
+        encode(&cbor!({ "Unlock" => { "Key" => Value::Map(fields) } }).unwrap())
+    };
+    for (renew, read) in [(None, false), (Some(false), false), (Some(true), true)] {
+        assert_eq!(
+            frame::decode_payload::<Request>(&request(renew)).unwrap(),
+            Request::Unlock(UnlockRequest::Key(KeyRequest { renew: read })),
+            "{renew:?}"
+        );
+    }
+    // `renew` is a yes or a no and nothing else.
+    for wrong in [Value::from(1), Value::Text("true".into()), Value::Null] {
+        let bad = encode(&cbor!({ "Unlock" => { "Key" => { "renew" => wrong } } }).unwrap());
+        assert!(frame::decode_payload::<Request>(&bad).is_err());
+    }
+
+    // The answer, in the same way.
+    let reply = encode(
+        &cbor!({
+            "Unlock" => {
+                "Key" => {
+                    "later" => { "x" => null },
+                    "sealing" => "EciesP256",
+                    "public" => Value::Bytes(vec![4; 65]),
+                },
+            },
+        })
+        .unwrap(),
+    );
+    let Response::Unlock(UnlockReply::Key(key)) =
+        frame::decode_payload::<Response>(&reply).unwrap()
+    else {
+        panic!("not a key");
+    };
+    assert_eq!(key.sealing, Sealing::EciesP256);
+    assert_eq!(key.public.as_bytes(), [4; 65]);
+
+    // The words of a refusal are those of any other request.
+    let declined =
+        |reason: Value| encode(&cbor!({ "Unlock" => { "Declined" => reason } }).unwrap());
+    assert_eq!(
+        frame::decode_payload::<Response>(&declined(Value::Text("Unsupported".into()))).unwrap(),
+        Response::Unlock(UnlockReply::Declined(DeclineReason::Unsupported))
+    );
+}
+
+#[test]
+fn a_way_of_sealing_that_an_unlock_does_not_know_is_other_and_one_with_data_is_an_error() {
+    use baton_proto::unlock::{Sealing, UnlockReply};
+
+    let key = |sealing: Value| {
+        encode(
+            &cbor!({
+                "Unlock" => { "Key" => { "sealing" => sealing, "public" => Value::Bytes(vec![1]) } },
+            })
+            .unwrap(),
+        )
+    };
+    let Response::Unlock(UnlockReply::Key(other)) =
+        frame::decode_payload::<Response>(&key(Value::Text("Lattice".into()))).unwrap()
+    else {
+        panic!("not a key");
+    };
+    assert_eq!(other.sealing, Sealing::Other);
+    // A reason for a refusal that it does not know is one it can still show as a no.
+    let declined = encode(&cbor!({ "Unlock" => { "Declined" => "SomethingNew" } }).unwrap());
+    assert_eq!(
+        frame::decode_payload::<Response>(&declined).unwrap(),
+        Response::Unlock(UnlockReply::Declined(DeclineReason::Other))
+    );
+    // One that carries data cannot be read at all, which is why new ones must not.
+    let data = cbor!({ "Lattice" => { "n" => 1 } }).unwrap();
+    assert!(frame::decode_payload::<Response>(&key(data.clone())).is_err());
+    let declined = encode(&cbor!({ "Unlock" => { "Declined" => data } }).unwrap());
+    assert!(frame::decode_payload::<Response>(&declined).is_err());
+}
+
+#[test]
+fn a_kind_of_unlock_request_this_version_does_not_know_is_an_error() {
+    // Requests are not extensible: a device asks only what the capabilities say is understood.
+    let later = encode(&cbor!({ "Unlock" => { "Forget" => {} } }).unwrap());
+    assert!(frame::decode_payload::<Request>(&later).is_err());
+    let later = encode(&cbor!({ "Unlock" => { "Forgotten" => {} } }).unwrap());
+    assert!(frame::decode_payload::<Response>(&later).is_err());
+    // And the two directions do not read each other's messages.
+    let key = encode(&cbor!({ "Unlock" => { "Key" => {} } }).unwrap());
+    assert!(frame::decode_payload::<Request>(&key).is_ok());
+    assert!(frame::decode_payload::<Response>(&key).is_err());
 }
 
 // The fuzz targets start from the seeds in `fuzz/seeds/decode_payload`, and a seed that is no

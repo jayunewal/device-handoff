@@ -252,7 +252,9 @@ fn thermal(state: u32) -> Thermal {
 
 /// What the source said about the pictures, in the form of the interface. What it said about sound
 /// does not go through here: sound reaches the platform by calls of its own, and a session does
-/// not hand a viewer that does not take sound a message about it.
+/// not hand a viewer that does not take sound a message about it. What it said about an unlock
+/// does not either, and a session does not hand a viewer that does not take part in unlocks a
+/// message about that.
 fn source_message(message: &SourceMessage) -> Option<BatonSourceMessage> {
     let mut out = BatonSourceMessage {
         size: size_of_u32::<BatonSourceMessage>(),
@@ -292,7 +294,10 @@ fn source_message(message: &SourceMessage) -> Option<BatonSourceMessage> {
             out.reason = dropped(notice.reason);
             out.count = notice.count;
         }
-        SourceMessage::Sound(_) | SourceMessage::Silent(_) => return None,
+        SourceMessage::Sound(_)
+        | SourceMessage::Silent(_)
+        | SourceMessage::UnlockSealed(_)
+        | SourceMessage::UnlockDone(_) => return None,
     }
     Some(out)
 }
@@ -333,11 +338,15 @@ impl From<BatonDecoderState> for DecoderState {
 mod tests {
     use std::sync::Mutex;
 
-    use baton_proto::id::SessionId;
+    use baton_proto::{
+        id::SessionId,
+        unlock::{Challenge, SealedKey},
+    };
     use baton_stream::{
         control::{Config, Pause, Silent, SilentReason, Sound, SoundCodec},
         gate::Notice,
         header::Flags,
+        unlock::{Done, Outcome, Sealed},
     };
 
     use super::*;
@@ -798,7 +807,7 @@ mod tests {
     }
 
     #[test]
-    fn what_the_source_said_about_sound_does_not_reach_the_source_call_of_the_platform() {
+    fn what_the_source_said_about_sound_or_an_unlock_is_not_a_source_call_of_the_platform() {
         let mut rig = rig(WIDTH, HEIGHT);
         rig.decoder.source(SourceMessage::Sound(Sound {
             codec: SoundCodec::Aac,
@@ -808,6 +817,13 @@ mod tests {
         }));
         rig.decoder.source(SourceMessage::Silent(Silent {
             reason: SilentReason::NoPermission,
+        }));
+        rig.decoder.source(SourceMessage::UnlockSealed(Sealed {
+            challenge: Challenge::from_bytes([1; Challenge::LEN]),
+            sealed: SealedKey::new(vec![3; 113]),
+        }));
+        rig.decoder.source(SourceMessage::UnlockDone(Done {
+            outcome: Outcome::Unlocked,
         }));
         rig.decoder.source(SourceMessage::Resume);
         assert_eq!(

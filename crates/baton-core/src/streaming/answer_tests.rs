@@ -207,6 +207,7 @@ pub(super) fn offer(byte: u8) -> Offer {
         height: 900,
         control: false,
         private: false,
+        unlock: false,
     }
 }
 

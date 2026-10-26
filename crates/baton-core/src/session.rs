@@ -26,6 +26,7 @@ use baton_proto::{
         Response, capability,
     },
     transfer::{Cancelled, Declined, TransferReply, TransferRequest},
+    unlock::UnlockReply,
 };
 use iroh::{
     Endpoint, EndpointAddr, RelayUrl,
@@ -419,6 +420,9 @@ async fn serve_stream(
                 .answer(&paired, &connection, link, request)
                 .await,
         ),
+        // A device that keeps no password for unlocking declines every request about one as
+        // unsupported (section 9). None does yet.
+        Request::Unlock(_) => Response::Unlock(UnlockReply::Declined(DeclineReason::Unsupported)),
     };
     respond(&mut send, &response).await;
 }

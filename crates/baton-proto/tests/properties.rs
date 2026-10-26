@@ -13,7 +13,8 @@ use baton_proto::{
     DeviceId, DeviceInfo, ItemId, Platform, SessionId, TransferId, frame,
     limits::{
         MAX_CAPABILITY_BYTES, MAX_CODECS, MAX_FAILURES_LISTED, MAX_FILE_BYTES, MAX_FRAME_RATE,
-        MAX_LANES, MAX_LIST_FRAME_ENTRIES, MAX_PICTURE_EDGE, MAX_PREVIEW_ITEMS, MAX_WINDOW_EDGE,
+        MAX_LANES, MAX_LIST_FRAME_ENTRIES, MAX_PICTURE_EDGE, MAX_PREVIEW_ITEMS,
+        MAX_SEALING_KEY_BYTES, MAX_WINDOW_EDGE,
     },
     message::{
         ClipboardText, DeclineReason, ErrorCode, ErrorReply, Handoff, HandoffReply, Hello, Item,
@@ -30,6 +31,7 @@ use baton_proto::{
         list::{ListChecker, ListChunk, ListEntry, ListError, Listing, hash_list},
         path,
     },
+    unlock::{KeyRequest, Sealing, SealingKey, UnlockKey, UnlockReply, UnlockRequest},
 };
 use proptest::{prelude::*, test_runner::FileFailurePersistence};
 
@@ -105,6 +107,7 @@ fn request() -> impl Strategy<Value = Request> {
         })),
         transfer_request().prop_map(Request::Transfer),
         stream_request().prop_map(Request::Stream),
+        any::<bool>().prop_map(|renew| Request::Unlock(UnlockRequest::Key(KeyRequest { renew }))),
     ]
 }
 
@@ -133,6 +136,21 @@ fn response() -> impl Strategy<Value = Response> {
         })),
         transfer_reply().prop_map(Response::Transfer),
         stream_reply().prop_map(Response::Stream),
+        unlock_reply().prop_map(Response::Unlock),
+    ]
+}
+
+fn unlock_reply() -> impl Strategy<Value = UnlockReply> {
+    prop_oneof![
+        (
+            prop_oneof![Just(Sealing::EciesP256), Just(Sealing::Other)],
+            proptest::collection::vec(any::<u8>(), 1..=MAX_SEALING_KEY_BYTES)
+        )
+            .prop_map(|(sealing, public)| UnlockReply::Key(UnlockKey {
+                sealing,
+                public: SealingKey::new(public)
+            })),
+        decline_reason().prop_map(UnlockReply::Declined),
     ]
 }
 
@@ -163,10 +181,11 @@ fn stream_request() -> impl Strategy<Value = StreamRequest> {
             1..=MAX_WINDOW_EDGE,
             1..=MAX_WINDOW_EDGE,
             any::<bool>(),
+            any::<bool>(),
             any::<bool>()
         )
             .prop_map(
-                |(session, source, title, app, width, height, control, private)| {
+                |(session, source, title, app, width, height, control, private, unlock)| {
                     StreamRequest::Offer(stream::Offer {
                         session,
                         source,
@@ -176,6 +195,7 @@ fn stream_request() -> impl Strategy<Value = StreamRequest> {
                         height,
                         control,
                         private,
+                        unlock,
                     })
                 }
             ),

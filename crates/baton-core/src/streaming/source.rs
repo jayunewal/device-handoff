@@ -780,9 +780,13 @@ impl Source {
                     }
                 }
             }
-            // A viewer sends a `Hear` only to a source that advertised `stream.sound`, and this
-            // source does not yet (protocol.md section 9).
-            ViewerMessage::Hear(_) => return ControlFlow::Break(()),
+            // A viewer sends a `Hear` only to a source that advertised `stream.sound`, and the
+            // messages of an unlock only to one that advertised `unlock.target` and offered the
+            // session with `unlock`. This source does neither yet (protocol.md section 9).
+            ViewerMessage::Hear(_)
+            | ViewerMessage::Unlock
+            | ViewerMessage::UnlockOpened(_)
+            | ViewerMessage::UnlockCancelled(_) => return ControlFlow::Break(()),
             // The offer told the viewer whether it may ask. A message from a viewer that may not is
             // dropped, and is no violation.
             ViewerMessage::Lift(lift) => {
@@ -902,12 +906,16 @@ async fn reset_and_wait(connection: &Connection, mut send: SendStream, every: Du
 
 #[cfg(test)]
 mod tests {
-    use baton_proto::stream::Codec;
+    use baton_proto::{
+        stream::Codec,
+        unlock::{BoxKey, Challenge},
+    };
     use baton_stream::{
         KIND_CONTROL, KIND_VIDEO,
         control::{Hear, Thermal},
         header::{Flags, PREFIX_LEN, encode_prefix},
         input::{Event, Modifiers, PointerAction},
+        unlock::{CancelReason, Cancelled, Opened},
     };
     use iroh::endpoint::{ReadError, RecvStream};
 
@@ -1752,6 +1760,32 @@ mod tests {
         // The source says so by resetting its own control stream.
         assert_eq!(reset_with(&mut control).await, 400);
         assert!(rig.log.has(&Heard::Ended));
+    }
+
+    #[tokio::test]
+    async fn the_messages_of_an_unlock_are_a_violation_while_the_source_takes_no_unlock() {
+        let opened = Opened {
+            challenge: Challenge::from_bytes([1; Challenge::LEN]),
+            key: BoxKey::from_bytes([2; BoxKey::LEN]),
+        };
+        for message in [
+            ViewerMessage::Unlock,
+            ViewerMessage::UnlockOpened(opened),
+            ViewerMessage::UnlockCancelled(Cancelled {
+                reason: CancelReason::Declined,
+            }),
+        ] {
+            let mut rig = Rig::new().await;
+            let mut control = rig.source_control().await;
+            read_source_message(&mut control).await;
+            let mut send = rig.open_viewer_control().await;
+            write_message(&mut send, &message).await.unwrap();
+            assert_eq!(rig.ended().await, End::Violation, "{message:?}");
+            assert_eq!(stopped_with(&send).await, 400, "{message:?}");
+            // The source says so by resetting its own control stream.
+            assert_eq!(reset_with(&mut control).await, 400, "{message:?}");
+            assert!(rig.log.has(&Heard::Ended));
+        }
     }
 
     #[tokio::test]
