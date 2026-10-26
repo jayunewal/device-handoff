@@ -325,6 +325,34 @@ jobs:
           for key in com.apple.security.app-sandbox com.apple.security.network.client com.apple.security.network.server com.apple.security.device.camera com.apple.security.files.downloads.read-write com.apple.security.files.user-selected.read-only; do
             grep -q "$key" entitlements.txt || { cat entitlements.txt; echo "$key is missing from the entitlements of $app" >&2; exit 1; }
           done
+      - name: Check that the guard of the privacy mode is in the app, for the same processors, signed to inherit the sandbox
+        # The app looks for it by name, inside itself, when a phone starts a private session, and a
+        # build without it refuses that session. It runs only when the sandbox of the app is its
+        # own, so a program that is signed with more or with less than these two entitlements
+        # would end at once, on a person's Mac.
+        run: |
+          set -eu
+          app=apps/baton/build/macos/Build/Products/Release/Baton.app
+          guard="$app/Contents/MacOS/BatonGuard"
+          test -x "$guard" || { echo "$guard is missing" >&2; exit 1; }
+          guard_archs=$(lipo -archs "$guard" | tr ' ' '\n' | sort | tr '\n' ' ')
+          app_archs=$(lipo -archs "$app/Contents/MacOS/Baton" | tr ' ' '\n' | sort | tr '\n' ' ')
+          echo "the guard is built for: $guard_archs; the app for: $app_archs"
+          [ "$guard_archs" = "$app_archs" ] || { echo "the guard and the app are built for different processors" >&2; exit 1; }
+          codesign -d --entitlements - "$guard" > guard-entitlements.txt 2>&1
+          for key in com.apple.security.app-sandbox com.apple.security.inherit; do
+            grep -q "$key" guard-entitlements.txt || { cat guard-entitlements.txt; echo "$key is missing from the entitlements of $guard" >&2; exit 1; }
+          done
+          keys=$(grep -o 'com\.apple\.[A-Za-z0-9._-]*' guard-entitlements.txt | sort -u | tr '\n' ' ')
+          [ "$keys" = "com.apple.security.app-sandbox com.apple.security.inherit " ] || {
+            cat guard-entitlements.txt
+            echo "the guard has an entitlement besides the two that let it inherit the sandbox" >&2
+            exit 1
+          }
+          codesign -dv "$guard" 2>&1 | grep -q "Identifier=io.github.jayunewal.baton.guard" || { echo "the guard has another identifier" >&2; exit 1; }
+          # The signature of the app seals the guard, so a guard that was signed after it, or not at
+          # all, fails here.
+          codesign --verify --deep --strict --verbose=2 "$app"
       - name: Start the app on this Mac
         timeout-minutes: 25
         working-directory: apps/baton

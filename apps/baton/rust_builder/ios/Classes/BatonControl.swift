@@ -103,16 +103,6 @@ final class MacDisplayListing: DisplayListing {
 
 // MARK: - The Mac
 
-/// Whether the session says that the screen is locked, or that another user switched the session
-/// away from the console. A session that cannot be read is not said to be locked.
-func macSessionLocked() -> Bool {
-  guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
-  // The key for the lock screen is not documented, and has been there as long as the lock screen
-  // has.
-  if (session["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue == true { return true }
-  return (session[kCGSessionOnConsoleKey as String] as? NSNumber)?.boolValue == false
-}
-
 /// What the system says of the Mac, and the way to bring an application to the front.
 final class MacActivityReader: MacActivity {
   var locked: Bool {

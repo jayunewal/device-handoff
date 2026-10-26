@@ -2,6 +2,13 @@
 
 import Foundation
 
+// The tests of the guard start this program again, as the guard and as the app (GuardTests.swift).
+if CommandLine.arguments.contains("--guard-child") { exit(guardChildMain()) }
+if CommandLine.arguments.contains("--guard-parent") { exit(guardParentMain()) }
+
+// A write to a guard that is gone is an error for a test to look at, and not the end of the tests.
+signal(SIGPIPE, SIG_IGN)
+
 var tests: [(String, () -> Void)] = [
   ("registration gives the Rust side a whole table", testRegistrationGivesTheRustSideAWholeTable),
   (
@@ -828,6 +835,46 @@ tests += [
     testASessionThatDidNotStartAfterTheCoverWentUpIsLockedAndGivenBackWhenItIsReleased
   ),
   (
+    "the guard is handed the Mac before the cover goes up and let go of after it comes down",
+    testTheGuardIsHandedTheMacBeforeTheCoverGoesUpAndLetGoOfAfterItComesDown
+  ),
+  (
+    "a guard that cannot be had raises nothing and says why",
+    testAGuardThatCannotBeHadRaisesNothingAndSaysWhy
+  ),
+  (
+    "a cover that does not go up gives the guard back and locks nothing",
+    testACoverThatDoesNotGoUpGivesTheGuardBackAndLocksNothing
+  ),
+  (
+    "a guard that is lost ends the session, tells the other device and locks the Mac",
+    testAGuardThatIsLostEndsTheSessionTellsTheOtherDeviceAndLocksTheMac
+  ),
+  (
+    "a guard that is lost while the cover goes up ends the session after the cover is up",
+    testAGuardThatIsLostWhileTheCoverGoesUpEndsTheSessionAfterTheCoverIsUp
+  ),
+  (
+    "the guard is told that the session is well only while the curtain is",
+    testTheGuardIsToldThatTheSessionIsWellOnlyWhileTheCurtainIs
+  ),
+  (
+    "the guard is told that the app is at work while the cover goes up",
+    testTheGuardIsToldThatTheAppIsAtWorkWhileTheCoverGoesUp
+  ),
+  (
+    "the guard is not told that the app is at work for longer than the bound",
+    testTheGuardIsNotToldThatTheAppIsAtWorkForLongerThanTheBound
+  ),
+  (
+    "the guard is told until the Mac is locked and the cover is down",
+    testTheGuardIsToldUntilTheMacIsLockedAndTheCoverIsDown
+  ),
+  (
+    "a session that nobody holds does not go on beating",
+    testASessionThatNobodyHoldsDoesNotGoOnBeating
+  ),
+  (
     "a quit of the app locks the Mac before it goes on",
     testAQuitOfTheAppLocksTheMacBeforeItGoesOn
   ),
@@ -850,6 +897,101 @@ tests += [
   (
     "what the other device is told is a short sentence that says the Mac locks",
     testWhatTheOtherDeviceIsToldIsAShortSentenceThatSaysTheMacLocks
+  ),
+  (
+    "the guard locks the Mac when the app is gone after it was handed the Mac",
+    testTheGuardLocksWhenTheAppIsGoneAfterItWasHandedTheMac
+  ),
+  (
+    "an armed guard locks the Mac when no line comes for the lapse",
+    testAnArmedGuardLocksWhenNoLineComesForTheLapse
+  ),
+  ("beats keep an armed guard from locking", testBeatsKeepAnArmedGuardFromLocking),
+  (
+    "the guard ends without locking when the session ends cleanly",
+    testTheGuardEndsWithoutLockingWhenTheSessionEndsCleanly
+  ),
+  (
+    "a guard that was never handed the Mac locks nothing",
+    testAGuardThatWasNeverHandedTheMacLocksNothing
+  ),
+  ("an app that arms twice is answered twice", testAnAppThatArmsTwiceIsAnsweredTwice),
+  (
+    "lines are cut out of whatever comes through a pipe",
+    testLinesAreCutOutOfWhateverComesThroughAPipe
+  ),
+  (
+    "locking goes round the ways until the Mac is locked",
+    testLockingGoesRoundTheWaysUntilTheMacIsLocked
+  ),
+  (
+    "a guard says it is ready, is handed the Mac and ends when the session ends",
+    testAGuardSaysItIsReadyIsHandedTheMacAndEndsWhenTheSessionEnds
+  ),
+  (
+    "a guard locks the Mac when its input closes after it was handed the Mac",
+    testAGuardLocksTheMacWhenItsInputClosesAfterItWasHandedTheMac
+  ),
+  (
+    "a guard locks the Mac when the app stops saying that it is well",
+    testAGuardLocksTheMacWhenTheAppStopsSayingThatItIsWell
+  ),
+  (
+    "beats keep a guard from locking for as long as they come and only then",
+    testBeatsKeepAGuardFromLockingForAsLongAsTheyComeAndOnlyThen
+  ),
+  (
+    "a guard that was never handed the Mac ends and locks nothing",
+    testAGuardThatWasNeverHandedTheMacEndsAndLocksNothing
+  ),
+  (
+    "a termination locks the Mac of a guard that was handed it",
+    testATerminationLocksTheMacOfAGuardThatWasHandedIt
+  ),
+  (
+    "a guard keeps trying to lock the Mac until it is locked",
+    testAGuardKeepsTryingToLockTheMacUntilItIsLocked
+  ),
+  ("a guard ignores lines it does not know", testAGuardIgnoresLinesItDoesNotKnow),
+  (
+    "a guard whose parent changes locks the Mac even if its input stays open",
+    testAGuardWhoseParentChangesLocksTheMacEvenIfItsInputStaysOpen
+  ),
+  (
+    "an app that is killed leaves a guard that locks the Mac",
+    testAnAppThatIsKilledLeavesAGuardThatLocksTheMac
+  ),
+  (
+    "an app that ends the session leaves a guard that locks nothing",
+    testAnAppThatEndsTheSessionLeavesAGuardThatLocksNothing
+  ),
+  (
+    "an app that hangs leaves a guard that locks the Mac when the lapse is over",
+    testAnAppThatHangsLeavesAGuardThatLocksTheMacWhenTheLapseIsOver
+  ),
+  (
+    "a guard that is terminated while it holds the Mac locks it and the app is told",
+    testAGuardThatIsTerminatedWhileItHoldsTheMacLocksIt
+  ),
+  (
+    "a guard that is killed while it holds the Mac is reported to the app",
+    testAGuardThatIsKilledWhileItHoldsTheMacIsReportedToTheApp
+  ),
+  (
+    "a guard whose pipe breaks while it stays is reported to the app",
+    testAGuardWhosePipeBreaksWhileItStaysIsReportedToTheApp
+  ),
+  (
+    "a guard that is not there or does not answer is not armed",
+    testAGuardThatIsNotThereOrDoesNotAnswerIsNotArmed
+  ),
+  (
+    "an arm that is answered too late is taken back and locks nothing",
+    testAnArmThatIsAnsweredTooLateIsTakenBackAndLocksNothing
+  ),
+  (
+    "a link is armed once and the guard ends when it is disarmed",
+    testALinkIsArmedOnceAndTheGuardEndsWhenItIsDisarmed
   ),
 ]
 
