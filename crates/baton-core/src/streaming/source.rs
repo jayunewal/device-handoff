@@ -61,13 +61,16 @@ use baton_stream::{
         PacketHeader,
         send::{Params as SoundRules, Sent as SoundSent, Stats as SoundStats},
     },
+    unlock::{Ask, Cancelled},
 };
 use iroh::endpoint::{Connection, SendStream, WriteError};
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ControlEnd, End, SoundPacket, SoundPlan, Streaming, Takes, WriteEnd, read_control, sound, stop,
+    ControlEnd, End, SoundPacket, SoundPlan, Streaming, Takes, UnlockAttempt, WriteEnd,
+    read_control, sound, stop,
+    unlock::{Handoff, Job, Step, UnlockSetup, Unlocking, Waiting},
     write_control,
 };
 use crate::{
@@ -171,6 +174,31 @@ pub trait SourceEvents: Send + 'static {
         let _ = on;
     }
 
+    /// Whether the cover of the screens, the hold of the keys and the pointer, and the guard that
+    /// locks the device if the app dies are all in place, now. The session asks when the viewer
+    /// asks to unlock, and refuses with `NotPrivate` unless the answer is yes: an unlock lights a
+    /// display and shows a lock screen, which only a device that keeps its screens dark may do
+    /// (ADR 0013). The platform answers from what it keeps, without looking at the system, since
+    /// the session's lock is held.
+    ///
+    /// The default is no: a platform that keeps nothing private cannot vouch for it.
+    fn private_in_place(&mut self) -> bool {
+        false
+    }
+
+    /// The viewer's person was recognised and sent the key of the box: the platform unlocks the
+    /// screen. It is given the [`UnlockAttempt`] and carries it out on a thread of its own, since
+    /// the session's lock is held, and says what came of it with
+    /// [`UnlockAttempt::done`]. This is called only in a session whose offer said `unlock`, only
+    /// while the screen is locked and [`private_in_place`](Self::private_in_place) was true, and
+    /// for one attempt at a time.
+    ///
+    /// The default lets go of the attempt, which reports `Failed`: a platform that cannot type a
+    /// password cannot unlock.
+    fn unlock(&mut self, attempt: UnlockAttempt) {
+        drop(attempt);
+    }
+
     /// The session is over. The platform lets go of everything it holds for it, and is called no
     /// more.
     fn ended(&mut self);
@@ -205,6 +233,14 @@ impl SourceEvents for Box<dyn SourceEvents> {
         (**self).hear(on);
     }
 
+    fn private_in_place(&mut self) -> bool {
+        (**self).private_in_place()
+    }
+
+    fn unlock(&mut self, attempt: UnlockAttempt) {
+        (**self).unlock(attempt);
+    }
+
     fn ended(&mut self) {
         (**self).ended();
     }
@@ -226,6 +262,13 @@ pub(crate) struct SourceParams {
     pub(crate) silent_after: Duration,
     /// Once the length of a message of the viewer has arrived, the rest of it has this long.
     pub(crate) stall: Duration,
+    /// The time an unlock waits for the face of the person at the viewer, once it has asked.
+    pub(crate) unlock_wait: Duration,
+    /// The time the platform has to unlock the screen, from the moment it is given the key. The
+    /// viewer waits longer than this for the end.
+    pub(crate) unlock_work: Duration,
+    /// How soon after a password was rejected a screen that unlocks proves it right.
+    pub(crate) unlock_grace: Duration,
 }
 
 impl Default for SourceParams {
@@ -237,6 +280,9 @@ impl Default for SourceParams {
             quiet_after: Duration::from_secs(10),
             silent_after: Duration::from_secs(30),
             stall: Duration::from_secs(10),
+            unlock_wait: Duration::from_secs(60),
+            unlock_work: Duration::from_secs(25),
+            unlock_grace: Duration::from_secs(20),
         }
     }
 }
@@ -256,6 +302,8 @@ pub(crate) struct SourceSetup {
     pub(crate) takes: Takes,
     /// What the session does about sound.
     pub(crate) sound: SoundPlan,
+    /// What the session does about an unlock.
+    pub(crate) unlock: UnlockSetup,
     /// The limits.
     pub(crate) params: SourceParams,
 }
@@ -339,6 +387,18 @@ struct Core {
     paused: bool,
     /// The platform was told that the next frame begins a chain.
     recovery_told: bool,
+    /// What the session does about an unlock.
+    unlock: Plan,
+}
+
+/// What a session does about an unlock, with the rules if it takes one.
+enum Plan {
+    /// The messages of an unlock are a violation.
+    Unsupported,
+    /// The messages of an unlock are dropped.
+    NotOffered,
+    /// The session takes an unlock. Boxed, since the rules are large next to the other variants.
+    Offered(Box<Unlocking>),
 }
 
 impl Core {
@@ -388,6 +448,14 @@ impl Core {
             self.sound.running = false;
         }
         self.events.hear(listening);
+    }
+
+    /// The rules of the unlock, if the session takes one.
+    fn unlocking(&mut self) -> Option<&mut Unlocking> {
+        match &mut self.unlock {
+            Plan::Offered(unlocking) => Some(unlocking.as_mut()),
+            Plan::Unsupported | Plan::NotOffered => None,
+        }
     }
 }
 
@@ -547,15 +615,42 @@ impl SourceHandle {
     /// Stops sending pictures for a while, and says why. The platform's gate drops the events
     /// of the viewer until [`resume`](Self::resume), except the release of a press that it
     /// delivered, so [`SourceEvents::input`] is still called.
+    ///
+    /// A pause because the screen is locked ([`PauseReason::Locked`]) is what lets the viewer unlock
+    /// it, in a session that takes an unlock. The platform pauses and resumes the session as the
+    /// screen locks and unlocks, also while it unlocks the screen itself.
     pub fn pause(&self, reason: PauseReason) {
-        lock(&self.source.core).paused = true;
-        self.source.say(SourceMessage::Pause(Pause { reason }));
+        let source = &self.source;
+        let now = source.now();
+        let mut core = lock(&source.core);
+        core.paused = true;
+        if reason == PauseReason::Locked {
+            let step = core
+                .unlocking()
+                .map(|unlocking| unlocking.locked(true, now))
+                .unwrap_or_default();
+            source.carry_out(&mut core, step);
+        }
+        drop(core);
+        source.say(SourceMessage::Pause(Pause { reason }));
     }
 
-    /// Goes on sending pictures.
+    /// Goes on sending pictures. A screen that was locked is not any more, so an unlock that waits
+    /// for the face of the person ends. A session that is over gives nothing back.
     pub fn resume(&self) {
-        lock(&self.source.core).paused = false;
-        self.source.say(SourceMessage::Resume);
+        let source = &self.source;
+        let now = source.now();
+        let mut core = lock(&source.core);
+        core.paused = false;
+        if source.end.get().is_none() {
+            let step = core
+                .unlocking()
+                .map(|unlocking| unlocking.locked(false, now))
+                .unwrap_or_default();
+            source.carry_out(&mut core, step);
+        }
+        drop(core);
+        source.say(SourceMessage::Resume);
     }
 
     /// An event of the viewer was dropped for this reason. The viewer is told, at most once a
@@ -708,6 +803,7 @@ impl Source {
             private,
             takes,
             sound,
+            unlock,
             params,
         } = setup;
         let sender = Sender::new(whom.session, params.rules);
@@ -717,6 +813,24 @@ impl Source {
         if !takes.allows(&config) {
             return Err(beyond_what_the_viewer_takes());
         }
+        let unlock = match unlock {
+            UnlockSetup::Unsupported => Plan::Unsupported,
+            UnlockSetup::NotOffered => Plan::NotOffered,
+            UnlockSetup::Offered(store) => {
+                // The offer says `unlock` only of a private session (protocol.md section 9).
+                if !private {
+                    return Err(Error::Config(
+                        "an unlock is offered only in a private session".to_owned(),
+                    ));
+                }
+                Plan::Offered(Box::new(Unlocking::new(
+                    store,
+                    whom.peer,
+                    params.unlock_wait,
+                    params.unlock_grace,
+                )))
+            }
+        };
         let (outbox, queue) = mpsc::channel(OUTBOX);
         // The first message waits for the stream to be opened.
         let _ = outbox.try_send(first);
@@ -742,6 +856,7 @@ impl Source {
                 quiet: false,
                 paused: false,
                 recovery_told: false,
+                unlock,
             }),
             outbox,
             viewer_control: AtomicBool::new(false),
@@ -818,7 +933,16 @@ impl Source {
                 );
             }
         }
-        lock(&self.core).events.ended();
+        let job = {
+            let mut core = lock(&self.core);
+            core.events.ended();
+            let now = self.now();
+            core.unlocking()
+                .and_then(|unlocking| unlocking.ended(now).job)
+        };
+        if let Some(job) = job {
+            self.run(job);
+        }
         tracing::debug!(peer = %self.peer.short(), reason = ?how, "a window streaming session ended");
     }
 
@@ -875,7 +999,7 @@ impl Source {
     /// Looks at the clock: gives up on the frames and the packets that are late, says what the
     /// viewer's events were dropped for, and ends the session of a viewer that has gone quiet.
     /// `Break` once the session is over.
-    fn on_tick(&self) -> ControlFlow<()> {
+    fn on_tick(self: &Arc<Self>) -> ControlFlow<()> {
         let now = self.now();
         let mut core = lock(&self.core);
         // The end can land after the task woke up and before it had the lock.
@@ -891,6 +1015,11 @@ impl Source {
         let silence = now.saturating_sub(core.last_report);
         core.quiet = silence > self.params.quiet_after;
         core.check_listening();
+        let step = core
+            .unlocking()
+            .map(|unlocking| unlocking.tick(now))
+            .unwrap_or_default();
+        self.carry_out(&mut core, step);
         drop(core);
         if let Some(notice) = notice {
             self.say(SourceMessage::Notice(notice));
@@ -928,7 +1057,7 @@ impl Source {
     }
 
     /// Carries out a message of the viewer. `Break` if it broke a rule.
-    fn viewer_said(&self, message: ViewerMessage) -> ControlFlow<()> {
+    fn viewer_said(self: &Arc<Self>, message: ViewerMessage) -> ControlFlow<()> {
         let now = self.now();
         let mut core = lock(&self.core);
         if self.end.get().is_some() {
@@ -973,20 +1102,104 @@ impl Source {
                 SoundPlan::Display => core.heard(on),
             },
             // A viewer sends the messages of an unlock only to a source that advertised
-            // `unlock.target` and offered the session with `unlock`. This source does neither yet
-            // (protocol.md section 9).
-            ViewerMessage::Unlock(_)
+            // `unlock.target` and offered the session with `unlock` (protocol.md section 9).
+            message @ (ViewerMessage::Unlock(_)
             | ViewerMessage::UnlockOpened(_)
-            | ViewerMessage::UnlockCancelled(_) => return ControlFlow::Break(()),
+            | ViewerMessage::UnlockCancelled(_)) => {
+                return self.unlock_said(&mut core, now, message);
+            }
             // The offer told the viewer whether it may ask. A message from a viewer that may not is
             // dropped, and is no violation.
             ViewerMessage::Lift(lift) => {
                 if self.private {
                     core.events.lift(lift);
+                    let step = core
+                        .unlocking()
+                        .map(|unlocking| unlocking.lifted(lift, now))
+                        .unwrap_or_default();
+                    self.carry_out(&mut core, step);
                 }
             }
         }
         ControlFlow::Continue(())
+    }
+
+    /// Carries out a message of an unlock. `Break` if the session takes none and the viewer was not
+    /// to send it.
+    fn unlock_said(
+        self: &Arc<Self>,
+        core: &mut Core,
+        now: Duration,
+        message: ViewerMessage,
+    ) -> ControlFlow<()> {
+        let step = match &mut core.unlock {
+            // The viewer is told by the offer whether it may unlock, and a device that never
+            // advertised an unlock was not to be sent a message of one.
+            Plan::Unsupported => return ControlFlow::Break(()),
+            // A message can cross the offer on its way, and an attempt for which the offer did not
+            // say `unlock` is not one that the viewer was to make: it is dropped.
+            Plan::NotOffered => return ControlFlow::Continue(()),
+            Plan::Offered(unlocking) => match message {
+                ViewerMessage::Unlock(Ask { number }) => {
+                    let in_place = core.events.private_in_place();
+                    unlocking.asked(number, now, in_place)
+                }
+                ViewerMessage::UnlockOpened(opened) => unlocking.opened(opened, now),
+                ViewerMessage::UnlockCancelled(Cancelled { reason }) => {
+                    unlocking.cancelled(reason, now)
+                }
+                _ => return ControlFlow::Continue(()),
+            },
+        };
+        self.carry_out(core, step);
+        ControlFlow::Continue(())
+    }
+
+    /// Does what an unlock asked for, with the lock of the session held: says what is to be said,
+    /// starts what waits for the disk, and hands the platform an attempt.
+    fn carry_out(self: &Arc<Self>, core: &mut Core, step: Step) {
+        let Step { say, job, hand } = step;
+        if let Some(message) = say {
+            self.say(message);
+        }
+        if let Some(job) = job {
+            self.run(job);
+        }
+        if let Some(Handoff { attempt, waiting }) = hand {
+            core.events.unlock(attempt);
+            self.runtime.spawn(Arc::clone(self).await_unlock(waiting));
+        }
+    }
+
+    /// Runs a call to the store on a thread that may wait.
+    fn run(&self, job: Job) {
+        drop(self.runtime.spawn_blocking(move || job.run()));
+    }
+
+    /// Waits for the platform to say what came of an attempt, writes it down, and then tells the
+    /// viewer, unless the viewer gave up. The record is written first so that what the viewer is
+    /// told is what the next question will find: a setup that was rejected is over already, unless
+    /// the screen proved the password right while the record was written.
+    async fn await_unlock(self: Arc<Self>, waiting: Waiting) {
+        let (number, report) = waiting.report(self.params.unlock_work).await;
+        let job = lock(&self.core)
+            .unlocking()
+            .and_then(|unlocking| unlocking.reported(number, report));
+        if let Some(job) = job {
+            // A store that fails does not keep the viewer from hearing.
+            let _ = tokio::task::spawn_blocking(move || job.run()).await;
+        }
+        let now = self.now();
+        let Step { say, job, .. } = lock(&self.core)
+            .unlocking()
+            .map(|unlocking| unlocking.closed(number, now))
+            .unwrap_or_default();
+        if let Some(job) = job {
+            let _ = tokio::task::spawn_blocking(move || job.run()).await;
+        }
+        if let Some(message) = say {
+            self.say(message);
+        }
     }
 
     /// Writes one frame on a stream of its own, and settles what became of it.
@@ -1275,6 +1488,7 @@ mod tests {
             private: false,
             takes: takes(),
             sound: SoundPlan::None,
+            unlock: UnlockSetup::Unsupported,
             params,
         }
     }

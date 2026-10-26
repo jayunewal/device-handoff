@@ -47,7 +47,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     SoundPlan, SourceEvents, SourceHandle, SourceParams, SourceSetup, Streaming, Table, Takes,
-    start::Starter,
+    start::Starter, unlock::UnlockSetup,
 };
 use crate::{
     error::{Error, Result},
@@ -426,6 +426,8 @@ impl Streaming {
             private: offered.private,
             takes,
             sound: offered.sound,
+            // No device offers an unlock yet.
+            unlock: UnlockSetup::Unsupported,
             params: SourceParams::default(),
         };
         let started = self.source(

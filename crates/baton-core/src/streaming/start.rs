@@ -417,6 +417,8 @@ impl Streaming {
             control: control && offer.control,
             private: offer.private,
             sound: sounding,
+            // No device advertises `unlock.approve` yet.
+            unlock: false,
         };
         match self.view_in(table, paired, connection.clone(), session, viewing, granted) {
             Ok(handle) => {

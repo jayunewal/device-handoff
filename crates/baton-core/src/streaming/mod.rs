@@ -67,6 +67,9 @@ mod source;
 mod start;
 #[cfg(test)]
 mod start_tests;
+mod unlock;
+#[cfg(test)]
+mod unlock_tests;
 mod view;
 
 /// How many frame streams a viewer takes at once from a source on a connection: six in flight and
@@ -99,6 +102,9 @@ pub(crate) use source::{SourceParams, SourceSetup};
 use start::Pending;
 pub(crate) use start::Starter;
 pub use start::{StartHandler, StartOutcome, StartRequest, StartSlot, StartVerdict};
+pub use unlock::{
+    CancelReason, KeepError, Question, Settled, UnlockAttempt, UnlockOutcome, Unlocker,
+};
 pub(crate) use view::ViewParams;
 pub use view::{DecodeError, Decoder, DecoderState, ViewHandle, ViewStats};
 use view::{Granted, View};
@@ -282,6 +288,7 @@ impl Streaming {
             control,
             private,
             sound: false,
+            unlock: false,
         };
         self.view_granted(peer, connection, session, viewing, granted)
     }

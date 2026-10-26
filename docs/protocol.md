@@ -355,7 +355,9 @@ The reference implementation takes part as a receiver once the application gives
 | Time without a byte moving, after which a transfer is stopped | 30 seconds |
 | Decision on an offer kept | for an accepted offer, as long as what was received for it is kept; for a refusal by the person or by policy, at least 10 minutes |
 | Time a source waits for the answer to the question of an unlock, which covers the person at the viewer finding their face | 60 seconds |
-| Time a source waits for the system to say that the screen is unlocked once it has typed the password | 5 seconds |
+| Time a source waits for the system to say that the screen is unlocked once it has typed the password, after which it calls the password rejected | 10 seconds |
+| Time a source gives the system to type the password and say what came of it, after which the attempt has `Failed` | 25 seconds |
+| Time after a `Rejected` in which a screen that proves to be unlocked gives the unlock back | 20 seconds |
 | Time a viewer waits for the answer to an `Unlock`, and for the `UnlockDone` that follows its `UnlockOpened` | 10 seconds, and 30 seconds |
 
 ## 7. Test vectors
@@ -935,7 +937,7 @@ With the key the source opens the box. If the key does not open it, nothing is t
 | `Failed` | The source could not do it for a reason of its own, such as not being allowed to post keys, or not being able to keep its new box. |
 | `Other` | An outcome of a later version. |
 
-**One try.** A source types the password at most once for each `UnlockSealed`, and never by itself. It makes no second try after a `Rejected`, and none after a `Stale`: it marks the unlock of that viewer unusable and answers every later `Unlock` with `NotSetUp` until the person sets it up again at the source. It does the same when the viewer says `KeyLost`. A wrong or a stale password therefore costs one failed login at the source and no more.
+**One try.** A source types the password at most once for each `UnlockSealed`, and never by itself. It makes no second try after a `Rejected`, and none after a `Stale`: it marks the unlock of that viewer unusable and answers every later `Unlock` with `NotSetUp` until the person sets it up again at the source. It does the same when the viewer says `KeyLost`. A wrong or a stale password therefore costs one failed login at the source and no more. A `Rejected` is what the source made of a screen that was still locked after 10 seconds, and a slow system can be right after the source has given up: when the screen proves to be unlocked within 20 seconds of a `Rejected`, or while the source writes the `Rejected` down, the source takes the unlock back as usable, before it tells the viewer, since the password was good or the person unlocked the screen another way. The next attempt then types the password once, as every attempt does, and a password that was wrong ends the unlock again.
 
 **Time.** A source that has sent an `UnlockSealed` and has no answer in 60 seconds ends the attempt with `TimedOut`. A viewer that has sent an `Unlock` and has neither an `UnlockSealed` nor an `UnlockDone` in 10 seconds gives up and sends an `UnlockCancelled` whose reason is `Failed`, and one that has sent an `UnlockOpened` and has no `UnlockDone` in 30 seconds stops waiting and tells its person that it does not know what came of it.
 
