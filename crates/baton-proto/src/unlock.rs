@@ -225,8 +225,9 @@ impl<'de> Deserialize<'de> for Challenge {
 /// recognised, in an `UnlockOpened`. It is a bearer secret: whoever holds it and the box can open
 /// the password. The target therefore uses a key once: before it types, it puts the password in a
 /// new box under a new key, sealed to the same key of the approver, so that a copy of a key that
-/// was used opens nothing that the target holds afterwards. It is wiped from memory when dropped
-/// and never printed.
+/// was used opens nothing that the target holds afterwards. A target that cannot keep the new box
+/// types nothing and keeps the old one, which the key still opens. It is wiped from memory when
+/// dropped and never printed.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct BoxKey([u8; Self::LEN]);
 
