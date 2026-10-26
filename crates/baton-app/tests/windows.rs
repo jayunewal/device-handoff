@@ -3598,3 +3598,34 @@ async fn the_sound_of_a_screen_that_a_phone_asked_for_can_be_heard_too() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_screen_that_a_phone_asked_for_cannot_be_heard_unless_both_devices_carry_sound() {
+    let cases = [
+        (
+            "a Mac that sends no sound",
+            Sharer::with_screen(false),
+            Viewer::playing(),
+        ),
+        (
+            "a phone that plays no sound",
+            Sharer::with_screen_and_sound(false),
+            Viewer::new(),
+        ),
+        (
+            "a phone whose platform says that it plays no sound",
+            Sharer::with_screen_and_sound(false),
+            Viewer::muddled(),
+        ),
+    ];
+    for (what, sharer, viewer) in cases {
+        let asking = Asking::with_platforms(sharer, viewer).await;
+        asking.allow(StartAccess::Look);
+        let session = asking.started(false).await;
+        assert!(session.display, "{what}");
+        assert!(!session.sound, "{what}");
+        // The request is not taken, and the Mac is never asked to record.
+        assert!(!asking.phone.app.hear_window(session.id, true), "{what}");
+        assert_eq!(asking.sharer.heard.count("hear"), 0, "{what}");
+    }
+}
