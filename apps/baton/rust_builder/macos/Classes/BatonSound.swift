@@ -260,8 +260,10 @@ final class SoundPump {
   private var running = false
   /// The samples of the run that do not make a whole packet yet.
   private var pending: [Float] = []
-  /// How many frames of silence the tap has read in a row, and whether it ever read anything else.
+  /// How many frames of silence the tap has read in a row, whether some program played when that
+  /// count began (nil until the first silence), and whether the tap ever read anything else.
   private var silentFrames = 0
+  private var playedAtBegin: Bool?
   private var heardSound = false
   /// How many packets of this run the library refused.
   private var refusals = 0
@@ -358,6 +360,7 @@ final class SoundPump {
     encoder = nil
     resampler = nil
     silentFrames = 0
+    playedAtBegin = nil
     refusals = 0
   }
 
@@ -403,6 +406,7 @@ final class SoundPump {
     tap = made
     tapRate = rate
     silentFrames = 0
+    playedAtBegin = nil
     return true
   }
 
@@ -474,9 +478,12 @@ final class SoundPump {
   }
 
   /// Looks at what the tap read for the sign that the system has not let the app record the sound:
-  /// silence for `soundSilenceSeconds`, while some program plays. Sound that was ever heard puts the
-  /// question to rest, since a program that plays silence on purpose would otherwise be taken for
-  /// a Mac that gives none. false if that is what it found, and the run has ended.
+  /// silence for `soundSilenceSeconds` while some program plays, a program that was there when the
+  /// count of the silence began and still is at its end. A program that begins to play within the
+  /// count may not have been read yet, so one that is there only at the end is not the sign, and
+  /// the next count is the first in which it can be. Sound that was ever heard puts the question to
+  /// rest, since a program that plays silence on purpose would otherwise be taken for a Mac that
+  /// gives none. false if the sign was found, and the run has ended.
   private func noticeSilence(in samples: [Float]) -> Bool {
     if heardSound { return true }
     if samples.contains(where: { $0 != 0 }) {
@@ -484,10 +491,15 @@ final class SoundPump {
       silentFrames = 0
       return true
     }
+    if playedAtBegin == nil { playedAtBegin = tap?.someoneIsPlaying() == true }
     silentFrames += samples.count / 2
     guard Double(silentFrames) / tapRate >= soundSilenceSeconds else { return true }
+    let played = playedAtBegin == true
+    // The look that ends this count is the one that begins the next.
+    let plays = tap?.someoneIsPlaying() == true
     silentFrames = 0
-    guard tap?.someoneIsPlaying() == true else { return true }
+    playedAtBegin = plays
+    guard played, plays else { return true }
     NSLog("Baton: the Mac reads only silence while a program plays: the app may not record it.")
     tellWhy(.noPermission)
     return false

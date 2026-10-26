@@ -1054,8 +1054,12 @@ tests += [
     testTwoSecondsOfSilenceWhileAProgramPlaysAreTakenForAMacThatHasNotLetTheAppRecord
   ),
   (
-    "silence while nothing plays is not reported and the count starts again after each look",
-    testSilenceWhileNothingPlaysIsNotReportedAndTheCountStartsAgainAfterEachLook
+    "silence while nothing plays is not reported and a program that begins later needs a count of its own",
+    testSilenceWhileNothingPlaysIsNotReportedAndAProgramThatBeginsLaterNeedsACountOfItsOwn
+  ),
+  (
+    "a program that begins just before the end of the count is not taken for a Mac that has not let the app record",
+    testAProgramThatBeginsJustBeforeTheEndOfTheCountIsNotTakenForAMacThatHasNotLetTheAppRecord
   ),
   (
     "sound that was heard once rests the question of the permission",

@@ -71,6 +71,7 @@ final class FakeSoundTap: SoundTap {
   private let failure: Error?
   private var muteds: [Bool] = []
   private var stopCount = 0
+  private var lookCount = 0
   private var isPlaying: Bool
   private var deliver: (([Float]) -> Void)?
   /// What the pump gave to be called with the blocks, also after the tap was stopped: the blocks
@@ -86,6 +87,8 @@ final class FakeSoundTap: SoundTap {
   /// Whether each start asked for the sound to be kept from the speakers.
   var starts: [Bool] { lock.locked { muteds } }
   var stops: Int { lock.locked { stopCount } }
+  /// How many times the pump asked whether some program plays.
+  var looks: Int { lock.locked { lookCount } }
 
   func setPlaying(_ playing: Bool) { lock.locked { isPlaying = playing } }
 
@@ -106,7 +109,12 @@ final class FakeSoundTap: SoundTap {
     deliver = nil
   }
 
-  func someoneIsPlaying() -> Bool { lock.locked { isPlaying } }
+  func someoneIsPlaying() -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    lookCount += 1
+    return isPlaying
+  }
 
   /// What the system does while the tap reads: a block is handed over from a thread of the tap.
   func read(_ samples: [Float]) {
@@ -451,20 +459,47 @@ func testTwoSecondsOfSilenceWhileAProgramPlaysAreTakenForAMacThatHasNotLetTheApp
   rig.pump.close()
 }
 
-func testSilenceWhileNothingPlaysIsNotReportedAndTheCountStartsAgainAfterEachLook() {
+func testSilenceWhileNothingPlaysIsNotReportedAndAProgramThatBeginsLaterNeedsACountOfItsOwn() {
   let rig = SoundRig()
   rig.pump.hear(true)
   rig.pump.idle()
-  // Nothing plays, so the silence is the sound of the Mac.
+  // Nothing plays, so the silence is the sound of the Mac. The pump looks for a program when a count
+  // of the silence begins, and when it ends, which is where the next count begins: at blocks 1, 94
+  // and 188 of the 200, and not at every block.
   rig.silence(blocks: 200)
   check(rig.session.silences.isEmpty, "\(rig.session.silences)")
   check(rig.taps.latest?.stops == 0)
-  // A program starts to play. The silence is counted from the look that found nothing.
+  check(rig.taps.latest?.looks == 3, "\(String(describing: rig.taps.latest?.looks)) looks")
+  // A program starts to play, and the tap reads nothing from it. The count that is running ends at
+  // block 282 with the program there, but it was not there when the count began.
   rig.taps.latest?.setPlaying(true)
-  rig.silence(blocks: 10)
+  rig.silence(blocks: 94)
   check(rig.session.silences.isEmpty, "\(rig.session.silences)")
-  rig.silence(blocks: 84)
+  // The count that begins with the program ends at block 376, and not before.
+  rig.silence(blocks: 81)
+  check(rig.session.silences.isEmpty, "\(rig.session.silences)")
+  rig.silence(blocks: 1)
   check(rig.session.silences == [.noPermission], "\(rig.session.silences)")
+  rig.pump.close()
+}
+
+func testAProgramThatBeginsJustBeforeTheEndOfTheCountIsNotTakenForAMacThatHasNotLetTheAppRecord() {
+  let rig = SoundRig()
+  rig.pump.hear(true)
+  rig.pump.idle()
+  // A Mac that has let the app record. Nothing plays for 1.98 seconds, and then a program starts,
+  // a moment before the count of two seconds is over and before the tap has read any of its sound.
+  rig.silence(blocks: 93)
+  rig.taps.latest?.setPlaying(true)
+  rig.silence(blocks: 1)
+  check(rig.session.silences.isEmpty, "\(rig.session.silences)")
+  check(rig.taps.latest?.stops == 0, "the Mac was left quiet")
+  // Its sound comes, and the run goes on with it, silence and sound alike.
+  rig.feed(1024)
+  rig.silence(blocks: 300)
+  check(rig.session.silences.isEmpty, "\(rig.session.silences)")
+  check(rig.taps.latest?.stops == 0)
+  check(rig.session.packets.count == 94 + 1 + 300, "\(rig.session.packets.count) packets")
   rig.pump.close()
 }
 
