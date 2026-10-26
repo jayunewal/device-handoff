@@ -4,8 +4,9 @@
 // the Mac, done with the calls of the system. Every screen is turned black by its table, which
 // nothing shows over, not Spotlight and not Mission Control, and which the capture does not see.
 // The keys and the pointer of the Mac are held by a tap that drops every event that this app did
-// not post. When the session is over the Mac is locked, with the first of three calls that does it,
-// and only then do the screens and the keys come back.
+// not post. When the session is over the Mac is locked, with the first of three ways that does it
+// (BatonLock.swift), and only then do the screens and the keys come back. If the app goes away
+// before that, the guard (BatonGuard.swift) locks the Mac.
 //
 // The app is sandboxed, and what is done here was found to work inside the sandbox, on a Mac, by
 // the checks in docs/research/privacy-mode. This file talks to the system, so it is built on a Mac
@@ -295,8 +296,11 @@ final class MacCurtain: Curtain {
   private static let watchInterval: TimeInterval = 0.25
   /// How many looks in a row may find a screen that is not dark before the session is ended.
   private static let darknessMisses = 2
+  /// How long the looks may stop before the curtain is no longer said to be well: four looks.
+  private static let lookGrace: TimeInterval = 1
 
   private let ledger: PostLedger
+  private let mac: MacLock
   private let cover = ScreenCover()
   private let queue = DispatchQueue(label: "io.github.jayunewal.baton.privacy")
   private let mutex = NSLock()
@@ -308,6 +312,8 @@ final class MacCurtain: Curtain {
   private var watcher: DispatchSourceTimer?
   private var quitWatch: QuitWatch?
   private var heldSince: TimeInterval = 0
+  /// When the last look was made, or the cover went up.
+  private var lastLook: TimeInterval = 0
   /// Used by the queue only.
   private var misses = 0
 
@@ -320,6 +326,7 @@ final class MacCurtain: Curtain {
   /// taken for the keys of somebody at the Mac.
   init(ledger: PostLedger) {
     self.ledger = ledger
+    mac = MacLock(noteKeyDown: { ledger.notedKeyDown() })
   }
 
   deinit {
@@ -359,12 +366,16 @@ final class MacCurtain: Curtain {
     guard dark else {
       throw SharerFailure(sentence: "This Mac could not make its screens dark.")
     }
-    // The screens stay awake: a screen that sleeps is not captured, and the session would end.
+    // The screens stay awake: a screen that sleeps is not captured, and the session would end. The
+    // activity is one that the person started, which the system does not slow down (App Nap), since
+    // an app with nothing on show that is slowed down would not look at the cover in time, and
+    // would not tell its guard that it is well.
     let kept = ProcessInfo.processInfo.beginActivity(
-      options: [.idleDisplaySleepDisabled, .idleSystemSleepDisabled],
+      options: [.userInitiated, .idleDisplaySleepDisabled, .idleSystemSleepDisabled],
       reason: "Baton keeps this Mac awake while another device uses it.")
     mutex.lock()
     activity = kept
+    lastLook = ProcessInfo.processInfo.systemUptime
     mutex.unlock()
     watch()
     privacyLog.notice("Baton: the screens are dark and the keys and the pointer are held.")
@@ -396,17 +407,19 @@ final class MacCurtain: Curtain {
     }
   }
 
-  var locked: Bool { macSessionLocked() }
+  var locked: Bool { mac.locked }
 
   func lock(attempt: Int) {
-    // The call of the system first, which locks at once and does not depend on a shortcut that the
-    // person may have changed; then the shortcut; then the sleep of the display, which locks a Mac
-    // that asks for its password at once.
-    switch attempt % 3 {
-    case 0: lockByCall()
-    case 1: lockByKeys()
-    default: lockByDisplaySleep()
-    }
+    mac.lock(attempt: attempt)
+  }
+
+  /// Whether the cover and the hold are up and the looks at them go on. The guard hears that the
+  /// session is well only while this is true.
+  var healthy: Bool {
+    mutex.lock()
+    defer { mutex.unlock() }
+    return covered && hold != nil
+      && ProcessInfo.processInfo.systemUptime - lastLook < MacCurtain.lookGrace
   }
 
   // MARK: Looking
@@ -431,6 +444,11 @@ final class MacCurtain: Curtain {
     let since = heldSince
     mutex.unlock()
     guard let held else { return }
+    defer {
+      mutex.lock()
+      lastLook = ProcessInfo.processInfo.systemUptime
+      mutex.unlock()
+    }
     if !held.holding { tell(.holdLost) }
     if cover.apply() {
       misses = 0
@@ -461,50 +479,6 @@ final class MacCurtain: Curtain {
     privacyLog.error("Baton: the private session is ended because of \(why, privacy: .public).")
     call(alarm)
   }
-
-  // MARK: Locking
-
-  private typealias LockScreenCall = @convention(c) () -> Int32
-
-  /// The call of the system that locks the screen, which is not in a header: it is looked for, and
-  /// a Mac that does not have it is locked another way.
-  private func lockByCall() {
-    guard let handle = dlopen("/System/Library/PrivateFrameworks/login.framework/login", RTLD_NOW),
-      let symbol = dlsym(handle, "SACLockScreenImmediate")
-    else { return }
-    _ = unsafeBitCast(symbol, to: LockScreenCall.self)()
-  }
-
-  /// Control, Command and Q, which is the shortcut of the system for locking the screen, posted as
-  /// a person's keys would be. They pass the hold, since this app posted them.
-  private func lockByKeys() {
-    guard CGPreflightPostEventAccess(), let source = CGEventSource(stateID: .hidSystemState) else {
-      return
-    }
-    let steps: [(CGKeyCode, Bool, CGEventFlags)] = [
-      (59, true, [.maskControl]),
-      (55, true, [.maskControl, .maskCommand]),
-      (12, true, [.maskControl, .maskCommand]),
-      (12, false, [.maskControl, .maskCommand]),
-      (55, false, [.maskControl]),
-      (59, false, []),
-    ]
-    for (code, down, flags) in steps {
-      if down { ledger.notedKeyDown() }
-      let event = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down)
-      event?.flags = flags
-      event?.post(tap: .cghidEventTap)
-      Thread.sleep(forTimeInterval: 0.02)
-    }
-  }
-
-  private func lockByDisplaySleep() {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
-    process.arguments = ["displaysleepnow"]
-    do { try process.run() } catch { return }
-    process.waitUntilExit()
-  }
 }
 
 /// The privacy of a session that another device controls, on this Mac. `ledger` is the one that
@@ -512,8 +486,12 @@ final class MacCurtain: Curtain {
 /// keys of somebody at the Mac. `end` ends the session with a sentence for the person there.
 func makePrivateSession(ledger: PostLedger, end: @escaping (String) -> Void) -> PrivateSession {
   let curtain = MacCurtain(ledger: ledger)
+  // The guard is inside the app, next to its own program. A build without it has no private
+  // session.
+  let guardian = GuardLink(executable: Bundle.main.url(forAuxiliaryExecutable: "BatonGuard"))
   let session = PrivateSession(
-    curtain: curtain, end: end, log: { privacyLog.notice("Baton: \($0, privacy: .public)") })
+    curtain: curtain, guardian: guardian, end: end,
+    log: { privacyLog.notice("Baton: \($0, privacy: .public)") })
   // A quit of the app is an end of the session like any other: `finish` returns when the Mac is
   // locked and the cover is down, and only then does the quit go on and the process end.
   curtain.whenTheAppQuits = { [weak session] in session?.finish(.sessionOver) }

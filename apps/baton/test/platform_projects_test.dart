@@ -249,6 +249,34 @@ void main() {
     expect(ios, contains('isFolder.boolValue && !isPackage'));
   });
 
+  test('the Mac app builds its guard and signs it to inherit the sandbox', () {
+    // The guard locks the Mac when the app goes away during a private session
+    // (docs/adr/0011-privacy-mode.md). Only the build puts it into the app, and the app looks
+    // for it by name, so a lost phase or a renamed program would show as a Mac that cannot start
+    // a private session, on the first try with a phone.
+    final project = _read('macos/Runner.xcodeproj/project.pbxproj');
+    expect(project, contains('/* Build Guard */,'), reason: 'Runner runs it');
+    expect(project, contains(r'sh \"$SRCROOT/Guard/build-guard.sh\"'));
+    final script = _read('macos/Guard/build-guard.sh');
+    expect(script, contains(r'"$programs/BatonGuard"'));
+    expect(script, contains('BatonGuard.swift'));
+    expect(script, contains('BatonLock.swift'));
+    expect(script, contains('--identifier io.github.jayunewal.baton.guard'));
+    expect(
+      _read('rust_builder/macos/Classes/BatonPrivacyMac.swift'),
+      contains('forAuxiliaryExecutable: "BatonGuard"'),
+    );
+    // A program that inherits the sandbox of its parent may hold no other entitlement.
+    final keys = RegExp(r'<key>([^<]+)</key>')
+        .allMatches(_read('macos/Guard/Guard.entitlements'))
+        .map((match) => match.group(1))
+        .toList();
+    expect(keys, [
+      'com.apple.security.app-sandbox',
+      'com.apple.security.inherit',
+    ]);
+  });
+
   test('the library is linked in a way that keeps its functions findable', () {
     for (final system in ['ios', 'macos']) {
       final podspec = _read('rust_builder/$system/baton_ffi.podspec');

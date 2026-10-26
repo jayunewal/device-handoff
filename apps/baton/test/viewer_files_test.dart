@@ -19,9 +19,11 @@ String _read(String path) =>
 const _files = [
   'BatonCapture.swift',
   'BatonControl.swift',
+  'BatonGuard.swift',
   'BatonH264Decoder.swift',
   'BatonH264Encoder.swift',
   'BatonInput.swift',
+  'BatonLock.swift',
   'BatonPrivacy.swift',
   'BatonPrivacyMac.swift',
   'BatonSource.swift',
@@ -88,9 +90,11 @@ void main() {
     const others = [
       'BatonCapture.swift',
       'BatonControl.swift',
+      'BatonGuard.swift',
       'BatonH264Decoder.swift',
       'BatonH264Encoder.swift',
       'BatonInput.swift',
+      'BatonLock.swift',
       'BatonPrivacy.swift',
       'BatonPrivacyMac.swift',
       'BatonSource.swift',
@@ -107,6 +111,7 @@ void main() {
       'BatonSource.swift',
       'BatonInput.swift',
       'BatonPrivacy.swift',
+      'BatonGuard.swift',
     ]) {
       final swift = _read('rust_builder/macos/Classes/$file');
       final imports = RegExp(

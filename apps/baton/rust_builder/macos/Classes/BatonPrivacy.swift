@@ -6,10 +6,11 @@
 // whatever the reason, the Mac is locked again and only then does it show anything.
 //
 // This file holds what does not depend on the frameworks of a Mac: when the cover goes up and comes
-// down, what ends a session, how the Mac is locked until the system says that it is. The Mac itself
-// (the cover, the tap that holds the input, the calls that lock) is given to it as a protocol, and
-// is in BatonPrivacyMac.swift. So that this file can be built and tested anywhere
-// (apps/baton/rust_builder/swift_tests), nothing here may import more than Foundation.
+// down, what ends a session, how the Mac is locked until the system says that it is, and what the
+// guard (BatonGuard.swift) is told. The Mac itself (the cover, the tap that holds the input, the
+// calls that lock) is given to it as a protocol, and is in BatonPrivacyMac.swift. So that this file
+// can be built and tested anywhere (apps/baton/rust_builder/swift_tests), nothing here may import
+// more than Foundation.
 
 import Foundation
 
@@ -28,6 +29,9 @@ enum PrivacyAlarm: Equatable {
   case holdLost
   /// A screen could not be kept dark.
   case coverLost
+  /// The guard went away, or locked the Mac, while the session was on: nothing would lock the Mac
+  /// if this app went away as well.
+  case guardLost
 
   /// What the person at the other device is told.
   var sentence: String {
@@ -41,12 +45,14 @@ enum PrivacyAlarm: Equatable {
         + "the Mac locks."
     case .coverLost:
       return "The Mac could not keep its screens dark. The session ended, and the Mac locks."
+    case .guardLost:
+      return "The Mac's guard stopped answering. The session ended, and the Mac locks."
     }
   }
 }
 
 /// What a private session uses of the Mac. BatonPrivacyMac.swift has the real one.
-protocol Curtain: AnyObject {
+protocol Curtain: MacLocking {
   /// Covers every screen with black, takes the keyboard and the pointer out of anyone's hands but
   /// this app's, and keeps the screens awake. `alarm` is called, from any thread and without
   /// waiting, when something at the Mac needs the session ended. Throws `SharerFailure` with a
@@ -57,12 +63,10 @@ protocol Curtain: AnyObject {
   /// called when nothing is raised.
   func lower()
 
-  /// Whether the system says that the Mac is locked.
-  var locked: Bool { get }
-
-  /// One try at locking the Mac. The Mac has more than one way, and the later numbers are tried
-  /// when the earlier ones did not lock it. It does not wait for the Mac to be locked.
-  func lock(attempt: Int)
+  /// Whether the cover and the hold are as they were put, and are still being looked at. Once the
+  /// cover is up, a session tells its guard that it is well only while this is true, so that a
+  /// curtain that nobody looks after any more ends in the lock of the guard.
+  var healthy: Bool { get }
 }
 
 // MARK: - The rules
@@ -79,6 +83,13 @@ struct PrivacyTiming {
   /// How long `finish` waits for the Mac to be locked and the cover to come down before it
   /// returns. The locking goes on, and the cover stays, until the Mac is locked.
   var patience: TimeInterval = 10
+  /// How often the guard is told that the session is well. It is a real time, since the guard
+  /// counts real time, and it is far shorter than the lapse that the guard waits for.
+  var beat: TimeInterval = 0.25
+  /// How long the guard is told that the app is at work, whatever the curtain says, while the cover
+  /// goes up: a Mac that is busy takes longer than the guard waits for a first word, and a cover
+  /// that takes longer than this ends in the lock of the guard. It is a real time too.
+  var raise: TimeInterval = 10
 }
 
 /// The privacy of one session that another device controls: the cover goes up when the session
@@ -86,6 +97,10 @@ struct PrivacyTiming {
 ///
 /// A Mac that cannot be locked keeps its cover and goes on trying. That is the way of failing that
 /// shows nothing to the people who are at home, and the person at the Mac has the power button.
+///
+/// The guard is handed the Mac before the cover goes up and let go of after it comes down. In
+/// between, an app that goes away without ending the session (a crash, a kill, a hang) is the
+/// guard's to answer for: it locks the Mac.
 final class PrivateSession {
   /// Why a session is finished.
   enum Cause: Equatable {
@@ -102,6 +117,7 @@ final class PrivateSession {
   }
 
   private let curtain: Curtain
+  private let guardian: SessionGuard
   private let end: (String) -> Void
   private let timing: PrivacyTiming
   private let sleep: (TimeInterval) -> Void
@@ -113,15 +129,26 @@ final class PrivateSession {
   private let condition = NSCondition()
   private var state = State.idle
 
-  /// `end` ends the session at the other device with a sentence for the person there. `sleep` and
-  /// `now` are the clocks, which the tests replace.
+  /// Whether the guard is told that the session is well. Apart from `condition`, since the thread
+  /// that tells it must never wait for a `begin` that is raising the cover.
+  private let beating = NSLock()
+  private var beatingOn = false
+  /// When the guard was first told, and whether the cover is up, so that the curtain is judged.
+  private var beatingSince: TimeInterval = 0
+  private var judging = false
+
+  /// `guardian` is the guard, which is handed the Mac for as long as the cover is up. `end` ends
+  /// the session at the other device with a sentence for the person there. `sleep` and `now` are
+  /// the clocks of the locking, which the tests replace.
   init(
-    curtain: Curtain, timing: PrivacyTiming = PrivacyTiming(), end: @escaping (String) -> Void,
+    curtain: Curtain, guardian: SessionGuard, timing: PrivacyTiming = PrivacyTiming(),
+    end: @escaping (String) -> Void,
     sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
     now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
     log: @escaping (String) -> Void = { _ in }
   ) {
     self.curtain = curtain
+    self.guardian = guardian
     self.timing = timing
     self.end = end
     self.sleep = sleep
@@ -129,23 +156,41 @@ final class PrivateSession {
     self.log = log
   }
 
-  /// Puts the cover up and takes the keyboard and the pointer. Throws `SharerFailure` if the Mac
-  /// cannot, and then nothing is left raised and the session cannot be raised again.
+  /// Hands the Mac to the guard, puts the cover up and takes the keyboard and the pointer. Throws
+  /// `SharerFailure` if the guard or the Mac cannot, and then nothing is left raised and the
+  /// session cannot be raised again.
   func begin() throws {
     condition.lock()
     defer { condition.unlock() }
     guard state == .idle else {
       throw SharerFailure(sentence: "This Mac could not keep its screen private.")
     }
+    // The guard first: a cover that nothing would lock the Mac behind, if this app went away, is
+    // not a private session, and a guard that cannot be had is told to the person before anything
+    // is covered.
+    do {
+      try guardian.arm { [weak self] in self?.alarmed(.guardLost) }
+    } catch {
+      state = .done
+      condition.broadcast()
+      if let failure = error as? GuardFailure { throw SharerFailure(sentence: failure.sentence) }
+      throw error
+    }
+    // The guard hears from the app while the cover goes up, which can take longer on a Mac that is
+    // busy than the guard waits for a first word.
+    startBeating()
     do {
       try curtain.raise { [weak self] alarm in self?.alarmed(alarm) }
     } catch {
+      stopBeating()
       curtain.lower()
+      guardian.disarm()
       state = .done
       condition.broadcast()
       throw error
     }
     state = .raised
+    judgeBeats()
     log("the cover is up")
   }
 
@@ -214,23 +259,68 @@ final class PrivateSession {
   }
 
   private func lockTheMac() {
-    var attempt = 0
-    while !curtain.locked {
-      log("locking the Mac, way \(attempt)")
-      curtain.lock(attempt: attempt)
-      attempt += 1
-      let until = now() + timing.settle
-      while now() < until && !curtain.locked {
-        sleep(timing.poll)
-      }
-    }
+    lockUntilLocked(
+      curtain, timing: LockTiming(settle: timing.settle, poll: timing.poll), sleep: sleep, now: now,
+      log: log)
     sleep(timing.afterLock)
     curtain.lower()
+    // The Mac is locked and nothing is covered, so the guard has nothing left to guard.
+    stopBeating()
+    guardian.disarm()
     log("the Mac is locked and the cover is down")
     condition.lock()
     state = .done
     condition.broadcast()
     condition.unlock()
+  }
+
+  // MARK: The beat
+
+  /// Tells the guard that the session is well, several times a second, for as long as the curtain
+  /// is: the guard locks the Mac when it hears nothing for its lapse, which is how an app that
+  /// hangs is dealt with. The thread does not keep the session alive.
+  private func startBeating() {
+    beating.lock()
+    beatingOn = true
+    judging = false
+    beatingSince = ProcessInfo.processInfo.systemUptime
+    beating.unlock()
+    let interval = timing.beat
+    let thread = Thread { [weak self] in
+      while self?.beatOnce() == true { Thread.sleep(forTimeInterval: interval) }
+    }
+    thread.name = "Baton privacy beat"
+    thread.qualityOfService = .userInteractive
+    thread.start()
+  }
+
+  /// One beat, if the curtain is well, or if the cover is still going up and has not been for too
+  /// long. false when there is no beating any more.
+  private func beatOnce() -> Bool {
+    beating.lock()
+    let on = beatingOn
+    let judged = judging
+    let since = beatingSince
+    beating.unlock()
+    guard on else { return false }
+    let well =
+      judged
+      ? curtain.healthy : ProcessInfo.processInfo.systemUptime - since < timing.raise
+    if well { guardian.beat() }
+    return true
+  }
+
+  /// The cover is up: from now on the curtain has to be well for the guard to be told.
+  private func judgeBeats() {
+    beating.lock()
+    judging = true
+    beating.unlock()
+  }
+
+  private func stopBeating() {
+    beating.lock()
+    beatingOn = false
+    beating.unlock()
   }
 }
 

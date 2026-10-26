@@ -1,31 +1,135 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Tests of BatonPrivacy.swift: when the cover of a private session goes up and when it comes down,
-// what ends the session, and how the Mac is locked until it says that it is. The Mac itself is
-// played by a curtain that does what the test says; what the real one does is checked on a Mac
+// what ends the session, how the Mac is locked until it says that it is, and what the guard is
+// told. The Mac itself is played by a curtain that does what the test says, and the guard by one
+// that records what it is told; what the real ones do is checked on a Mac
 // (docs/research/privacy-mode).
 
 import Foundation
 
+/// What a curtain and a guard were asked, in the order they were asked it.
+final class Journal: @unchecked Sendable {
+  private let mutex = NSLock()
+  private var lines: [String] = []
+
+  func add(_ line: String) {
+    mutex.lock()
+    lines.append(line)
+    mutex.unlock()
+  }
+
+  var all: [String] {
+    mutex.lock()
+    defer { mutex.unlock() }
+    return lines
+  }
+}
+
+/// A guard that records what it is asked, and is lost when the test says.
+final class FakeGuard: SessionGuard {
+  private let mutex = NSLock()
+  private let journal: Journal?
+  private var lost: (() -> Void)?
+  private var beated = 0
+  private var armedCount = 0
+  private var disarmedCount = 0
+
+  /// What `arm` throws, if anything.
+  var armFailure: GuardFailure?
+
+  init(journal: Journal? = nil) {
+    self.journal = journal
+  }
+
+  func arm(lost: @escaping () -> Void) throws {
+    journal?.add("arm")
+    if let armFailure { throw armFailure }
+    mutex.lock()
+    self.lost = lost
+    armedCount += 1
+    mutex.unlock()
+  }
+
+  func beat() {
+    mutex.lock()
+    beated += 1
+    mutex.unlock()
+  }
+
+  func disarm() {
+    journal?.add("disarm")
+    mutex.lock()
+    disarmedCount += 1
+    mutex.unlock()
+  }
+
+  /// The guard went away, or locked the Mac.
+  func lose() {
+    mutex.lock()
+    let call = lost
+    mutex.unlock()
+    call?()
+  }
+
+  var beats: Int {
+    mutex.lock()
+    defer { mutex.unlock() }
+    return beated
+  }
+
+  var armed: Int {
+    mutex.lock()
+    defer { mutex.unlock() }
+    return armedCount
+  }
+
+  var disarmed: Int {
+    mutex.lock()
+    defer { mutex.unlock() }
+    return disarmedCount
+  }
+}
+
 /// A curtain that records what it is asked, and is locked when the test says.
 final class FakeCurtain: Curtain {
   private let mutex = NSLock()
+  private let journal: Journal?
   private var events: [String] = []
   private var alarm: ((PrivacyAlarm) -> Void)?
   private var isLocked = false
   private var attempts: [Int] = []
   private var lockedAfter: Int?
+  private var isHealthy = true
 
   var raiseFailure: Error?
   /// Rung from inside `raise`, as an alarm is when something at the Mac happens at once.
   var ringsWhileRaising: PrivacyAlarm?
+  /// Done from inside `raise`, for something else that happens while the cover goes up.
+  var whileRaising: (() -> Void)?
 
   /// The Mac is locked by the try with this number, counted from 0. nil: never, until `lockNow`.
-  init(locksAtAttempt: Int? = 0) {
+  init(locksAtAttempt: Int? = 0, journal: Journal? = nil) {
     lockedAfter = locksAtAttempt
+    self.journal = journal
+  }
+
+  /// Whether the cover and the hold are as they were put, and looked at.
+  var healthy: Bool {
+    get {
+      mutex.lock()
+      defer { mutex.unlock() }
+      return isHealthy
+    }
+    set {
+      mutex.lock()
+      isHealthy = newValue
+      mutex.unlock()
+    }
   }
 
   func raise(alarm: @escaping (PrivacyAlarm) -> Void) throws {
+    journal?.add("raise")
     mutex.lock()
     events.append("raise")
     mutex.unlock()
@@ -33,6 +137,7 @@ final class FakeCurtain: Curtain {
     mutex.lock()
     self.alarm = alarm
     mutex.unlock()
+    whileRaising?()
     if let ringsWhileRaising {
       alarm(ringsWhileRaising)
       Thread.sleep(forTimeInterval: 0.05)
@@ -40,6 +145,7 @@ final class FakeCurtain: Curtain {
   }
 
   func lower() {
+    journal?.add("lower")
     mutex.lock()
     events.append("lower")
     mutex.unlock()
@@ -52,6 +158,7 @@ final class FakeCurtain: Curtain {
   }
 
   func lock(attempt: Int) {
+    journal?.add("lock \(attempt)")
     mutex.lock()
     events.append("lock \(attempt)")
     attempts.append(attempt)
@@ -137,12 +244,12 @@ final class Told: @unchecked Sendable {
 }
 
 private func session(
-  _ curtain: Curtain, clock: FakeClock = FakeClock(), told: Told = Told(),
-  patience: TimeInterval = 5
+  _ curtain: Curtain, guardian: SessionGuard = FakeGuard(), clock: FakeClock = FakeClock(),
+  told: Told = Told(), patience: TimeInterval = 5
 ) -> PrivateSession {
   PrivateSession(
-    curtain: curtain, timing: PrivacyTiming(patience: patience), end: told.tell,
-    sleep: clock.sleep, now: clock.now)
+    curtain: curtain, guardian: guardian, timing: PrivacyTiming(patience: patience, beat: 0.005),
+    end: told.tell, sleep: clock.sleep, now: clock.now)
 }
 
 // MARK: - When the cover goes up
@@ -190,7 +297,8 @@ func testTheCoverGoesUpOnceAndAFailureLeavesNothingRaised() {
   check(refusing.log == ["raise", "lower"], "the second begin touched the Mac: \(refusing.log)")
   failing.finish(.released)
   failing.finish(.sessionOver)
-  check(refusing.log == ["raise", "lower"], "a session that did not begin finished: \(refusing.log)")
+  check(
+    refusing.log == ["raise", "lower"], "a session that did not begin finished: \(refusing.log)")
 }
 
 func testAWindowThatWasOnlyGivenAndLetGoOfRaisesNothingAndCannotBeRaisedAfterwards() {
@@ -319,7 +427,7 @@ func testTheMacIsLockedWhileTheOtherDeviceIsStillBeingToldAndNeitherWaitsForTheO
   let entered = DispatchSemaphore(value: 0)
   let clock = FakeClock()
   let privacy = PrivateSession(
-    curtain: curtain, timing: PrivacyTiming(patience: 5),
+    curtain: curtain, guardian: FakeGuard(), timing: PrivacyTiming(patience: 5),
     end: { _ in
       entered.signal()
       _ = release.wait(timeout: .now() + 10)
@@ -377,6 +485,236 @@ func testASessionThatDidNotStartAfterTheCoverWentUpIsLockedAndGivenBackWhenItIsR
   try? privacy.begin()
   privacy.finish(.released)
   check(curtain.log == ["raise", "lock 0", "lower"], "\(curtain.log)")
+}
+
+// MARK: - The guard
+
+func testTheGuardIsHandedTheMacBeforeTheCoverGoesUpAndLetGoOfAfterItComesDown() {
+  let journal = Journal()
+  let curtain = FakeCurtain(locksAtAttempt: 1, journal: journal)
+  let guardian = FakeGuard(journal: journal)
+  let privacy = session(curtain, guardian: guardian)
+  do {
+    try privacy.begin()
+  } catch {
+    check(false, "the cover could not be raised: \(error)")
+  }
+  // The guard is the first, so that nothing is ever covered that nothing would lock.
+  check(journal.all == ["arm", "raise"], "\(journal.all)")
+  privacy.finish(.sessionOver)
+  // The guard is let go of last, when the Mac is locked and nothing is covered.
+  check(
+    journal.all == ["arm", "raise", "lock 0", "lock 1", "lower", "disarm"], "\(journal.all)")
+  check(guardian.armed == 1 && guardian.disarmed == 1)
+  // Finishing again, in any way, hands nothing back twice.
+  privacy.finish(.sessionOver)
+  privacy.finish(.alarm(.escape))
+  Thread.sleep(forTimeInterval: 0.05)
+  check(guardian.disarmed == 1, "\(journal.all)")
+}
+
+func testAGuardThatCannotBeHadRaisesNothingAndSaysWhy() {
+  let journal = Journal()
+  let curtain = FakeCurtain(journal: journal)
+  let guardian = FakeGuard(journal: journal)
+  guardian.armFailure = GuardFailure(sentence: "This Mac has no guard.")
+  let privacy = session(curtain, guardian: guardian)
+  do {
+    try privacy.begin()
+    check(false, "a session was begun that no guard watches")
+  } catch let failure as SharerFailure {
+    check(failure.sentence == "This Mac has no guard.", failure.sentence)
+  } catch {
+    check(false, "another kind of error: \(error)")
+  }
+  // Nothing was covered, held or locked, and there is nothing to give back.
+  check(journal.all == ["arm"], "\(journal.all)")
+  // The session cannot begin again, and finishing it does nothing.
+  do {
+    try privacy.begin()
+    check(false, "a session that no guard watched was begun again")
+  } catch is SharerFailure {
+  } catch {
+    check(false, "another kind of error: \(error)")
+  }
+  privacy.finish(.released)
+  privacy.finish(.sessionOver)
+  Thread.sleep(forTimeInterval: 0.05)
+  check(journal.all == ["arm"], "\(journal.all)")
+  check(guardian.disarmed == 0)
+}
+
+func testACoverThatDoesNotGoUpGivesTheGuardBackAndLocksNothing() {
+  let journal = Journal()
+  let curtain = FakeCurtain(journal: journal)
+  curtain.raiseFailure = SharerFailure(sentence: "The screens did not go dark.")
+  let guardian = FakeGuard(journal: journal)
+  let privacy = session(curtain, guardian: guardian)
+  do {
+    try privacy.begin()
+    check(false, "a cover that could not be raised was raised")
+  } catch let failure as SharerFailure {
+    check(failure.sentence == "The screens did not go dark.", failure.sentence)
+  } catch {
+    check(false, "another kind of error: \(error)")
+  }
+  check(journal.all == ["arm", "raise", "lower", "disarm"], "\(journal.all)")
+  // The guard that was let go of is not heard from again.
+  guardian.lose()
+  Thread.sleep(forTimeInterval: 0.05)
+  check(journal.all == ["arm", "raise", "lower", "disarm"], "\(journal.all)")
+  // Nor is it told that the session is well: the session is done, and nothing is guarded.
+  let told = guardian.beats
+  Thread.sleep(forTimeInterval: 0.1)
+  check(guardian.beats == told, "the guard was told after the cover failed")
+}
+
+func testAGuardThatIsLostEndsTheSessionTellsTheOtherDeviceAndLocksTheMac() {
+  let journal = Journal()
+  let curtain = FakeCurtain(locksAtAttempt: 0, journal: journal)
+  let guardian = FakeGuard(journal: journal)
+  let told = Told()
+  let privacy = session(curtain, guardian: guardian, told: told)
+  try? privacy.begin()
+  guardian.lose()
+  check(told.wait(), "the other device was not told")
+  check(eventually { journal.all.last == "disarm" }, "\(journal.all)")
+  check(journal.all == ["arm", "raise", "lock 0", "lower", "disarm"], "\(journal.all)")
+  check(told.all == [PrivacyAlarm.guardLost.sentence], "\(told.all)")
+  // A guard that is lost twice, or after the end, ends nothing again.
+  guardian.lose()
+  privacy.finish(.sessionOver)
+  Thread.sleep(forTimeInterval: 0.05)
+  check(told.all.count == 1, "\(told.all)")
+  check(journal.all.count == 5, "\(journal.all)")
+}
+
+func testAGuardThatIsLostWhileTheCoverGoesUpEndsTheSessionAfterTheCoverIsUp() {
+  let journal = Journal()
+  let curtain = FakeCurtain(locksAtAttempt: 0, journal: journal)
+  let guardian = FakeGuard(journal: journal)
+  // The guard was armed and goes away while the cover is being raised.
+  curtain.whileRaising = { guardian.lose() }
+  let told = Told()
+  let privacy = session(curtain, guardian: guardian, told: told)
+  do {
+    try privacy.begin()
+  } catch {
+    check(false, "the cover could not be raised: \(error)")
+  }
+  check(told.wait(), "the other device was not told")
+  check(eventually { journal.all.last == "disarm" }, "\(journal.all)")
+  // The Mac is locked after the cover was up, and the guard is let go of last.
+  check(journal.all == ["arm", "raise", "lock 0", "lower", "disarm"], "\(journal.all)")
+  check(told.all == [PrivacyAlarm.guardLost.sentence], "\(told.all)")
+}
+
+func testTheGuardIsToldThatTheSessionIsWellOnlyWhileTheCurtainIs() {
+  let curtain = FakeCurtain()
+  let guardian = FakeGuard()
+  let privacy = session(curtain, guardian: guardian)
+  Thread.sleep(forTimeInterval: 0.05)
+  check(guardian.beats == 0, "a session that never began told the guard that it is well")
+  try? privacy.begin()
+  check(eventually { guardian.beats >= 3 }, "the guard was not told: \(guardian.beats)")
+
+  curtain.healthy = false
+  Thread.sleep(forTimeInterval: 0.05)
+  let paused = guardian.beats
+  Thread.sleep(forTimeInterval: 0.15)
+  check(guardian.beats == paused, "the guard was told that a curtain that is not well is well")
+
+  curtain.healthy = true
+  check(eventually { guardian.beats > paused }, "the guard was not told again")
+
+  privacy.finish(.sessionOver)
+  let ended = guardian.beats
+  Thread.sleep(forTimeInterval: 0.15)
+  check(guardian.beats == ended, "the guard was told after the session was over")
+}
+
+func testTheGuardIsToldThatTheAppIsAtWorkWhileTheCoverGoesUp() {
+  // A Mac that is busy takes longer to raise the cover than the guard waits for a first word, and
+  // a guard that locked the Mac before the session began would be a Mac that locks for nothing.
+  let curtain = FakeCurtain()
+  let guardian = FakeGuard()
+  curtain.healthy = false
+  var during = 0
+  curtain.whileRaising = {
+    Thread.sleep(forTimeInterval: 0.3)
+    during = guardian.beats
+  }
+  let privacy = session(curtain, guardian: guardian)
+  do { try privacy.begin() } catch { check(false, "the cover could not be raised: \(error)") }
+  check(during >= 3, "the guard was not told while the cover went up: \(during)")
+  // Once the cover is up the curtain is judged, and one that is not well is not said to be.
+  Thread.sleep(forTimeInterval: 0.05)
+  let judged = guardian.beats
+  Thread.sleep(forTimeInterval: 0.2)
+  check(guardian.beats == judged, "the guard was told that a curtain that is not well is well")
+  curtain.healthy = true
+  Thread.sleep(forTimeInterval: 0.2)
+  check(guardian.beats > judged, "the guard was not told that a curtain that is well is well")
+  privacy.finish(.sessionOver)
+}
+
+func testTheGuardIsNotToldThatTheAppIsAtWorkForLongerThanTheBound() {
+  // A cover that hangs while it goes up must end in the lock of the guard, and not be told well
+  // for as long as it hangs.
+  let curtain = FakeCurtain()
+  let guardian = FakeGuard()
+  curtain.healthy = false
+  var first = 0
+  var second = 0
+  curtain.whileRaising = {
+    Thread.sleep(forTimeInterval: 0.25)
+    first = guardian.beats
+    Thread.sleep(forTimeInterval: 0.25)
+    second = guardian.beats
+  }
+  let clock = FakeClock()
+  let privacy = PrivateSession(
+    curtain: curtain, guardian: guardian,
+    timing: PrivacyTiming(patience: 5, beat: 0.005, raise: 0.1), end: Told().tell,
+    sleep: clock.sleep, now: clock.now)
+  do { try privacy.begin() } catch { check(false, "the cover could not be raised: \(error)") }
+  check(first >= 2, "the guard was not told while the cover went up: \(first)")
+  check(second == first, "the guard was told after the bound: \(first) then \(second)")
+  privacy.finish(.sessionOver)
+}
+
+func testTheGuardIsToldUntilTheMacIsLockedAndTheCoverIsDown() {
+  // An app that hangs while it locks the Mac is the guard's to answer for, so the guard goes on
+  // being told, and is not let go of, for as long as the Mac is not locked.
+  let curtain = FakeCurtain(locksAtAttempt: nil)
+  let guardian = FakeGuard()
+  let privacy = session(curtain, guardian: guardian, patience: 0.2)
+  try? privacy.begin()
+  privacy.finish(.sessionOver)
+  let during = guardian.beats
+  check(
+    eventually { guardian.beats > during + 3 }, "the guard was not told while the Mac was locked")
+  check(guardian.disarmed == 0, "the guard was let go of on a Mac that is not locked")
+  curtain.lockNow()
+  check(eventually { guardian.disarmed == 1 }, "the guard was not let go of")
+  check(curtain.lowered == 1)
+  Thread.sleep(forTimeInterval: 0.05)
+  let ended = guardian.beats
+  Thread.sleep(forTimeInterval: 0.1)
+  check(guardian.beats == ended, "the guard was told after it was let go of")
+}
+
+func testASessionThatNobodyHoldsDoesNotGoOnBeating() {
+  let curtain = FakeCurtain()
+  let guardian = FakeGuard()
+  var privacy: PrivateSession? = session(curtain, guardian: guardian)
+  try? privacy?.begin()
+  check(eventually { guardian.beats >= 2 })
+  privacy = nil
+  Thread.sleep(forTimeInterval: 0.1)
+  let ended = guardian.beats
+  Thread.sleep(forTimeInterval: 0.15)
+  check(guardian.beats == ended, "a session that nobody held went on beating")
 }
 
 // MARK: - A quit of the app
@@ -493,7 +831,7 @@ func testTheLedgerSaysHowLongAgoTheAppLastPostedAKey() {
 }
 
 func testWhatTheOtherDeviceIsToldIsAShortSentenceThatSaysTheMacLocks() {
-  let all: [PrivacyAlarm] = [.escape, .foreignKey, .holdLost, .coverLost]
+  let all: [PrivacyAlarm] = [.escape, .foreignKey, .holdLost, .coverLost, .guardLost]
   var seen = Set<String>()
   for alarm in all {
     let sentence = alarm.sentence
