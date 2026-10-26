@@ -262,6 +262,10 @@ var tests: [(String, () -> Void)] = [
     testTheTableHasAScreenCallOnlyWhenThePlatformCanGiveTheScreen
   ),
   (
+    "the table has a lift only when the platform can give the screen, and is whole",
+    testTheTableHasALiftOnlyWhenThePlatformCanGiveTheScreenAndTheTableIsWhole
+  ),
+  (
     "a platform that says nothing of the screen cannot give it and has no entry for it",
     testAPlatformThatSaysNothingOfTheScreenCannotGiveItAndHasNoEntryForIt
   ),
@@ -284,6 +288,10 @@ var tests: [(String, () -> Void)] = [
   (
     "a screen call with structs that are too short or missing is refused without asking the platform",
     testAScreenCallWithStructsThatAreTooShortOrMissingIsRefusedWithoutAskingThePlatform
+  ),
+  (
+    "what is lifted reaches the window as the two parts it is made of and no other part",
+    testWhatIsLiftedReachesTheWindowAsTheTwoPartsItIsMadeOfAndNoOtherPart
   ),
   (
     "a window is prepared within what the other device takes",
@@ -833,6 +841,22 @@ tests += [
   (
     "a session that did not start after the cover went up is locked when it is released",
     testASessionThatDidNotStartAfterTheCoverWentUpIsLockedAndGivenBackWhenItIsReleased
+  ),
+  (
+    "what is lifted reaches the curtain only while the cover is up and each call replaces the last",
+    testWhatIsLiftedReachesTheCurtainOnlyWhileTheCoverIsUpAndEachCallReplacesTheOneBefore
+  ),
+  (
+    "a session that ends with something lifted puts it back before it locks the Mac",
+    testASessionThatEndsWithSomethingLiftedPutsItBackBeforeItLocksTheMac
+  ),
+  (
+    "a part that cannot be put back ends the session and the Mac is locked anyway",
+    testAPartThatCannotBePutBackEndsTheSessionTellsTheOtherDeviceAndLocksTheMacAnyway
+  ),
+  (
+    "a finish that comes while something is being lifted waits for the lift",
+    testAFinishThatComesWhileSomethingIsBeingLiftedWaitsForTheLiftAndThenPutsItBack
   ),
   (
     "the guard is handed the Mac before the cover goes up and let go of after it comes down",

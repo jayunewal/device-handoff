@@ -113,6 +113,9 @@ final class InputHold {
   private var port: CFMachPort?
   private var started = false
   private var stopping = false
+  /// Whether the keys and the pointer of the Mac pass: the person at the other device let them be
+  /// used at the Mac. The tap stays on, so that holding them again is this and nothing else.
+  private var passing = false
   /// Used by the thread of the tap only.
   private var hatch = EscapeHatch()
   private let ready = DispatchSemaphore(value: 0)
@@ -153,6 +156,17 @@ final class InputHold {
     stopping = true
     lock.unlock()
     finished.wait()
+  }
+
+  /// Lets the keys and the pointer of the Mac through while `passing`, or holds them again. The tap
+  /// is on all the while, and a hold that is lost is still found. Three presses of Escape are no
+  /// way out while the keys pass, since the person at the Mac is allowed to use them. Whatever was
+  /// pressed or clicked when the hold begins again may stay as it is until it is next pressed or
+  /// clicked: the release that the hold drops is not seen by the system.
+  func pass(_ passing: Bool) {
+    lock.lock()
+    self.passing = passing
+    lock.unlock()
   }
 
   /// Whether the tap is on. A tap that the system switched off is switched on once more.
@@ -214,6 +228,14 @@ final class InputHold {
       lock.unlock()
       if let port { CGEvent.tapEnable(tap: port, enable: true) }
       return nil
+    }
+    lock.lock()
+    let letThrough = passing
+    lock.unlock()
+    if letThrough {
+      // Presses of Escape that were counted before do not count towards the ones after.
+      hatch = EscapeHatch()
+      return Unmanaged.passUnretained(event)
     }
     if event.getIntegerValueField(.eventSourceUnixProcessID) == Int64(getpid()) {
       return Unmanaged.passUnretained(event)
@@ -312,6 +334,10 @@ final class MacCurtain: Curtain {
   private var watcher: DispatchSourceTimer?
   private var quitWatch: QuitWatch?
   private var heldSince: TimeInterval = 0
+  /// What the person at the other device lifted: the screens are let show what is on them, and the
+  /// keys and the pointer of the Mac are let through. A lifted part is not looked at.
+  private var screenLifted = false
+  private var inputLifted = false
   /// When the last look was made, or the cover went up.
   private var lastLook: TimeInterval = 0
   /// Used by the queue only.
@@ -393,6 +419,8 @@ final class MacCurtain: Curtain {
     quitWatch = nil
     let wasCovered = covered
     covered = false
+    screenLifted = false
+    inputLifted = false
     mutex.unlock()
     quits?.stop()
     timer?.cancel()
@@ -404,6 +432,58 @@ final class MacCurtain: Curtain {
     if let kept { ProcessInfo.processInfo.endActivity(kept) }
     if wasCovered || held != nil {
       privacyLog.notice("Baton: the screens and the keys and the pointer are given back.")
+    }
+  }
+
+  func lift(screen: Bool, input: Bool) throws {
+    // On the queue of the looks, so that a look is never half way through when the hold or the
+    // cover changes, and never puts back a cover that was just lifted.
+    try queue.sync {
+      mutex.lock()
+      let held = hold
+      let raised = covered
+      let wasScreen = screenLifted
+      let wasInput = inputLifted
+      mutex.unlock()
+      guard raised, let held else { return }
+      // What is put back goes in the order of `raise`, the hold first, so that nobody can type or
+      // click in the moment that the screens are dark. What is lifted goes after it.
+      if wasInput && !input {
+        // The keys that went down at the Mac while it was open are not the tripwire's to judge.
+        mutex.lock()
+        heldSince = ProcessInfo.processInfo.systemUptime
+        inputLifted = false
+        mutex.unlock()
+        held.pass(false)
+        privacyLog.notice("Baton: the keys and the pointer are held again.")
+      }
+      if wasScreen && !screen {
+        mutex.lock()
+        screenLifted = false
+        mutex.unlock()
+        misses = 0
+        var dark = false
+        for _ in 0..<3 where !dark {
+          dark = cover.apply()
+          if !dark { Thread.sleep(forTimeInterval: 0.05) }
+        }
+        guard dark else { throw PrivacyAlarm.coverLost }
+        privacyLog.notice("Baton: the screens are dark again.")
+      }
+      if !wasScreen && screen {
+        mutex.lock()
+        screenLifted = true
+        mutex.unlock()
+        cover.restore()
+        privacyLog.notice("Baton: the screens show what is on them.")
+      }
+      if !wasInput && input {
+        mutex.lock()
+        inputLifted = true
+        mutex.unlock()
+        held.pass(true)
+        privacyLog.notice("Baton: the keys and the pointer can be used at the Mac.")
+      }
     }
   }
 
@@ -437,11 +517,14 @@ final class MacCurtain: Curtain {
   }
 
   /// Whether the hold and the cover are as they were put, and whether a key went down that the hold
-  /// did not take.
+  /// did not take. A part that the person at the other device lifted is not looked at, except that
+  /// the tap must be there: the Mac is held again when the part is put back.
   private func look() {
     mutex.lock()
     let held = hold
     let since = heldSince
+    let showing = screenLifted
+    let usable = inputLifted
     mutex.unlock()
     guard let held else { return }
     defer {
@@ -450,12 +533,16 @@ final class MacCurtain: Curtain {
       mutex.unlock()
     }
     if !held.holding { tell(.holdLost) }
-    if cover.apply() {
+    if showing {
+      misses = 0
+    } else if cover.apply() {
       misses = 0
     } else {
       misses += 1
       if misses >= MacCurtain.darknessMisses { tell(.coverLost) }
     }
+    // Keys are what the person at the Mac is let press.
+    if usable { return }
     // How long ago the system counted the last key press, which moves for a key that the tap was
     // blind to. It is negative if there never was one. It is the last key only: see `Tripwire`.
     let age = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .keyDown)

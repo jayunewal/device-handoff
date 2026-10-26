@@ -2039,6 +2039,8 @@ func testAWindowThatCannotBeSteeredSaysNothingAndPutsNothing() {
   }
   check(ViewOnly().surroundings() == nil)
   check(!ViewOnly().post(.key(KeyPost(code: 4, down: true, repeating: false, modifiers: [], text: nil))))
+  // It keeps nothing private, so it has nothing to lift, and is told that without harm.
+  ViewOnly().lift(screen: true, input: true)
 }
 
 // MARK: - What the library is told

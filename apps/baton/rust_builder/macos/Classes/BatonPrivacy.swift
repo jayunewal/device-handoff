@@ -16,8 +16,9 @@ import Foundation
 
 // MARK: - What the Mac does
 
-/// Something at the Mac that ends a private session.
-enum PrivacyAlarm: Equatable {
+/// Something at the Mac that ends a private session. It is also what a curtain throws when a part
+/// of the privacy that was lifted cannot be put back.
+enum PrivacyAlarm: Error, Equatable {
   /// The person at the Mac pressed Escape three times, which is the way out of a Mac that shows
   /// nothing and takes no keys.
   case escape
@@ -58,6 +59,15 @@ protocol Curtain: MacLocking {
   /// waiting, when something at the Mac needs the session ended. Throws `SharerFailure` with a
   /// sentence if it cannot, and then nothing is left raised. Called once.
   func raise(alarm: @escaping (PrivacyAlarm) -> Void) throws
+
+  /// Lifts or puts back the two parts of the privacy that the person at the other device may switch
+  /// on and off as often as they like: with `screen` the screens show what is on them, and with
+  /// `input` the keyboard and the pointer of the Mac can be used at it. Everything that is lifted
+  /// is given each time, and a call replaces the one before; a curtain that is raised has both
+  /// off. A part that is lifted is not judged, since nobody is suspected of a key or a click that
+  /// they were let make. Throws the alarm of the part that could not be put back, and then the
+  /// curtain is as private as it could be made. Does nothing when nothing is raised.
+  func lift(screen: Bool, input: Bool) throws
 
   /// Takes the cover down and lets go of the keyboard, the pointer and the screens. It may be
   /// called when nothing is raised.
@@ -101,6 +111,11 @@ struct PrivacyTiming {
 /// The guard is handed the Mac before the cover goes up and let go of after it comes down. In
 /// between, an app that goes away without ending the session (a crash, a kill, a hang) is the
 /// guard's to answer for: it locks the Mac.
+///
+/// The person at the other device can lift the privacy for a while, the screens and the keyboard
+/// and the pointer each by itself and as often as they like (`lift`), to show the Mac to somebody
+/// or to use it from where they sit. Nothing that is lifted outlasts the session: whatever ends it,
+/// what was lifted is put back before the Mac is locked, and a session starts with nothing lifted.
 final class PrivateSession {
   /// Why a session is finished.
   enum Cause: Equatable {
@@ -110,6 +125,14 @@ final class PrivateSession {
     case released
     /// Something at the Mac ended it.
     case alarm(PrivacyAlarm)
+  }
+
+  /// The two parts of the privacy that the person at the other device can lift, each by itself.
+  struct Lifted: Equatable {
+    /// The screens show what is on them.
+    var screen = false
+    /// The keyboard and the pointer of the Mac can be used at it.
+    var input = false
   }
 
   private enum State {
@@ -128,6 +151,10 @@ final class PrivateSession {
   /// from the first moment of the hold) waits for the cover to be up.
   private let condition = NSCondition()
   private var state = State.idle
+  /// What the person at the other device has lifted of the privacy and not put back, under
+  /// `condition`: a lift holds it for as long as it takes, so that no finish begins half way
+  /// through one.
+  private var lifted = Lifted()
 
   /// Whether the guard is told that the session is well. Apart from `condition`, since the thread
   /// that tells it must never wait for a `begin` that is raising the cover.
@@ -194,6 +221,28 @@ final class PrivateSession {
     log("the cover is up")
   }
 
+  /// The person at the other device switched what keeps the Mac private: `screen` lets the screens
+  /// show what is on them, and `input` lets the keyboard and the pointer be used at the Mac. Both
+  /// are given each time and the last call decides, so a part is put back by a call that leaves it
+  /// off. A call that changes nothing is not passed on. It does nothing before the cover is up, nor
+  /// once the session is being finished: a Mac that is being locked has nothing lifted. A part that
+  /// cannot be put back ends the session, and the Mac is locked.
+  func lift(screen: Bool, input: Bool) {
+    condition.lock()
+    defer { condition.unlock() }
+    let wanted = Lifted(screen: screen, input: input)
+    guard state == .raised, wanted != lifted else { return }
+    do {
+      try curtain.lift(screen: screen, input: input)
+      lifted = wanted
+      log(
+        "the screens \(screen ? "show what is on them" : "are dark"), the keys and the pointer "
+          + "\(input ? "can be used at the Mac" : "are held")")
+    } catch {
+      alarmed((error as? PrivacyAlarm) ?? .coverLost)
+    }
+  }
+
   /// The session is over, or the window is let go of, or something at the Mac ended it: the Mac is
   /// locked, and then the cover comes down. Returns when that is done, or after the patience of the
   /// timing, in which case the Mac goes on being locked on a thread of its own.
@@ -258,7 +307,27 @@ final class PrivateSession {
     worker.start()
   }
 
+  /// Puts back whatever the person at the other device lifted, before the Mac is locked: nobody at
+  /// the Mac can get in the way of the lock, and the lock screen is drawn behind the cover and not
+  /// in front of a screen that shows what was on it. A part that cannot be put back does not stop
+  /// the lock.
+  private func putBack() {
+    condition.lock()
+    let was = lifted
+    condition.unlock()
+    guard was != Lifted() else { return }
+    do {
+      try curtain.lift(screen: false, input: false)
+    } catch {
+      log("what was lifted could not be put back before the Mac was locked")
+    }
+    condition.lock()
+    lifted = Lifted()
+    condition.unlock()
+  }
+
   private func lockTheMac() {
+    putBack()
     lockUntilLocked(
       curtain, timing: LockTiming(settle: timing.settle, poll: timing.poll), sleep: sleep, now: now,
       log: log)

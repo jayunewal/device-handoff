@@ -107,6 +107,10 @@ final class FakeCurtain: Curtain {
   var ringsWhileRaising: PrivacyAlarm?
   /// Done from inside `raise`, for something else that happens while the cover goes up.
   var whileRaising: (() -> Void)?
+  /// What the call that leaves nothing lifted throws, if anything: the put-back of the privacy.
+  var putBackFailure: PrivacyAlarm?
+  /// Done from inside `lift`, with what it was asked, for something else that happens meanwhile.
+  var whileLifting: ((Bool, Bool) -> Void)?
 
   /// The Mac is locked by the try with this number, counted from 0. nil: never, until `lockNow`.
   init(locksAtAttempt: Int? = 0, journal: Journal? = nil) {
@@ -142,6 +146,16 @@ final class FakeCurtain: Curtain {
       alarm(ringsWhileRaising)
       Thread.sleep(forTimeInterval: 0.05)
     }
+  }
+
+  func lift(screen: Bool, input: Bool) throws {
+    let line = "lift \(screen) \(input)"
+    journal?.add(line)
+    mutex.lock()
+    events.append(line)
+    mutex.unlock()
+    whileLifting?(screen, input)
+    if !screen && !input, let putBackFailure { throw putBackFailure }
   }
 
   func lower() {
@@ -485,6 +499,117 @@ func testASessionThatDidNotStartAfterTheCoverWentUpIsLockedAndGivenBackWhenItIsR
   try? privacy.begin()
   privacy.finish(.released)
   check(curtain.log == ["raise", "lock 0", "lower"], "\(curtain.log)")
+}
+
+// MARK: - What the person at the other device lifts
+
+func testWhatIsLiftedReachesTheCurtainOnlyWhileTheCoverIsUpAndEachCallReplacesTheOneBefore() {
+  let curtain = FakeCurtain(locksAtAttempt: 0)
+  let privacy = session(curtain)
+  // Before the cover is up there is nothing to lift.
+  privacy.lift(screen: true, input: true)
+  check(curtain.log.isEmpty, "\(curtain.log)")
+  try? privacy.begin()
+  // A session starts with nothing lifted, so a call that lifts nothing changes nothing.
+  privacy.lift(screen: false, input: false)
+  check(curtain.log == ["raise"], "a lift of nothing was passed on: \(curtain.log)")
+  // Either part by itself, both, and back, as often as the person likes. A call that says what
+  // already is changes nothing and is not passed on.
+  privacy.lift(screen: true, input: false)
+  privacy.lift(screen: true, input: false)
+  privacy.lift(screen: true, input: true)
+  privacy.lift(screen: false, input: true)
+  privacy.lift(screen: false, input: true)
+  privacy.lift(screen: false, input: false)
+  privacy.lift(screen: false, input: false)
+  privacy.lift(screen: false, input: true)
+  privacy.lift(screen: false, input: false)
+  let lifts = [
+    "lift true false", "lift true true", "lift false true", "lift false false", "lift false true",
+    "lift false false",
+  ]
+  check(curtain.log == ["raise"] + lifts, "\(curtain.log)")
+  // Nothing is lifted when the session ends, so nothing is put back first.
+  privacy.finish(.sessionOver)
+  check(curtain.log == ["raise"] + lifts + ["lock 0", "lower"], "\(curtain.log)")
+  // And once it is over there is nothing to lift.
+  privacy.lift(screen: true, input: true)
+  Thread.sleep(forTimeInterval: 0.05)
+  check(curtain.log == ["raise"] + lifts + ["lock 0", "lower"], "\(curtain.log)")
+}
+
+func testASessionThatEndsWithSomethingLiftedPutsItBackBeforeItLocksTheMac() {
+  // However the session ends, what was lifted is put back first: nobody at the Mac can get in the
+  // way of the lock, and the lock screen is drawn behind the cover and not in front of a screen
+  // that shows what was on it.
+  let ways: [(String, (PrivateSession, FakeCurtain) -> Void)] = [
+    ("the end of the session", { privacy, _ in privacy.finish(.sessionOver) }),
+    ("a release", { privacy, _ in privacy.finish(.released) }),
+    ("an alarm", { _, curtain in curtain.ring(.holdLost) }),
+  ]
+  for (name, end) in ways {
+    for (screen, input) in [(true, false), (false, true), (true, true)] {
+      let curtain = FakeCurtain(locksAtAttempt: 0)
+      let privacy = session(curtain)
+      try? privacy.begin()
+      privacy.lift(screen: screen, input: input)
+      end(privacy, curtain)
+      check(eventually { curtain.lowered == 1 }, "\(name): \(curtain.log)")
+      check(
+        curtain.log == ["raise", "lift \(screen) \(input)", "lift false false", "lock 0", "lower"],
+        "\(name), \(screen) \(input): \(curtain.log)")
+    }
+  }
+}
+
+func testAPartThatCannotBePutBackEndsTheSessionTellsTheOtherDeviceAndLocksTheMacAnyway() {
+  let curtain = FakeCurtain(locksAtAttempt: 0)
+  curtain.putBackFailure = .coverLost
+  let told = Told()
+  let privacy = session(curtain, told: told)
+  try? privacy.begin()
+  privacy.lift(screen: true, input: false)
+  privacy.lift(screen: false, input: false)
+  check(told.wait(), "the other device was not told")
+  check(told.all == [PrivacyAlarm.coverLost.sentence], "\(told.all)")
+  check(eventually { curtain.lowered == 1 }, "\(curtain.log)")
+  // What is still lifted is put back once more before the lock, and when that fails as well the
+  // lock goes on.
+  check(
+    curtain.log == [
+      "raise", "lift true false", "lift false false", "lift false false", "lock 0", "lower",
+    ], "\(curtain.log)")
+  // The session is over, and a lift after it changes nothing.
+  privacy.lift(screen: true, input: true)
+  Thread.sleep(forTimeInterval: 0.05)
+  check(curtain.log.count == 6, "\(curtain.log)")
+}
+
+func testAFinishThatComesWhileSomethingIsBeingLiftedWaitsForTheLiftAndThenPutsItBack() {
+  let curtain = FakeCurtain(locksAtAttempt: 0)
+  let privacy = session(curtain)
+  try? privacy.begin()
+  let inside = DispatchSemaphore(value: 0)
+  let go = DispatchSemaphore(value: 0)
+  // Only the lift that lifts something waits: the put-back, which the finish does, does not.
+  curtain.whileLifting = { screen, input in
+    guard screen || input else { return }
+    inside.signal()
+    _ = go.wait(timeout: .now() + 5)
+  }
+  let lifting = Thread { privacy.lift(screen: true, input: true) }
+  lifting.start()
+  check(inside.wait(timeout: .now() + 5) == .success, "the curtain was not asked to lift")
+  let finishing = Thread { privacy.finish(.sessionOver) }
+  finishing.start()
+  // The session is not finished half way through a lift.
+  Thread.sleep(forTimeInterval: 0.2)
+  check(curtain.log == ["raise", "lift true true"], "\(curtain.log)")
+  go.signal()
+  check(eventually { curtain.lowered == 1 }, "\(curtain.log)")
+  check(
+    curtain.log == ["raise", "lift true true", "lift false false", "lock 0", "lower"],
+    "\(curtain.log)")
 }
 
 // MARK: - The guard

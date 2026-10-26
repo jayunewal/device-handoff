@@ -22,8 +22,14 @@ final class FakeSharedWindow: SharedWindow {
   var around: WindowSurroundings?
   var posts: [InputPost] = []
   var postWorks = true
+  /// What the person at the other device lifted of the privacy, each time they switched it.
+  var lifts: [PrivateSession.Lifted] = []
 
   func surroundings() -> WindowSurroundings? { around }
+
+  func lift(screen: Bool, input: Bool) {
+    lifts.append(PrivateSession.Lifted(screen: screen, input: input))
+  }
 
   func post(_ post: InputPost) -> Bool {
     posts.append(post)
@@ -344,6 +350,20 @@ func testTheTableHasAScreenCallOnlyWhenThePlatformCanGiveTheScreen() {
   check(with.screens == 0, "the screen was given before anyone asked")
 }
 
+func testTheTableHasALiftOnlyWhenThePlatformCanGiveTheScreenAndTheTableIsWhole() {
+  let without = FakeSharerPlatform()
+  check(registeredSharing(without)?.lift == nil, "a lift for a platform with no screen to keep private")
+
+  let with = FakeSharerPlatform()
+  with.canGiveScreen = true
+  guard let table = registeredSharing(with) else { return check(false) }
+  check(table.lift != nil, "a platform that can give the screen")
+  // The lift is the last entry of the table, 96 bytes in, and the table is 104 bytes long.
+  check(MemoryLayout<BatonSharerVTable>.size == 104, "size \(MemoryLayout<BatonSharerVTable>.size)")
+  check(table.size == 104, "size \(table.size)")
+  check(MemoryLayout<BatonSharerVTable>.offset(of: \.lift) == 96)
+}
+
 /// A platform from before the screen could be given: it says nothing of it.
 final class PlatformWithoutAScreen: SharerPlatform {
   var canControl = false
@@ -508,6 +528,43 @@ func testAScreenCallWithStructsThatAreTooShortOrMissingIsRefusedWithoutAskingThe
   check(result.code == 0, "structs of exactly the size they state: \(result.code)")
   check(exact.pointee.context != nil && exact.pointee.kind == UInt32(BATON_PICKED_DISPLAY))
   release(exact.pointee.context)
+  check(window.releasedCalls == 1)
+}
+
+func testWhatIsLiftedReachesTheWindowAsTheTwoPartsItIsMadeOfAndNoOtherPart() {
+  let platform = FakeSharerPlatform()
+  platform.canGiveScreen = true
+  guard let table = registeredSharing(platform), let screen = table.screen,
+    let lift = table.lift, let release = table.release
+  else { return check(false) }
+  check(BATON_LIFT_SCREEN == 1 && BATON_LIFT_INPUT == 2)
+  let window = FakeSharedWindow()
+  platform.screenWindow = window
+  var picked = emptyPicked()
+  check(withMessage { screen(table.context, UInt32(BATON_SCREEN_PRIVATE), &picked, $0) }.code == 0)
+  lift(picked.context, 0)
+  lift(picked.context, UInt32(BATON_LIFT_SCREEN))
+  lift(picked.context, UInt32(BATON_LIFT_INPUT))
+  lift(picked.context, UInt32(BATON_LIFT_SCREEN | BATON_LIFT_INPUT))
+  lift(picked.context, 0)
+  // A bit that this version does not know lifts nothing: that is the safe side of not knowing it.
+  lift(picked.context, 4)
+  lift(picked.context, 0x8000_0000 | UInt32(BATON_LIFT_INPUT))
+  lift(picked.context, UInt32.max)
+  // A call about a window that is not there is nothing.
+  lift(nil, UInt32(BATON_LIFT_SCREEN))
+  let expected = [
+    PrivateSession.Lifted(screen: false, input: false),
+    PrivateSession.Lifted(screen: true, input: false),
+    PrivateSession.Lifted(screen: false, input: true),
+    PrivateSession.Lifted(screen: true, input: true),
+    PrivateSession.Lifted(screen: false, input: false),
+    PrivateSession.Lifted(screen: false, input: false),
+    PrivateSession.Lifted(screen: false, input: true),
+    PrivateSession.Lifted(screen: true, input: true),
+  ]
+  check(window.lifts == expected, "\(window.lifts)")
+  release(picked.context)
   check(window.releasedCalls == 1)
 }
 
