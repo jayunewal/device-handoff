@@ -975,7 +975,7 @@ impl Source {
             // A viewer sends the messages of an unlock only to a source that advertised
             // `unlock.target` and offered the session with `unlock`. This source does neither yet
             // (protocol.md section 9).
-            ViewerMessage::Unlock
+            ViewerMessage::Unlock(_)
             | ViewerMessage::UnlockOpened(_)
             | ViewerMessage::UnlockCancelled(_) => return ControlFlow::Break(()),
             // The offer told the viewer whether it may ask. A message from a viewer that may not is
@@ -1148,7 +1148,7 @@ mod tests {
         control::{Hear, SoundCodec, Thermal},
         header::{Flags, PREFIX_LEN, encode_prefix},
         input::{Event, Modifiers, PointerAction},
-        unlock::{CancelReason, Cancelled, Opened},
+        unlock::{Ask, CancelReason, Cancelled, Opened},
     };
     use iroh::endpoint::{ReadError, RecvStream};
 
@@ -2044,7 +2044,7 @@ mod tests {
             key: BoxKey::from_bytes([2; BoxKey::LEN]),
         };
         for message in [
-            ViewerMessage::Unlock,
+            ViewerMessage::Unlock(Ask { number: 1 }),
             ViewerMessage::UnlockOpened(opened),
             ViewerMessage::UnlockCancelled(Cancelled {
                 reason: CancelReason::Declined,

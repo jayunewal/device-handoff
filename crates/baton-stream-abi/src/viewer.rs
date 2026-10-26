@@ -901,10 +901,12 @@ mod tests {
             reason: SilentReason::NoPermission,
         }));
         rig.decoder.source(SourceMessage::UnlockSealed(Sealed {
+            number: 1,
             challenge: Challenge::from_bytes([1; Challenge::LEN]),
             sealed: SealedKey::new(vec![3; 113]),
         }));
         rig.decoder.source(SourceMessage::UnlockDone(Done {
+            number: 1,
             outcome: Outcome::Unlocked,
         }));
         rig.decoder.source(SourceMessage::Resume);

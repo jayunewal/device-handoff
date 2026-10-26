@@ -1931,10 +1931,12 @@ mod tests {
     async fn the_messages_of_an_unlock_are_a_violation_while_the_viewer_takes_no_unlock() {
         for message in [
             SourceMessage::UnlockSealed(Sealed {
+                number: 1,
                 challenge: Challenge::from_bytes([1; Challenge::LEN]),
                 sealed: SealedKey::new(vec![3; 113]),
             }),
             SourceMessage::UnlockDone(Done {
+                number: 1,
                 outcome: Outcome::Unlocked,
             }),
         ] {
