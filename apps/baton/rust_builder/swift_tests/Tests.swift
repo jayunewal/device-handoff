@@ -113,6 +113,22 @@ struct SeenFrame: Equatable {
   var sequenceSets: Int
 }
 
+/// What a fake screen saw of a packet of sound.
+struct SeenPlay: Equatable {
+  var flags: UInt32
+  var number: UInt64
+  var captureTime: UInt64
+  var lostBefore: UInt64
+  var bytes: [UInt8]
+}
+
+/// What a fake screen was told about sound, in the order of the calls.
+enum SoundCall: Equatable {
+  case sound(SoundForm)
+  case play(SeenPlay)
+  case stopped(UInt32)
+}
+
 final class FakeScreen: ViewerScreen {
   var frames: [SeenFrame] = []
   var accept = true
@@ -136,6 +152,18 @@ final class FakeScreen: ViewerScreen {
   func state() -> DecoderReport { report }
   func ended() { endedCalls += 1 }
   func released() { releasedCalls += 1 }
+
+  var soundCalls: [SoundCall] = []
+  func sound(_ form: SoundForm) { soundCalls.append(.sound(form)) }
+  func play(_ packet: PlayInput) {
+    soundCalls.append(
+      .play(
+        SeenPlay(
+          flags: packet.flags, number: packet.number, captureTime: packet.captureTime,
+          lostBefore: packet.lostBefore, bytes: Array(packet.packet))))
+  }
+  func stopped(_ why: UInt32) { soundCalls.append(.stopped(why)) }
+
   deinit { onDeinit?() }
 }
 
@@ -145,6 +173,7 @@ final class FakePlatform: ViewerPlatform {
   var failure: ScreenFailure?
   var made: [FakeScreen] = []
   var nextId: Int64 = 7
+  var playsSound = false
 
   func makeScreen(for window: WindowInfo, link: UInt64) throws -> MadeScreen {
     windows.append((window, link))
