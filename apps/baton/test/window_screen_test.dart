@@ -1335,22 +1335,22 @@ void main() {
       },
     );
 
+    // A tall screen that can be controlled, so that the picture reaches the top of the view, under
+    // the lines over it, and a touch on a line lands on the picture if the line lets it through.
+    WindowSession tallScreen() => sampleWindowSession(
+      display: true,
+      title: null,
+      app: null,
+      width: 900,
+      height: 4000,
+      control: true,
+      sound: true,
+    );
+
     testWidgets(
       'keeps a touch on the line that says why from going through to the window',
       (tester) async {
-        // A tall screen, so that the picture reaches the top of the view, under the line.
-        final shown = await _open(
-          tester,
-          window: sampleWindowSession(
-            display: true,
-            title: null,
-            app: null,
-            width: 900,
-            height: 4000,
-            control: true,
-            sound: true,
-          ),
-        );
+        final shown = await _open(tester, window: tallScreen());
         await tester.tap(find.widgetWithText(FilterChip, 'Control'));
         await tester.pump();
         await tester.tap(off);
@@ -1374,6 +1374,35 @@ void main() {
         await tester.tapAt(Offset(450, tester.getTopLeft(line).dy + 3));
         await tester.pump();
         expect(shown.session.windowInputs, isEmpty);
+      },
+    );
+
+    testWidgets(
+      'lets a touch on the line about what the other device did not do through to the window',
+      (tester) async {
+        final shown = await _open(tester, window: tallScreen());
+        await tester.tap(find.widgetWithText(FilterChip, 'Control'));
+        await tester.pump();
+        shown.session.emit(
+          Event.windowNotice(
+            id: 1,
+            reason: WindowNoticeReason.locked,
+            count: 1,
+          ),
+        );
+        await tester.pump(Duration.zero);
+        await tester.pump();
+        final line = find
+            .ancestor(
+              of: find.text('Anna’s Mac is locked.'),
+              matching: find.byType(Material),
+            )
+            .first;
+
+        // This line has no button, so a touch on it is a touch on the picture under it.
+        await tester.tapAt(Offset(450, tester.getTopLeft(line).dy + 3));
+        await tester.pump();
+        expect(shown.session.windowInputs, isNotEmpty);
       },
     );
 
