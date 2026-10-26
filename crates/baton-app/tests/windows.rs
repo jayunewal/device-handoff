@@ -119,23 +119,31 @@ struct Viewer {
     /// If set, `open` fails with this.
     fail: Mutex<Option<String>>,
     limits: ShowLimits,
-    /// Whether the screens play sound.
+    /// Whether the platform says that the screens play sound.
     plays: bool,
+    /// Whether the screens are given a speaker. A platform that plays sound does so, and one that
+    /// does not has no speaker to give, unless it is set up wrongly.
+    speaks: bool,
     /// What the speakers of the screens heard.
     sounds: Arc<Heard>,
 }
 
 impl Viewer {
     fn new() -> Arc<Self> {
-        Self::building(false)
+        Self::building(false, false)
     }
 
     /// A platform whose screens play sound.
     fn playing() -> Arc<Self> {
-        Self::building(true)
+        Self::building(true, true)
     }
 
-    fn building(plays: bool) -> Arc<Self> {
+    /// A platform that gives its screens a speaker and does not say that they play sound.
+    fn muddled() -> Arc<Self> {
+        Self::building(false, true)
+    }
+
+    fn building(plays: bool, speaks: bool) -> Arc<Self> {
         Arc::new(Self {
             next_screen: AtomicI64::new(100),
             heard: Arc::new(Heard::default()),
@@ -149,6 +157,7 @@ impl Viewer {
                 codecs: vec![Codec::H264],
             },
             plays,
+            speaks,
             sounds: Arc::new(Heard::default()),
         })
     }
@@ -174,7 +183,7 @@ impl WindowViewer for Viewer {
             Box::new(Screening(Arc::clone(&self.heard))),
             self.next_screen.fetch_add(1, Ordering::Relaxed),
         );
-        Ok(if self.plays {
+        Ok(if self.speaks {
             screen.with_speaker(Speaking(Arc::clone(&self.sounds)))
         } else {
             screen
@@ -3425,6 +3434,34 @@ async fn a_screen_can_be_heard_only_when_both_devices_and_the_screen_allow_it() 
     let pair = sounding().await;
     assert!(!pair.viewing.app.hear_window(1, true));
     assert!(!pair.viewing.app.hear_window(u64::MAX, false));
+}
+
+#[tokio::test]
+async fn a_device_is_set_up_to_play_sound_only_when_its_platform_says_it_does() {
+    // The platform gives its screens a speaker and does not say that they play sound, as one that
+    // was changed and not finished would. The device is not set up to play sound, which is also
+    // what it tells the devices it is paired with, so the screen cannot be heard here and the
+    // speaker is not used.
+    let pair = Pair::with_platforms(Sharer::with_sound(whole_display()), Viewer::muddled()).await;
+    let mut viewing_events = pair.viewing.app.events();
+    let WindowShared::Started(_) = pair.offered_and_answered(true, false).await else {
+        panic!("the screen was not shared");
+    };
+    let shown = shown_window(&mut viewing_events).await;
+    assert!(!shown.sound);
+    assert!(!pair.viewing.app.hear_window(shown.id, true));
+    until("the pictures to be shown", || {
+        pair.viewer.heard.has("show 2")
+    })
+    .await;
+    // The Mac was not asked to record, and the speaker was not called, not even at the end.
+    assert_eq!(pair.sharer.heard.count("hear"), 0);
+    assert!(pair.viewing.app.end_window(shown.id));
+    until("the screen to be told that the session is over", || {
+        pair.viewer.heard.has("ended")
+    })
+    .await;
+    assert_eq!(pair.viewer.sounds.all(), Vec::<String>::new());
 }
 
 #[tokio::test]
