@@ -306,9 +306,15 @@ final class MacCurtain: Curtain {
   private var covered = false
   private var activity: NSObjectProtocol?
   private var watcher: DispatchSourceTimer?
+  private var quitWatch: QuitWatch?
   private var heldSince: TimeInterval = 0
   /// Used by the queue only.
   private var misses = 0
+
+  /// What happens when the app is about to quit while the cover is up. It is set once, before
+  /// `raise`: the quit gives the screens back as its process ends, so it has to be the end of the
+  /// session, with the Mac locked first.
+  var whenTheAppQuits: (() -> Void)?
 
   /// `ledger` is told of the keys that this curtain posts to lock the Mac, so that they are not
   /// taken for the keys of somebody at the Mac.
@@ -328,6 +334,14 @@ final class MacCurtain: Curtain {
     guard first else {
       throw SharerFailure(sentence: "This Mac could not keep its screen private.")
     }
+    // The person at the other device can quit Baton by mistake (Command-Q, its menu, its window),
+    // and the Mac must not be left open by that: a quit is heard, unlike a crash.
+    let quits = QuitWatch(name: NSApplication.willTerminateNotification) { [weak self] in
+      self?.whenTheAppQuits?()
+    }
+    mutex.lock()
+    quitWatch = quits
+    mutex.unlock()
     // The hold comes first, so that nobody can type or click in the moment that the screens are
     // dark.
     let made = InputHold { [weak self] alarm in self?.tell(alarm) }
@@ -364,9 +378,12 @@ final class MacCurtain: Curtain {
     hold = nil
     let kept = activity
     activity = nil
+    let quits = quitWatch
+    quitWatch = nil
     let wasCovered = covered
     covered = false
     mutex.unlock()
+    quits?.stop()
     timer?.cancel()
     // A look that is running is waited for, so that it does not put the cover back after it is
     // down.
@@ -421,8 +438,8 @@ final class MacCurtain: Curtain {
       misses += 1
       if misses >= MacCurtain.darknessMisses { tell(.coverLost) }
     }
-    // The count of the system goes up for a key that the tap was blind to. A count that never was
-    // is negative.
+    // How long ago the system counted the last key press, which moves for a key that the tap was
+    // blind to. It is negative if there never was one. It is the last key only: see `Tripwire`.
     let age = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .keyDown)
     if Tripwire.foreignKey(
       lastKeyAge: age >= 0 ? age : nil, sinceHold: ProcessInfo.processInfo.systemUptime - since,
@@ -494,9 +511,13 @@ final class MacCurtain: Curtain {
 /// the poster of the events uses, so that the keys the other device sends are not taken for the
 /// keys of somebody at the Mac. `end` ends the session with a sentence for the person there.
 func makePrivateSession(ledger: PostLedger, end: @escaping (String) -> Void) -> PrivateSession {
-  PrivateSession(
-    curtain: MacCurtain(ledger: ledger), end: end,
-    log: { privacyLog.notice("Baton: \($0, privacy: .public)") })
+  let curtain = MacCurtain(ledger: ledger)
+  let session = PrivateSession(
+    curtain: curtain, end: end, log: { privacyLog.notice("Baton: \($0, privacy: .public)") })
+  // A quit of the app is an end of the session like any other: `finish` returns when the Mac is
+  // locked and the cover is down, and only then does the quit go on and the process end.
+  curtain.whenTheAppQuits = { [weak session] in session?.finish(.sessionOver) }
+  return session
 }
 
 #endif

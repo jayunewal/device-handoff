@@ -179,6 +179,15 @@ func testTheCoverGoesUpOnceAndAFailureLeavesNothingRaised() {
   }
   // Whatever was done before the failure is undone, and the Mac is not locked: nothing began.
   check(refusing.log == ["raise", "lower"], "\(refusing.log)")
+  // The session cannot be raised again, and asking to does not touch the Mac.
+  do {
+    try failing.begin()
+    check(false, "a session whose cover failed was raised again")
+  } catch is SharerFailure {
+  } catch {
+    check(false, "another kind of error: \(error)")
+  }
+  check(refusing.log == ["raise", "lower"], "the second begin touched the Mac: \(refusing.log)")
   failing.finish(.released)
   failing.finish(.sessionOver)
   check(refusing.log == ["raise", "lower"], "a session that did not begin finished: \(refusing.log)")
@@ -196,6 +205,8 @@ func testAWindowThatWasOnlyGivenAndLetGoOfRaisesNothingAndCannotBeRaisedAfterwar
   } catch {
     check(false, "another kind of error: \(error)")
   }
+  // A lock that a thread of its own had been started for would show by now.
+  Thread.sleep(forTimeInterval: 0.1)
   check(curtain.log.isEmpty, "\(curtain.log)")
 }
 
@@ -206,11 +217,15 @@ func testTheCoverComesDownOnlyAfterTheMacIsLockedAndTheLockScreenWasDrawn() {
   let clock = FakeClock()
   let privacy = session(curtain, clock: clock)
   try? privacy.begin()
+  let began = Date()
   privacy.finish(.sessionOver)
+  check(Date().timeIntervalSince(began) < 2, "the end of the session waited for more than the lock")
   check(curtain.log == ["raise", "lock 0", "lower"], "\(curtain.log)")
-  // The cover stays for a while after the Mac says that it is locked.
+  // The cover stays for a while after the Mac says that it is locked, and for no longer.
   check(
     clock.sleeps.contains { $0 >= PrivacyTiming().afterLock }, "slept \(clock.sleeps)")
+  check(
+    clock.sleeps.reduce(0, +) < PrivacyTiming().afterLock + 0.5, "slept \(clock.sleeps)")
   // Finishing again, in any way, changes nothing.
   privacy.finish(.sessionOver)
   privacy.finish(.released)
@@ -316,6 +331,19 @@ func testTheMacIsLockedWhileTheOtherDeviceIsStillBeingToldAndNeitherWaitsForTheO
   release.signal()
 }
 
+func testAnAlarmDoesNotHoldUpWhoeverRingsItAndTheCoverStaysUntilTheMacIsLocked() {
+  let curtain = FakeCurtain(locksAtAttempt: nil)
+  let privacy = session(curtain, patience: 5)
+  try? privacy.begin()
+  // The thread of the tap rings the alarm and must answer the system at once.
+  let began = Date()
+  privacy.finish(.alarm(.escape))
+  check(Date().timeIntervalSince(began) < 1, "an alarm waited for the lock")
+  check(curtain.lowered == 0, "the cover came down on a Mac that is not locked")
+  curtain.lockNow()
+  check(eventually { curtain.lowered == 1 }, "\(curtain.log)")
+}
+
 func testTheEndOfASessionWaitsForTheLockAndAReleaseThatFollowsDoesNot() {
   let curtain = FakeCurtain(locksAtAttempt: nil)
   let privacy = session(curtain, patience: 5)
@@ -349,6 +377,61 @@ func testASessionThatDidNotStartAfterTheCoverWentUpIsLockedAndGivenBackWhenItIsR
   try? privacy.begin()
   privacy.finish(.released)
   check(curtain.log == ["raise", "lock 0", "lower"], "\(curtain.log)")
+}
+
+// MARK: - A quit of the app
+
+func testAQuitOfTheAppLocksTheMacBeforeItGoesOn() {
+  // The quit gives the screens back as the process ends, so it finishes the session first, and
+  // the notification does not return before the Mac is locked and the cover is down.
+  let center = NotificationCenter()
+  let quit = Notification.Name("test.the.app.quits")
+  let curtain = FakeCurtain(locksAtAttempt: 1)
+  let privacy = session(curtain)
+  try? privacy.begin()
+  let watch = QuitWatch(name: quit, center: center) { privacy.finish(.sessionOver) }
+  center.post(name: quit, object: nil)
+  check(curtain.log == ["raise", "lock 0", "lock 1", "lower"], "\(curtain.log)")
+
+  // A watch that was stopped does nothing, and may be stopped again.
+  watch.stop()
+  watch.stop()
+  center.post(name: quit, object: nil)
+  check(curtain.log == ["raise", "lock 0", "lock 1", "lower"], "\(curtain.log)")
+}
+
+func testAWatchOfTheQuitCallsItsActionOnTheThreadThatQuitsAndStopsWhenItIsLetGoOf() {
+  let center = NotificationCenter()
+  let quit = Notification.Name("test.the.app.quits.again")
+  let calls = LockedCounter()
+  var watch: QuitWatch? = QuitWatch(name: quit, center: center) { calls.add() }
+  center.post(name: quit, object: nil)
+  check(calls.value == 1, "\(calls.value)")
+  // It does not answer to another notification.
+  center.post(name: Notification.Name("test.something.else"), object: nil)
+  check(calls.value == 1, "\(calls.value)")
+  // Let go of, it stops.
+  watch = nil
+  center.post(name: quit, object: nil)
+  check(calls.value == 1, "a watch that was let go of acted: \(calls.value)")
+}
+
+/// A count that threads add to.
+final class LockedCounter: @unchecked Sendable {
+  private let mutex = NSLock()
+  private var count = 0
+
+  func add() {
+    mutex.lock()
+    count += 1
+    mutex.unlock()
+  }
+
+  var value: Int {
+    mutex.lock()
+    defer { mutex.unlock() }
+    return count
+  }
 }
 
 // MARK: - What the system's counters say

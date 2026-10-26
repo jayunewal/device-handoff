@@ -234,6 +234,39 @@ final class PrivateSession {
   }
 }
 
+// MARK: - The quit of the app
+
+/// Calls `action` when the app is about to quit, until it is stopped. A quit gives the screens of the
+/// Mac back, since the process that kept them dark ends, so a private session locks the Mac first:
+/// `action` runs on the thread that quits the app, and the quit goes on when it returns.
+final class QuitWatch {
+  private let center: NotificationCenter
+  private let lock = NSLock()
+  private var token: NSObjectProtocol?
+
+  /// `name` is what the app posts when it is about to quit (`NSApplication.willTerminateNotification`
+  /// on a Mac).
+  init(
+    name: Notification.Name, center: NotificationCenter = .default, action: @escaping () -> Void
+  ) {
+    self.center = center
+    token = center.addObserver(forName: name, object: nil, queue: nil) { _ in action() }
+  }
+
+  /// Stops watching. It may be called again, and from the action.
+  func stop() {
+    lock.lock()
+    let observer = token
+    token = nil
+    lock.unlock()
+    if let observer { center.removeObserver(observer) }
+  }
+
+  deinit {
+    stop()
+  }
+}
+
 // MARK: - What is judged from the system's counters
 
 /// When this app last handed a key to the system. A key that this app did not press is what the
@@ -264,7 +297,12 @@ final class PostLedger: @unchecked Sendable {
 
 /// A key at the Mac that the tap did not hold, which happens while a program has the keyboard to
 /// itself (a password field): the system then does not show the keys to the taps of other programs,
-/// but its own count of key presses still goes up.
+/// but how long ago it counted the last key press still moves.
+///
+/// That is the time since the last key press and not a count of them, so it sees the last key only:
+/// a key at the Mac that is followed by a key from the other device before the next look is not
+/// seen (docs/adr/0011-privacy-mode.md). Reading the count of key presses instead is for the next
+/// checks on a Mac.
 enum Tripwire {
   /// How much later than the last key of this app the count may be, in seconds, before the key
   /// counts as another's: the system stamps a key a moment after it was handed over.

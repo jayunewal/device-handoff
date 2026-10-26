@@ -2382,6 +2382,8 @@ async fn control_is_not_granted_when_the_platform_can_no_longer_post_input() {
     let shared = started_at(&mut events).await;
 
     assert_eq!((handle.control(), shared.control), (false, false));
+    // The phone only looks, so the screen is not asked for as private either.
+    assert_eq!(screens.sharer.privacies(), [Privacy::Open]);
 }
 
 #[tokio::test]

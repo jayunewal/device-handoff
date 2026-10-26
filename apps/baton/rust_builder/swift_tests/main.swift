@@ -816,12 +816,24 @@ tests += [
     testTheMacIsLockedWhileTheOtherDeviceIsStillBeingToldAndNeitherWaitsForTheOther
   ),
   (
+    "an alarm does not hold up whoever rings it, and the cover stays until the Mac is locked",
+    testAnAlarmDoesNotHoldUpWhoeverRingsItAndTheCoverStaysUntilTheMacIsLocked
+  ),
+  (
     "the end of a session waits for the lock and a release that follows does not",
     testTheEndOfASessionWaitsForTheLockAndAReleaseThatFollowsDoesNot
   ),
   (
     "a session that did not start after the cover went up is locked when it is released",
     testASessionThatDidNotStartAfterTheCoverWentUpIsLockedAndGivenBackWhenItIsReleased
+  ),
+  (
+    "a quit of the app locks the Mac before it goes on",
+    testAQuitOfTheAppLocksTheMacBeforeItGoesOn
+  ),
+  (
+    "a watch of the quit calls its action and stops when it is let go of",
+    testAWatchOfTheQuitCallsItsActionOnTheThreadThatQuitsAndStopsWhenItIsLetGoOf
   ),
   (
     "three presses of Escape in two seconds are the way out",
