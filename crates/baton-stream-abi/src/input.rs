@@ -20,10 +20,16 @@
 //! with the events that wait, so that a switch that is put back is not held up by a platform that
 //! was slow with a post.
 //!
-//! The same thread runs `start`, `ended` and `release` of the window, which is the one thread
-//! that the header promises for all the calls of a window. It holds the window from the start and
-//! lets go of it when the session is over, so a platform that is in the middle of a post when the
-//! session ends is waited for, and the release of a press that was posted is not lost.
+//! Whether the viewer wants to hear the sound of the screen is told the same way, since the session
+//! says it with its lock held too: [`Forward`] keeps the latest answer, and the thread gives it to
+//! the platform after a lift that waits, and before it takes the next batch of events. A viewer
+//! that turns sound on and off faster than the platform answers is told the last of it only, which
+//! the platform takes as it takes each: `hear(true)` is always a fresh start.
+//!
+//! The same thread runs `start`, `lift`, `hear`, `ended` and `release` of the window, which is the
+//! one thread that the header promises for all the calls of a window. It holds the window from the
+//! start and lets go of it when the session is over, so a platform that is in the middle of a post
+//! when the session ends is waited for, and the release of a press that was posted is not lost.
 //!
 //! A press that was posted is always released: by the viewer's own release, or, when that does not
 //! come, by the thread. It releases everything that is held when the session is paused, when the
@@ -136,6 +142,10 @@ struct Waiting {
     /// What the viewer lifted of the privacy of the screen since the window was last told, as
     /// `LIFT_` bits: the last thing it said, whatever it said before.
     lift: Option<u32>,
+    /// The latest word of the session about the sound of the screen that the platform has not been
+    /// given: `true` if it is wanted. A word that the platform was not given when the next one
+    /// came is replaced by it.
+    hear: Option<bool>,
     phase: Phase,
 }
 
@@ -144,6 +154,8 @@ struct Waiting {
 enum Step {
     /// Tell the window that this is lifted of the privacy of the screen now.
     Lift(u32),
+    /// Tell the window whether the sound of the screen is wanted.
+    Hear(bool),
     /// Put these events to the window.
     Batch(InputBatch, Duration, Instant),
     /// This many events were lost.
@@ -164,6 +176,7 @@ impl Waiting {
                 self.queue.clear();
                 self.nudged = false;
                 self.lift = None;
+                self.hear = None;
                 let told = mem::replace(&mut self.phase, Phase::OverTold) == Phase::OverTold;
                 return (!told).then_some(Step::Over);
             }
@@ -173,6 +186,11 @@ impl Waiting {
         // wait for the posts that were in the queue before it.
         if let Some(lifted) = self.lift.take() {
             return Some(Step::Lift(lifted));
+        }
+        // Before the events, so that a Mac that is kept quiet for a viewer who turned the sound off
+        // is not kept so while the batches ahead of the word are put to the window.
+        if let Some(on) = self.hear.take() {
+            return Some(Step::Hear(on));
         }
         match self.queue.pop_front() {
             Some(Queued::Batch(batch, arrived, queued)) => {
@@ -283,6 +301,18 @@ impl Input {
         self.wake.notify_one();
     }
 
+    /// The session says whether the sound of the screen is wanted. The thread gives the platform
+    /// the latest word, and not the ones between.
+    fn hear(&self, on: bool) {
+        let mut waiting = lock(&self.waiting);
+        if waiting.phase != Phase::Running {
+            return;
+        }
+        waiting.hear = Some(on);
+        drop(waiting);
+        self.wake.notify_one();
+    }
+
     /// The session is over.
     fn over(&self) {
         let mut waiting = lock(&self.waiting);
@@ -327,8 +357,9 @@ impl Input {
 }
 
 /// What the session tells the platform, as the session hears it: the events of the person go to
-/// the queue, the reports of the viewer say that someone is there, and the end of the session says
-/// that nothing more is to be put to the window.
+/// the queue, the reports of the viewer say that someone is there, whether the viewer wants to hear
+/// goes to the thread, which gives it to the platform, and the end of the session says that nothing
+/// more is to be put to the window.
 ///
 /// The rest the platform has no use for: it asks `begin` and `recovery_pending` on its own clock,
 /// and the picture it makes is not told what the viewer wants.
@@ -362,6 +393,10 @@ impl SourceEvents for Forward {
     fn held(&mut self, _: Vec<LtrToken>) {}
 
     fn recovery(&mut self) {}
+
+    fn hear(&mut self, on: bool) {
+        self.input.hear(on);
+    }
 
     fn ended(&mut self) {
         self.input.over();
@@ -471,6 +506,7 @@ impl Worker {
                         self.window.lift(lifted);
                     }
                 }
+                Step::Hear(on) => self.window.hear(on),
                 Step::Batch(batch, arrived, queued) => self.batch(&batch, arrived, queued),
                 Step::Lost(lost) => self.lost(lost),
                 Step::Over => {
@@ -668,7 +704,8 @@ mod tests {
     use crate::{
         abi::{BatonRect, CODEC_H264, KEYBOARD_ELSEWHERE},
         fake_sharer::{
-            Around, AroundPlan, FakeSharer, SharerCall, StartPlan, key_post, left_down, left_up,
+            Around, AroundPlan, FakeSharer, RECORD, STOP, SharerCall, StartPlan, key_post,
+            left_down, left_up, pointer_post,
         },
         journal::EVERY,
         platform::Takes,
@@ -2307,6 +2344,168 @@ mod tests {
         input.close();
         Forward::new(Arc::clone(&input)).input(batch(vec![key(4, true, None)]), Duration::ZERO);
         assert_eq!(input.queued(), 0);
+    }
+
+    #[test]
+    fn the_word_about_the_sound_goes_before_the_batches_that_wait_and_is_given_once() {
+        let mut waiting = Waiting::default();
+        let first = batch(vec![key(4, true, None)]);
+        let (early, one) = (Instant::now(), Duration::from_secs(1));
+        waiting
+            .queue
+            .push_back(Queued::Batch(first.clone(), one, early));
+        waiting.nudged = true;
+        waiting.hear = Some(true);
+        assert_eq!(waiting.step(), Some(Step::Hear(true)));
+        assert_eq!(waiting.step(), Some(Step::Batch(first, one, early)));
+        assert_eq!(waiting.step(), Some(Step::Look));
+        assert_eq!(waiting.step(), None);
+
+        // The end takes the word with it, as it takes the events that wait: a window that is over
+        // is not asked to record.
+        waiting.hear = Some(true);
+        waiting.phase = Phase::Over;
+        assert_eq!(waiting.step(), Some(Step::Over));
+        assert_eq!(waiting.hear, None);
+        assert_eq!(waiting.step(), None);
+
+        // The close comes first, whatever waits.
+        waiting.hear = Some(true);
+        waiting.phase = Phase::Closed;
+        assert_eq!(waiting.step(), Some(Step::Close));
+    }
+
+    #[test]
+    fn a_lift_that_waits_goes_before_the_word_about_the_sound_and_that_before_the_batches() {
+        let mut waiting = Waiting::default();
+        let first = batch(vec![key(4, true, None)]);
+        let (early, one) = (Instant::now(), Duration::from_secs(1));
+        waiting
+            .queue
+            .push_back(Queued::Batch(first.clone(), one, early));
+        waiting.hear = Some(true);
+        waiting.lift = Some(LIFT_SCREEN);
+        // What puts the privacy back is not held up by the word, and neither waits for the events.
+        assert_eq!(waiting.step(), Some(Step::Lift(LIFT_SCREEN)));
+        assert_eq!(waiting.step(), Some(Step::Hear(true)));
+        assert_eq!(waiting.step(), Some(Step::Batch(first, one, early)));
+        assert_eq!(waiting.step(), None);
+    }
+
+    #[test]
+    fn a_viewer_who_asks_for_the_sound_and_withdraws_faster_than_the_window_answers_is_told_the_last_word()
+     {
+        let input = Input::new(TIMING);
+        let mut forward = Forward::new(Arc::clone(&input));
+        let next = || lock(&input.waiting).step();
+
+        // On, off and on is on: the window starts anew, as it does at each on.
+        forward.hear(true);
+        forward.hear(false);
+        forward.hear(true);
+        assert_eq!(next(), Some(Step::Hear(true)));
+        assert_eq!(next(), None);
+
+        // On and off is off.
+        forward.hear(true);
+        forward.hear(false);
+        assert_eq!(next(), Some(Step::Hear(false)));
+        assert_eq!(next(), None);
+
+        // The same word comes again when the session says it again, which it does when the person
+        // asks anew while no sound is sent. The window is to answer each.
+        forward.hear(true);
+        assert_eq!(next(), Some(Step::Hear(true)));
+        forward.hear(true);
+        assert_eq!(next(), Some(Step::Hear(true)));
+        assert_eq!(next(), None);
+    }
+
+    #[test]
+    fn a_word_about_the_sound_that_arrives_after_the_end_or_the_close_is_not_kept() {
+        let input = Input::new(TIMING);
+        let mut forward = Forward::new(Arc::clone(&input));
+        forward.hear(true);
+        forward.ended();
+        // The word that waited is taken by the end, and the one that came after it is not kept.
+        forward.hear(false);
+        assert_eq!(lock(&input.waiting).hear, Some(true));
+        assert_eq!(lock(&input.waiting).step(), Some(Step::Over));
+        assert_eq!(lock(&input.waiting).hear, None);
+        forward.hear(true);
+        assert_eq!(lock(&input.waiting).hear, None);
+
+        let input = Input::new(TIMING);
+        input.close();
+        Forward::new(Arc::clone(&input)).hear(true);
+        assert_eq!(lock(&input.waiting).hear, None);
+    }
+
+    #[test]
+    fn the_window_is_told_about_the_sound_by_its_thread_before_the_batches_that_wait() {
+        let mut served = Served::new(LONG);
+        served.knows_a_frame();
+        // The platform takes its time with the first batch, and the session says more meanwhile:
+        // another batch, and then that the viewer wants to hear.
+        let stall = Stall::new(&served.platform);
+        served.hears_at(
+            vec![pointer(7, (0.5, 0.5), PointerAction::Move)],
+            Duration::from_millis(100),
+        );
+        stall.wait_until_stuck();
+        served.hears_at(
+            vec![pointer(7, (0.25, 0.5), PointerAction::Move)],
+            Duration::from_millis(200),
+        );
+        served.forward.hear(true);
+        stall.let_go();
+        served.wait_for_posts(2);
+
+        // The call that was under way is finished, and then the word goes before the batch that
+        // waited: what the platform records is not kept waiting for the events of the window.
+        let calls = served.platform.calls(1);
+        assert_eq!(
+            calls[1..],
+            [
+                SharerCall::Start { link: 1 },
+                SharerCall::Surroundings,
+                SharerCall::Post(pointer_post(300.0, 200.0, PointerAction::Move)),
+                RECORD,
+                SharerCall::Surroundings,
+                SharerCall::Post(pointer_post(200.0, 200.0, PointerAction::Move)),
+            ]
+        );
+
+        // The next word follows, and the window is told that it ended after it.
+        served.forward.hear(false);
+        wait_for("the window to be told", || {
+            served.platform.hear_calls(1) == [RECORD, STOP]
+        });
+        served.close();
+        let calls = served.platform.calls(1);
+        assert_eq!(
+            calls[calls.len() - 3..],
+            [STOP, SharerCall::Ended, SharerCall::Release]
+        );
+        // None of the calls overlapped with another, which the platform would have said.
+        served.platform.assert_no_complaints();
+    }
+
+    #[test]
+    fn a_word_about_the_sound_that_waits_when_the_session_ends_is_not_given_to_the_window() {
+        let mut served = Served::new(LONG);
+        served.knows_a_frame();
+        let stall = Stall::new(&served.platform);
+        served.hears(vec![pointer(7, (0.5, 0.5), PointerAction::Move)]);
+        stall.wait_until_stuck();
+        // The viewer asks to hear, and the session ends before the thread is free to tell.
+        served.forward.hear(true);
+        served.forward.ended();
+        stall.let_go();
+        served.wait_for_posts(1);
+        served.close();
+        assert_eq!(served.platform.hear_calls(1), []);
+        served.platform.assert_no_complaints();
     }
 
     #[test]

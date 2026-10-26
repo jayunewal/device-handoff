@@ -488,7 +488,10 @@ func registerSharer(_ platform: SharerPlatform) -> Int32 {
     surroundings: sharerSurroundings,
     post: sharerPost,
     screen: nil,
-    lift: nil)
+    lift: nil,
+    // This device sends no sound yet: the entry is left out, and the devices it is paired with are
+    // not told that it can.
+    hear: nil)
   // A device that cannot give its screen leaves the entries out, and its paired devices are not
   // told that they can ask for it. The screen is the one thing that is given private, so what
   // lifts the privacy goes with it.

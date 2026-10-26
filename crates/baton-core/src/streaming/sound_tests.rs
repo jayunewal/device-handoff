@@ -19,12 +19,12 @@ use baton_proto::{
 use baton_stream::{
     KIND_CONTROL, KIND_SOUND,
     control::{
-        Config as Format, Hear, InputBatch, Report, Silent, SilentReason, Sound, SoundCodec,
-        SourceMessage, Thermal, ViewerMessage, Want,
+        Config as Format, Hear, InputBatch, Pause, PauseReason, Report, Silent, SilentReason,
+        Sound, SoundCodec, SourceMessage, Thermal, ViewerMessage, Want,
     },
     header::{PREFIX_LEN, encode_prefix},
     sender::LtrToken,
-    sound::{PacketFlags, PacketHeader},
+    sound::{PacketFlags, PacketHeader, send::Stats as SoundStats},
 };
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use tokio::sync::mpsc;
@@ -33,7 +33,7 @@ use super::{
     End, Granted, NotSent, Play, ShareOutcome, SoundPacket, SoundPlan, SourceEvents, SourceHandle,
     SourceParams, SourceSetup, Streaming, Takes, ViewHandle, ViewParams, Viewer, Viewing,
     WindowHandler, WindowOffer, WindowShare, WindowVerdict,
-    answer_tests::{App, Plan, Platform, Speaking, Speech, Spoken, quick},
+    answer_tests::{App, Heard, Plan, Platform, Speaking, Speech, Spoken, quick},
     offer_tests::fit,
 };
 use crate::{
@@ -51,7 +51,7 @@ fn session_id() -> SessionId {
 }
 
 /// The form of sound that the first version sends.
-fn aac() -> Sound {
+pub(super) fn aac() -> Sound {
     Sound {
         codec: SoundCodec::Aac,
         rate: 48_000,
@@ -61,7 +61,7 @@ fn aac() -> Sound {
 }
 
 /// A packet for a source to send. Its first byte tells it from the others.
-fn packet(byte: u8, capture_time: u64) -> SoundPacket {
+pub(super) fn packet(byte: u8, capture_time: u64) -> SoundPacket {
     SoundPacket {
         bytes: vec![byte; 300],
         capture_time,
@@ -341,7 +341,7 @@ async fn no_packet_is_taken_before_the_platform_has_said_what_the_packets_are() 
 
 #[tokio::test]
 async fn a_viewer_that_turns_sound_off_ends_the_run_and_the_platform_is_told() {
-    let (mut rig, mut viewer, _control) =
+    let (mut rig, mut viewer, mut control) =
         SourceRig::listening(SoundPlan::Display, quick_source()).await;
     write_message(&mut viewer, &ViewerMessage::Hear(Hear { on: false }))
         .await
@@ -350,6 +350,17 @@ async fn a_viewer_that_turns_sound_off_ends_the_run_and_the_platform_is_told() {
         .await;
     assert_eq!(rig.handle.sound(packet(1, 5)).unwrap(), None);
     nothing_arrives(&mut rig.packets).await;
+    // The platform may not have heard yet. Neither a run that it begins nor a `Silent` that it
+    // says is for a viewer that does not want to hear, so the next the viewer reads is the pause.
+    rig.handle.begin_sound(aac()).unwrap();
+    rig.handle.silent(SilentReason::Failed);
+    rig.handle.pause(PauseReason::Locked);
+    assert_eq!(
+        read_source_message(&mut control).await,
+        SourceMessage::Pause(Pause {
+            reason: PauseReason::Locked
+        })
+    );
 }
 
 #[tokio::test]
@@ -475,6 +486,16 @@ async fn a_viewer_that_goes_quiet_loses_the_run_and_gets_a_new_one_when_it_comes
     rig.until_asked(&[Asked::Hear(true), Asked::Hear(false)])
         .await;
     assert_eq!(rig.handle.sound(packet(1, 0)).unwrap(), None);
+    // The platform may not have heard yet, and a run that it begins now is not for a viewer that
+    // is quiet: the next the viewer reads is the pause.
+    rig.handle.begin_sound(aac()).unwrap();
+    rig.handle.pause(PauseReason::Locked);
+    assert_eq!(
+        read_source_message(&mut control).await,
+        SourceMessage::Pause(Pause {
+            reason: PauseReason::Locked
+        })
+    );
     // It comes back, and the run it asked for begins again.
     write_message(&mut viewer, &report()).await.unwrap();
     rig.until_asked(&[Asked::Hear(true), Asked::Hear(false), Asked::Hear(true)])
@@ -745,9 +766,15 @@ impl ViewRig {
     }
 }
 
-/// The next `Hear` of the viewer, among its reports.
+/// The next `Hear` of the viewer, among its reports. The reports keep coming, so a viewer that
+/// never says it is waited for only so long.
 async fn heard(recv: &mut RecvStream) -> Hear {
+    let deadline = Instant::now() + PATIENCE;
     loop {
+        assert!(
+            Instant::now() < deadline,
+            "the viewer said no `Hear` in time"
+        );
         match read_next::<ViewerMessage>(recv, PATIENCE).await {
             Ok(Some(ViewerMessage::Hear(hear))) => return hear,
             Ok(Some(ViewerMessage::Report(_))) => {}
@@ -847,6 +874,15 @@ async fn turning_sound_off_stops_the_speaker_and_the_packets_and_tells_the_sourc
     })
     .await;
     assert_eq!(rig.speech.played()[1], (5, true, 0, b"five".to_vec()));
+}
+
+#[tokio::test]
+async fn asking_again_while_sound_is_on_asks_the_source_again() {
+    let mut rig = ViewRig::new().await;
+    let (_source_control, mut viewer_control) = rig.running().await;
+    // A source that could not capture at first tries again only if it hears of it.
+    assert!(rig.handle.hear(true));
+    assert_eq!(heard(&mut viewer_control).await, Hear { on: true });
 }
 
 #[tokio::test]
@@ -1044,6 +1080,14 @@ async fn a_form_that_cannot_be_played_turns_sound_off_and_the_source_is_told() {
                 .is_err(),
             "{what}"
         );
+        // Sound is off by now, so the person turning it off says nothing more to the speaker or
+        // the source: what the source reads next is the `on` that follows.
+        assert!(rig.handle.hear(false));
+        assert_eq!(
+            rig.speech.all(),
+            [Spoken::Stopped(Some(SilentReason::Other))],
+            "{what}"
+        );
         // The person can ask again, and a form that can be played begins a run.
         assert!(rig.handle.hear(true));
         assert_eq!(heard(&mut viewer_control).await, Hear { on: true });
@@ -1238,10 +1282,27 @@ struct NodeRig {
 
 impl NodeRig {
     async fn new() -> Self {
+        Self::of(true, true).await
+    }
+
+    /// The same, with a source that was set up to send sound only if `sends`, and a viewer that
+    /// was set up to play it only if `plays`.
+    async fn of(sends: bool, plays: bool) -> Self {
         let app = App::new(Plan::Accept);
-        let viewer =
-            TestNode::with(|builder| builder.window_handler(Arc::clone(&app)).play_sound()).await;
-        let source = TestNode::with(|builder| builder.share_windows(false).share_sound()).await;
+        let viewer = TestNode::with(|builder| {
+            let builder = builder.window_handler(Arc::clone(&app));
+            if plays { builder.play_sound() } else { builder }
+        })
+        .await;
+        let source = TestNode::with(|builder| {
+            let builder = builder.share_windows(false);
+            if sends {
+                builder.share_sound()
+            } else {
+                builder
+            }
+        })
+        .await;
         source.pair_with(&viewer);
         Self {
             viewer,
@@ -1251,8 +1312,8 @@ impl NodeRig {
     }
 
     /// Offers `window`, and gives the session that a yes starts and what its platform hears.
-    async fn share(&self, window: WindowShare) -> (SourceHandle, super::answer_tests::Heard) {
-        let heard = super::answer_tests::Heard::default();
+    async fn share(&self, window: WindowShare) -> (SourceHandle, Heard) {
+        let heard = Heard::default();
         let outcome = self
             .source
             .node
@@ -1377,6 +1438,19 @@ async fn sound_goes_from_the_platform_of_the_source_to_the_speaker_of_the_viewer
             .collect::<Vec<_>>(),
         [(0, true, 0, 0), (1, false, 0, 1), (2, false, 0, 2)]
     );
+    // The source was told that each stream was acknowledged, and that none was reset or stopped.
+    until("the streams to stop counting", || {
+        handle.stats().sound_streams == 0
+    })
+    .await;
+    assert_eq!(
+        handle.stats().sound,
+        SoundStats {
+            sent: 3,
+            acked: 3,
+            ..SoundStats::default()
+        }
+    );
 
     // The person turns it off, and the platform is told to let the sound of the screen play.
     assert!(viewing.hear(false));
@@ -1414,46 +1488,38 @@ async fn a_session_of_a_window_has_no_sound_and_the_person_is_told_why() {
     assert_eq!(heard.count("hear"), 0);
 }
 
+/// The viewer asks for sound as a viewer that broke the rules would: the source ends the session,
+/// and its platform is never asked.
+async fn asks_in_breach(viewing: &ViewHandle, handle: &SourceHandle, heard: &Heard) {
+    viewing.say_anyway(ViewerMessage::Hear(Hear { on: true }));
+    let ended = tokio::time::timeout(PATIENCE, handle.ended())
+        .await
+        .expect("the source did not end the session");
+    assert_eq!(ended, End::Violation);
+    assert_eq!(heard.count("hear"), 0);
+}
+
 #[tokio::test]
 async fn a_viewer_cannot_ask_for_sound_from_a_source_that_was_not_set_up_to_send_it() {
-    let app = App::new(Plan::Accept);
-    let viewer =
-        TestNode::with(|builder| builder.window_handler(Arc::clone(&app)).play_sound()).await;
-    let source = TestNode::with(|builder| builder.share_windows(false)).await;
-    source.pair_with(&viewer);
-    let outcome = source
-        .node
-        .share(
-            &viewer.id,
-            display(),
-            Platform(super::answer_tests::Heard::default()),
-            fit,
-        )
-        .await;
-    assert!(matches!(outcome.unwrap(), ShareOutcome::Started(_)));
-    let viewing = app.handle(0);
+    let rig = NodeRig::of(false, true).await;
+    let (handle, heard) = rig.share(display()).await;
+    let viewing = rig.app.handle(0);
     assert!(!viewing.can_hear());
     assert!(!viewing.hear(true));
+    // A viewer that asks all the same breaks a rule, and a Mac that was not set up to send sound
+    // is not made quiet or asked to capture.
+    asks_in_breach(&viewing, &handle, &heard).await;
 }
 
 #[tokio::test]
 async fn a_viewer_that_was_not_set_up_to_play_sound_has_nothing_to_ask_with() {
-    let app = App::new(Plan::Accept);
-    let viewer = TestNode::with(|builder| builder.window_handler(Arc::clone(&app))).await;
-    let source = TestNode::with(|builder| builder.share_windows(false).share_sound()).await;
-    source.pair_with(&viewer);
-    let outcome = source
-        .node
-        .share(
-            &viewer.id,
-            display(),
-            Platform(super::answer_tests::Heard::default()),
-            fit,
-        )
-        .await;
-    assert!(matches!(outcome.unwrap(), ShareOutcome::Started(_)));
+    let rig = NodeRig::of(true, false).await;
+    let (handle, heard) = rig.share(display()).await;
     // The application gave the session a speaker, but the device does not play sound.
-    let viewing = app.handle(0);
+    let viewing = rig.app.handle(0);
     assert!(!viewing.can_hear());
     assert!(!viewing.hear(true));
+    // A viewer that asks all the same breaks a rule, and a Mac is not made quiet for a device that
+    // plays nothing.
+    asks_in_breach(&viewing, &handle, &heard).await;
 }

@@ -298,6 +298,13 @@ impl ViewHandle {
         self.view.say(ViewerMessage::Want(want));
     }
 
+    /// Says `message` to the source as it is, with no regard for what the source advertised, for
+    /// the tests of a source that is sent what it should not be.
+    #[cfg(test)]
+    pub(super) fn say_anyway(&self, message: ViewerMessage) {
+        self.view.say(message);
+    }
+
     /// Whether the person at the source granted control of the window with the offer. If not,
     /// [`input`](Self::input) takes nothing: a viewer cannot ask for control, and cannot turn it
     /// on later.

@@ -140,6 +140,35 @@ pub const SENT_TOO_LARGE: u32 = 2;
 /// The session is over: nothing went out.
 pub const SENT_OVER: u32 = 3;
 
+/// AAC-LC: a packet is one access unit, with no ADTS header and no other framing.
+pub const SOUND_CODEC_AAC: u32 = 1;
+
+/// A flag of `play`: the packet begins a run of sound, so the decoder starts afresh at it.
+pub const PLAY_FIRST: u32 = 1;
+
+/// The person turned the sound off. Only `stopped` is given this one.
+pub const SILENT_OFF: u32 = 0;
+/// The session is of a window, and the sound goes with a whole screen only. Only `stopped` is
+/// given this one: the library answers a viewer that asks for the sound of a window by itself.
+pub const SILENT_WINDOW: u32 = 1;
+/// The system of the source has not let the program record the sound of the device.
+pub const SILENT_NO_PERMISSION: u32 = 2;
+/// Something went wrong at the source.
+pub const SILENT_FAILED: u32 = 3;
+/// A reason that this version does not know.
+pub const SILENT_OTHER: u32 = 4;
+
+/// The packet of sound went out; the number says which packet it is.
+pub const SOUND_SENT: u32 = 0;
+/// The packet did not go out, and nothing is wrong: no run of sound goes (the viewer turned the
+/// sound off, or has not been told yet what the packets are), or the viewer takes no more streams
+/// just now.
+pub const SOUND_DROPPED: u32 = 1;
+/// The packet is larger than the protocol allows: nothing went out.
+pub const SOUND_TOO_LARGE: u32 = 2;
+/// The session is over: nothing went out.
+pub const SOUND_OVER: u32 = 3;
+
 /// Another window has the keyboard, or the application is not in front.
 pub const KEYBOARD_ELSEWHERE: u32 = 0;
 /// The application is in front and the shared window is its focused window.
@@ -535,6 +564,59 @@ pub struct BatonPost {
     pub text: BatonBytes,
 }
 
+/// The form of the sound: what the packets that follow are. A session has one form of sound.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BatonSound {
+    /// The bytes of this struct.
+    pub size: u32,
+    /// A `SOUND_CODEC_` number.
+    pub codec: u32,
+    /// The sampling rate in hertz, from 8000 to 96000.
+    pub rate: u32,
+    /// How many channels there are: 1 or 2.
+    pub channels: u32,
+    /// How many samples of each channel one packet holds: 960 or 1024 for AAC-LC.
+    pub samples: u32,
+    /// Zero.
+    pub reserved: u32,
+}
+
+/// A packet of sound for the speaker to play.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BatonPlay {
+    /// The bytes of this struct.
+    pub size: u32,
+    /// `PLAY_` bits.
+    pub flags: u32,
+    /// The number of the packet. Packets come in the order of their numbers.
+    pub number: u64,
+    /// When the first sample of the packet was captured, in microseconds since the session began,
+    /// on the clock of the source.
+    pub capture_time: u64,
+    /// How many packets before this one are missing and are not played if they come later. The
+    /// speaker covers a gap that long. Zero for the first packet of a run.
+    pub lost_before: u64,
+    /// The packet.
+    pub packet: BatonBytes,
+}
+
+/// A packet of sound that the encoder made.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BatonSoundPacket {
+    /// The bytes of this struct.
+    pub size: u32,
+    /// Zero.
+    pub reserved: u32,
+    /// When the first sample of the packet was captured, in microseconds on the clock of the
+    /// session (`baton_stream_source_clock`).
+    pub capture_time: u64,
+    /// The packet.
+    pub bytes: BatonBytes,
+}
+
 /// Fills in what the device can show.
 pub type LimitsFn = unsafe extern "C" fn(context: *mut c_void, limits: *mut BatonLimits) -> i32;
 /// Makes the decoder and the screen for a window.
@@ -557,8 +639,16 @@ pub type StateFn = unsafe extern "C" fn(screen: *mut c_void, state: *mut BatonDe
 pub type EndedFn = unsafe extern "C" fn(screen: *mut c_void);
 /// The screen is not needed any more.
 pub type ReleaseFn = unsafe extern "C" fn(screen: *mut c_void);
+/// The source sends sound from now on, in this form.
+pub type SoundFn = unsafe extern "C" fn(screen: *mut c_void, sound: *const BatonSound);
+/// Decodes and plays a packet of sound.
+pub type PlayFn = unsafe extern "C" fn(screen: *mut c_void, play: *const BatonPlay);
+/// The run of sound is over; `why` is a `SILENT_` number.
+pub type StoppedFn = unsafe extern "C" fn(screen: *mut c_void, why: u32);
 
-/// What the platform registers. A function that is `None` here is a registration that is refused.
+/// What the platform registers. A function that is `None` here is a registration that is refused,
+/// except `sound`, `play` and `stopped`, which a platform that cannot play sound leaves out: all
+/// three or none.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct BatonViewerVTable {
@@ -584,6 +674,12 @@ pub struct BatonViewerVTable {
     pub ended: Option<EndedFn>,
     /// See [`ReleaseFn`].
     pub release: Option<ReleaseFn>,
+    /// See [`SoundFn`].
+    pub sound: Option<SoundFn>,
+    /// See [`PlayFn`].
+    pub play: Option<PlayFn>,
+    /// See [`StoppedFn`].
+    pub stopped: Option<StoppedFn>,
 }
 
 /// Whether the person can let another device control a window that they share.
@@ -616,13 +712,15 @@ pub type ScreenFn = unsafe extern "C" fn(
 ) -> i32;
 /// Lifts, or puts back, what keeps the Mac private while another device controls it.
 pub type LiftFn = unsafe extern "C" fn(picked: *mut c_void, lifted: u32);
+/// Whether the sound of the screen is wanted: 1 if it is, 0 if it is not.
+pub type HearFn = unsafe extern "C" fn(picked: *mut c_void, on: u32);
 
 /// What the platform registers to share windows. A function that is `None` here is a registration
 /// that is refused, except `surroundings` and `post`, which a platform that cannot post input
 /// leaves out, `screen`, which a platform that cannot give its screen without a picker leaves out,
-/// and `lift`, which a platform that cannot keep a screen private leaves out. `ended` and `release`
-/// are called with the pointer of the window, where the viewer's are called with the pointer of a
-/// screen.
+/// `lift`, which a platform that cannot keep a screen private leaves out, and `hear`, which a
+/// platform that cannot send the sound of its screen leaves out. `ended` and `release` are called
+/// with the pointer of the window, where the viewer's are called with the pointer of a screen.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct BatonSharerVTable {
@@ -654,4 +752,6 @@ pub struct BatonSharerVTable {
     pub screen: Option<ScreenFn>,
     /// See [`LiftFn`]. A platform that cannot keep a screen private leaves it out.
     pub lift: Option<LiftFn>,
+    /// See [`HearFn`]. A platform that cannot send the sound of its screen leaves it out.
+    pub hear: Option<HearFn>,
 }

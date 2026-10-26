@@ -272,6 +272,20 @@ impl Sessions {
         }
     }
 
+    /// Asks the other device to send the sound of the screen `id`, or to stop. Returns whether the
+    /// request was made: a window that is not shown here, a window and not a whole screen, a
+    /// device that sends no sound and a session that is over take no request.
+    pub(crate) fn hear(&self, id: u64, on: bool) -> bool {
+        self.viewing(id).is_some_and(|handle| handle.hear(on))
+    }
+
+    /// Whether this device plays the sound of the screens it shows: the platform says so.
+    pub(crate) fn plays_sound(&self) -> bool {
+        self.viewer
+            .as_ref()
+            .is_some_and(|viewer| viewer.plays_sound())
+    }
+
     /// Ends the session `id`, if it runs. Returns whether it did.
     pub(crate) fn end(&self, id: u64) -> bool {
         let live = locked(&self.live).get(&id).cloned();
@@ -412,6 +426,12 @@ impl Sessions {
             tracing::error!(error = %error, "the platform's limits are not within the protocol");
             "This device cannot show windows.".to_owned()
         })?;
+        // A speaker the platform gave is used only on a device that was set up to play sound; the
+        // session never calls it on another.
+        let viewing = match screen.speaker {
+            Some(speaker) => viewing.with_speaker(speaker),
+            None => viewing,
+        };
         Ok(Prepared {
             screen: screen.id,
             link,

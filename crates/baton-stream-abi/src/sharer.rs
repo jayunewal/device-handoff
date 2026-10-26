@@ -15,7 +15,8 @@
 //! 3. `start`, when the session runs. The window gets a link in the table of [`Links`] first, so
 //!    that the platform can use it from the first moment, and a thread of its own takes the
 //!    window from here on ([`Worker`]): it calls `start`, and then, for a window that is shared
-//!    with control, `surroundings` and `post`. A task waits for the end.
+//!    with control, `surroundings` and `post`, and, for a platform that sends sound, `hear`. A
+//!    task waits for the end.
 //! 4. `ended`, from that thread, once the session is over, whoever ended it, and then `release`
 //!    when the window is dropped. Neither is called with a lock of the session held, so neither
 //!    can wait for a thread of the platform that is on its way into the session.
@@ -37,7 +38,7 @@ use baton_app::windows::{
     PickedWindow, PlatformError, Privacy, ScreenError, SharingFailure, WindowSharer,
 };
 use baton_core::{
-    streaming::{NotSent, Picture, SourceEvents, SourceHandle, Takes},
+    streaming::{NotSent, Picture, SoundPacket, SourceEvents, SourceHandle, Takes},
     util::BoxFuture,
 };
 use baton_proto::{
@@ -45,7 +46,7 @@ use baton_proto::{
     stream::Codec,
 };
 use baton_stream::{
-    control::{Config as Format, PauseReason},
+    control::{Config as Format, PauseReason, SilentReason, Sound},
     gate::Geometry,
     h264,
     header::FrameKind,
@@ -56,7 +57,8 @@ use crate::{
     Error,
     abi::{
         BEGIN_DELTA, BEGIN_KEY, BEGIN_NOT_NOW, BEGIN_RECOVERY, CODEC_H264, PAUSE_HIDDEN,
-        PAUSE_LOCKED, PAUSE_OTHER, SENT, SENT_OVER, SENT_STALE, SENT_TOO_LARGE,
+        PAUSE_LOCKED, PAUSE_OTHER, SENT, SENT_OVER, SENT_STALE, SENT_TOO_LARGE, SILENT_FAILED,
+        SILENT_NO_PERMISSION, SILENT_OTHER, SOUND_DROPPED, SOUND_OVER, SOUND_SENT, SOUND_TOO_LARGE,
     },
     input::{Closing, Dropped, Forward, Input, Timing, Worker},
     platform::{Chosen, Failure, PickedHandle, ScreenFailure, SharerCalls, Takes as WhatItTakes},
@@ -249,6 +251,11 @@ impl WindowSharer for AbiSharer {
 
     fn can_lift(&self) -> bool {
         self.shared.calls.can_lift()
+    }
+
+    /// A platform that gave no way to be told when the sound is wanted cannot send it.
+    fn sends_sound(&self) -> bool {
+        self.shared.calls.can_hear()
     }
 
     /// Has the platform give its main display. The call may wait for the system, so a thread that
@@ -549,6 +556,40 @@ impl Outcome {
     }
 }
 
+/// What became of a packet of sound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SoundOutcome {
+    /// It went out as the packet with this number.
+    Sent(u64),
+    /// It did not go out, and nothing is wrong: no run of sound goes, or the other device takes no
+    /// more streams just now.
+    Dropped,
+    /// It is larger than the protocol allows.
+    TooLarge,
+    /// The session is over.
+    Over,
+}
+
+impl SoundOutcome {
+    /// The `SOUND_` number the platform is given.
+    pub(crate) const fn code(self) -> u32 {
+        match self {
+            Self::Sent(_) => SOUND_SENT,
+            Self::Dropped => SOUND_DROPPED,
+            Self::TooLarge => SOUND_TOO_LARGE,
+            Self::Over => SOUND_OVER,
+        }
+    }
+
+    /// The number of the packet, 0 if none went out.
+    pub(crate) const fn number(self) -> u64 {
+        match self {
+            Self::Sent(number) => number,
+            _ => 0,
+        }
+    }
+}
+
 /// The session of a window that this device shares, as the platform reaches it with its link.
 pub(crate) struct SourceLink {
     handle: Arc<SourceHandle>,
@@ -742,6 +783,46 @@ impl SourceLink {
         self.input.resume();
     }
 
+    /// Says what the packets of sound are, after the platform was told that the sound is wanted.
+    /// Nothing happens if it is not wanted any more, which the platform is told in turn.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Argument`] if the form is beyond what the protocol allows, or differs from the one
+    /// that an earlier run of the session began with: a session has one form of sound.
+    pub(crate) fn begin_sound(&self, sound: Sound) -> Result<(), Error> {
+        self.handle.begin_sound(sound).map_err(|_| Error::Argument)
+    }
+
+    /// Says that the platform cannot send the sound that is wanted, for a `SILENT_` reason.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Argument`] if the reason is not one that the platform may give: the person turning
+    /// the sound off, and the session being of a window, are for the library to say.
+    pub(crate) fn silent(&self, reason: u32) -> Result<(), Error> {
+        let reason = match reason {
+            SILENT_NO_PERMISSION => SilentReason::NoPermission,
+            SILENT_FAILED => SilentReason::Failed,
+            SILENT_OTHER => SilentReason::Other,
+            _ => return Err(Error::Argument),
+        };
+        self.handle.silent(reason);
+        Ok(())
+    }
+
+    /// Sends a packet of sound.
+    pub(crate) fn sound(&self, packet: SoundPacket) -> SoundOutcome {
+        match self.handle.sound(packet) {
+            Ok(Some(number)) => SoundOutcome::Sent(number),
+            Err(NotSent::TooLarge) => SoundOutcome::TooLarge,
+            Err(NotSent::Over) => SoundOutcome::Over,
+            // No run goes, or there is no room; or a reason that a newer version of the library
+            // has. The packet is lost, which a packet of sound may be without anything being wrong.
+            Ok(None) | Err(_) => SoundOutcome::Dropped,
+        }
+    }
+
     /// Ends the session. With a sentence, something went wrong and the person is told what; with
     /// none, the person ended it and nothing is shown.
     pub(crate) fn end(&self, sentence: Option<String>) {
@@ -884,6 +965,17 @@ mod tests {
         assert_eq!(told(Outcome::Stale), (SENT_STALE, 0));
         assert_eq!(told(Outcome::TooLarge), (SENT_TOO_LARGE, 0));
         assert_eq!(told(Outcome::Over), (SENT_OVER, 0));
+    }
+
+    #[test]
+    fn what_became_of_a_packet_of_sound_is_told_with_a_number_and_a_code() {
+        let told = |outcome: SoundOutcome| (outcome.code(), outcome.number());
+        assert_eq!(told(SoundOutcome::Sent(7)), (SOUND_SENT, 7));
+        // Packet 0 is a packet like the others: the code says that it went out.
+        assert_eq!(told(SoundOutcome::Sent(0)), (SOUND_SENT, 0));
+        assert_eq!(told(SoundOutcome::Dropped), (SOUND_DROPPED, 0));
+        assert_eq!(told(SoundOutcome::TooLarge), (SOUND_TOO_LARGE, 0));
+        assert_eq!(told(SoundOutcome::Over), (SOUND_OVER, 0));
     }
 
     #[test]
