@@ -41,6 +41,7 @@ Widget _screen(
   void Function(Device device, {required bool control})? onStartScreen,
   bool canGiveScreen = false,
   ControlAccessKeeper? controlAccess,
+  ScreenAccessKeeper? screenAccess,
 }) => MaterialApp(
   home: DevicesScreen(
     session: session,
@@ -52,6 +53,7 @@ Widget _screen(
     canGiveScreen: canGiveScreen,
     controlAccess:
         controlAccess ?? FakeControlAccess(ControlAccess.unavailable),
+    screenAccess: screenAccess ?? FakeScreenAccess(ScreenAccess.unavailable),
   ),
 );
 
@@ -62,6 +64,7 @@ Future<void> _show(
   void Function(Device device, {required bool control})? onStartScreen,
   bool canGiveScreen = false,
   ControlAccessKeeper? controlAccess,
+  ScreenAccessKeeper? screenAccess,
 }) async {
   await tester.pumpWidget(
     _screen(
@@ -70,6 +73,7 @@ Future<void> _show(
       onStartScreen: onStartScreen,
       canGiveScreen: canGiveScreen,
       controlAccess: controlAccess,
+      screenAccess: screenAccess,
     ),
   );
   await tester.pumpAndSettle();
@@ -782,20 +786,34 @@ void main() {
     final phone = _device('Phone', Platform.ios);
     late FakeSession session;
     late FakeControlAccess keeper;
+    late FakeScreenAccess recorder;
+
+    const recordingSentence =
+        'To let Phone ask for the screen, allow Baton to record it in System '
+        'Settings, under Privacy & Security, Screen & System Audio Recording. '
+        'Then quit Baton and open it again.';
+    const controlSentence =
+        'To let Phone control a window or a screen, allow Baton to control '
+        'this computer in System Settings, under Privacy & Security, '
+        'Accessibility. If Baton is in the list already, take it out and add '
+        'it again.';
 
     Future<void> show(
       WidgetTester tester, {
       ControlAccess access = ControlAccess.allowed,
+      ScreenAccess recording = ScreenAccess.allowed,
       bool canGiveScreen = true,
     }) async {
       session = _session(devices: [phone]);
       keeper = FakeControlAccess(access);
+      recorder = FakeScreenAccess(recording);
       await _show(
         tester,
         session,
         onShareWindow: (device, {required control}) {},
         canGiveScreen: canGiveScreen,
         controlAccess: keeper,
+        screenAccess: recorder,
       );
     }
 
@@ -944,15 +962,8 @@ void main() {
           (id: phone.id, access: StartAccess.control),
         ]);
         expect(keeper.requests, 1);
-        expect(
-          find.text(
-            'To let Phone control a window or a screen, allow Baton to control '
-            'this computer in System Settings, under Privacy & Security, '
-            'Accessibility. If Baton is in the list already, take it out and '
-            'add it again.',
-          ),
-          findsOneWidget,
-        );
+        expect(find.text(controlSentence), findsOneWidget);
+        expect(recorder.requests, 0, reason: 'the screen can be recorded');
       },
     );
 
@@ -965,6 +976,137 @@ void main() {
       await choose(tester, 'Show it to look at');
 
       expect(keeper.requests, 0);
+    });
+
+    testWidgets(
+      'asks the system to record the screen, once it is kept, when that has '
+      'not been allowed',
+      (tester) async {
+        await show(tester, recording: ScreenAccess.needed);
+        await open(tester);
+
+        await choose(tester, 'Show it to look at');
+
+        expect(session.startAccessSet, [
+          (id: phone.id, access: StartAccess.look),
+        ]);
+        expect(recorder.requests, 1);
+        expect(keeper.requests, 0);
+        expect(find.text(recordingSentence), findsOneWidget);
+      },
+    );
+
+    testWidgets('asks the system to record the screen for a device that may '
+        'control it as well', (tester) async {
+      await show(tester, recording: ScreenAccess.needed);
+      await open(tester);
+
+      await choose(tester, 'Show it to look at and control');
+
+      expect(recorder.requests, 1);
+      expect(keeper.requests, 0, reason: 'control was allowed');
+      expect(find.text(recordingSentence), findsOneWidget);
+      expect(find.text(controlSentence), findsNothing);
+    });
+
+    testWidgets(
+      'asks for both consents, and says both, when neither is given',
+      (tester) async {
+        await show(
+          tester,
+          access: ControlAccess.needed,
+          recording: ScreenAccess.needed,
+        );
+        await open(tester);
+
+        await choose(tester, 'Show it to look at and control');
+
+        expect(recorder.requests, 1);
+        expect(keeper.requests, 1);
+        // One notice says both, since a second would take the first off the screen.
+        expect(
+          find.text('$recordingSentence $controlSentence'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets('asks nothing of the system when the screen can be recorded', (
+      tester,
+    ) async {
+      await show(tester);
+      await open(tester);
+
+      await choose(tester, 'Show it to look at');
+
+      expect(session.startAccessSet, isNotEmpty);
+      expect(recorder.requests, 0);
+      expect(
+        find.textContaining('Screen & System Audio Recording'),
+        findsNothing,
+      );
+    });
+
+    testWidgets('asks the system when the setting is saved, not before', (
+      tester,
+    ) async {
+      await show(tester);
+      await open(tester);
+      // The person took the consent back after the screen was shown.
+      recorder.access = ScreenAccess.needed;
+
+      await choose(tester, 'Show it to look at');
+
+      expect(recorder.requests, 1);
+    });
+
+    testWidgets(
+      'does not ask to record the screen when nothing is to be shown',
+      (tester) async {
+        await show(tester, recording: ScreenAccess.needed);
+        session.startAccesses[phone.id] = StartAccess.look;
+        await open(tester);
+
+        await choose(tester, 'Do not show it');
+
+        expect(session.startAccessSet, [
+          (id: phone.id, access: StartAccess.off),
+        ]);
+        expect(recorder.asked, 0);
+        expect(recorder.requests, 0);
+      },
+    );
+
+    testWidgets(
+      'does not ask to record a screen that this device cannot give',
+      (tester) async {
+        await show(tester, recording: ScreenAccess.unavailable);
+        await open(tester);
+
+        await choose(tester, 'Show it to look at');
+
+        expect(session.startAccessSet, isNotEmpty);
+        expect(recorder.requests, 0);
+        expect(
+          find.textContaining('Screen & System Audio Recording'),
+          findsNothing,
+        );
+      },
+    );
+
+    testWidgets('says in the dialog that saving asks to record the screen', (
+      tester,
+    ) async {
+      await show(tester);
+
+      await open(tester);
+
+      expect(
+        find.textContaining(
+          'when you save, this Mac asks for that if it has not been given',
+        ),
+        findsOneWidget,
+      );
     });
 
     testWidgets('leaves control out where the system cannot do it', (
@@ -1007,7 +1149,11 @@ void main() {
     testWidgets(
       'asks for no consent to control when the setting could not be kept',
       (tester) async {
-        await show(tester, access: ControlAccess.needed);
+        await show(
+          tester,
+          access: ControlAccess.needed,
+          recording: ScreenAccess.needed,
+        );
         session.startAccessFailure = const BatonError(
           kind: ErrorKind.storage,
           message: 'Baton could not keep the setting.',
@@ -1018,6 +1164,8 @@ void main() {
 
         expect(find.text('Baton could not keep the setting.'), findsOneWidget);
         expect(keeper.requests, 0);
+        expect(recorder.asked, 0);
+        expect(recorder.requests, 0);
       },
     );
 
@@ -1089,6 +1237,33 @@ void main() {
 
       expect(
         find.text('When ${visibleText(name)} asks for the screen of this Mac'),
+        findsOneWidget,
+      );
+      expect(visibleText(name), isNot(name));
+    });
+
+    testWidgets('names the device as fit to show in the notice', (
+      tester,
+    ) async {
+      const name = 'Pad\u202Eexe';
+      session = _session(devices: [_device(name, Platform.ios)]);
+      await _show(
+        tester,
+        session,
+        onShareWindow: (device, {required control}) {},
+        canGiveScreen: true,
+        controlAccess: FakeControlAccess(),
+        screenAccess: FakeScreenAccess(ScreenAccess.needed),
+      );
+      await tester.tap(find.byTooltip('More about $name'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Let this device ask for the screen…'));
+      await tester.pumpAndSettle();
+
+      await choose(tester, 'Show it to look at');
+
+      expect(
+        find.textContaining('To let ${visibleText(name)} ask for the screen'),
         findsOneWidget,
       );
       expect(visibleText(name), isNot(name));

@@ -24,3 +24,26 @@ class FakeControlAccess extends ControlAccessKeeper {
   @override
   Future<void> request() async => requests++;
 }
+
+/// Says what a test wants the system to say about recording the screen of this device.
+class FakeScreenAccess extends ScreenAccessKeeper {
+  FakeScreenAccess([this.access = ScreenAccess.allowed]);
+
+  /// What `state` gives.
+  ScreenAccess access;
+
+  /// How many times `state` was asked.
+  int asked = 0;
+
+  /// How many times `request` was called.
+  int requests = 0;
+
+  @override
+  Future<ScreenAccess> state() async {
+    asked++;
+    return access;
+  }
+
+  @override
+  Future<void> request() async => requests++;
+}

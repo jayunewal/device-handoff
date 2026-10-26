@@ -2172,6 +2172,15 @@ func testTheConsentIsToldToTheAppWithTheWordsItReads() {
   check(ControlAccess(rawValue: "") == nil)
 }
 
+func testTheConsentToRecordTheScreenIsToldToTheAppWithTheWordsItReads() {
+  // The screens of the app read these words (apps/baton/lib/src/control_access.dart).
+  check(ScreenAccess.allowed.rawValue == "allowed")
+  check(ScreenAccess.needed.rawValue == "needed")
+  check(ScreenAccess.unavailable.rawValue == "unavailable")
+  check(ScreenAccess(rawValue: "needed") == .needed)
+  check(ScreenAccess(rawValue: "") == nil)
+}
+
 // MARK: - Places on the screen
 
 func testARectangleCanHoldSomethingOnlyWithAFiniteSizeAboveZero() {

@@ -6,31 +6,32 @@ import 'package:baton/src/control_access.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+const _channel = MethodChannel(PlatformControlAccess.channelName);
+
+/// Answers the channel with [answer], and notes what it was asked, in order.
+List<String> _listen(
+  WidgetTester tester,
+  Object? Function(MethodCall call) answer,
+) {
+  final calls = <String>[];
+  tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(_channel, (
+    call,
+  ) async {
+    calls.add(call.method);
+    return answer(call);
+  });
+  addTearDown(
+    () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      _channel,
+      null,
+    ),
+  );
+  return calls;
+}
+
 void main() {
   group('the consent of the system to control windows', () {
-    const channel = MethodChannel(PlatformControlAccess.channelName);
     const access = PlatformControlAccess();
-
-    /// Answers the channel with [answer], and notes what it was asked, in order.
-    List<String> listen(
-      WidgetTester tester,
-      Object? Function(MethodCall call) answer,
-    ) {
-      final calls = <String>[];
-      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
-        call,
-      ) async {
-        calls.add(call.method);
-        return answer(call);
-      });
-      addTearDown(
-        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-          channel,
-          null,
-        ),
-      );
-      return calls;
-    }
 
     test('are asked through the plugin that the questions name', () {
       expect(
@@ -43,7 +44,7 @@ void main() {
 
     testWidgets('are read as the plugin says them, on a Mac', (tester) async {
       var answer = 'allowed';
-      final calls = listen(tester, (_) => answer);
+      final calls = _listen(tester, (_) => answer);
 
       expect(await access.state(), ControlAccess.allowed);
       answer = 'needed';
@@ -58,7 +59,7 @@ void main() {
       tester,
     ) async {
       Object? answer;
-      listen(tester, (_) => answer);
+      _listen(tester, (_) => answer);
 
       for (final unknown in [null, 42, true, '', 'yes', 'Allowed']) {
         answer = unknown;
@@ -71,7 +72,7 @@ void main() {
     }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
     testWidgets('are asked for by the plugin, on a Mac', (tester) async {
-      final calls = listen(tester, (_) => 'needed');
+      final calls = _listen(tester, (_) => 'needed');
 
       await access.request();
 
@@ -82,23 +83,94 @@ void main() {
       tester,
     ) async {
       // The app has no code for it, and the channel says so.
-      listen(tester, (_) => throw MissingPluginException());
+      _listen(tester, (_) => throw MissingPluginException());
 
       expect(await access.state(), ControlAccess.unavailable);
       await access.request();
     }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
     testWidgets('are unavailable when the plugin fails', (tester) async {
-      listen(tester, (_) => throw PlatformException(code: 'broken'));
+      _listen(tester, (_) => throw PlatformException(code: 'broken'));
 
       expect(await access.state(), ControlAccess.unavailable);
       await access.request();
     }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
     testWidgets('are not asked of any system but a Mac', (tester) async {
-      final calls = listen(tester, (_) => 'allowed');
+      final calls = _listen(tester, (_) => 'allowed');
 
       expect(await access.state(), ControlAccess.unavailable);
+      await access.request();
+
+      expect(calls, isEmpty);
+    }, variant: TargetPlatformVariant.all(excluding: {TargetPlatform.macOS}));
+  });
+
+  group('the consent of the system to record the screen', () {
+    const access = PlatformScreenAccess();
+
+    test('are asked through the plugin, with the questions it names', () {
+      expect(PlatformScreenAccess.stateQuestion, 'screenAccess');
+      expect(PlatformScreenAccess.requestQuestion, 'requestScreenAccess');
+    });
+
+    testWidgets('are read as the plugin says them, on a Mac', (tester) async {
+      var answer = 'allowed';
+      final calls = _listen(tester, (_) => answer);
+
+      expect(await access.state(), ScreenAccess.allowed);
+      answer = 'needed';
+      expect(await access.state(), ScreenAccess.needed);
+      answer = 'unavailable';
+      expect(await access.state(), ScreenAccess.unavailable);
+
+      expect(calls, ['screenAccess', 'screenAccess', 'screenAccess']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+    testWidgets('are not allowed by an answer that is not known', (
+      tester,
+    ) async {
+      Object? answer;
+      _listen(tester, (_) => answer);
+
+      for (final unknown in [null, 42, true, '', 'yes', 'Allowed']) {
+        answer = unknown;
+        expect(
+          await access.state(),
+          ScreenAccess.unavailable,
+          reason: '$unknown',
+        );
+      }
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+    testWidgets('are asked for by the plugin, on a Mac', (tester) async {
+      final calls = _listen(tester, (_) => 'needed');
+
+      await access.request();
+
+      expect(calls, ['requestScreenAccess']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+    testWidgets('are unavailable when the plugin does not answer', (
+      tester,
+    ) async {
+      _listen(tester, (_) => throw MissingPluginException());
+
+      expect(await access.state(), ScreenAccess.unavailable);
+      await access.request();
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+    testWidgets('are unavailable when the plugin fails', (tester) async {
+      _listen(tester, (_) => throw PlatformException(code: 'broken'));
+
+      expect(await access.state(), ScreenAccess.unavailable);
+      await access.request();
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+    testWidgets('are not asked of any system but a Mac', (tester) async {
+      final calls = _listen(tester, (_) => 'allowed');
+
+      expect(await access.state(), ScreenAccess.unavailable);
       await access.request();
 
       expect(calls, isEmpty);
@@ -132,6 +204,14 @@ void main() {
           plugin,
           contains('case "${PlatformControlAccess.requestQuestion}":'),
         );
+        expect(
+          plugin,
+          contains('case "${PlatformScreenAccess.stateQuestion}":'),
+        );
+        expect(
+          plugin,
+          contains('case "${PlatformScreenAccess.requestQuestion}":'),
+        );
       });
 
       test('says only the words the app reads ($system)', () {
@@ -146,6 +226,20 @@ void main() {
           multiLine: true,
         ).allMatches(body!).map((match) => match.group(1)).toSet();
         expect(words, ControlAccess.values.map((state) => state.name).toSet());
+      });
+
+      test('says only the words the app reads of the screen ($system)', () {
+        final rules = read(system, 'BatonInput.swift');
+
+        final body = RegExp(r'enum ScreenAccess: String[^{]*\{([^}]*)\}')
+            .firstMatch(rules)
+            ?.group(1);
+        expect(body, isNotNull, reason: 'the enum of the answers is gone');
+        final words = RegExp(
+          r'^\s*case (\w+)',
+          multiLine: true,
+        ).allMatches(body!).map((match) => match.group(1)).toSet();
+        expect(words, ScreenAccess.values.map((state) => state.name).toSet());
       });
     }
   });

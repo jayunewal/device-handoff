@@ -229,6 +229,17 @@ void main() {
       if (!canShare) {
         expect(access, 'unavailable');
       }
+      // Whether the screen may be recorded with no picker is answered in the same way, and a
+      // device that shares nothing gives no screen.
+      final recording = await _screenAccess();
+      expect(
+        ['allowed', 'needed', 'unavailable'],
+        contains(recording),
+        reason: 'the plugin says: $recording',
+      );
+      if (!canShare) {
+        expect(recording, 'unavailable');
+      }
     },
     skip:
         defaultTargetPlatform != TargetPlatform.iOS &&
@@ -523,6 +534,13 @@ Future<Map<String, int>> _streamStatus() async {
 Future<String?> _controlAccess() async {
   const channel = MethodChannel('io.github.jayunewal.baton/stream');
   return channel.invokeMethod<String>('controlAccess');
+}
+
+/// What the plugin answers to the question whether this device lets Baton record its screen with no
+/// picker of the system: "allowed", "needed" or "unavailable" (BatonStreamPlugin.swift).
+Future<String?> _screenAccess() async {
+  const channel = MethodChannel('io.github.jayunewal.baton/stream');
+  return channel.invokeMethod<String>('screenAccess');
 }
 
 /// What there is to say about the app and its screen when a wait runs out, for the log: a

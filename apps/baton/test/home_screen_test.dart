@@ -66,6 +66,7 @@ Future<FakeSession> _show(
   FakeShower? shower,
   FakeScreen? screen,
   ControlAccessKeeper? controlAccess,
+  ScreenAccessKeeper? screenAccess,
 ]) async {
   final session = given ?? _session();
   tester.view
@@ -85,6 +86,8 @@ Future<FakeSession> _show(
         screen: screen ?? FakeScreen(),
         controlAccess:
             controlAccess ?? FakeControlAccess(ControlAccess.unavailable),
+        screenAccess:
+            screenAccess ?? FakeScreenAccess(ScreenAccess.unavailable),
       ),
     ),
   );
@@ -515,6 +518,34 @@ void main() {
       expect(session.startAccessSet, [
         (id: _kitchenIpad.id, access: StartAccess.look),
       ]);
+    },
+  );
+
+  testWidgets(
+    'a Mac asks the system to record its screen when a device may ask',
+    (tester) async {
+      final session = _session()..abilities = _macAbilities;
+      final recorder = FakeScreenAccess(ScreenAccess.needed);
+      await _show(
+        tester,
+        session,
+        const SystemFileChooser(),
+        null,
+        null,
+        null,
+        recorder,
+      );
+
+      await tester.tap(find.byTooltip('More about Kitchen iPad'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Let this device ask for the screen…'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Show it to look at'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      expect(recorder.requests, 1);
     },
   );
 
