@@ -16,7 +16,7 @@ use std::{
 use baton_app::{
     App, ErrorKind, Event, Events, Options, ScreenStarted, StartAccess, WindowAbilities,
     WindowButton, WindowEnd, WindowInput, WindowModifiers, WindowNoticeReason, WindowPointer,
-    WindowRequest, WindowRole, WindowSession, WindowShared, Windows,
+    WindowRequest, WindowRole, WindowSession, WindowShared, WindowSound, Windows,
     windows::{
         PickedWindow, PlatformError, Privacy, Screen, ScreenError, ScreenLink, SharingFailure,
         ShowLimits, WindowSharer, WindowViewer,
@@ -25,14 +25,18 @@ use baton_app::{
 use baton_core::{
     Config as NodeConfig, Identity, Node, PairedDevice, TrustStore,
     streaming::{
-        DecodeError, Decoder, DecoderState, Picture, SourceEvents, SourceHandle, StartOutcome,
-        Takes, ViewHandle, Viewing, Wanted, WhyNot, WindowHandler, WindowOffer, WindowVerdict,
+        DecodeError, Decoder, DecoderState, Picture, Play, SoundPacket, SourceEvents, SourceHandle,
+        Speaker, StartOutcome, Takes, ViewHandle, Viewing, Wanted, WhyNot, WindowHandler,
+        WindowOffer, WindowVerdict,
     },
     util::BoxFuture,
 };
 use baton_proto::{DeviceId, stream::Codec, ticket::PairTicket};
 use baton_stream::{
-    control::{Config, InputBatch, Lift, Report, SourceMessage, Thermal, Want},
+    control::{
+        Config, InputBatch, Lift, Report, SilentReason, Sound, SoundCodec, SourceMessage, Thermal,
+        Want,
+    },
     gate::Reason,
     header::FrameHeader,
     input::{Button, Event as InputEvent, Modifiers, PointerAction},
@@ -58,6 +62,10 @@ impl Heard {
 
     fn has(&self, what: &str) -> bool {
         self.0.lock().unwrap().iter().any(|heard| heard == what)
+    }
+
+    fn all(&self) -> Vec<String> {
+        self.0.lock().unwrap().clone()
     }
 
     fn count(&self, prefix: &str) -> usize {
@@ -111,10 +119,23 @@ struct Viewer {
     /// If set, `open` fails with this.
     fail: Mutex<Option<String>>,
     limits: ShowLimits,
+    /// Whether the screens play sound.
+    plays: bool,
+    /// What the speakers of the screens heard.
+    sounds: Arc<Heard>,
 }
 
 impl Viewer {
     fn new() -> Arc<Self> {
+        Self::building(false)
+    }
+
+    /// A platform whose screens play sound.
+    fn playing() -> Arc<Self> {
+        Self::building(true)
+    }
+
+    fn building(plays: bool) -> Arc<Self> {
         Arc::new(Self {
             next_screen: AtomicI64::new(100),
             heard: Arc::new(Heard::default()),
@@ -127,6 +148,8 @@ impl Viewer {
                 max_fps: 60,
                 codecs: vec![Codec::H264],
             },
+            plays,
+            sounds: Arc::new(Heard::default()),
         })
     }
 }
@@ -147,10 +170,47 @@ impl WindowViewer for Viewer {
             control: window.control,
         });
         self.links.lock().unwrap().push(link);
-        Ok(Screen::new(
+        let screen = Screen::new(
             Box::new(Screening(Arc::clone(&self.heard))),
             self.next_screen.fetch_add(1, Ordering::Relaxed),
-        ))
+        );
+        Ok(if self.plays {
+            screen.with_speaker(Speaking(Arc::clone(&self.sounds)))
+        } else {
+            screen
+        })
+    }
+
+    fn plays_sound(&self) -> bool {
+        self.plays
+    }
+}
+
+/// The speaker of a screen: it keeps a line for each call.
+struct Speaking(Arc<Heard>);
+
+impl Speaker for Speaking {
+    fn sound(&mut self, sound: Sound) {
+        self.0
+            .push(format!("sound {:?} {}", sound.codec, sound.samples));
+    }
+
+    fn play(&mut self, play: Play, packet: Vec<u8>) {
+        self.0.push(format!(
+            "play {} lost {} first {} bytes {}",
+            play.number,
+            play.lost_before,
+            play.first,
+            packet.len()
+        ));
+    }
+
+    fn stopped(&mut self, why: Option<SilentReason>) {
+        self.0.push(format!("stopped {why:?}"));
+    }
+
+    fn ended(&mut self) {
+        self.0.push("ended");
     }
 }
 
@@ -241,6 +301,8 @@ struct Sharer {
     lifted: Arc<Mutex<Vec<Lift>>>,
     /// How many times the person was given a picker.
     picks: AtomicUsize,
+    /// Whether the platform can send the sound of a whole display.
+    sounds: bool,
 }
 
 /// What the platform does when it is asked for its screen.
@@ -252,23 +314,62 @@ enum ScreenPlan {
     Refuses(ScreenError),
 }
 
+/// What a platform can do besides sharing the window that the person picked.
+#[derive(Clone, Copy, Default)]
+struct Can {
+    /// Give its screen without the person picking it.
+    screen: bool,
+    /// Lift what keeps that screen private.
+    lift: bool,
+    /// Send the sound of a whole display.
+    sound: bool,
+}
+
 impl Sharer {
     fn new(control: bool, next: Option<Chosen>) -> Arc<Self> {
-        Self::building(control, next, false, false)
+        Self::building(control, next, Can::default())
     }
 
     /// A platform that can give its screen without the person picking it.
     fn with_screen(control: bool) -> Arc<Self> {
-        Self::building(control, None, true, false)
+        let can = Can {
+            screen: true,
+            ..Can::default()
+        };
+        Self::building(control, None, can)
     }
 
     /// A platform that can give its screen without the person picking it, and can lift what keeps
     /// that screen private when the person at the other device says so.
     fn with_lift(control: bool) -> Arc<Self> {
-        Self::building(control, None, true, true)
+        let can = Can {
+            screen: true,
+            lift: true,
+            ..Can::default()
+        };
+        Self::building(control, None, can)
     }
 
-    fn building(control: bool, next: Option<Chosen>, gives_screen: bool, lifts: bool) -> Arc<Self> {
+    /// A platform that can send the sound of a whole display.
+    fn with_sound(next: Chosen) -> Arc<Self> {
+        let can = Can {
+            sound: true,
+            ..Can::default()
+        };
+        Self::building(false, Some(next), can)
+    }
+
+    /// A platform that can give its screen without the person picking it, and send its sound.
+    fn with_screen_and_sound(control: bool) -> Arc<Self> {
+        let can = Can {
+            screen: true,
+            sound: true,
+            ..Can::default()
+        };
+        Self::building(control, None, can)
+    }
+
+    fn building(control: bool, next: Option<Chosen>, can: Can) -> Arc<Self> {
         Arc::new(Self {
             control: AtomicBool::new(control),
             next: Mutex::new(next),
@@ -283,14 +384,15 @@ impl Sharer {
             fails_at_once: Mutex::new(None),
             failure: Arc::new(Mutex::new(None)),
             inputs: Arc::new(Mutex::new(Vec::new())),
-            gives_screen,
+            gives_screen: can.screen,
             screen_plan: Mutex::new(ScreenPlan::Gives(whole_display())),
             screen_gate: Mutex::new(None),
             screens: AtomicUsize::new(0),
             privacies: Mutex::new(Vec::new()),
-            lifts,
+            lifts: can.lift,
             lifted: Arc::new(Mutex::new(Vec::new())),
             picks: AtomicUsize::new(0),
+            sounds: can.sound,
         })
     }
 
@@ -384,6 +486,10 @@ impl WindowSharer for Sharer {
 
     fn can_lift(&self) -> bool {
         self.lifts
+    }
+
+    fn sends_sound(&self) -> bool {
+        self.sounds
     }
 
     fn screen(
@@ -538,6 +644,10 @@ impl SourceEvents for Hearing {
         self.2.lock().unwrap().push(lift);
     }
 
+    fn hear(&mut self, on: bool) {
+        self.0.push(format!("hear {}", u8::from(on)));
+    }
+
     fn recovery(&mut self) {
         self.0.push("recovery");
     }
@@ -631,7 +741,10 @@ impl Pair {
     }
 
     async fn with_sharer(sharer: Arc<Sharer>) -> Self {
-        let viewer = Viewer::new();
+        Self::with_platforms(sharer, Viewer::new()).await
+    }
+
+    async fn with_platforms(sharer: Arc<Sharer>, viewer: Arc<Viewer>) -> Self {
         let sharing = Dev::start("Studio Mac", Windows::none().sharing(sharer.clone())).await;
         let viewing = Dev::start("Kitchen iPad", Windows::none().showing(viewer.clone())).await;
         pair(&sharing, &viewing).await;
@@ -2702,7 +2815,10 @@ impl Asking {
     }
 
     async fn with(sharer: Arc<Sharer>) -> Self {
-        let viewer = Viewer::new();
+        Self::with_platforms(sharer, Viewer::new()).await
+    }
+
+    async fn with_platforms(sharer: Arc<Sharer>, viewer: Arc<Viewer>) -> Self {
         let mac = Dev::start("Studio Mac", Windows::none().sharing(sharer.clone())).await;
         let phone = Dev::start("Pocket Phone", Windows::none().showing(viewer.clone())).await;
         pair(&mac, &phone).await;
@@ -3215,4 +3331,233 @@ async fn a_person_who_gives_up_while_the_mac_gets_ready_leaves_nothing_shown_and
     // The Mac and the phone are free for the next asking.
     asking.started(false).await;
     assert_eq!(asking.screens(), 2);
+}
+
+// The sound of a screen (ADR 0012): the person asks to hear it, the platform of the source records
+// it, and the speaker of the viewer plays it.
+
+/// The form of the sound that the platform of the source sends.
+const AAC: Sound = Sound {
+    codec: SoundCodec::Aac,
+    rate: 48_000,
+    channels: 2,
+    samples: 1024,
+};
+
+/// The packet of sound with this number, as the encoder of the platform makes it.
+fn packet(number: u64) -> SoundPacket {
+    SoundPacket {
+        bytes: vec![0x2a; 300],
+        capture_time: 21_333 * number,
+    }
+}
+
+/// A Mac that sends the sound of a whole display, an iPad that plays it, and the two paired.
+async fn sounding() -> Pair {
+    Pair::with_platforms(Sharer::with_sound(whole_display()), Viewer::playing()).await
+}
+
+/// The next time the screens hear how the sound of the window `id` stands.
+async fn next_sound(events: &mut Events, id: u64) -> WindowSound {
+    next_matching(events, |event| match event {
+        Event::WindowSound { id: of, sound } if of == id => Some(sound),
+        _ => None,
+    })
+    .await
+}
+
+/// The handle of the session that the platform of the source holds, once it has it.
+async fn source_handle(sharer: &Sharer) -> Arc<SourceHandle> {
+    until("the platform of the source to be started", || {
+        sharer.handle.lock().unwrap().is_some()
+    })
+    .await;
+    sharer.handle.lock().unwrap().clone().unwrap()
+}
+
+#[tokio::test]
+async fn a_screen_can_be_heard_only_when_both_devices_and_the_screen_allow_it() {
+    let cases = [
+        (
+            "a whole screen between two devices that carry sound",
+            Sharer::with_sound(whole_display()),
+            Viewer::playing(),
+            true,
+        ),
+        (
+            "a window",
+            Sharer::with_sound(report_window()),
+            Viewer::playing(),
+            false,
+        ),
+        (
+            "a source that sends no sound",
+            Sharer::new(false, Some(whole_display())),
+            Viewer::playing(),
+            false,
+        ),
+        (
+            "a viewer that plays no sound",
+            Sharer::with_sound(whole_display()),
+            Viewer::new(),
+            false,
+        ),
+    ];
+    for (what, sharer, viewer, heard) in cases {
+        let pair = Pair::with_platforms(sharer, viewer).await;
+        let mut viewing_events = pair.viewing.app.events();
+        let WindowShared::Started(shared) = pair.offered_and_answered(true, false).await else {
+            panic!("{what}: the window was not shared");
+        };
+        let shown = shown_window(&mut viewing_events).await;
+        assert_eq!(shown.sound, heard, "{what}");
+        // The request is taken exactly when the session says that the sound can be heard.
+        assert_eq!(
+            pair.viewing.app.hear_window(shown.id, false),
+            heard,
+            "{what}"
+        );
+        // The device that shares the screen sends its sound, and is not asked for it.
+        assert!(!shared.sound, "{what}");
+        assert!(!pair.sharing.app.hear_window(shared.id, true), "{what}");
+    }
+    // Nor is a session that does not run, or one that never was.
+    let pair = sounding().await;
+    assert!(!pair.viewing.app.hear_window(1, true));
+    assert!(!pair.viewing.app.hear_window(u64::MAX, false));
+}
+
+#[tokio::test]
+async fn the_sound_of_a_screen_goes_from_the_platform_of_the_source_to_the_speaker_of_the_viewer() {
+    let pair = sounding().await;
+    let mut viewing_events = pair.viewing.app.events();
+    let WindowShared::Started(_) = pair.offered_and_answered(true, false).await else {
+        panic!("the screen was not shared");
+    };
+    let shown = shown_window(&mut viewing_events).await;
+    assert!(shown.sound);
+    let handle = source_handle(&pair.sharer).await;
+    until("the pictures to be shown", || {
+        pair.viewer.heard.has("show 2")
+    })
+    .await;
+
+    // Sound is off until the person asks, and the Mac is not asked to record before.
+    assert_eq!(pair.sharer.heard.count("hear"), 0);
+    assert!(pair.viewing.app.hear_window(shown.id, true));
+    until(
+        "the platform of the source to be asked for the sound",
+        || pair.sharer.heard.has("hear 1"),
+    )
+    .await;
+    // The speaker is told nothing until the platform says what its packets are.
+    assert_eq!(pair.viewer.sounds.all(), Vec::<String>::new());
+    handle.begin_sound(AAC).unwrap();
+    assert_eq!(
+        next_sound(&mut viewing_events, shown.id).await,
+        WindowSound::Playing
+    );
+
+    // The packets reach the speaker in order, whole.
+    for number in 0..3 {
+        assert_eq!(handle.sound(packet(number)).unwrap(), Some(number));
+    }
+    until("the speaker to play all three", || {
+        pair.viewer.sounds.count("play") == 3
+    })
+    .await;
+    assert_eq!(
+        pair.viewer.sounds.all(),
+        [
+            "sound Aac 1024",
+            "play 0 lost 0 first true bytes 300",
+            "play 1 lost 0 first false bytes 300",
+            "play 2 lost 0 first false bytes 300",
+        ]
+    );
+
+    // The person turns it off: the speaker stops, the screens hear it, and the Mac is told.
+    assert!(pair.viewing.app.hear_window(shown.id, false));
+    assert_eq!(
+        next_sound(&mut viewing_events, shown.id).await,
+        WindowSound::Off
+    );
+    until("the platform of the source to be told", || {
+        pair.sharer.heard.has("hear 0")
+    })
+    .await;
+    assert_eq!(pair.viewer.sounds.all().last().unwrap(), "stopped None");
+
+    // The session ends: the speaker lets go, and nothing more is taken.
+    assert!(pair.viewing.app.end_window(shown.id));
+    until("the speaker to be told that the session is over", || {
+        pair.viewer.sounds.has("ended")
+    })
+    .await;
+    assert!(!pair.viewing.app.hear_window(shown.id, true));
+}
+
+#[tokio::test]
+async fn a_source_that_cannot_record_says_why_and_tries_again_when_the_person_asks_again() {
+    let pair = sounding().await;
+    let mut viewing_events = pair.viewing.app.events();
+    let WindowShared::Started(_) = pair.offered_and_answered(true, false).await else {
+        panic!("the screen was not shared");
+    };
+    let shown = shown_window(&mut viewing_events).await;
+    let handle = source_handle(&pair.sharer).await;
+    until("the pictures to be shown", || {
+        pair.viewer.heard.has("show 2")
+    })
+    .await;
+
+    // The Mac has not let the program record its sound: the person is told why.
+    assert!(pair.viewing.app.hear_window(shown.id, true));
+    until("the platform of the source to be asked", || {
+        pair.sharer.heard.count("hear 1") == 1
+    })
+    .await;
+    handle.silent(SilentReason::NoPermission);
+    assert_eq!(
+        next_sound(&mut viewing_events, shown.id).await,
+        WindowSound::NoPermission
+    );
+    assert_eq!(
+        pair.viewer.sounds.all(),
+        ["stopped Some(NoPermission)"],
+        "the speaker was told why there is no sound"
+    );
+
+    // The person at the Mac allowed it, and the person here asks again: the platform of the source
+    // is asked again, with nothing in between, and this time it can.
+    assert!(pair.viewing.app.hear_window(shown.id, true));
+    until("the platform of the source to be asked again", || {
+        pair.sharer.heard.count("hear 1") == 2
+    })
+    .await;
+    assert_eq!(pair.sharer.heard.count("hear 0"), 0);
+    handle.begin_sound(AAC).unwrap();
+    assert_eq!(
+        next_sound(&mut viewing_events, shown.id).await,
+        WindowSound::Playing
+    );
+    assert_eq!(
+        pair.viewer.sounds.all(),
+        ["stopped Some(NoPermission)", "sound Aac 1024"]
+    );
+}
+
+#[tokio::test]
+async fn the_sound_of_a_screen_that_a_phone_asked_for_can_be_heard_too() {
+    let asking =
+        Asking::with_platforms(Sharer::with_screen_and_sound(false), Viewer::playing()).await;
+    asking.allow(StartAccess::Look);
+    let session = asking.started(false).await;
+    assert!(session.display);
+    assert!(session.sound);
+    assert!(asking.phone.app.hear_window(session.id, true));
+    until("the platform of the Mac to be asked for the sound", || {
+        asking.sharer.heard.has("hear 1")
+    })
+    .await;
 }

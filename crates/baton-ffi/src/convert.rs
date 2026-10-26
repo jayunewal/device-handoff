@@ -15,7 +15,7 @@ use crate::api::{
         Platform, PreviewName, Reach, Received, ReceivedItem, Receiving, Route, ScreenStarted,
         SendStage, StartAccess, TransferEnd, TransferRequest, TransferResult, WindowAbilities,
         WindowButton, WindowEnd, WindowInput, WindowModifiers, WindowNoticeReason, WindowPointer,
-        WindowRequest, WindowRole, WindowSession, WindowShared,
+        WindowRequest, WindowRole, WindowSession, WindowShared, WindowSound,
     },
 };
 
@@ -355,6 +355,7 @@ impl From<app::WindowSession> for WindowSession {
             height,
             control,
             private,
+            sound,
             screen,
         } = session;
         Self {
@@ -369,7 +370,21 @@ impl From<app::WindowSession> for WindowSession {
             height,
             control,
             private,
+            sound,
             screen,
+        }
+    }
+}
+
+impl From<app::WindowSound> for WindowSound {
+    fn from(sound: app::WindowSound) -> Self {
+        match sound {
+            app::WindowSound::Playing => Self::Playing,
+            app::WindowSound::Off => Self::Off,
+            app::WindowSound::Window => Self::Window,
+            app::WindowSound::NoPermission => Self::NoPermission,
+            app::WindowSound::Failed => Self::Failed,
+            app::WindowSound::Other => Self::Other,
         }
     }
 }
@@ -601,6 +616,10 @@ impl From<app::Event> for Event {
                 reason: reason.into(),
                 count,
             },
+            app::Event::WindowSound { id, sound } => Self::WindowSound {
+                id: signed(id),
+                sound: sound.into(),
+            },
             app::Event::WindowEnded { id, end } => Self::WindowEnded {
                 id: signed(id),
                 end: end.into(),
@@ -664,6 +683,7 @@ mod tests {
             height: 900,
             control: true,
             private: true,
+            sound: true,
             screen: Some(7),
         }
     }
@@ -681,6 +701,7 @@ mod tests {
         assert_eq!((converted.width, converted.height), (1440, 900));
         assert!(converted.control);
         assert!(converted.private);
+        assert!(converted.sound);
         assert_eq!(converted.screen, Some(7));
         let sharing = WindowSession::from(app::WindowSession {
             role: app::WindowRole::Sharing,
@@ -1146,6 +1167,42 @@ mod tests {
                 count: 1,
             }),
             Event::WindowNotice { id: i64::MAX, .. }
+        ));
+    }
+
+    #[test]
+    fn every_state_the_app_gives_for_the_sound_of_a_screen_is_carried_over() {
+        for (sound, expected) in [
+            (app::WindowSound::Playing, WindowSound::Playing),
+            (app::WindowSound::Off, WindowSound::Off),
+            (app::WindowSound::Window, WindowSound::Window),
+            (app::WindowSound::NoPermission, WindowSound::NoPermission),
+            (app::WindowSound::Failed, WindowSound::Failed),
+            (app::WindowSound::Other, WindowSound::Other),
+        ] {
+            assert_eq!(WindowSound::from(sound), expected, "{sound:?}");
+        }
+    }
+
+    #[test]
+    fn the_sound_of_a_screen_keeps_its_window_and_how_it_stands() {
+        assert_eq!(
+            Event::from(app::Event::WindowSound {
+                id: 4,
+                sound: app::WindowSound::NoPermission,
+            }),
+            Event::WindowSound {
+                id: 4,
+                sound: WindowSound::NoPermission
+            }
+        );
+        // A number that Dart cannot hold stays a number it can.
+        assert!(matches!(
+            Event::from(app::Event::WindowSound {
+                id: u64::MAX,
+                sound: app::WindowSound::Playing,
+            }),
+            Event::WindowSound { id: i64::MAX, .. }
         ));
     }
 

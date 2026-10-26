@@ -74,6 +74,16 @@ abstract class Baton implements RustOpaqueInterface {
   /// it and lets go of the folder, as the app layer does when it is dropped.
   Future<Stream<Event>> events();
 
+  /// Asks the device that shares the screen `session`, which is shown here, to send its sound
+  /// (`listen`), or to stop. The sound plays on this device, and the other device keeps its own
+  /// speakers quiet for as long as it is sent. Sound is off when a session starts. It is for a
+  /// session whose `WindowSession.sound` is set. Returns whether the request was made, which is
+  /// not so for a window that is not shown here, for a window and not a whole screen, when this
+  /// device plays no sound or the other sends none, and for a session that is over. How it came
+  /// out comes as `Event.windowSound`. A request to hear that is made again asks the other
+  /// device to try again, which a person does after it said that it could not.
+  bool hearWindow({required PlatformInt64 session, required bool listen});
+
   /// What other devices have sent, newest first.
   Future<List<Received>> inbox();
 

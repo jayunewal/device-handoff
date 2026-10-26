@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::model::{
     OfferOutcome, PairingRequest, Received, TransferEnd, TransferRequest, WindowEnd,
-    WindowNoticeReason, WindowRequest, WindowSession,
+    WindowNoticeReason, WindowRequest, WindowSession, WindowSound,
 };
 
 /// Something a screen may want to react to.
@@ -96,6 +96,21 @@ pub enum Event {
         /// How many events it dropped, at least 1.
         count: u32,
     },
+    /// The sound of a screen that is shown here changed: it plays, the person turned it off, or the
+    /// other device says why it sends none. Show the person how it stands.
+    ///
+    /// It comes only for a session whose [`WindowSession::sound`] is set, and only after the
+    /// person asked to hear it with [`App::hear_window`](crate::App::hear_window), so it always
+    /// comes after the [`Event::WindowStarted`] of the same window. The other device that said it
+    /// sends none can begin by itself when the cause is gone, for example when the person there
+    /// has allowed it to record the sound, and then [`WindowSound::Playing`] follows; a person
+    /// who asks again with `hear_window` makes it try at once.
+    WindowSound {
+        /// The [`WindowSession::id`] whose sound this is.
+        id: u64,
+        /// How the sound stands now.
+        sound: WindowSound,
+    },
     /// A window that was shown or shared is over.
     WindowEnded {
         /// The [`WindowSession::id`] that ended.
@@ -113,7 +128,9 @@ pub enum Event {
     /// missed `WindowStarted` cannot end that window short of stopping the app, and a request to
     /// show a window that it missed runs out as a no. A missed `WindowPicture` leaves the
     /// picture in the shape of the window that was offered until the next one comes, and a
-    /// missed `WindowNotice` leaves the person without the reason, which the next one gives.
+    /// missed `WindowNotice` leaves the person without the reason, which the next one gives. A
+    /// missed `WindowSound` leaves the sound as the screen last showed it; turning it off and on
+    /// again asks again, and the answer tells how it stands.
     Resync,
 }
 

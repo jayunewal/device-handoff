@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 
 import 'awake.dart';
 import 'backend.dart';
+import 'window_sound.dart';
 
 /// Something to tell the person about a window that is over, or that did not begin.
 sealed class WindowNote {
@@ -67,6 +68,11 @@ typedef WindowDropped = ({
 /// [started], and the screen that takes it draws the picture with `WindowSession.screen`, in the
 /// shape that [pictureOf] says.
 ///
+/// A screen that another device shares whole can send its sound too, which plays here while the
+/// person wants it ([hear]); [soundOf] says how that stands. Sound is off when a session starts,
+/// except in a private session, where the sound is asked for at once: the device that shares a
+/// private screen is quiet for the whole of the session, so there would be none to hear otherwise.
+///
 /// The screen of a phone stays on from an offer until the person has answered it and the window
 /// has begun, because Baton on a phone works only while it is on the screen. The screen that
 /// shows the window keeps it on from there; [screen] does the asking, and tests give it one of
@@ -99,6 +105,7 @@ class WindowsController extends ChangeNotifier {
   final List<WindowSession> _sessions = [];
   final Map<int, PictureSize> _pictures = {};
   final Map<int, LiftedPrivacy> _lifted = {};
+  final Map<int, ScreenSound> _sounds = {};
   final List<WindowNote> _notes = [];
 
   /// What this device does with windows. Offer only what is possible.
@@ -144,6 +151,12 @@ class WindowsController extends ChangeNotifier {
   /// starts, whatever they were in the last one: nothing is remembered for a device.
   LiftedPrivacy liftedOf(WindowSession session) =>
       _lifted[session.id.toInt()] ?? (screen: false, input: false);
+
+  /// How the sound of [session], which is shown here, stands: whether the person asked for it,
+  /// whether it plays, and why the other device sends none if it says so. It is off when the
+  /// session starts, and for a session whose `WindowSession.sound` is not set, which has none.
+  ScreenSound soundOf(WindowSession session) =>
+      _sounds[session.id.toInt()] ?? soundOff;
 
   /// Each offer as it comes, so that a screen that covers the list can say that one waits.
   Stream<WindowRequest> get asked => _asked.stream;
@@ -201,6 +214,9 @@ class WindowsController extends ChangeNotifier {
                 note is WindowNotOpened &&
                 note.request.deviceId == session.deviceId,
           );
+          // The device that shares a private screen keeps its own speakers quiet throughout, so
+          // its sound is asked for at once: the person would hear nothing otherwise.
+          if (session.private && session.sound) hear(session, listen: true);
           _started.add(session);
         }
         _settle();
@@ -222,11 +238,26 @@ class WindowsController extends ChangeNotifier {
         );
         if (index < 0 || count <= 0) return;
         _dropped.add((session: _sessions[index], reason: reason, count: count));
+      case Event_WindowSound(:final id, :final sound):
+        // Only a screen that runs here has sound to hear.
+        final shown = _sessions.any(
+          (s) => s.id == id && s.role == WindowRole.viewing,
+        );
+        if (!shown) return;
+        final next = switch (sound) {
+          WindowSound.playing => (stage: SoundStage.playing, why: null),
+          WindowSound.off => soundOff,
+          _ => (stage: SoundStage.silent, why: sound),
+        };
+        if (_sounds[id.toInt()] == next) return;
+        _sounds[id.toInt()] = next;
+        notifyListeners();
       case Event_WindowEnded(:final id, :final end):
         final index = _sessions.indexWhere((s) => s.id == id);
         if (index < 0) return;
         _pictures.remove(id.toInt());
         _lifted.remove(id.toInt());
+        _sounds.remove(id.toInt());
         final session = _sessions.removeAt(index);
         // The person who ended it knows.
         if (end is! WindowEnd_ThisDevice) _note(WindowOver(session, end));
@@ -328,6 +359,7 @@ class WindowsController extends ChangeNotifier {
     _sessions.removeWhere((s) => s.id == session.id);
     _pictures.remove(session.id.toInt());
     _lifted.remove(session.id.toInt());
+    _sounds.remove(session.id.toInt());
     if (_sessions.length != kept) _settle();
     return running;
   }
@@ -365,6 +397,25 @@ class WindowsController extends ChangeNotifier {
     );
     if (!told) return false;
     _lifted[session.id.toInt()] = next;
+    notifyListeners();
+    return true;
+  }
+
+  /// Asks the device that shares [session], a screen that is shown here whose `WindowSession.sound`
+  /// is set, to send its sound ([listen]), or to stop. Returns whether the other device was
+  /// asked. When it was not (the session is over, or it has no sound), things stay as they were,
+  /// and [soundOf] says so. The other device answers with `Event_WindowSound`: the sound plays, or
+  /// the other device says why it sends none, and a person who asks again makes it try again.
+  /// Asking for what is being asked for or plays already, or to stop what is off, asks nothing.
+  /// The rules of what may be asked are kept in Rust, once, and not repeated here.
+  bool hear(WindowSession session, {required bool listen}) {
+    final now = soundOf(session).stage;
+    final wanted = now == SoundStage.asking || now == SoundStage.playing;
+    if (listen == wanted && now != SoundStage.silent) return true;
+    if (!_session.hearWindow(session.id.toInt(), listen: listen)) return false;
+    _sounds[session.id.toInt()] = listen
+        ? (stage: SoundStage.asking, why: null)
+        : soundOff;
     notifyListeners();
     return true;
   }

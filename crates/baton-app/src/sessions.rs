@@ -15,14 +15,18 @@ use std::{
 use baton_core::{
     PairedDevice,
     streaming::{
-        DecodeError, Decoder, DecoderState, End, ShareOutcome, SourceHandle, StartOutcome,
-        StartSlot, Takes, ViewHandle, Viewing, Wanted, WindowHandler, WindowOffer, WindowShare,
-        WindowVerdict,
+        DecodeError, Decoder, DecoderState, End, Play, ShareOutcome, SourceHandle, Speaker,
+        StartOutcome, StartSlot, Takes, ViewHandle, Viewing, Wanted, WindowHandler, WindowOffer,
+        WindowShare, WindowVerdict,
     },
     util::BoxFuture,
 };
 use baton_proto::{DeviceId, message::DeclineReason};
-use baton_stream::{control::SourceMessage, gate::Notice, header::FrameHeader};
+use baton_stream::{
+    control::{SilentReason, Sound, SourceMessage},
+    gate::Notice,
+    header::FrameHeader,
+};
 use tokio::sync::broadcast;
 
 use crate::{
@@ -30,7 +34,7 @@ use crate::{
     app::{Questions, locked},
     model::{
         ScreenStarted, WindowAbilities, WindowEnd, WindowInput, WindowRequest, WindowRole,
-        WindowSession, WindowShared,
+        WindowSession, WindowShared, WindowSound,
     },
     windows::{PickedWindow, ScreenLink, SharingFailure, WindowSharer, WindowViewer, noun},
 };
@@ -38,8 +42,12 @@ use crate::{
 /// A session that runs, and how to end it.
 #[derive(Clone)]
 enum Live {
-    /// A window of another device that is shown here.
-    Viewing(Arc<ViewHandle>),
+    /// A window of another device that is shown here. `sound` is whether the person can ask to
+    /// hear it ([`WindowSession::sound`]).
+    Viewing {
+        handle: Arc<ViewHandle>,
+        sound: bool,
+    },
     /// A window of this device that another one shows. The platform has the handle, and ends the
     /// session by letting go of it, so the app keeps no copy that would keep it going.
     Sharing(Weak<SourceHandle>),
@@ -69,14 +77,16 @@ struct Prepared {
 }
 
 /// What the source of a window that is shown here says that the screens need: the size of its
-/// picture, kept until the screens know the window, and the events of the person that it dropped.
+/// picture, kept until the screens know the window, the events of the person that it dropped, and
+/// how its sound stands.
 ///
 /// The source says the size before its first picture, and the node tells the app that the
 /// session runs at about the same moment, on tasks of their own, so the size can come first. It
 /// waits here for the window and is told right after [`Event::WindowStarted`], so that a screen
 /// always hears of a window before it hears of its picture. A notice answers what the person did
 /// on the window, which they can do only once they know it, so it is told when the window is
-/// known and dropped when it is not.
+/// known and dropped when it is not. The same goes for the sound, which the person asks for only
+/// once they know the window.
 struct Pictures {
     events: broadcast::Sender<Event>,
     state: Mutex<PictureState>,
@@ -142,6 +152,45 @@ impl Pictures {
                 count: notice.count,
             });
         }
+    }
+
+    /// The sound of the window began, ended or is not sent.
+    fn sounded(&self, sound: WindowSound) {
+        let state = locked(&self.state);
+        // Under the lock, so that it cannot overtake the window or a size that `began` tells.
+        if let Some(id) = state.session {
+            tracing::info!(?sound, "the sound of the window changed");
+            // Nobody listening is fine.
+            let _ = self.events.send(Event::WindowSound { id, sound });
+        }
+    }
+}
+
+/// The speaker of the platform, with the app hearing when the sound begins or ends, and why it is
+/// not there. It passes everything on as it is.
+struct Listening {
+    speaker: Box<dyn Speaker>,
+    pictures: Arc<Pictures>,
+}
+
+impl Speaker for Listening {
+    fn sound(&mut self, sound: Sound) {
+        self.speaker.sound(sound);
+        self.pictures.sounded(WindowSound::Playing);
+    }
+
+    fn play(&mut self, play: Play, packet: Vec<u8>) {
+        self.speaker.play(play, packet);
+    }
+
+    fn stopped(&mut self, why: Option<SilentReason>) {
+        self.speaker.stopped(why);
+        self.pictures
+            .sounded(why.map_or(WindowSound::Off, WindowSound::from));
+    }
+
+    fn ended(&mut self) {
+        self.speaker.ended();
     }
 }
 
@@ -245,7 +294,7 @@ impl Sessions {
     /// The window `id`, if it is shown here and runs.
     fn viewing(&self, id: u64) -> Option<Arc<ViewHandle>> {
         match locked(&self.live).get(&id) {
-            Some(Live::Viewing(handle)) => Some(Arc::clone(handle)),
+            Some(Live::Viewing { handle, .. }) => Some(Arc::clone(handle)),
             _ => None,
         }
     }
@@ -276,7 +325,14 @@ impl Sessions {
     /// request was made: a window that is not shown here, a window and not a whole screen, a
     /// device that sends no sound and a session that is over take no request.
     pub(crate) fn hear(&self, id: u64, on: bool) -> bool {
-        self.viewing(id).is_some_and(|handle| handle.hear(on))
+        let handle = match locked(&self.live).get(&id) {
+            Some(Live::Viewing {
+                handle,
+                sound: true,
+            }) => Arc::clone(handle),
+            _ => return false,
+        };
+        handle.hear(on)
     }
 
     /// Whether this device plays the sound of the screens it shows: the platform says so.
@@ -290,7 +346,7 @@ impl Sessions {
     pub(crate) fn end(&self, id: u64) -> bool {
         let live = locked(&self.live).get(&id).cloned();
         match live {
-            Some(Live::Viewing(handle)) => handle.end(),
+            Some(Live::Viewing { handle, .. }) => handle.end(),
             Some(Live::Sharing(handle)) => match handle.upgrade() {
                 Some(handle) => handle.end(),
                 // The platform let go of the handle, which ended the session. Its entry goes when
@@ -429,7 +485,10 @@ impl Sessions {
         // A speaker the platform gave is used only on a device that was set up to play sound; the
         // session never calls it on another.
         let viewing = match screen.speaker {
-            Some(speaker) => viewing.with_speaker(speaker),
+            Some(speaker) => viewing.with_speaker(Listening {
+                speaker,
+                pictures: Arc::clone(&pictures),
+            }),
             None => viewing,
         };
         Ok(Prepared {
@@ -471,6 +530,8 @@ impl Sessions {
             height,
             control,
             private: handle.private(),
+            // Sound goes with a whole screen only.
+            sound: display && handle.can_hear(),
             screen: Some(accepted.screen),
         };
         self.begin_viewing(session, handle, &accepted.link, &accepted.pictures);
@@ -490,7 +551,11 @@ impl Sessions {
             let handle = Arc::clone(&handle);
             Box::pin(async move { window_end(handle.ended().await) })
         };
-        self.begin(session, Live::Viewing(handle), ended, Some(pictures));
+        let live = Live::Viewing {
+            handle,
+            sound: session.sound,
+        };
+        self.begin(session, live, ended, Some(pictures));
     }
 
     /// Asks `peer` to start sharing its screen with this device, and shows it if it does. No
@@ -534,6 +599,7 @@ impl Sessions {
                     height: 0,
                     control: handle.control(),
                     private: handle.private(),
+                    sound: handle.can_hear(),
                     screen: Some(screen),
                 };
                 self.begin_viewing(session.clone(), handle, &link, &pictures);
@@ -611,6 +677,7 @@ impl Sessions {
                     height,
                     control,
                     private,
+                    sound: false,
                     screen: None,
                 };
                 self.begin(
@@ -725,7 +792,7 @@ impl WindowHandler for Handler {
 mod tests {
     use baton_proto::{id::SessionId, stream::Codec};
     use baton_stream::{
-        control::{Config, Pause, PauseReason, Thermal},
+        control::{Config, Pause, PauseReason, SoundCodec, Thermal},
         gate::Reason,
         header::Flags,
     };
@@ -983,6 +1050,7 @@ mod tests {
             height: 900,
             control: false,
             private: false,
+            sound: false,
             screen: Some(100),
         }
     }
@@ -1263,6 +1331,151 @@ mod tests {
                 told.contains("busy with another window or screen"),
                 "{display}: {told}"
             );
+        }
+    }
+
+    fn sounded(id: u64, sound: WindowSound) -> Event {
+        Event::WindowSound { id, sound }
+    }
+
+    #[test]
+    fn the_sound_of_a_window_is_told_once_the_window_is_known_and_dropped_before() {
+        let (pictures, mut heard) = pictures();
+        pictures.sounded(WindowSound::Playing);
+        pictures.began(3);
+        assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
+        pictures.sounded(WindowSound::Playing);
+        assert_eq!(heard.try_recv(), Ok(sounded(3, WindowSound::Playing)));
+        assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn the_sound_is_told_in_its_order_among_the_sizes_and_the_notices() {
+        let (pictures, mut heard) = pictures();
+        pictures.said(1280, 800);
+        pictures.began(3);
+        pictures.sounded(WindowSound::Playing);
+        pictures.noticed(notice(Reason::Locked, 1));
+        pictures.sounded(WindowSound::NoPermission);
+        assert_eq!(heard.try_recv(), Ok(picture(3, 1280, 800)));
+        assert_eq!(heard.try_recv(), Ok(sounded(3, WindowSound::Playing)));
+        assert_eq!(
+            heard.try_recv(),
+            Ok(noticed(3, WindowNoticeReason::Locked, 1))
+        );
+        assert_eq!(heard.try_recv(), Ok(sounded(3, WindowSound::NoPermission)));
+        assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn a_sound_that_stands_is_logged_with_how_it_stands() {
+        let (pictures, _heard) = pictures();
+        pictures.began(3);
+        pictures.sounded(WindowSound::Failed);
+        let lines = logged();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("INFO"), "{lines:?}");
+        assert!(lines[0].contains("sound=Failed"), "{lines:?}");
+    }
+
+    /// A speaker that keeps what it was told, in order.
+    #[derive(Clone, Default)]
+    struct Told(Arc<Mutex<Vec<String>>>);
+
+    impl Told {
+        fn all(&self) -> Vec<String> {
+            locked(&self.0).clone()
+        }
+
+        fn push(&self, what: String) {
+            locked(&self.0).push(what);
+        }
+    }
+
+    impl Speaker for Told {
+        fn sound(&mut self, sound: Sound) {
+            self.push(format!("sound {:?} {}", sound.codec, sound.samples));
+        }
+
+        fn play(&mut self, play: Play, packet: Vec<u8>) {
+            self.push(format!(
+                "play {} {} {}",
+                play.number,
+                play.lost_before,
+                packet.len()
+            ));
+        }
+
+        fn stopped(&mut self, why: Option<SilentReason>) {
+            self.push(format!("stopped {why:?}"));
+        }
+
+        fn ended(&mut self) {
+            self.push("ended".to_owned());
+        }
+    }
+
+    const AAC: Sound = Sound {
+        codec: SoundCodec::Aac,
+        rate: 48_000,
+        channels: 2,
+        samples: 1024,
+    };
+
+    #[test]
+    fn the_speaker_of_the_platform_is_told_all_of_it_and_the_screens_hear_how_the_sound_stands() {
+        let (pictures, mut heard) = pictures();
+        pictures.began(3);
+        let platform = Told::default();
+        let mut speaker = Listening {
+            speaker: Box::new(platform.clone()),
+            pictures,
+        };
+        let play = Play {
+            number: 4,
+            capture_time: 90_000,
+            first: false,
+            lost_before: 2,
+        };
+        speaker.sound(AAC);
+        speaker.play(play, vec![1, 2, 3]);
+        speaker.stopped(Some(SilentReason::NoPermission));
+        speaker.sound(AAC);
+        speaker.stopped(None);
+        speaker.ended();
+        assert_eq!(
+            platform.all(),
+            [
+                "sound Aac 1024",
+                "play 4 2 3",
+                "stopped Some(NoPermission)",
+                "sound Aac 1024",
+                "stopped None",
+                "ended",
+            ]
+        );
+        // The packets are not events, and the end of the session tells the screens nothing: they
+        // hear of that through the end of the window.
+        for expected in [
+            WindowSound::Playing,
+            WindowSound::NoPermission,
+            WindowSound::Playing,
+            WindowSound::Off,
+        ] {
+            assert_eq!(heard.try_recv(), Ok(sounded(3, expected)));
+        }
+        assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn each_reason_the_source_gives_for_sending_no_sound_is_told_as_itself() {
+        for (reason, expected) in [
+            (SilentReason::Window, WindowSound::Window),
+            (SilentReason::NoPermission, WindowSound::NoPermission),
+            (SilentReason::Failed, WindowSound::Failed),
+            (SilentReason::Other, WindowSound::Other),
+        ] {
+            assert_eq!(WindowSound::from(reason), expected, "{reason:?}");
         }
     }
 }

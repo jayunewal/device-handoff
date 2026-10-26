@@ -196,6 +196,7 @@ void main() {
           height: 600,
           control: false,
           private: false,
+          sound: false,
         ),
       );
 
@@ -608,6 +609,7 @@ void main() {
           height: 600,
           control: false,
           private: false,
+          sound: false,
         ),
       );
 
@@ -853,6 +855,7 @@ void main() {
           height: 0,
           control: false,
           private: false,
+          sound: false,
         ),
       );
 
@@ -1109,6 +1112,272 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(settings, findsNothing);
+    });
+  });
+
+  group('the sound of a screen', () {
+    WindowSession screenWithSound({int id = 1, bool private = false}) =>
+        sampleWindowSession(
+          id: id,
+          display: true,
+          title: null,
+          app: null,
+          control: private,
+          private: private,
+          sound: true,
+        );
+
+    final off = find.byTooltip('Hear the sound of Anna’s Mac');
+    final asking = find.byTooltip(
+      'Waiting for the sound of Anna’s Mac, tap to stop',
+    );
+    final playing = find.byTooltip('Turn off the sound of Anna’s Mac');
+    final silent = find.byTooltip('No sound from Anna’s Mac, tap to try again');
+    final anySpeaker = find.byWidgetPredicate(
+      (widget) =>
+          widget is Tooltip &&
+          (widget.message ?? '').contains('sound') &&
+          (widget.message ?? '').contains('Anna’s Mac'),
+    );
+
+    /// Baton says how the sound stands. The screen shows it once the test has pumped.
+    void hearOf(_Shown shown, WindowSound sound) {
+      shown.session.emit(
+        Event.windowSound(id: shown.window.id.toInt(), sound: sound),
+      );
+    }
+
+    testWidgets(
+      'has a speaker in the bar only for a screen that can be heard',
+      (tester) async {
+        await _open(tester, window: sampleWindowSession(display: true));
+        expect(anySpeaker, findsNothing);
+
+        await tester.pumpWidget(const SizedBox());
+        await _open(tester, window: screenWithSound());
+        expect(off, findsOneWidget);
+        expect(find.byIcon(Icons.volume_off_outlined), findsOneWidget);
+      },
+    );
+
+    testWidgets('is off when the session starts, and nothing is asked', (
+      tester,
+    ) async {
+      final shown = await _open(tester, window: screenWithSound());
+
+      expect(off, findsOneWidget);
+      expect(shown.session.windowHears, isEmpty);
+    });
+
+    testWidgets(
+      'is asked for with a tap, plays when Baton says so, and is turned off with another',
+      (tester) async {
+        final shown = await _open(tester, window: screenWithSound(id: 4));
+
+        await tester.tap(off);
+        await tester.pumpAndSettle();
+        expect(asking, findsOneWidget);
+        expect(find.byIcon(Icons.volume_up_outlined), findsOneWidget);
+
+        hearOf(shown, WindowSound.playing);
+        await tester.pumpAndSettle();
+        expect(playing, findsOneWidget);
+        expect(find.byIcon(Icons.volume_up), findsOneWidget);
+
+        await tester.tap(playing);
+        await tester.pumpAndSettle();
+        expect(off, findsOneWidget);
+
+        expect(shown.session.windowHears, [
+          (session: 4, listen: true),
+          (session: 4, listen: false),
+        ]);
+      },
+    );
+
+    testWidgets(
+      'can be stopped while it waits for the other device to answer',
+      (tester) async {
+        final shown = await _open(tester, window: screenWithSound());
+        await tester.tap(off);
+        await tester.pumpAndSettle();
+
+        await tester.tap(asking);
+        await tester.pumpAndSettle();
+
+        expect(off, findsOneWidget);
+        expect(shown.session.windowHears.last, (session: 1, listen: false));
+      },
+    );
+
+    testWidgets(
+      'says why the other device sends none, and asks again with a tap',
+      (tester) async {
+        final shown = await _open(tester, window: screenWithSound());
+        await tester.tap(off);
+        await tester.pumpAndSettle();
+
+        hearOf(shown, WindowSound.noPermission);
+        await tester.pumpAndSettle();
+        expect(silent, findsOneWidget);
+        expect(
+          find.text(
+            'Anna’s Mac has not let Baton record its sound. Someone at Anna’s '
+            'Mac can allow it in the settings of that device. Then tap the '
+            'speaker to try again.',
+          ),
+          findsOneWidget,
+        );
+
+        // The sentence goes as soon as the person asks again, and comes back if it is no better.
+        await tester.tap(silent);
+        await tester.pumpAndSettle();
+        expect(asking, findsOneWidget);
+        expect(find.textContaining('has not let Baton record'), findsNothing);
+        hearOf(shown, WindowSound.failed);
+        await tester.pumpAndSettle();
+        expect(
+          find.text(
+            'Anna’s Mac could not record its sound. Tap the speaker to try '
+            'again.',
+          ),
+          findsOneWidget,
+        );
+        hearOf(shown, WindowSound.playing);
+        await tester.pumpAndSettle();
+        expect(playing, findsOneWidget);
+        expect(find.textContaining('could not record'), findsNothing);
+
+        expect(shown.session.windowHears, [
+          (session: 1, listen: true),
+          (session: 1, listen: true),
+        ]);
+      },
+    );
+
+    testWidgets('has a sentence for each reason that the other device gives', (
+      tester,
+    ) async {
+      final shown = await _open(tester, window: screenWithSound());
+      await tester.tap(off);
+      await tester.pumpAndSettle();
+
+      for (final (sound, text) in [
+        (
+          WindowSound.window,
+          'Sound goes with a whole screen, and this is a window on Anna’s Mac.',
+        ),
+        (
+          WindowSound.failed,
+          'Anna’s Mac could not record its sound. Tap the speaker to try again.',
+        ),
+        (
+          WindowSound.other,
+          'Anna’s Mac cannot send its sound now. Tap the speaker to try again.',
+        ),
+      ]) {
+        hearOf(shown, sound);
+        await tester.pumpAndSettle();
+        expect(find.text(text), findsOneWidget, reason: '$sound');
+      }
+    });
+
+    testWidgets(
+      'puts the sentence about the sound under the one about what the other device did not do',
+      (tester) async {
+        final shown = await _open(
+          tester,
+          window: sampleWindowSession(
+            display: true,
+            title: null,
+            app: null,
+            control: true,
+            sound: true,
+          ),
+        );
+        await tester.tap(find.widgetWithText(FilterChip, 'Control'));
+        await tester.pump();
+        await tester.tap(off);
+        await tester.pumpAndSettle();
+
+        shown.session.emit(
+          Event.windowNotice(
+            id: 1,
+            reason: WindowNoticeReason.locked,
+            count: 1,
+          ),
+        );
+        hearOf(shown, WindowSound.failed);
+        await tester.pump(Duration.zero);
+        await tester.pump();
+
+        final dropped = find.text('Anna’s Mac is locked.');
+        final sound = find.text(
+          'Anna’s Mac could not record its sound. Tap the speaker to try again.',
+        );
+        expect(dropped, findsOneWidget);
+        expect(sound, findsOneWidget);
+        expect(
+          tester.getTopLeft(dropped).dy,
+          lessThan(tester.getTopLeft(sound).dy),
+        );
+      },
+    );
+
+    testWidgets(
+      'says so, and keeps things as they were, when the other device could not be asked',
+      (tester) async {
+        final shown = await _open(tester, window: screenWithSound());
+
+        shown.session.windowHearTaken = false;
+        await tester.tap(off);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+
+        expect(
+          find.text('Baton could not ask Anna’s Mac for its sound. Try again.'),
+          findsOneWidget,
+        );
+        expect(off, findsOneWidget);
+        // The window goes on.
+        expect(shown.controller.sessions, [shown.window]);
+      },
+    );
+
+    testWidgets(
+      'is asked for at once on a private screen, and shows that it waits',
+      (tester) async {
+        final shown = await _open(
+          tester,
+          window: screenWithSound(private: true),
+        );
+
+        expect(shown.session.windowHears, [(session: 1, listen: true)]);
+        expect(asking, findsOneWidget);
+        hearOf(shown, WindowSound.playing);
+        await tester.pumpAndSettle();
+        expect(playing, findsOneWidget);
+      },
+    );
+
+    testWidgets('is not offered once the session is over', (tester) async {
+      final shown = await _open(tester, window: screenWithSound());
+      await tester.tap(off);
+      await tester.pumpAndSettle();
+      hearOf(shown, WindowSound.noPermission);
+      await tester.pumpAndSettle();
+
+      shown.session.emit(
+        Event.windowEnded(
+          id: shown.window.id.toInt(),
+          end: const WindowEnd.otherDevice(),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(anySpeaker, findsNothing);
+      // Nor is there a sentence about the sound of a window that is over.
+      expect(find.textContaining('has not let Baton record'), findsNothing);
     });
   });
 }

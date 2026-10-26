@@ -17,6 +17,7 @@ use baton_core::{
 };
 use baton_proto::Platform as ProtoPlatform;
 use baton_stream::{
+    control::SilentReason,
     gate::Reason,
     input::{Button, Modifiers, PointerAction},
     input_queue::Input,
@@ -622,6 +623,9 @@ pub enum WindowRole {
 }
 
 /// A window, or a whole display, that is shown on this device or shared from it.
+// Four facts about a session (a whole display, control, private, sound), each of its own: a state
+// that combined them would only hide which one a screen means.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct WindowSession {
     /// Names this session when ending it with [`App::end_window`](crate::App::end_window),
@@ -653,6 +657,12 @@ pub struct WindowSession {
     /// and the pointer there out of use, until the device that shows it says otherwise with
     /// [`App::window_lift`](crate::App::window_lift).
     pub private: bool,
+    /// Whether the person here can ask to hear the sound of the screen with
+    /// [`App::hear_window`](crate::App::hear_window): what is shown here is a whole screen, this
+    /// device plays sound, and the device that shares the screen sends it. That device may still
+    /// have none to send, which [`Event::WindowSound`](crate::Event::WindowSound) says. Sound is
+    /// off when the session starts. `false` for a window that this device shares.
+    pub sound: bool,
     /// What to draw the picture with, when the window is shown on this device: the number that the
     /// platform gave the screen. `None` when the window is shared from this device.
     pub screen: Option<i64>,
@@ -669,8 +679,43 @@ impl fmt::Debug for WindowSession {
             .field("height", &self.height)
             .field("control", &self.control)
             .field("private", &self.private)
+            .field("sound", &self.sound)
             .field("screen", &self.screen)
             .finish_non_exhaustive()
+    }
+}
+
+/// How the sound of a screen that is shown here stands, as
+/// [`Event::WindowSound`](crate::Event::WindowSound) tells it.
+///
+/// Sound is off until the person asks for it with [`App::hear_window`](crate::App::hear_window).
+/// The other device may then begin to send it, or say why it cannot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowSound {
+    /// The other device sends the sound of its screen, and it plays on this one. The other device
+    /// keeps its own speakers quiet for as long as it does.
+    Playing,
+    /// There is no sound because the person turned it off.
+    Off,
+    /// The other device sends none: what it shares is a window, and only a whole screen has sound.
+    Window,
+    /// The other device sends none: its system has not let Baton record the sound, and the person
+    /// there has to allow it. The other device goes on by itself when they have.
+    NoPermission,
+    /// The other device sends none: something went wrong there, where the sound is recorded.
+    Failed,
+    /// The other device sends none, for a reason that this version does not know.
+    Other,
+}
+
+impl From<SilentReason> for WindowSound {
+    fn from(reason: SilentReason) -> Self {
+        match reason {
+            SilentReason::Window => Self::Window,
+            SilentReason::NoPermission => Self::NoPermission,
+            SilentReason::Failed => Self::Failed,
+            SilentReason::Other => Self::Other,
+        }
     }
 }
 
@@ -990,6 +1035,7 @@ mod tests {
             height: 900,
             control: false,
             private: false,
+            sound: false,
             screen: Some(7),
         };
         for shown in [format!("{request:?}"), format!("{session:?}")] {

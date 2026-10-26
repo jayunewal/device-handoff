@@ -340,6 +340,10 @@ void main() {
           isFalse,
         );
       }
+      // Nor is the sound of a screen that does not run asked for, or asked to stop.
+      for (final listen in [true, false]) {
+        expect(a.hearWindow(session: session, listen: listen), isFalse);
+      }
     }
     // And a device that is not paired is not offered a window, not asked for its screen, and is
     // not allowed anything.

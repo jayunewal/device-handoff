@@ -288,6 +288,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WindowShared dco_decode_window_shared(dynamic raw);
 
   @protected
+  WindowSound dco_decode_window_sound(dynamic raw);
+
+  @protected
   AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer);
 
   @protected
@@ -558,6 +561,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WindowShared sse_decode_window_shared(SseDeserializer deserializer);
+
+  @protected
+  WindowSound sse_decode_window_sound(SseDeserializer deserializer);
 
   @protected
   void sse_encode_AnyhowException(
@@ -888,6 +894,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_window_shared(WindowShared self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_window_sound(WindowSound self, SseSerializer serializer);
 }
 
 // Section: wire_class

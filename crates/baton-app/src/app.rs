@@ -718,13 +718,15 @@ impl App {
 
     /// Asks the other device to send the sound of the screen `session`, which is shown here, or to
     /// stop. The sound plays on this device, and the other device keeps its own speakers quiet for
-    /// as long as it is sent (`docs/adr/0012-sound.md`).
+    /// as long as it is sent (`docs/adr/0012-sound.md`). Sound is off when a session starts.
     ///
-    /// Returns whether the request was made. It is not for a window that is not shown here, for a
-    /// session of a single window (sound goes with a whole screen only), when this device plays no
-    /// sound ([`WindowViewer::plays_sound`](crate::windows::WindowViewer::plays_sound)), or when the
-    /// other device sends none. A request to hear that is made again asks the other device to try
-    /// again, which a person does after it said that it could not: the speaker is told why.
+    /// Returns whether the request was made. It is for a session whose `WindowSession::sound` is
+    /// set, so it is not for a window that is not shown here, for a session of a single window
+    /// (sound goes with a whole screen only), when this device plays no sound
+    /// ([`WindowViewer::plays_sound`](crate::windows::WindowViewer::plays_sound)), or when the
+    /// other device sends none. How it came out is told with [`Event::WindowSound`]: that the sound
+    /// plays, or why the other device sends none. A request to hear that is made again asks the
+    /// other device to try again, which a person does after it said that it could not.
     pub fn hear_window(&self, session: u64, on: bool) -> bool {
         self.inner.sessions.hear(session, on)
     }
