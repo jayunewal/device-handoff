@@ -928,4 +928,47 @@ func testTheAacEncoderRefusesWhatItCannotMakeAndIsOverWhenLetGoOf() {
   } catch {}
 }
 
+/// What the Mac sends and what the phone plays are two files that never meet but on the wire: this
+/// is where the packets of the one are given to the other, as they go from the Mac to the phone.
+func testTheDecoderMakesTheToneBackThatTheEncoderOfTheMacMadeOfIt() {
+  guard let encoder = try? AacEncoder(form: form48), let decoder = try? AacDecoder(form: form48)
+  else { return check(false, "no encoder or no decoder") }
+  defer {
+    encoder.invalidate()
+    decoder.invalidate()
+  }
+  var tone: [Float] = []
+  var packets = 0
+  var phase = 0.0
+  // 1500 Hz is 32 waves in a packet of 1024 frames at 48 kHz.
+  let step = 2.0 * Double.pi * 1500.0 / 48_000.0
+  for _ in 0..<16 {
+    var samples = [Float](repeating: 0, count: 2048)
+    for frame in 0..<1024 {
+      let value = Float(0.5 * sin(phase))
+      phase += step
+      samples[frame * 2] = value
+      samples[frame * 2 + 1] = value
+    }
+    do {
+      guard let packet = try encoder.encode(samples) else { continue }
+      packets += 1
+      guard let decoded = try decoder.decode(packet) else {
+        check(false, "packet \(packets) gave no samples")
+        continue
+      }
+      check(decoded.count == 2048, "packet \(packets) gave \(decoded.count) samples")
+      // The first four hold the beginning of the tone that the encoder and the decoder lead in with.
+      if packets > 4 { tone += decoded }
+    } catch {
+      check(false, "packet \(packets) was not made or not decoded: \(error)")
+    }
+  }
+  check(packets >= 12, "\(packets) packets")
+  let wanted = loudness(of: tone, channels: 2, frequency: 1500, rate: 48_000)
+  let other = loudness(of: tone, channels: 2, frequency: 6000, rate: 48_000)
+  check(wanted > 0.42 && wanted < 0.58, "the tone is \(wanted) loud, and was made 0.5")
+  check(other < 0.02, "a tone of 6000 Hz that was not there is \(other) loud")
+}
+
 #endif

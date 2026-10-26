@@ -1240,6 +1240,10 @@ tests += [
       "the AAC encoder refuses what it cannot make and is over when let go of",
       testTheAacEncoderRefusesWhatItCannotMakeAndIsOverWhenLetGoOf
     ),
+    (
+      "the decoder makes the tone back that the encoder of the Mac made of it",
+      testTheDecoderMakesTheToneBackThatTheEncoderOfTheMacMadeOfIt
+    ),
   ]
 #endif
 
