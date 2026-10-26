@@ -277,6 +277,77 @@ void main() {
     ]);
   });
 
+  test('the guard is built from a checkout whose path has a space in it', () {
+    // Xcode hands the script paths such as "/Volumes/Backup/Personal Projects/...", and a list of
+    // programs kept in a string and left unquoted falls apart at the space: lipo is then given
+    // "/Volumes/Backup/Personal" and "Projects/..." and the build of the whole app stops. The
+    // tools are replaced by scripts that write down what they were given, and lipo, like the
+    // real one, refuses a file that is not there.
+    final root = Directory.systemTemp.createTempSync('baton guard ');
+    addTearDown(() => root.deleteSync(recursive: true));
+    final tools = Directory('${root.path}/tools')..createSync();
+    final notes = File('${root.path}/notes');
+    void tool(String name, String body) {
+      final file = File('${tools.path}/$name')..writeAsStringSync(body);
+      expect(Process.runSync('chmod', ['+x', file.path]).exitCode, 0);
+    }
+
+    // `xcrun swiftc ... -o program` makes the program.
+    tool('xcrun', r'''#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  [ "$1" = "-o" ] && : > "$2"
+  shift
+done
+''');
+    tool('lipo', '''#!/bin/sh
+echo "lipo \$*" >> "${notes.path}"
+output=""
+while [ "\$#" -gt 0 ]; do
+  case "\$1" in
+    -create) ;;
+    -output) output="\$2"; shift ;;
+    *) [ -e "\$1" ] || { echo "lipo: file not found: \$1" >&2; exit 1; } ;;
+  esac
+  shift
+done
+: > "\$output"
+''');
+    tool('codesign', '''#!/bin/sh
+echo "codesign \$*" >> "${notes.path}"
+''');
+    final checkout = Directory('${root.path}/Personal Projects/app/macos')
+      ..createSync(recursive: true);
+    Directory('${checkout.path}/../rust_builder/macos/Classes')
+        .createSync(recursive: true);
+    final build = Directory('${root.path}/Build Products/Baton.app')
+      ..createSync(recursive: true);
+    final derived = Directory('${root.path}/Derived Files')..createSync();
+    final script = File('macos/Guard/build-guard.sh').absolute.path;
+    final ran = Process.runSync(
+      'sh',
+      [script],
+      environment: {
+        'PATH': '${tools.path}:${Platform.environment['PATH']}',
+        'SRCROOT': checkout.path,
+        'SDKROOT': '${root.path}/SDK',
+        'TARGET_BUILD_DIR': build.path,
+        'CONTENTS_FOLDER_PATH': 'Contents',
+        'DERIVED_FILE_DIR': derived.path,
+        'ARCHS': 'arm64 x86_64',
+      },
+    );
+    expect(ran.exitCode, 0, reason: '${ran.stdout}${ran.stderr}');
+    final work = '${derived.path}/baton-guard';
+    final program = '${build.path}/Contents/MacOS/BatonGuard';
+    expect(
+      notes.readAsLinesSync().first,
+      'lipo -create $work/BatonGuard-arm64 $work/BatonGuard-x86_64 '
+      '-output $program',
+    );
+    expect(File(program).existsSync(), isTrue);
+    expect(notes.readAsStringSync(), contains('codesign '));
+  }, skip: Platform.isWindows ? 'it runs sh' : false);
+
   test('the library is linked in a way that keeps its functions findable', () {
     for (final system in ['ios', 'macos']) {
       final podspec = _read('rust_builder/$system/baton_ffi.podspec');
