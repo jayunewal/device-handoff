@@ -784,6 +784,24 @@ pub(crate) fn worth_retrying(error: &Error) -> bool {
     }
 }
 
+/// Whether a call that failed is made again on a new connection.
+///
+/// Only the first try on a connection that was there from an earlier call can have met one that
+/// died while it sat idle; a connection made for the call that fails is a real failure. A call
+/// that asks a person (`asks_person`) is not made again after a timeout: the person may be
+/// deciding, and a second try would ask them again and double the wait.
+pub(crate) fn retry_on_new_connection(
+    reused: bool,
+    attempt: u32,
+    asks_person: bool,
+    error: &Error,
+) -> bool {
+    reused
+        && attempt == 1
+        && worth_retrying(error)
+        && !(asks_person && matches!(error, Error::Timeout(_)))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1142,5 +1160,36 @@ mod tests {
         assert!(!worth_retrying(&closed(400)));
         assert!(!worth_retrying(&Error::Unsupported("x".into())));
         assert!(!worth_retrying(&Error::protocol("x")));
+    }
+
+    #[test]
+    fn a_call_is_made_again_once_and_only_on_a_connection_from_an_earlier_call() {
+        let lost = || Error::network("x", "y");
+        // (reused, attempt, asks a person, the call is made again)
+        for (reused, attempt, asks_person, again) in [
+            (true, 1, false, true),
+            (true, 1, true, true),
+            (false, 1, false, false),
+            (false, 1, true, false),
+            (true, 2, false, false),
+            (true, 2, true, false),
+        ] {
+            assert_eq!(
+                retry_on_new_connection(reused, attempt, asks_person, &lost()),
+                again,
+                "reused {reused}, attempt {attempt}, asks a person {asks_person}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_call_that_asks_a_person_is_not_made_again_after_a_timeout() {
+        let timeout = Error::Timeout("x");
+        assert!(retry_on_new_connection(true, 1, false, &timeout));
+        assert!(!retry_on_new_connection(true, 1, true, &timeout));
+        // A refusal is not retried whoever was asked.
+        let refused = Error::protocol("x");
+        assert!(!retry_on_new_connection(true, 1, false, &refused));
+        assert!(!retry_on_new_connection(true, 1, true, &refused));
     }
 }
