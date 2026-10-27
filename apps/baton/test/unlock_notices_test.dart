@@ -156,6 +156,31 @@ void main() {
     expect(notices.posted, hasLength(1));
   });
 
+  test(
+    'goes on whatever the system throws when it could not show one',
+    () async {
+      final session = _session();
+      final notices = FakeNotices();
+      await _start(session, notices);
+
+      for (final failure in <Object>[
+        ArgumentError('bad'),
+        const FormatException('odd'),
+        'not even an error',
+      ]) {
+        notices.postFailure = failure;
+        await _attempt(session, sampleUnlockEntry());
+      }
+
+      expect(notices.posted, isEmpty);
+
+      notices.postFailure = null;
+      await _attempt(session, sampleUnlockEntry());
+
+      expect(notices.posted, hasLength(1));
+    },
+  );
+
   test('goes on when the system took no notification', () async {
     final session = _session();
     final notices = FakeNotices()..taken = false;

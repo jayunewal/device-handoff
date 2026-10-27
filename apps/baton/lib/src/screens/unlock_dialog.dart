@@ -24,8 +24,10 @@ enum UnlockDialogResult {
 /// Setting it up takes the password of the person who uses this device. Baton checks it against
 /// the account, and keeps it in a box that only the other device opens, after its person's face.
 /// The field hides what is typed, lets nothing suggest or correct it, and is emptied as soon as
-/// the password has been given to Baton, whatever came of it. The password is a string of the app
-/// for as long as it is typed, which Flutter cannot wipe; the record says so.
+/// the password is given to Baton, before Baton answers and whatever comes of it. The password is a
+/// string of the app for as long as it is typed, which Flutter cannot wipe; the record says so.
+/// A failure that Baton does not describe, a panic of the library say, is told in a sentence of
+/// its own, and the window can be closed after it.
 ///
 /// It returns what the person did, and `null` when they closed it. Nothing is kept here: the
 /// controller does the work, and the screen that opened this tells the person what came of it.
@@ -91,31 +93,37 @@ class _UnlockDialogState extends State<UnlockDialog> {
   Future<void> _setUp() async {
     final password = _password.text;
     if (_working || password.isEmpty) return;
+    // Baton gets the password with this call, and the field lets go of it now, whatever comes of
+    // the call: a typing mistake is typed again, and nothing waits in the field while the other
+    // device is asked, which takes as long as the person there takes.
+    _password.clear();
     setState(() {
       _working = true;
       _problem = null;
     });
-    final result = await widget.controller.setUpUnlock(widget.device, password);
-    // Baton has the password now, or has refused it. Either way the field lets go of it: a typing
-    // mistake is typed again, and nothing waits in the field.
-    _password.clear();
+    final UnlockSetUp result;
+    try {
+      result = await widget.controller.setUpUnlock(widget.device, password);
+    } on Object catch (e) {
+      _failed(
+        'Look above to see whether the unlock is set up, and try again if it '
+        'is not.',
+        e,
+      );
+      return;
+    }
     if (!mounted) return;
     switch (result) {
       case UnlockSetUp_Done():
         Navigator.of(context).pop(UnlockDialogResult.setUp);
       case UnlockSetUp_WrongPassword():
-        setState(() {
-          _working = false;
-          _problem =
-              'That is not the password of this '
-              '${platformName(widget.thisDevice)}, so nothing was kept. Type '
-              'it again.';
-        });
+        _stop(
+          'That is not the password of this '
+          '${platformName(widget.thisDevice)}, so nothing was kept. Type it '
+          'again.',
+        );
       case UnlockSetUp_NotDone(:final message):
-        setState(() {
-          _working = false;
-          _problem = message;
-        });
+        _stop(message);
     }
   }
 
@@ -125,16 +133,45 @@ class _UnlockDialogState extends State<UnlockDialog> {
       _working = true;
       _problem = null;
     });
-    final problem = await widget.controller.turnOffUnlock(widget.device);
+    final String? problem;
+    try {
+      problem = await widget.controller.turnOffUnlock(widget.device);
+    } on Object catch (e) {
+      _failed(
+        'Look above to see whether the unlock is still set up, and try again '
+        'if it is.',
+        e,
+      );
+      return;
+    }
     if (!mounted) return;
     if (problem == null) {
       Navigator.of(context).pop(UnlockDialogResult.turnedOff);
     } else {
-      setState(() {
-        _working = false;
-        _problem = problem;
-      });
+      _stop(problem);
     }
+  }
+
+  /// The work is over and did not end well: the person can act again, with [problem] to read.
+  void _stop(String problem) {
+    if (!mounted) return;
+    setState(() {
+      _working = false;
+      _problem = problem;
+    });
+  }
+
+  /// Baton failed in a way that it does not describe, say a panic in the library, which reaches
+  /// Dart as an error that is not a `BatonError`. The window must not stay shut with the person
+  /// unable to leave it. It does not know how far the work got, so it sends the person to the line
+  /// above, which the library answers anew each time the window is drawn, and says what to do
+  /// then ([advice]). Only the kind of the error is logged: what it says could hold anything.
+  void _failed(String advice, Object error) {
+    debugPrint('Baton: unlock window: ${error.runtimeType}');
+    _stop(
+      'Something went wrong inside Baton. $advice If it keeps happening, '
+      'restart Baton.',
+    );
   }
 
   /// Where the unlock stands, in a sentence. [name] is the device that would unlock this one.

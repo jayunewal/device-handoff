@@ -1895,6 +1895,136 @@ void main() {
       expect(find.text('Unlock this Mac from Phone'), findsNothing);
     });
 
+    testWidgets('empties the field when the call is made, not when it returns', (
+      tester,
+    ) async {
+      await show(tester);
+      session.holdSetUp();
+      await open(tester);
+      await tester.enterText(find.byType(TextField), 'secret');
+      await tester.pump();
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Set up'));
+      await tester.pump();
+
+      // The other device has not answered, and Baton has the password already.
+      expect(session.unlocksSetUp, [(id: phone.id, password: 'secret')]);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        '',
+      );
+
+      session.releaseSetUp();
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('does not close on Back or a tap outside while it works', (
+      tester,
+    ) async {
+      await show(tester);
+      session.holdSetUp();
+      await open(tester);
+      await tester.enterText(find.byType(TextField), 'pw');
+      await tester.pump();
+      await tester.tap(find.widgetWithText(FilledButton, 'Set up'));
+      await tester.pump();
+
+      // A window that closes takes a moment to go, so the time is given for it to be gone.
+      const closing = Duration(seconds: 1);
+      final navigator = tester.state<NavigatorState>(find.byType(Navigator));
+      await navigator.maybePop();
+      await tester.pump(closing);
+      await tester.tapAt(const Offset(5, 5));
+      await tester.pump(closing);
+
+      expect(find.text('Unlock this Mac from Phone'), findsOneWidget);
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
+
+      session.releaseSetUp();
+      await tester.pumpAndSettle();
+
+      expect(find.text('Unlock this Mac from Phone'), findsNothing);
+    });
+
+    testWidgets('does not set up when Enter is pressed in an empty field', (
+      tester,
+    ) async {
+      await show(tester);
+      await open(tester);
+      await tester.tap(find.byType(TextField));
+      await tester.pump();
+
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pump();
+
+      expect(session.unlocksSetUp, isEmpty);
+      expect(find.byType(LinearProgressIndicator), findsNothing);
+      expect(find.text('Unlock this Mac from Phone'), findsOneWidget);
+    });
+
+    testWidgets('can be closed after an error that Baton does not describe', (
+      tester,
+    ) async {
+      await show(tester);
+      session.setUpFailure = StateError('a panic in the library');
+      await open(tester);
+
+      await typeAndSetUp(tester, 'secret');
+
+      expect(
+        find.text(
+          'Something went wrong inside Baton. Look above to see whether the '
+          'unlock is set up, and try again if it is not. If it keeps '
+          'happening, restart Baton.',
+        ),
+        findsOneWidget,
+      );
+      // The window is not shut, and the password is nowhere.
+      final field = tester.widget<TextField>(find.byType(TextField));
+      expect(field.enabled, isTrue);
+      expect(field.controller!.text, '');
+      expect(find.text('secret'), findsNothing);
+      expect(find.byType(LinearProgressIndicator), findsNothing);
+      expect(session.unlocksSetUp, [(id: phone.id, password: 'secret')]);
+
+      await tester.tap(find.text('Close'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Unlock this Mac from Phone'), findsNothing);
+    });
+
+    testWidgets('can be closed after turning off went wrong in a way that '
+        'Baton does not describe', (tester) async {
+      await show(tester);
+      session.unlockStatuses[phone.id] = UnlockStatus.on_(
+        since: _secondsAgo(const Duration(hours: 2)),
+      );
+      session.turnOffFailure = StateError('a panic in the library');
+      await open(tester);
+
+      await tester.tap(find.text('Turn off'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text(
+          'Something went wrong inside Baton. Look above to see whether the '
+          'unlock is still set up, and try again if it is. If it keeps '
+          'happening, restart Baton.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.byType(LinearProgressIndicator), findsNothing);
+      final close = tester.widget<TextButton>(
+        find.widgetWithText(TextButton, 'Close'),
+      );
+      expect(close.onPressed, isNotNull);
+
+      await tester.tap(find.text('Close'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Unlock this Mac from Phone'), findsNothing);
+    });
+
     testWidgets('closes without doing anything on Close', (tester) async {
       await show(tester);
       await open(tester);
@@ -2024,6 +2154,39 @@ void main() {
       );
       expect(find.textContaining('Tablet'), findsNothing);
       expect(find.text('None yet.'), findsNothing);
+    });
+
+    testWidgets('lists an attempt that comes in while it is open, and where '
+        'the unlock stands after it', (tester) async {
+      await show(tester);
+      session.unlockStatuses[phone.id] = UnlockStatus.on_(
+        since: _secondsAgo(const Duration(hours: 2)),
+      );
+      await open(tester);
+      expect(find.text('None yet.'), findsOneWidget);
+      expect(find.textContaining('Set up 2 hours ago.'), findsOneWidget);
+
+      // Phone tried, and the password was not accepted, which ends the unlock.
+      final entry = sampleUnlockEntry(
+        at: _secondsAgo(const Duration(seconds: 20)),
+        deviceId: phone.id,
+        device: 'Phone',
+        result: UnlockResult.rejected,
+      );
+      session.unlockEntries = [entry];
+      session.unlockStatuses[phone.id] = UnlockStatus.ended(
+        since: _secondsAgo(const Duration(hours: 2)),
+      );
+      session.emit(Event.unlockAttempted(entry: entry));
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.text('None yet.'), findsNothing);
+      expect(
+        find.textContaining('did not accept it. Set the unlock up again.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('and it ended'), findsOneWidget);
     });
 
     testWidgets('shows only the last five attempts', (tester) async {
