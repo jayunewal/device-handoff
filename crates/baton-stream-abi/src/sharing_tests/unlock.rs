@@ -1123,6 +1123,10 @@ async fn each_reason_that_a_face_was_not_given_is_what_the_person_is_told_of_the
                 rig.told(&screen).await,
                 [WindowUnlock::Ended(UnlockResult::NotSetUp)]
             );
+            // The refusal comes from what the Mac holds in memory. The record is ended in the
+            // same write as the line of the history, which lands a little later, so the line is
+            // awaited before the record is read.
+            assert_eq!(rig.attempt_told().await.result, UnlockResult::KeyLost);
             assert!(matches!(
                 rig.sharing.app.unlock_status(&rig.viewing.id()).unwrap(),
                 UnlockStatus::Ended { .. }
