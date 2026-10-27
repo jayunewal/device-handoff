@@ -59,13 +59,14 @@ use crate::{
         BEGIN_DELTA, BEGIN_KEY, BEGIN_NOT_NOW, BatonBytes, BatonFormat, BatonFront, BatonGeometry,
         BatonPicked, BatonPicture, BatonRect, BatonSharerVTable, BatonSound, BatonSoundPacket,
         CODEC_H264, E_PLATFORM, FRAME_KEY, FRAME_RECOVERY, FRAME_REFERENCED, KEYBOARD_ELSEWHERE,
-        LIFT_INPUT, LIFT_SCREEN, PAUSE_HIDDEN, PAUSE_LOCKED, PAUSE_OTHER, PICKED_DISPLAY,
+        LIFT_INPUT, LIFT_SCREEN, OK, PAUSE_HIDDEN, PAUSE_LOCKED, PAUSE_OTHER, PICKED_DISPLAY,
         PICKED_WINDOW, PLAY_FIRST, SCREEN_NEEDS_INPUT_PERMISSION, SCREEN_NEEDS_PERMISSION,
         SCREEN_PRIVATE, SCREEN_UNAVAILABLE, SENT, SENT_OVER, SENT_STALE, SENT_TOO_LARGE,
         SILENT_FAILED, SILENT_NO_PERMISSION, SILENT_OFF, SILENT_OTHER, SILENT_WINDOW,
         SOUND_DROPPED, SOUND_OVER, SOUND_SENT, SOUND_TOO_LARGE, SOURCE_CONFIG, SOURCE_PAUSE,
         SOURCE_RESUME, size_of_u32,
     },
+    exports,
     fake::{Call, Decoded, Fake, Played, Watchdog},
     fake_sharer::{
         self, Around, FakeSharer, Pic, PickPlan, PreparePlan, RECORD, STOP, ScreenPlan, SharerCall,
@@ -75,6 +76,7 @@ use crate::{
     },
     fixture::{HEIGHT, PPS, SPS, WIDTH, pictures, sps},
     input::{Forward, Timing},
+    registry::standing_in,
     session_tests::{Dev, QUIET, WAIT, avcc, next_matching, pair, units_of, until, window_ended},
 };
 
@@ -3342,10 +3344,16 @@ async fn a_speaker_that_cannot_play_says_so_and_the_platform_of_the_source_is_to
     );
 
     // The speaker of the screen could not make the run, and says so from a thread of its own, with
-    // the link that `open` gave for the screen.
+    // the link that `open` gave for the screen. It calls the function of the interface, as the
+    // platform does, and that reaches the session of this device and not the one that reports a
+    // decoder that failed.
     let (registry, screen) = (Arc::clone(&rig.viewing_registry), rig.screen_link(1));
-    let speaker = std::thread::spawn(move || registry.link_sound_failed(screen));
-    assert_eq!(speaker.join().unwrap(), Ok(()));
+    let speaker = std::thread::spawn(move || {
+        standing_in(&registry, || {
+            exports::baton_stream_link_sound_failed(screen)
+        })
+    });
+    assert_eq!(speaker.join().unwrap(), OK);
     // The person is told that it was this device. The platform of the source is told to stop, so
     // that the Mac plays again, and the speaker is stopped as when the person turns the sound off.
     assert_eq!(

@@ -345,14 +345,19 @@ class _WindowScreenState extends State<WindowScreen> {
                                           _Notice(
                                             text: silence,
                                             actions: [
-                                              (
-                                                label: 'Turn off the sound',
-                                                onPressed: () =>
-                                                    widget.controller.hear(
-                                                      session,
-                                                      listen: false,
-                                                    ),
-                                              ),
+                                              // This device turned the sound off and told the
+                                              // other device when it could not play it, so there
+                                              // is nothing left to turn off.
+                                              if (sound.why !=
+                                                  WindowSound.cannotPlay)
+                                                (
+                                                  label: 'Turn off the sound',
+                                                  onPressed: () =>
+                                                      widget.controller.hear(
+                                                        session,
+                                                        listen: false,
+                                                      ),
+                                                ),
                                               (
                                                 label: 'Close',
                                                 onPressed: () => widget
