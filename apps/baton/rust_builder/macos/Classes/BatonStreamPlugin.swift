@@ -77,7 +77,10 @@ private func thermalLevel() -> UInt32 {
 }
 
 /// What this device shows windows with: H.264 decoded by VideoToolbox, drawn from a texture. The
-/// sound of a screen is decoded by AudioToolbox and played by an audio engine.
+/// sound of a screen is decoded by AudioToolbox and played by an audio engine. On an iPhone or an
+/// iPad the person can also unlock a locked Mac that the screen shows, with their face: the key
+/// that only their face opens is in the Secure Enclave (BatonFaceKeys.swift), and what decides who
+/// may ask for the face, and when, is in BatonFace.swift.
 final class DeviceViewer: ViewerPlatform {
   /// The largest picture and the highest rate the device is asked for. The hardware of every
   /// device that runs the app decodes H.264 at 4K, and a window that is larger is made smaller by
@@ -93,8 +96,26 @@ final class DeviceViewer: ViewerPlatform {
 
   private let places: ScreenPlaces<TextureSlot>
 
+  /// The keys that only the face of the person opens, and the prompt for the face. Only an iPhone
+  /// or an iPad has them: a Mac does not approve the unlock of another device in this version,
+  /// so it registers none of the calls about it. The Simulator has them too and answers that it
+  /// has no Secure Enclave, which tells whoever sets an unlock up what is missing.
+  private let unlock: FaceUnlock?
+
   init(places: ScreenPlaces<TextureSlot>) {
     self.places = places
+    #if os(iOS)
+    unlock = FaceUnlock(keys: SecureEnclaveFaceKeys())
+    #else
+    unlock = nil
+    #endif
+  }
+
+  var canUnlock: Bool { unlock != nil }
+
+  func unlockKey(_ request: FaceKeyRequest) throws -> FacePublicKey {
+    guard let unlock else { throw FaceKeyFailure.noEnclave }
+    return try unlock.key(for: request)
   }
 
   func makeScreen(for window: WindowInfo, link: UInt64) throws -> MadeScreen {
@@ -121,7 +142,8 @@ final class DeviceViewer: ViewerPlatform {
       speaker: ScreenSpeaker(
         cannotPlay: { _ = baton_stream_link_sound_failed(link) },
         makeDecoder: { try AacDecoder(form: $0) },
-        makeOutput: { form, ring in try EngineOutput(form: form, ring: ring) }))
+        makeOutput: { form, ring in try EngineOutput(form: form, ring: ring) }),
+      asker: unlock?.asker(link: link))
     return MadeScreen(screen: screen, id: slot.id)
   }
 }

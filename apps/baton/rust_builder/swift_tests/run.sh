@@ -14,6 +14,7 @@ trap 'rm -rf "$work"' EXIT
 swiftc -swift-version 5 "$@" \
   -import-objc-header "$classes/baton_stream_abi.h" \
   "$classes/BatonViewer.swift" "$classes/BatonSource.swift" "$classes/BatonInput.swift" \
+  "$classes/BatonFace.swift" "$classes/BatonFaceKeys.swift" \
   "$classes/BatonH264Decoder.swift" "$classes/BatonH264Encoder.swift" "$classes/BatonCapture.swift" \
   "$classes/BatonControl.swift" "$classes/BatonPrivacy.swift" "$classes/BatonPrivacyMac.swift" \
   "$classes/BatonGuard.swift" "$classes/BatonLock.swift" "$classes/BatonSpeaker.swift" \

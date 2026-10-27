@@ -6,10 +6,11 @@
 //
 // This file holds what does not depend on the frameworks of an Apple device: the functions that
 // the Rust side calls, the reading of what it passes, and the rules for which picture is shown
-// and when a decoder has failed. The sound of a screen is handed on to BatonSpeaker.swift. The
-// decoder, the screen and the texture are given to it as protocols. So that it can be built and
-// tested on any computer that has a Swift compiler (apps/baton/rust_builder/swift_tests), nothing
-// here may import more than Foundation.
+// and when a decoder has failed. The sound of a screen is handed on to BatonSpeaker.swift, and the
+// unlock of a locked screen with the face of the person to BatonFace.swift. The decoder, the screen
+// and the texture are given to it as protocols. So that it can be built and tested on any computer
+// that has a Swift compiler (apps/baton/rust_builder/swift_tests), nothing here may import more
+// than Foundation.
 //
 // A call from Rust must never end in a trap, because a trap ends the whole app: nothing here
 // force-unwraps, indexes without looking, or asserts on what Rust passed.
@@ -59,10 +60,29 @@ protocol ViewerPlatform: AnyObject {
   /// Whether the screens that it makes play the sound of a screen. A platform that does not is not
   /// given the calls about sound, and the devices it is paired with are not told that it can.
   var playsSound: Bool { get }
+
+  /// Whether the person at this device can unlock the screen of another device with their face:
+  /// the platform keeps a key that only their face opens, for each device it may unlock
+  /// (`unlockKey`), and its screens ask for the face (`ViewerScreen.unlockOpen`). A platform that
+  /// cannot is not given the calls about it, and the devices it is paired with are not told that
+  /// it can.
+  var canUnlock: Bool { get }
+
+  /// The public key that the unlock of `request.device` is sealed to: the one this device made for
+  /// that device, made now if there is none, and replaced first if `request.renew`. The private
+  /// half stays in the Secure Enclave. Throws `FaceKeyFailure`. Called on a thread of the Rust
+  /// side that may wait, with no lock held, so it may overlap any other call; only a platform that
+  /// `canUnlock` is asked.
+  func unlockKey(_ request: FaceKeyRequest) throws -> FacePublicKey
 }
 
 extension ViewerPlatform {
   var playsSound: Bool { false }
+  var canUnlock: Bool { false }
+
+  func unlockKey(_ request: FaceKeyRequest) throws -> FacePublicKey {
+    throw FaceKeyFailure.noEnclave
+  }
 }
 
 struct MadeScreen {
@@ -97,13 +117,27 @@ protocol ViewerScreen: AnyObject {
   /// No sound is wanted or sent, for the reason `why` (BATON_SILENT_): let go of the decoder and
   /// stop playing. It comes also when no sound did.
   func stopped(_ why: UInt32)
+
+  /// The person tapped Unlock on the locked screen that this screen shows: ask for their face and
+  /// open the sealed key of `question` with the key this device made for that device. The call is
+  /// made with the lock of the session held, so it does not wait for the person: it takes the
+  /// question to a thread of its own, answers from there with `baton_stream_unlock_opened` or
+  /// `baton_stream_unlock_declined`, and returns true. false if the question cannot be taken at
+  /// all: another is open, or the screen has ended. Then nothing is answered.
+  func unlockOpen(_ question: FaceQuestion) -> Bool
+  /// The question is not open any more: take the prompt for the face down, wipe what is held, and
+  /// answer nothing for it. Does nothing when no question is open.
+  func unlockCancel()
 }
 
-/// A screen that plays no sound takes the three calls about it and does nothing.
+/// A screen that plays no sound takes the three calls about it and does nothing. A screen that
+/// cannot ask for a face takes no question.
 extension ViewerScreen {
   func sound(_ form: SoundForm) {}
   func play(_ packet: PlayInput) {}
   func stopped(_ why: UInt32) {}
+  func unlockOpen(_ question: FaceQuestion) -> Bool { false }
+  func unlockCancel() {}
 }
 
 // MARK: - What the Rust side passes
@@ -456,6 +490,53 @@ private func viewerStopped(_ screen: UnsafeMutableRawPointer?, _ why: UInt32) {
   screenOf(screen)?.stopped(why)
 }
 
+/// Writes a sentence into the message of the Rust side, if it gave one that this version of the
+/// interface can write to.
+private func explain(_ sentence: String, in message: UnsafeMutablePointer<BatonMessage>?) {
+  guard let message, message.pointee.size >= UInt32(MemoryLayout<BatonMessage>.size) else {
+    return
+  }
+  write(sentence, to: message)
+}
+
+private func viewerUnlockKey(
+  _ context: UnsafeMutableRawPointer?, _ source: UnsafePointer<BatonUnlockSource>?,
+  _ key: UnsafeMutablePointer<BatonUnlockKey>?, _ message: UnsafeMutablePointer<BatonMessage>?
+) -> Int32 {
+  // All of it is checked before the platform is asked, because asking can replace the key that a
+  // setup was sealed to, and that is not to happen for a call that cannot take the answer.
+  guard let context, let source, let key, let request = FaceKeyRequest(reading: source),
+    key.pointee.size >= UInt32(MemoryLayout<BatonUnlockKey>.size), key.pointee.key != nil
+  else { return badArgument }
+  let platform = Unmanaged<ViewerBox>.fromOpaque(context).takeUnretainedValue().platform
+  do {
+    let made = try platform.unlockKey(request)
+    guard made.write(to: key) else {
+      explain("The key for the unlock could not be handed over.", in: message)
+      return platformFailure
+    }
+    return ok
+  } catch let failure as FaceKeyFailure {
+    explain(failure.sentence, in: message)
+    return failure.code
+  } catch {
+    explain("The key for the unlock could not be made.", in: message)
+    return platformFailure
+  }
+}
+
+private func viewerUnlockOpen(
+  _ screen: UnsafeMutableRawPointer?, _ question: UnsafePointer<BatonUnlockQuestion>?
+) -> Int32 {
+  guard let screen = screenOf(screen), let question, let asked = FaceQuestion(reading: question)
+  else { return badArgument }
+  return screen.unlockOpen(asked) ? ok : platformFailure
+}
+
+private func viewerUnlockCancel(_ screen: UnsafeMutableRawPointer?) {
+  screenOf(screen)?.unlockCancel()
+}
+
 /// Gives the Rust side the platform's viewer: a device that has registered one takes the windows
 /// that other devices offer, and a device that has not takes none. Call it once, at launch,
 /// before the app starts. Returns what `baton_stream_register_viewer` returned.
@@ -464,8 +545,8 @@ func registerViewer(_ platform: ViewerPlatform) -> Int32 {
   // The Rust side keeps the context for as long as the process lives, so it is let go of only if
   // the registration failed.
   let context = Unmanaged.passRetained(ViewerBox(platform))
-  // A platform that plays no sound leaves the last three entries out, all of them, and the devices
-  // it is paired with are not told that it can.
+  // A platform that plays no sound leaves the three entries for it out, all of them, and the
+  // devices it is paired with are not told that it can.
   var sound: BatonSoundFn?
   var play: BatonPlayFn?
   var stopped: BatonStoppedFn?
@@ -473,6 +554,16 @@ func registerViewer(_ platform: ViewerPlatform) -> Int32 {
     sound = viewerSound
     play = viewerPlay
     stopped = viewerStopped
+  }
+  // The same for the unlock of another device's screen with the face of the person: all three
+  // entries or none, since a table that gives some of them reads as none.
+  var unlockKey: BatonUnlockKeyFn?
+  var unlockOpen: BatonUnlockOpenFn?
+  var unlockCancel: BatonUnlockCancelFn?
+  if platform.canUnlock {
+    unlockKey = viewerUnlockKey
+    unlockOpen = viewerUnlockOpen
+    unlockCancel = viewerUnlockCancel
   }
   var table = BatonViewerVTable(
     version: BATON_STREAM_ABI_VERSION,
@@ -489,9 +580,9 @@ func registerViewer(_ platform: ViewerPlatform) -> Int32 {
     sound: sound,
     play: play,
     stopped: stopped,
-    unlock_key: nil,
-    unlock_open: nil,
-    unlock_cancel: nil)
+    unlock_key: unlockKey,
+    unlock_open: unlockOpen,
+    unlock_cancel: unlockCancel)
   let code = baton_stream_register_viewer(&table)
   if code != ok {
     context.release()
@@ -612,7 +703,9 @@ struct SmoothedMicros {
 
 /// A window that is shown: it takes the frames, decodes them, and shows the pictures that the
 /// Rust side asks for. What shows a picture, and what tells how hot the device is, are given to it.
-/// A screen that shows a whole display can also be given a speaker, which plays the sound.
+/// A screen that shows a whole display can also be given a speaker, which plays the sound. A screen
+/// on a device that can unlock the screen it shows with the face of its person is given an asker,
+/// which has the one question that the screen may have open.
 final class WindowScreen<Decoder: PictureDecoder>: ViewerScreen {
   private let decoder: Decoder
   private let pictures = PictureTable<Decoder.Picture>()
@@ -621,6 +714,7 @@ final class WindowScreen<Decoder: PictureDecoder>: ViewerScreen {
   private let thermal: () -> UInt32
   private let onRelease: () -> Void
   private let speaker: ScreenSpeaker?
+  private let asker: FaceAsker?
 
   private let lock = NSLock()
   private var sets: ParameterSets?
@@ -634,11 +728,13 @@ final class WindowScreen<Decoder: PictureDecoder>: ViewerScreen {
   /// must not call back into the screen. `failed` tells the Rust side that the decoder failed on a
   /// frame after it had taken it, and is called on a thread of its own, never from within a call
   /// of the Rust side. `onRelease` is called once, when the Rust side no longer needs the screen.
-  /// `speaker` plays the sound of the screen, if the device plays any.
+  /// `speaker` plays the sound of the screen, if the device plays any. `asker` asks for the face of
+  /// the person when they unlock the screen that is shown, if the device can; the end of the screen
+  /// closes it.
   init(
     decoder: Decoder, present: @escaping (Decoder.Picture?) -> Void,
     failed: @escaping () -> Void, thermal: @escaping () -> UInt32,
-    onRelease: @escaping () -> Void, speaker: ScreenSpeaker? = nil
+    onRelease: @escaping () -> Void, speaker: ScreenSpeaker? = nil, asker: FaceAsker? = nil
   ) {
     self.decoder = decoder
     self.present = present
@@ -646,6 +742,7 @@ final class WindowScreen<Decoder: PictureDecoder>: ViewerScreen {
     self.thermal = thermal
     self.onRelease = onRelease
     self.speaker = speaker
+    self.asker = asker
   }
 
   func decode(_ frame: FrameInput) -> Bool {
@@ -751,13 +848,24 @@ final class WindowScreen<Decoder: PictureDecoder>: ViewerScreen {
     speaker?.stop()
   }
 
+  func unlockOpen(_ question: FaceQuestion) -> Bool {
+    asker?.ask(question) ?? false
+  }
+
+  func unlockCancel() {
+    asker?.cancel()
+  }
+
   func ended() {
     lock.lock()
     let already = over
     over = true
     lock.unlock()
     if already { return }
-    // The speaker is let go of first: it takes the sound off the device without waiting for it.
+    // The prompt for the face comes down and nothing is answered for it, and the speaker is let go
+    // of: both without waiting, so that the Rust side is not held up. The key that the face opened,
+    // if it opened one, is wiped, and the end of the session is a reason to drop it.
+    asker?.close()
     speaker?.close()
     decoder.stop()
     pictures.clear()
