@@ -406,20 +406,13 @@ final class SpeakerRig {
   private var madeDecoders: [FakeSoundDecoder] = []
   private var madeOutputs: [FakeSoundOutput] = []
   private var number: UInt64 = 0
-  private var time = 0.0
+  private var reports = 0
 
-  /// The time on the clock of the speaker, in seconds. It stands where a test puts it.
-  var now: Double {
-    get {
-      lock.lock()
-      defer { lock.unlock() }
-      return time
-    }
-    set {
-      lock.lock()
-      time = newValue
-      lock.unlock()
-    }
+  /// How many times the speaker said that it cannot play.
+  var cannotPlayCalls: Int {
+    lock.lock()
+    defer { lock.unlock() }
+    return reports
   }
 
   init(form: SoundForm = SoundForm(rate: 1000, channels: 2, samples: 10)) {
@@ -428,7 +421,11 @@ final class SpeakerRig {
 
   lazy var speaker = ScreenSpeaker(
     levels: SoundLevels(startMillis: 40, mostMillis: 100),
-    clock: { [self] in now },
+    cannotPlay: { [self] in
+      lock.lock()
+      reports += 1
+      lock.unlock()
+    },
     makeDecoder: { [self] form in
       if decoderFails { throw SoundFailure(step: "make the decoder", code: -7) }
       let decoder = FakeSoundDecoder(form: form)
@@ -639,13 +636,14 @@ func testClosingEndsTheRunAndLaterCallsDoNothing() {
   check(rig.outputs.first?.stops == 1 && rig.decoders.first?.invalidated == 1)
 }
 
-func testADecoderOrAnOutputThatCannotBeMadeEndsTheRunQuietly() {
+func testADecoderOrAnOutputThatCannotBeMadeEndsTheRunAndIsReported() {
   let rig = SpeakerRig()
   rig.decoderFails = true
   rig.begin()
   rig.send(1, first: true)
   rig.settle()
   check(rig.decoders.isEmpty && rig.outputs.isEmpty, "an output was made without a decoder")
+  check(rig.cannotPlayCalls == 1, "the decoder that could not be made: \(rig.cannotPlayCalls)")
 
   rig.decoderFails = false
   rig.outputFails = true
@@ -654,6 +652,7 @@ func testADecoderOrAnOutputThatCannotBeMadeEndsTheRunQuietly() {
   rig.settle()
   check(rig.decoders.count == 1 && rig.decoders.first?.invalidated == 1, "the decoder was kept")
   check(rig.decoders.first?.log.isEmpty == true, "a packet was decoded for a run with no output")
+  check(rig.cannotPlayCalls == 2, "the output that could not be made: \(rig.cannotPlayCalls)")
 
   rig.outputFails = false
   rig.startFails = true
@@ -663,6 +662,7 @@ func testADecoderOrAnOutputThatCannotBeMadeEndsTheRunQuietly() {
   check(rig.decoders.count == 2 && rig.outputs.count == 1)
   check(rig.outputs.first?.stops == 1 && rig.decoders.last?.invalidated == 1, "the failed start")
   check(rig.decoders.last?.log.isEmpty == true)
+  check(rig.cannotPlayCalls == 3, "the output that could not be started: \(rig.cannotPlayCalls)")
 
   rig.startFails = false
   rig.begin()
@@ -670,97 +670,73 @@ func testADecoderOrAnOutputThatCannotBeMadeEndsTheRunQuietly() {
   rig.settle()
   check(rig.decoders.last?.log == ["reset", "decode 1"], "a run after the ones that failed")
   check(rig.outputs.last?.stops == 0)
+  check(rig.cannotPlayCalls == 3, "a run that plays was reported")
 }
 
-func testARunThatCouldNotBeMadeIsTriedAgainOnAPacketAfterASecond() {
+func testARunThatCouldNotBeMadeIsReportedOnceAndNotTriedAgainByItself() {
   let rig = SpeakerRig()
   rig.outputFails = true
   rig.begin()
   rig.send(1, first: true)
   rig.settle()
   check(rig.decoders.count == 1 && rig.outputs.isEmpty, "the first try")
+  check(rig.cannotPlayCalls == 1)
 
-  // The call is over, or the device is back.
+  // The call is over, or the device is back, and the packets go on coming. The Rust side turns the
+  // sound off and these are on their way; they are dropped and nothing is made of them.
   rig.outputFails = false
-  rig.now = 0.5
-  rig.send(2)
-  rig.settle()
-  check(rig.decoders.count == 1 && rig.outputs.isEmpty, "a try before the second was over")
-
-  rig.now = 1.0
-  rig.send(3)
-  rig.send(4)
-  rig.settle()
-  check(rig.decoders.count == 2 && rig.outputs.count == 1, "the try after the second")
-  check(
-    rig.decoders.last?.log == ["decode 3", "decode 4"],
-    "\(String(describing: rig.decoders.last?.log))")
-  check(rig.outputs.last?.starts == 1 && rig.outputs.last?.stops == 0)
-  check(rig.outputs.last?.ring.frames == 20, "the packets after the try are played")
-  rig.send(5)
-  rig.now = 9
-  rig.send(6)
-  rig.settle()
-  check(rig.decoders.count == 2 && rig.outputs.count == 1, "a run that goes is not made again")
-}
-
-func testARunThatKeepsFailingIsTriedAgainOncePerSecond() {
-  let rig = SpeakerRig()
-  rig.startFails = true
-  rig.begin()
-  rig.settle()
-  check(rig.decoders.count == 1 && rig.outputs.count == 1, "the first try")
-  var byte: UInt8 = 0
-  for time in [0.25, 0.5, 0.75, 0.99] {
-    rig.now = time
-    byte += 1
+  for byte in UInt8(2)...9 {
     rig.send(byte)
   }
   rig.settle()
-  check(rig.decoders.count == 1, "a try inside the second: \(rig.decoders.count)")
-  rig.now = 1.0
-  rig.send(9)
+  check(rig.decoders.count == 1 && rig.outputs.isEmpty, "a run was made without being asked for")
+  check(rig.decoders.first?.log.isEmpty == true, "a packet was decoded without a run")
+  check(rig.cannotPlayCalls == 1, "the same failure was reported again: \(rig.cannotPlayCalls)")
+
+  // The person turns the sound on again, and the source begins a new run: that is tried, and plays.
+  rig.speaker.stop()
+  rig.begin()
+  rig.send(10, first: true)
   rig.settle()
-  check(rig.decoders.count == 2 && rig.outputs.count == 2, "the second try")
-  rig.now = 1.5
-  rig.send(10)
-  rig.settle()
-  check(rig.decoders.count == 2, "a second is counted from the last try")
-  rig.now = 2.0
-  rig.send(11)
-  rig.settle()
-  check(rig.decoders.count == 3 && rig.outputs.count == 3, "the third try")
+  check(rig.decoders.count == 2 && rig.outputs.count == 1, "the run that was asked for")
+  check(rig.decoders.last?.log == ["reset", "decode 10"])
+  check(rig.outputs.last?.starts == 1 && rig.outputs.last?.stops == 0)
+  check(rig.cannotPlayCalls == 1)
+}
+
+func testARunThatFailsAgainWhenItIsAskedForAgainIsReportedAgain() {
+  let rig = SpeakerRig()
+  rig.startFails = true
+  for asked in 1...3 {
+    rig.begin()
+    rig.settle()
+    check(rig.cannotPlayCalls == asked, "run \(asked): \(rig.cannotPlayCalls) reports")
+    check(rig.decoders.count == asked && rig.outputs.count == asked, "run \(asked) was tried once")
+  }
   check(rig.decoders.allSatisfy { $0.invalidated == 1 }, "a try that failed let go of its decoder")
   check(rig.outputs.allSatisfy { $0.stops == 1 }, "a try that failed stopped its output")
   check(rig.decoders.allSatisfy { $0.log.isEmpty }, "a packet was decoded without a run")
 }
 
-func testARunThatWasStoppedBeforeItWasMadeIsNotTriedAgainAndANewOneIsTriedInItsForm() {
+func testAFailureThatComesAfterTheScreenWasClosedIsLoggedAndNotReported() {
   let rig = SpeakerRig()
-  rig.outputFails = true
+  let entered = DispatchSemaphore(value: 0)
+  let open = DispatchSemaphore(value: 0)
+  rig.startFails = true
+  rig.startGate = (entered: entered, open: open)
   rig.begin()
-  rig.speaker.stop()
+  check(entered.wait(timeout: .now() + 5) == .success, "the output never started")
+  // The screen is over while the output is starting, and then the start fails.
+  rig.speaker.close()
+  open.signal()
   rig.settle()
-  rig.outputFails = false
-  rig.now = 5
-  rig.send(1)
-  rig.settle()
-  check(rig.decoders.count == 1 && rig.outputs.isEmpty, "a run that was stopped was made")
+  check(rig.outputs.first?.stops == 1 && rig.decoders.first?.invalidated == 1)
+  check(rig.cannotPlayCalls == 0, "a screen that is over was told: \(rig.cannotPlayCalls)")
 
-  // A run that begins while another waits takes its place: it is the form of the last that is made.
-  let other = SoundForm(rate: 1000, channels: 1, samples: 20)
-  rig.outputFails = true
+  // And a run that was asked for after the end is not tried at all.
   rig.begin()
   rig.settle()
-  rig.speaker.begin(other)
-  rig.settle()
-  rig.outputFails = false
-  rig.now = 6
-  rig.send(2)
-  rig.settle()
-  check(rig.decoders.count == 4 && rig.outputs.count == 1, "the run that waited")
-  check(rig.decoders.last?.form == other, "a run was made in the form of the one before")
-  check(rig.decoders.last?.log == ["decode 2"] && rig.outputs.last?.ring.frames == 20)
+  check(rig.decoders.count == 1 && rig.outputs.count == 1 && rig.cannotPlayCalls == 0)
 }
 
 func testThePacketIsCopiedBeforePlayReturns() {

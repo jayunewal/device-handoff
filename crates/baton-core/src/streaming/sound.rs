@@ -82,6 +82,15 @@ pub trait Speaker: Send + 'static {
     /// on only after the next [`sound`](Self::sound).
     fn stopped(&mut self, why: Option<SilentReason>);
 
+    /// The platform said that it cannot play the run of sound
+    /// ([`ViewHandle::sound_failed`](super::ViewHandle::sound_failed)), and the source was told to
+    /// stop sending. The run is over and sound is off, as after [`stopped`](Self::stopped) with
+    /// `None`, which is what this does unless the speaker wants to tell the two apart: the person
+    /// is to hear that this device cannot play the sound, which is no one's doing but the device's.
+    fn could_not_play(&mut self) {
+        self.stopped(None);
+    }
+
     /// The session is over. The speaker lets go of everything it holds, and is called no more.
     fn ended(&mut self);
 }
@@ -97,6 +106,10 @@ impl Speaker for Box<dyn Speaker> {
 
     fn stopped(&mut self, why: Option<SilentReason>) {
         (**self).stopped(why);
+    }
+
+    fn could_not_play(&mut self) {
+        (**self).could_not_play();
     }
 
     fn ended(&mut self) {
@@ -247,6 +260,19 @@ impl Hearing {
         was != on
     }
 
+    /// The platform cannot play the run: it could not make or start what plays it. Turns sound off,
+    /// as the viewer would, and tells the speaker that it was this device that could not. Says
+    /// whether sound was on, and so whether the source is to be told: a report that comes when the
+    /// viewer has turned sound off already is about a run that is over, and changes nothing.
+    pub(super) fn cannot_play(&mut self) -> bool {
+        if !std::mem::replace(&mut self.on, false) {
+            return false;
+        }
+        self.forget_run();
+        self.speaker.could_not_play();
+        true
+    }
+
     /// The source says what its packets are. Dropped while the viewer does not want to hear. A
     /// form that this viewer cannot play ends the run, as a `Silent` would, and turns sound off:
     /// the source is to be told, since it keeps the Mac quiet for a viewer that plays nothing.
@@ -277,12 +303,17 @@ impl Hearing {
 
     /// Ends the run: what the receiver holds is forgotten, and the speaker is told.
     fn stop(&mut self, why: Option<SilentReason>) {
+        self.forget_run();
+        self.speaker.stopped(why);
+    }
+
+    /// What the receiver holds for the run is forgotten.
+    fn forget_run(&mut self) {
         for action in self.receiver.end_run() {
             if let Action::Discard(number) = action {
                 self.packets.remove(&number);
             }
         }
-        self.speaker.stopped(why);
     }
 
     /// The packet of a stream is whole at `now`. Returns whether the speaker and the rules agree

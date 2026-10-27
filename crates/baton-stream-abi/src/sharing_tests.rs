@@ -25,7 +25,7 @@ use std::{
 use baton_app::{
     Event, Events, StartAccess, WindowButton, WindowEnd, WindowInput, WindowModifiers,
     WindowNoticeReason, WindowPointer, WindowRequest, WindowRole, WindowSession, WindowShared,
-    Windows,
+    WindowSound, Windows,
     windows::{
         PickedWindow, PlatformError, Privacy, ScreenError, ScreenLink, SharingFailure, WindowSharer,
     },
@@ -434,6 +434,19 @@ impl Rig {
             .into_iter()
             .filter(|call| matches!(call, Call::Sound(_) | Call::Play(_) | Call::Stopped(_)))
             .collect()
+    }
+
+    /// The link that `open` gave the viewing platform for a screen.
+    fn screen_link(&self, screen: u64) -> u64 {
+        self.viewer
+            .log()
+            .into_iter()
+            .filter_map(|(_, call)| match call {
+                Call::Open { link, .. } => Some(link),
+                _ => None,
+            })
+            .nth(usize::try_from(screen).unwrap() - 1)
+            .expect("the screen was not opened")
     }
 
     /// The packets of sound that the viewing platform was given to play, in order.
@@ -3296,6 +3309,97 @@ async fn a_platform_that_cannot_record_says_why_and_the_person_can_ask_again() {
 
     assert!(rig.viewing.app.end_window(session));
     rig.nothing_is_left().await;
+}
+
+/// The next time the screens hear how the sound of the window `id` stands.
+async fn next_sound(events: &mut Events, id: u64) -> WindowSound {
+    next_matching(events, |event| match event {
+        Event::WindowSound { id: of, sound } if of == id => Some(sound),
+        _ => None,
+    })
+    .await
+}
+
+#[tokio::test]
+async fn a_speaker_that_cannot_play_says_so_and_the_platform_of_the_source_is_told_to_stop() {
+    let mut rig = Rig::new().await;
+    let shown = rig.share_of(true, false).await;
+    let (link, window, session) = (shown.link, shown.window, shown.viewing.id);
+    let form = aac(48_000, 2, 1024);
+    assert!(rig.viewing.app.hear_window(session, true));
+    until("the platform to be asked for the sound", || {
+        rig.platform.hear_calls(window) == [RECORD]
+    })
+    .await;
+    assert_eq!(sound_begin(&rig.registry, link, &form), Ok(()));
+    until("the other platform to be told what the packets are", || {
+        rig.sound_calls(1) == [Call::Sound(form)]
+    })
+    .await;
+    assert_eq!(
+        next_sound(&mut rig.viewing_events, session).await,
+        WindowSound::Playing
+    );
+
+    // The speaker of the screen could not make the run, and says so from a thread of its own, with
+    // the link that `open` gave for the screen.
+    let (registry, screen) = (Arc::clone(&rig.viewing_registry), rig.screen_link(1));
+    let speaker = std::thread::spawn(move || registry.link_sound_failed(screen));
+    assert_eq!(speaker.join().unwrap(), Ok(()));
+    // The person is told that it was this device. The platform of the source is told to stop, so
+    // that the Mac plays again, and the speaker is stopped as when the person turns the sound off.
+    assert_eq!(
+        next_sound(&mut rig.viewing_events, session).await,
+        WindowSound::CannotPlay
+    );
+    until("the platform of the source to be told to stop", || {
+        rig.platform.hear_calls(window) == [RECORD, STOP]
+    })
+    .await;
+    until("the speaker to stop", || {
+        rig.sound_calls(1).last() == Some(&Call::Stopped(SILENT_OFF))
+    })
+    .await;
+    // What the platform of the source hands over for the run goes nowhere.
+    assert_eq!(
+        sound(&rig.registry, link, 0, b"late"),
+        Ok((SOUND_DROPPED, 0))
+    );
+
+    // A report about the run that is over changes nothing, and neither does a link that is not
+    // open.
+    assert_eq!(rig.viewing_registry.link_sound_failed(screen), Ok(()));
+    assert_eq!(
+        rig.viewing_registry.link_sound_failed(screen + 100),
+        Err(Error::UnknownLink)
+    );
+    tokio::time::sleep(QUIET).await;
+    assert_eq!(rig.platform.hear_calls(window), [RECORD, STOP]);
+
+    // The person asks again. The platform of the source is asked afresh, and this time the
+    // speaker plays.
+    assert!(rig.viewing.app.hear_window(session, true));
+    until("the platform of the source to be asked again", || {
+        rig.platform.hear_calls(window) == [RECORD, STOP, RECORD]
+    })
+    .await;
+    assert_eq!(sound_begin(&rig.registry, link, &form), Ok(()));
+    let sent = sound(&rig.registry, link, 90_000, b"again");
+    assert_eq!(sent.map(|(outcome, _)| outcome), Ok(SOUND_SENT));
+    until("the packet to be played", || rig.played(1).len() == 1).await;
+    let calls = rig.sound_calls(1);
+    assert_eq!(calls.len(), 4, "{calls:?}");
+    assert_eq!(calls[1], Call::Stopped(SILENT_OFF));
+    assert_eq!(calls[2], Call::Sound(form));
+    assert!(matches!(calls[3], Call::Play(_)), "{calls:?}");
+
+    assert!(rig.viewing.app.end_window(session));
+    rig.nothing_is_left().await;
+    // The screen is released with the session, and its link is not open any more.
+    assert_eq!(
+        rig.viewing_registry.link_sound_failed(screen),
+        Err(Error::UnknownLink)
+    );
 }
 
 #[tokio::test]

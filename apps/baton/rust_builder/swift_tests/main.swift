@@ -1250,20 +1250,20 @@ tests += [
     testClosingEndsTheRunAndLaterCallsDoNothing
   ),
   (
-    "a decoder or an output that cannot be made ends the run quietly",
-    testADecoderOrAnOutputThatCannotBeMadeEndsTheRunQuietly
+    "a decoder or an output that cannot be made ends the run and is reported",
+    testADecoderOrAnOutputThatCannotBeMadeEndsTheRunAndIsReported
   ),
   (
-    "a run that could not be made is tried again on a packet after a second",
-    testARunThatCouldNotBeMadeIsTriedAgainOnAPacketAfterASecond
+    "a run that could not be made is reported once and not tried again by itself",
+    testARunThatCouldNotBeMadeIsReportedOnceAndNotTriedAgainByItself
   ),
   (
-    "a run that keeps failing is tried again once per second",
-    testARunThatKeepsFailingIsTriedAgainOncePerSecond
+    "a run that fails again when it is asked for again is reported again",
+    testARunThatFailsAgainWhenItIsAskedForAgainIsReportedAgain
   ),
   (
-    "a run stopped before it was made is not tried again, and a new run takes its place",
-    testARunThatWasStoppedBeforeItWasMadeIsNotTriedAgainAndANewOneIsTriedInItsForm
+    "a failure that comes after the screen was closed is logged and not reported",
+    testAFailureThatComesAfterTheScreenWasClosedIsLoggedAndNotReported
   ),
   ("the packet is copied before play returns", testThePacketIsCopiedBeforePlayReturns),
   (

@@ -189,6 +189,11 @@ impl Speaker for Listening {
             .sounded(why.map_or(WindowSound::Off, WindowSound::from));
     }
 
+    fn could_not_play(&mut self) {
+        self.speaker.could_not_play();
+        self.pictures.sounded(WindowSound::CannotPlay);
+    }
+
     fn ended(&mut self) {
         self.speaker.ended();
     }
@@ -1410,6 +1415,10 @@ mod tests {
             self.push(format!("stopped {why:?}"));
         }
 
+        fn could_not_play(&mut self) {
+            self.push("could not play".to_owned());
+        }
+
         fn ended(&mut self) {
             self.push("ended".to_owned());
         }
@@ -1442,6 +1451,8 @@ mod tests {
         speaker.stopped(Some(SilentReason::NoPermission));
         speaker.sound(AAC);
         speaker.stopped(None);
+        speaker.sound(AAC);
+        speaker.could_not_play();
         speaker.ended();
         assert_eq!(
             platform.all(),
@@ -1451,6 +1462,8 @@ mod tests {
                 "stopped Some(NoPermission)",
                 "sound Aac 1024",
                 "stopped None",
+                "sound Aac 1024",
+                "could not play",
                 "ended",
             ]
         );
@@ -1461,6 +1474,8 @@ mod tests {
             WindowSound::NoPermission,
             WindowSound::Playing,
             WindowSound::Off,
+            WindowSound::Playing,
+            WindowSound::CannotPlay,
         ] {
             assert_eq!(heard.try_recv(), Ok(sounded(3, expected)));
         }

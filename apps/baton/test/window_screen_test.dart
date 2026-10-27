@@ -1335,6 +1335,87 @@ void main() {
       },
     );
 
+    testWidgets(
+      'says that this device could not play the sound, and plays it when the person asks again',
+      (tester) async {
+        final shown = await _open(tester, window: screenWithSound());
+        await tester.tap(off);
+        await tester.pumpAndSettle();
+        hearOf(shown, WindowSound.playing);
+        await tester.pumpAndSettle();
+        expect(playing, findsOneWidget);
+
+        hearOf(shown, WindowSound.cannotPlay);
+        await tester.pumpAndSettle();
+        expect(silent, findsOneWidget);
+        expect(
+          find.text(
+            'This device could not play the sound of Anna’s Mac. Tap the '
+            'speaker to try again.',
+          ),
+          findsOneWidget,
+        );
+
+        await tester.tap(silent);
+        await tester.pumpAndSettle();
+        expect(asking, findsOneWidget);
+        expect(find.textContaining('could not play'), findsNothing);
+        hearOf(shown, WindowSound.playing);
+        await tester.pumpAndSettle();
+        expect(playing, findsOneWidget);
+        expect(shown.session.windowHears, [
+          (session: 1, listen: true),
+          (session: 1, listen: true),
+        ]);
+      },
+    );
+
+    testWidgets(
+      'puts the line about the silence away with Close, and shows it again when the sound stands differently',
+      (tester) async {
+        final shown = await _open(tester, window: screenWithSound());
+        final close = find.text('Close');
+        final line = find.textContaining('has not let Baton record');
+        await tester.tap(off);
+        await tester.pumpAndSettle();
+        hearOf(shown, WindowSound.noPermission);
+        await tester.pumpAndSettle();
+        expect(line, findsOneWidget);
+        expect(close, findsOneWidget);
+
+        await tester.tap(close);
+        await tester.pumpAndSettle();
+
+        // The line goes. The speaker still says there is no sound, and nothing was asked.
+        expect(line, findsNothing);
+        expect(close, findsNothing);
+        expect(find.text('Turn off the sound'), findsNothing);
+        expect(silent, findsOneWidget);
+        expect(shown.session.windowHears, [(session: 1, listen: true)]);
+
+        // The same news does not bring it back.
+        hearOf(shown, WindowSound.noPermission);
+        await tester.pumpAndSettle();
+        expect(line, findsNothing);
+
+        // A person who asks again and gets the same answer is told it.
+        await tester.tap(silent);
+        await tester.pumpAndSettle();
+        expect(line, findsNothing);
+        hearOf(shown, WindowSound.noPermission);
+        await tester.pumpAndSettle();
+        expect(line, findsOneWidget);
+        expect(close, findsOneWidget);
+
+        // Another reason brings it back too, after it was put away again.
+        await tester.tap(close);
+        await tester.pumpAndSettle();
+        hearOf(shown, WindowSound.failed);
+        await tester.pumpAndSettle();
+        expect(find.textContaining('could not record'), findsOneWidget);
+      },
+    );
+
     // A tall screen that can be controlled, so that the picture reaches the top of the view, under
     // the lines over it, and a touch on a line lands on the picture if the line lets it through.
     WindowSession tallScreen() => sampleWindowSession(
@@ -1406,7 +1487,7 @@ void main() {
       },
     );
 
-    testWidgets('has a sentence for each reason that the other device gives', (
+    testWidgets('has a sentence for each reason that there is no sound', (
       tester,
     ) async {
       final shown = await _open(tester, window: screenWithSound());
@@ -1425,6 +1506,11 @@ void main() {
         (
           WindowSound.other,
           'Anna’s Mac cannot send its sound now. Tap the speaker to try again.',
+        ),
+        (
+          WindowSound.cannotPlay,
+          'This device could not play the sound of Anna’s Mac. Tap the '
+              'speaker to try again.',
         ),
       ]) {
         hearOf(shown, sound);

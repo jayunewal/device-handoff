@@ -3179,6 +3179,7 @@ impl SseDecode for crate::api::model::WindowSound {
             3 => crate::api::model::WindowSound::NoPermission,
             4 => crate::api::model::WindowSound::Failed,
             5 => crate::api::model::WindowSound::Other,
+            6 => crate::api::model::WindowSound::CannotPlay,
             _ => unreachable!("Invalid variant for WindowSound: {}", inner),
         };
     }
@@ -4247,6 +4248,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::model::WindowSound {
             Self::NoPermission => 3.into_dart(),
             Self::Failed => 4.into_dart(),
             Self::Other => 5.into_dart(),
+            Self::CannotPlay => 6.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -5167,6 +5169,7 @@ impl SseEncode for crate::api::model::WindowSound {
                 crate::api::model::WindowSound::NoPermission => 3,
                 crate::api::model::WindowSound::Failed => 4,
                 crate::api::model::WindowSound::Other => 5,
+                crate::api::model::WindowSound::CannotPlay => 6,
                 _ => {
                     unimplemented!("");
                 }

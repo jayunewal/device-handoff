@@ -628,6 +628,10 @@ async fn ends(how: Ending) {
         rig.registry.link_decode_failed(link),
         Err(Error::UnknownLink)
     );
+    assert_eq!(
+        rig.registry.link_sound_failed(link),
+        Err(Error::UnknownLink)
+    );
     // And the platform has not been called again by anything since.
     let calls = rig.fake.log().len();
     tokio::time::sleep(QUIET).await;
@@ -910,10 +914,9 @@ async fn the_platform_cannot_call_back_while_the_library_is_calling_it() {
             if let Some(known) = known {
                 // A call that was let in would wait for the lock that the library holds.
                 let _watch = Watchdog::start("a call back into the library");
-                answers
-                    .lock()
-                    .unwrap()
-                    .push((call.clone(), registry.link_decode_failed(known)));
+                let mut answers = answers.lock().unwrap();
+                answers.push((call.clone(), registry.link_decode_failed(known)));
+                answers.push((call.clone(), registry.link_sound_failed(known)));
             }
         });
     }
@@ -969,7 +972,9 @@ async fn a_second_window_gets_a_screen_and_a_link_of_its_own() {
         rig.registry.link_decode_failed(one),
         Err(Error::UnknownLink)
     );
+    assert_eq!(rig.registry.link_sound_failed(one), Err(Error::UnknownLink));
     assert_eq!(rig.registry.link_decode_failed(two), Ok(()));
+    assert_eq!(rig.registry.link_sound_failed(two), Ok(()));
 
     assert!(rig.sharing.app.end_window(second.sharing.id));
     rig.nothing_is_left().await;

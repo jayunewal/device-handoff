@@ -454,6 +454,27 @@ impl ViewHandle {
         true
     }
 
+    /// The platform could not play the run of sound that began: the decoder or what plays the
+    /// sound could not be made or started, because a call holds the audio of a phone or there is
+    /// nothing to play on, say. It tells the session from a thread of its own, never from within a
+    /// call of the [`Speaker`](super::Speaker), which the session makes with its lock held.
+    ///
+    /// Sound is turned off, as when the person does it, and the source is told to stop, so that it
+    /// does not keep its own speakers quiet for a viewer that plays nothing. The speaker is told
+    /// with [`Speaker::could_not_play`](super::Speaker::could_not_play). The person asks again with
+    /// [`hear`](Self::hear), and the platform is given a new run to try. A report that comes when
+    /// sound is off already, or after the session is over, is about a run that is over, and does
+    /// nothing.
+    pub fn sound_failed(&self) {
+        let view = &self.view;
+        view.with_sound(|sound| {
+            if sound.cannot_play() {
+                // Said under the lock, in the order of the requests, as `hear` says its own.
+                view.say(ViewerMessage::Hear(Hear { on: false }));
+            }
+        });
+    }
+
     /// Whether the person can ask to unlock the screen of the source: the offer said that the person
     /// at the source set the unlock up for this device, and the application gave the session an
     /// unlocker ([`Viewing::with_unlocker`]). If not, [`unlock`](Self::unlock) does nothing. The

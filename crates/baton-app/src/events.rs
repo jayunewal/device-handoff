@@ -96,15 +96,18 @@ pub enum Event {
         /// How many events it dropped, at least 1.
         count: u32,
     },
-    /// The sound of a screen that is shown here changed: it plays, the person turned it off, or the
-    /// other device says why it sends none. Show the person how it stands.
+    /// The sound of a screen that is shown here changed: it plays, the person turned it off, the
+    /// other device says why it sends none, or this device could not play it. Show the person how
+    /// it stands.
     ///
     /// It comes only for a session whose [`WindowSession::sound`] is set, and only after the
     /// person asked to hear it with [`App::hear_window`](crate::App::hear_window), so it always
     /// comes after the [`Event::WindowStarted`] of the same window. The other device that said it
     /// sends none can begin by itself when the cause is gone, for example when the person there
     /// has allowed it to record the sound, and then [`WindowSound::Playing`] follows; a person
-    /// who asks again with `hear_window` makes it try at once.
+    /// who asks again with `hear_window` makes it try at once. A device that could not play it
+    /// ([`WindowSound::CannotPlay`]) has the other device stop sending, and does not try again by
+    /// itself: only the person asking again does.
     WindowSound {
         /// The [`WindowSession::id`] whose sound this is.
         id: u64,

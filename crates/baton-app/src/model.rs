@@ -689,7 +689,8 @@ impl fmt::Debug for WindowSession {
 /// [`Event::WindowSound`](crate::Event::WindowSound) tells it.
 ///
 /// Sound is off until the person asks for it with [`App::hear_window`](crate::App::hear_window).
-/// The other device may then begin to send it, or say why it cannot.
+/// The other device may then begin to send it, or say why it cannot, and this device may find that
+/// it cannot play it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowSound {
     /// The other device sends the sound of its screen, and it plays on this one. The other device
@@ -706,6 +707,11 @@ pub enum WindowSound {
     Failed,
     /// The other device sends none, for a reason that this version does not know.
     Other,
+    /// This device could not play the sound: what plays it could not be made or started, because a
+    /// call holds the audio of a phone, say, or there is nothing to play on. The other device was
+    /// told to stop, so it is not quiet for nothing. The person can try again with
+    /// [`App::hear_window`](crate::App::hear_window).
+    CannotPlay,
 }
 
 impl From<SilentReason> for WindowSound {

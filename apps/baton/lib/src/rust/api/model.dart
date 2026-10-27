@@ -180,13 +180,15 @@ sealed class Event with _$Event {
     required int count,
   }) = Event_WindowNotice;
 
-  /// The sound of a screen that is shown here changed: it plays, the person turned it off, or
-  /// the other device says why it sends none. Show the person how it stands. It comes only
-  /// for a session whose `WindowSession.sound` is set, and only after the person asked to
-  /// hear it with `Baton.hearWindow`, so it comes after the `Event.windowStarted` of the same
-  /// window. A device that said it sends none can begin by itself when the cause is gone (the
-  /// person there allowed it to record the sound), and then `WindowSound.playing` follows; a
-  /// person who asks again with `Baton.hearWindow` makes it try at once.
+  /// The sound of a screen that is shown here changed: it plays, the person turned it off, the
+  /// other device says why it sends none, or this device could not play it. Show the person how
+  /// it stands. It comes only for a session whose `WindowSession.sound` is set, and only after
+  /// the person asked to hear it with `Baton.hearWindow`, so it comes after the
+  /// `Event.windowStarted` of the same window. A device that said it sends none can begin by
+  /// itself when the cause is gone (the person there allowed it to record the sound), and then
+  /// `WindowSound.playing` follows; a person who asks again with `Baton.hearWindow` makes it
+  /// try at once. A device that could not play it (`WindowSound.cannotPlay`) does not try
+  /// again by itself: only the person asking again does.
   const factory Event.windowSound({
     /// The `WindowSession.id` whose sound this is.
     required PlatformInt64 id,
@@ -1330,7 +1332,8 @@ sealed class WindowShared with _$WindowShared {
 }
 
 /// How the sound of a screen that is shown here stands, as `Event.windowSound` tells it. Sound is
-/// off until the person asks for it with `Baton.hearWindow`.
+/// off until the person asks for it with `Baton.hearWindow`. The other device may then begin to
+/// send it, or say why it cannot, and this device may find that it cannot play it.
 enum WindowSound {
   /// The other device sends the sound of its screen, and it plays on this one. The other
   /// device keeps its own speakers quiet for as long as it does.
@@ -1352,4 +1355,9 @@ enum WindowSound {
 
   /// The other device sends none, for a reason that this version does not know.
   other,
+
+  /// This device could not play the sound: what plays it could not be made or started, because a
+  /// call holds the audio of a phone, say, or there is nothing to play on. The other device was
+  /// told to stop. Turning the sound on again with `Baton.hearWindow` tries again.
+  cannotPlay,
 }
