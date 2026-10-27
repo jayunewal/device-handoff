@@ -18,7 +18,8 @@ use super::{
     error::BatonError,
     model::{
         Device, Event, FileProgress, FilesSent, JoinProgress, Me, Network, Offer, Reach, Received,
-        Receiving, ScreenStarted, StartAccess, WindowAbilities, WindowInput, WindowShared,
+        Receiving, ScreenStarted, StartAccess, UnlockEntry, UnlockSetUp, UnlockStatus,
+        WindowAbilities, WindowInput, WindowShared,
     },
 };
 use crate::convert::signed;
@@ -330,6 +331,77 @@ impl Baton {
     #[frb(sync)]
     pub fn hear_window(&self, session: i64, listen: bool) -> bool {
         u64::try_from(session).is_ok_and(|session| self.app.hear_window(session, listen))
+    }
+
+    /// Asks the device that shares the screen `session`, which is shown here, to unlock it. It is
+    /// for a screen that is locked (`Event.windowLocked`), in a session whose
+    /// `WindowSession.unlock` is set: the person at the other device set the unlock up for this
+    /// one, and the screen is kept private there. This device then asks for the face of the person,
+    /// and the other device types its password if the face is recognised. `Event.windowUnlock`
+    /// tells how it goes and how it ends, and `Event.windowLocked` tells that the screen is not
+    /// locked any more. Returns whether the request was made, which is not so for a window that is
+    /// not shown here, a session that takes no unlock, one whose attempt is going, and a session
+    /// that is over. A person who declined the face at once and taps again within a moment may
+    /// get a false: the next tap is taken.
+    #[frb(sync)]
+    pub fn unlock_window(&self, session: i64) -> bool {
+        u64::try_from(session).is_ok_and(|session| self.app.unlock_window(session))
+    }
+
+    /// How the unlock of the paired device `id` stands at this device: whether the person set it
+    /// up so that the device can unlock this one while it is locked, and whether it ended since.
+    /// Throws `ErrorKind.notPaired`.
+    #[frb(sync)]
+    pub fn unlock_status(&self, id: String) -> Result<UnlockStatus, BatonError> {
+        Ok(self.app.unlock_status(&id)?.into())
+    }
+
+    /// Sets up the unlock of this device for the paired device `id`, so that it can unlock this one
+    /// while it is locked, with the face of the person there. What was set up for it before is
+    /// replaced. `password` is the password of the person who uses this device: the system here
+    /// checks it first (`UnlockSetUp.wrongPassword`, and nothing is asked of the other device), and
+    /// then it is kept in a box that only the other device opens, after the face of its person.
+    ///
+    /// The password cannot be wiped from Dart: the screen should hide it while it is typed, give it
+    /// to this call once, and let go of it at once. The call can last as long as the person at the
+    /// other device takes to answer, when the platform there asks them.
+    ///
+    /// A set-up that stops after the other device made its new key turns the unlock that was set
+    /// up before off, since what was sealed to the old key opens nothing now, and
+    /// `UnlockSetUp.notDone` says so: read `unlockStatus` again after it. A call that fails with
+    /// `ErrorKind.unreachable` may have stopped after that point without knowing it, and then
+    /// leaves what was set up before: it ends at the first tap that finds it stale.
+    ///
+    /// Throws `ErrorKind.notPaired`, `ErrorKind.unreachable`, `ErrorKind.declined` if the other
+    /// device cannot approve an unlock, `ErrorKind.storage` if it could not be kept, and
+    /// `ErrorKind.other` if this device cannot be unlocked from another
+    /// (`windowAbilities().canBeUnlocked`).
+    pub async fn set_up_unlock(
+        &self,
+        id: String,
+        password: String,
+    ) -> Result<UnlockSetUp, BatonError> {
+        Ok(self.app.set_up_unlock(&id, password).await?.into())
+    }
+
+    /// Turns the unlock of the paired device `id` off: the box and the keys are deleted, and the
+    /// device cannot unlock this one until the person sets it up again. Returns whether there was
+    /// one to turn off. Unpairing a device turns its unlock off as well. Throws
+    /// `ErrorKind.notPaired`, and `ErrorKind.storage` if the change could not be kept.
+    pub fn turn_off_unlock(&self, id: String) -> Result<bool, BatonError> {
+        Ok(self.app.turn_off_unlock(&id)?)
+    }
+
+    /// The last attempts to unlock this device, the latest first, up to a hundred: who tried, when
+    /// and how it ended. Each one comes as `Event.unlockAttempted` when it ends. It says nothing of
+    /// the password or of the keys.
+    #[frb(sync)]
+    pub fn unlock_history(&self) -> Vec<UnlockEntry> {
+        self.app
+            .unlock_history()
+            .into_iter()
+            .map(UnlockEntry::from)
+            .collect()
     }
 
     /// Sends a web link to a paired device.

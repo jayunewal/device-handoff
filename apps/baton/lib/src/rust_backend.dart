@@ -256,6 +256,22 @@ class _RustSession implements Session {
       _baton.hearWindow(session: session, listen: listen);
 
   @override
+  bool unlockWindow(int session) => _baton.unlockWindow(session: session);
+
+  @override
+  UnlockStatus unlockStatus(String id) => _baton.unlockStatus(id: id);
+
+  @override
+  Future<UnlockSetUp> setUpUnlock(String id, String password) =>
+      _baton.setUpUnlock(id: id, password: password);
+
+  @override
+  Future<bool> turnOffUnlock(String id) => _baton.turnOffUnlock(id: id);
+
+  @override
+  List<UnlockEntry> unlockHistory() => _baton.unlockHistory();
+
+  @override
   Future<List<Received>> inbox() => _baton.inbox();
 
   @override

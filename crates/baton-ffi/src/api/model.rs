@@ -328,7 +328,7 @@ pub enum Receiving {
 }
 
 /// What this device does with windows, so that a screen offers only what is possible.
-// Four things a device can do, each of its own: see `baton_app::WindowAbilities`.
+// Six things a device can do, each of its own: see `baton_app::WindowAbilities`.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowAbilities {
@@ -342,6 +342,14 @@ pub struct WindowAbilities {
     /// person here allowed that device (`Baton.setStartAccess`). Offer that setting only where
     /// this is so.
     pub can_give_screen: bool,
+    /// This device can let a paired device unlock its screen when it is locked, with the face of
+    /// the person there, once the person here has set that up (`Baton.setUpUnlock`). Offer the
+    /// settings for it only where this is so.
+    pub can_be_unlocked: bool,
+    /// This device can unlock the screen of a paired device that is locked, with the face of the
+    /// person here. Offer the Unlock button only where this is so, and only for a session whose
+    /// `WindowSession.unlock` is set.
+    pub can_unlock: bool,
 }
 
 /// What a paired device may do at this one without a person here being asked: ask it to start
@@ -408,7 +416,7 @@ pub enum WindowRole {
 }
 
 /// A window, or a whole display, that is shown on this device or shared from it.
-// Five facts about a session, each of its own: see `baton_app::WindowSession`.
+// Six facts about a session, each of its own: see `baton_app::WindowSession`.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct WindowSession {
@@ -453,6 +461,12 @@ pub struct WindowSession {
     /// asked every time they end such a session, and the device is locked unless they say
     /// otherwise. `false` for a window that this device shares.
     pub leave: bool,
+    /// Whether the person here can ask the device that shares the screen to unlock it when it is
+    /// locked, with `Baton.unlockWindow`: the person there set the unlock up for this device, the
+    /// screen is kept private, and the platform here asks for the face of the person. The device
+    /// unlocks only while it is locked (`Event.windowLocked`) and while the screen and the keys
+    /// and the pointer there have not been lifted. `false` for a window that this device shares.
+    pub unlock: bool,
     /// What to draw the picture with when the window is shown on this device: the number of
     /// the screen, which on Flutter is the id of a `Texture`. `null` when the window is shared
     /// from this device.
@@ -472,6 +486,7 @@ impl std::fmt::Debug for WindowSession {
             .field("private", &self.private)
             .field("sound", &self.sound)
             .field("leave", &self.leave)
+            .field("unlock", &self.unlock)
             .field("screen", &self.screen)
             .finish_non_exhaustive()
     }
@@ -506,6 +521,127 @@ pub enum WindowSound {
     /// Asking again with `Baton.hearWindow` is taken once they have allowed it, also in this
     /// session.
     NotAllowed,
+}
+
+/// How an attempt to unlock a screen ended. It is what the person who tapped Unlock is told
+/// (`WindowUnlock.ended`) and what the history at the device that was unlocked holds
+/// (`UnlockEntry.result`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnlockResult {
+    /// The screen is unlocked.
+    Unlocked,
+    /// No unlock is set up for the device that asked, or the one that was has ended. The person
+    /// at the device that is unlocked has to set it up again there.
+    NotSetUp,
+    /// The screen was not locked, so nothing was typed.
+    NotLocked,
+    /// The screen, the keys or the pointer of the device that is unlocked were not kept private,
+    /// because they were lifted or the device could not vouch for them, so nothing was typed.
+    NotPrivate,
+    /// Another unlock was going on.
+    Busy,
+    /// The key did not open the box, so nothing was typed. The person at the device that is
+    /// unlocked has to set it up again there.
+    Stale,
+    /// The password was typed and the screen stayed locked. The person at the device that is
+    /// unlocked has to set it up again there.
+    Rejected,
+    /// The device that asked did not answer in time.
+    TimedOut,
+    /// The device that is unlocked could not do it for a reason of its own.
+    Failed,
+    /// An outcome that this version does not know.
+    Other,
+    /// The person did not agree, their face was not recognised, or they cancelled.
+    Declined,
+    /// The device that asked no longer has the key that opens the sealed one: a face was added or
+    /// removed, or the device was restored. The person at the device that is unlocked has to set
+    /// the unlock up again there.
+    KeyLost,
+    /// The device that asked gave up for a reason of its own.
+    GaveUp,
+    /// The device that is unlocked sent no question in time. Only the device that asked ends this
+    /// way.
+    NoQuestion,
+    /// The key was sent and the device that is unlocked did not say what came of it in time. The
+    /// screen may be unlocked: look at it. Only the device that asked ends this way.
+    NoResult,
+    /// The session ended while the device that is unlocked waited for the one that asked. Only the
+    /// history at the device that is unlocked holds this.
+    SessionEnded,
+}
+
+/// How an unlock that the person here asked for stands, as `Event.windowUnlock` tells it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowUnlock {
+    /// The device that shares the screen sent its question, and this device is asking for the face
+    /// of the person.
+    Asking,
+    /// The face was recognised and the key went to the device that shares the screen, which types
+    /// the password now.
+    Typing,
+    /// It is over, and this is how.
+    Ended {
+        /// How it ended.
+        result: UnlockResult,
+    },
+}
+
+/// Where the unlock of a paired device stands at this device: whether the person set it up here
+/// for that device, so that the device can unlock this one when it is locked. It is changed at
+/// this device only, with `Baton.setUpUnlock` and `Baton.turnOffUnlock`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnlockStatus {
+    /// Not set up. The device cannot unlock this one.
+    Off,
+    /// Set up, and the device can try it.
+    On {
+        /// When the person set it up, in seconds since the Unix epoch.
+        since: i64,
+    },
+    /// Set up once, and ended: the password was not accepted, the box was not opened by its key,
+    /// or the device lost its key. Only the person here can set it up again.
+    Ended {
+        /// When the person set it up, in seconds since the Unix epoch.
+        since: i64,
+    },
+}
+
+/// What came of setting the unlock up for a paired device (`Baton.setUpUnlock`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnlockSetUp {
+    /// It is set up: the device can unlock this one while it is locked, in a private session. What
+    /// was set up before is replaced.
+    Done,
+    /// The system here does not accept the password. Nothing was kept, and the other device was
+    /// not asked for anything.
+    WrongPassword,
+    /// It is not set up. What was set up before is as it was, unless the sentence says otherwise:
+    /// when the other device had made its new key already, what was set up before opens nothing,
+    /// and the sentence says that it is turned off.
+    NotDone {
+        /// One sentence that says why, in words that name the device.
+        message: String,
+    },
+}
+
+/// An attempt to unlock this device, in the history that it keeps. It says nothing of the
+/// password or of the keys.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnlockEntry {
+    /// When it ended, in seconds since the Unix epoch.
+    pub at: i64,
+    /// The id of the paired device that asked.
+    pub device_id: String,
+    /// The name of that device as the person gave it, at that time.
+    pub device_name: String,
+    /// How it ended.
+    pub result: UnlockResult,
+    /// Whether to tell the person here of it, when they are next at this device: it succeeded, or
+    /// it got as far as a try and failed. A refusal that came before anything was typed, a person
+    /// who cancelled, and a session that ended say nothing worth a notification. Every attempt is
+    /// in the history all the same.
+    pub notify: bool,
 }
 
 /// How a window session ended.
@@ -876,6 +1012,40 @@ pub enum Event {
         id: i64,
         /// How the sound stands now.
         sound: WindowSound,
+    },
+    /// The screen that is shown here is locked at the device that shares it, or is no longer. Show
+    /// it as locked, with an Unlock button where `WindowSession.unlock` is set, and take that
+    /// down when the screen is unlocked. The source says so when it pauses the picture because it
+    /// locked or its display went off, and when the pictures go on. It comes after the
+    /// `Event.windowStarted` of the same window, and not for a window that is shared from this
+    /// device. A screen that is locked when the window starts is told right after it. Only a
+    /// change is told.
+    WindowLocked {
+        /// The `WindowSession.id` whose screen this is.
+        id: i64,
+        /// Whether it is locked now.
+        locked: bool,
+    },
+    /// An unlock that the person here asked for with `Baton.unlockWindow` moved on: this device
+    /// asks for their face, the key went to the device that shares the screen, or it is over and
+    /// this is how. Show how it stands in the place of the button. An attempt ends with
+    /// `WindowUnlock.ended`, unless the window ends first (`Event.windowEnded`). It comes only for
+    /// a session whose `WindowSession.unlock` is set, and after the person asked. The screen is
+    /// unlocked when the pictures go on (`Event.windowLocked`): an `ended` that says `unlocked` and
+    /// one that says `noResult` are what the other device said and did not say.
+    WindowUnlock {
+        /// The `WindowSession.id` whose screen this is.
+        id: i64,
+        /// How the attempt stands now.
+        step: WindowUnlock,
+    },
+    /// Someone tried to unlock this device, or the person at a paired device did, and the attempt
+    /// ended: it is in the history now (`Baton.unlockHistory`). When `UnlockEntry.notify` is set,
+    /// tell the person here, when they are next at this device. Every attempt is in the history
+    /// all the same.
+    UnlockAttempted {
+        /// The attempt.
+        entry: UnlockEntry,
     },
     /// A window that was shown or shared is over.
     WindowEnded {

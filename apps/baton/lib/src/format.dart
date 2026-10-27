@@ -32,6 +32,11 @@ IconData platformIcon(Platform platform) => switch (platform) {
 /// worth offering to ask it. A Mac does. The others have no way to yet.
 bool givesScreenWhenAsked(Platform platform) => platform == Platform.macOs;
 
+/// Whether a device that runs this system can unlock another with its face, so that it is worth
+/// offering to set the unlock up for it. An iPhone or an iPad can. The others have no way to yet.
+bool unlocksWithFace(Platform platform) =>
+    platform == Platform.ios || platform == Platform.ipadOs;
+
 const _months = [
   'Jan',
   'Feb',

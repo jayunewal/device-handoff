@@ -298,6 +298,8 @@ class FakeSession implements Session {
     canShare: false,
     canControl: false,
     canGiveScreen: false,
+    canBeUnlocked: false,
+    canUnlock: false,
   );
 
   @override
@@ -497,6 +499,80 @@ class FakeSession implements Session {
     windowHears.add((session: session, listen: listen));
     return windowHearTaken;
   }
+
+  /// What `unlockWindow` was given, in order.
+  final List<int> windowUnlocks = [];
+
+  /// What `unlockWindow` says: whether the request was made.
+  bool windowUnlockTaken = true;
+
+  @override
+  bool unlockWindow(int session) {
+    windowUnlocks.add(session);
+    return windowUnlockTaken;
+  }
+
+  /// What `unlockStatus` gives for each device. A device that is not here is `UnlockStatus.off`.
+  final Map<String, UnlockStatus> unlockStatuses = {};
+
+  /// What `unlockStatus` throws, if it should fail: say a device that was forgotten.
+  Object? unlockStatusFailure;
+
+  @override
+  UnlockStatus unlockStatus(String id) {
+    final failure = unlockStatusFailure;
+    if (failure != null) throw failure;
+    return unlockStatuses[id] ?? const UnlockStatus.off();
+  }
+
+  /// What `setUpUnlock` was asked, in order: the device, and the password as it was given.
+  final List<({String id, String password})> unlocksSetUp = [];
+
+  /// What `setUpUnlock` gives. A set-up that is done turns the status of the device on.
+  UnlockSetUp setUpResult = const UnlockSetUp.done();
+
+  /// What `setUpUnlock` throws, if it should fail.
+  Object? setUpFailure;
+
+  /// Makes `setUpUnlock` wait until [releaseSetUp], as it does while the other device answers.
+  void holdSetUp() => _setUpReady = Completer<void>();
+
+  /// Lets the held `setUpUnlock` answer.
+  void releaseSetUp() => _setUpReady?.complete();
+
+  Completer<void>? _setUpReady;
+
+  @override
+  Future<UnlockSetUp> setUpUnlock(String id, String password) async {
+    unlocksSetUp.add((id: id, password: password));
+    await _setUpReady?.future;
+    final failure = setUpFailure;
+    if (failure != null) throw failure;
+    if (setUpResult is UnlockSetUp_Done) {
+      unlockStatuses[id] = const UnlockStatus.on_(since: 1760529600);
+    }
+    return setUpResult;
+  }
+
+  /// What `turnOffUnlock` was asked, in order.
+  final List<String> unlocksTurnedOff = [];
+
+  /// What `turnOffUnlock` throws, if it should fail.
+  Object? turnOffFailure;
+
+  @override
+  Future<bool> turnOffUnlock(String id) async {
+    unlocksTurnedOff.add(id);
+    final failure = turnOffFailure;
+    if (failure != null) throw failure;
+    return unlockStatuses.remove(id) != null;
+  }
+
+  /// What `unlockHistory` gives, the latest first.
+  List<UnlockEntry> unlockEntries = [];
+
+  @override
+  List<UnlockEntry> unlockHistory() => unlockEntries;
 
   /// What `inbox` gives, newest first.
   List<Received> received = [];
@@ -743,6 +819,7 @@ WindowSession sampleWindowSession({
   bool private = false,
   bool sound = false,
   bool leave = false,
+  bool unlock = false,
   bool display = false,
   int? screen,
 }) => WindowSession(
@@ -759,7 +836,37 @@ WindowSession sampleWindowSession({
   private: private,
   sound: sound,
   leave: leave,
+  unlock: unlock,
   screen: screen ?? (role == WindowRole.viewing ? 7 : null),
+);
+
+/// An attempt to unlock this device, as the history keeps it, for a test to show.
+UnlockEntry sampleUnlockEntry({
+  int at = 1760529600,
+  String deviceId =
+      'b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0',
+  String device = 'Anna’s iPhone',
+  UnlockResult result = UnlockResult.unlocked,
+  bool? notify,
+}) => UnlockEntry(
+  at: at,
+  deviceId: deviceId,
+  deviceName: device,
+  result: result,
+  // What Baton says: an unlock that was done, or that failed after it was tried.
+  notify:
+      notify ??
+      switch (result) {
+        UnlockResult.unlocked ||
+        UnlockResult.stale ||
+        UnlockResult.rejected ||
+        UnlockResult.timedOut ||
+        UnlockResult.failed ||
+        UnlockResult.other ||
+        UnlockResult.keyLost ||
+        UnlockResult.gaveUp => true,
+        _ => false,
+      },
 );
 
 /// An item in the inbox that a test can show.

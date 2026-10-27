@@ -9,12 +9,15 @@ import '../control_access.dart';
 import '../controller.dart';
 import '../file_chooser.dart';
 import '../format.dart';
+import '../notice_access.dart';
 import '../scanner.dart';
+import '../unlock_text.dart';
 import 'add_device_screen.dart';
 import 'content_box.dart';
 import 'diagnostics_screen.dart';
 import 'send_screen.dart';
 import 'start_access_dialog.dart';
+import 'unlock_dialog.dart';
 
 /// The home screen: this device, and the devices it is paired with.
 class DevicesScreen extends StatefulWidget {
@@ -26,8 +29,10 @@ class DevicesScreen extends StatefulWidget {
     this.onShareWindow,
     this.onStartScreen,
     this.canGiveScreen = false,
+    this.canBeUnlocked = false,
     this.controlAccess = const PlatformControlAccess(),
     this.screenAccess = const PlatformScreenAccess(),
+    this.notices = const PlatformNoticeKeeper(),
     super.key,
   });
 
@@ -56,6 +61,10 @@ class DevicesScreen extends StatefulWidget {
   /// each device lets the person say which may.
   final bool canGiveScreen;
 
+  /// Whether this device can let a paired device unlock it while it is locked, so that the menu
+  /// of an iPhone or an iPad lets the person set that up.
+  final bool canBeUnlocked;
+
   /// What the system says about letting another device control a window or a screen of this one.
   /// Tests give it one of their own.
   final ControlAccessKeeper controlAccess;
@@ -63,6 +72,10 @@ class DevicesScreen extends StatefulWidget {
   /// What the system says about letting Baton record the screen of this device, which a device
   /// that asks for the screen needs. Tests give it one of their own.
   final ScreenAccessKeeper screenAccess;
+
+  /// What the system says about showing notifications, which tell the person that a paired device
+  /// unlocked this one. Tests give it one of their own.
+  final NoticeKeeper notices;
 
   @override
   State<DevicesScreen> createState() => _DevicesScreenState();
@@ -191,6 +204,42 @@ class _DevicesScreenState extends State<DevicesScreen>
     if (mounted && sentences.isNotEmpty) _tell(sentences.join(' '));
   }
 
+  /// Lets the person say that [device] may unlock this one while it is locked, and turn that off,
+  /// and shows the attempts of [device] to. A notification is how the person learns that a device
+  /// unlocked this one while they were not looking at it, so the system is asked to allow
+  /// notifications once the unlock is set up, when the person knows what for.
+  Future<void> _unlock(Device device) async {
+    final computer = platformName(_controller.me.platform);
+    final result = await showDialog<UnlockDialogResult>(
+      context: context,
+      builder: (context) => UnlockDialog(
+        controller: _controller,
+        device: device,
+        thisDevice: _controller.me.platform,
+        notices: widget.notices,
+        now: widget.now,
+      ),
+    );
+    if (result == null || !mounted) return;
+    final name = visibleText(device.name);
+    switch (result) {
+      case UnlockDialogResult.turnedOff:
+        _tell('$name can no longer unlock this $computer.');
+      case UnlockDialogResult.setUp:
+        var access = await widget.notices.state();
+        if (access == NoticeAccess.needed) {
+          access = await widget.notices.request();
+        }
+        if (!mounted) return;
+        _tell(
+          [
+            '$name can now unlock this $computer while it is locked.',
+            ?describeNoticeAccess(access, computer),
+          ].join(' '),
+        );
+    }
+  }
+
   void _tell(String sentence) {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
@@ -298,6 +347,7 @@ class _DevicesScreenState extends State<DevicesScreen>
               onStartScreen: widget.onStartScreen,
               canControl: _access != ControlAccess.unavailable,
               onAllowScreen: widget.canGiveScreen ? _allowScreen : null,
+              onUnlock: widget.canBeUnlocked ? _unlock : null,
               onForget: _forget,
             ),
           ),
@@ -316,6 +366,7 @@ class _Devices extends StatelessWidget {
     required this.onStartScreen,
     required this.canControl,
     required this.onAllowScreen,
+    required this.onUnlock,
     required this.onForget,
   });
 
@@ -332,6 +383,10 @@ class _Devices extends StatelessWidget {
   /// Lets the person say whether a device may ask for the screen of this one, or `null` on a
   /// device that cannot give its screen.
   final void Function(Device device)? onAllowScreen;
+
+  /// Lets the person say whether a device may unlock this one while it is locked, or `null` on a
+  /// device that cannot be unlocked. Only a device that unlocks with its face has the entry.
+  final void Function(Device device)? onUnlock;
   final void Function(Device device) onForget;
 
   @override
@@ -374,7 +429,9 @@ class _Devices extends StatelessWidget {
               onShareWindow: onShareWindow,
               onStartScreen: onStartScreen,
               canControl: canControl,
+              thisDevice: controller.me.platform,
               onAllowScreen: onAllowScreen,
+              onUnlock: onUnlock,
               onForget: onForget,
             ),
         ],
@@ -482,7 +539,7 @@ class _NoDevices extends StatelessWidget {
 }
 
 /// What a device's menu offers.
-enum _DeviceAction { allowScreen, forget }
+enum _DeviceAction { allowScreen, unlock, forget }
 
 class _DeviceTile extends StatelessWidget {
   const _DeviceTile({
@@ -492,7 +549,9 @@ class _DeviceTile extends StatelessWidget {
     required this.onShareWindow,
     required this.onStartScreen,
     required this.canControl,
+    required this.thisDevice,
     required this.onAllowScreen,
+    required this.onUnlock,
     required this.onForget,
   });
 
@@ -502,7 +561,11 @@ class _DeviceTile extends StatelessWidget {
   final void Function(Device device, {required bool control})? onShareWindow;
   final void Function(Device device, {required bool control})? onStartScreen;
   final bool canControl;
+
+  /// The system that this device runs, to name it in the menu.
+  final Platform thisDevice;
   final void Function(Device device)? onAllowScreen;
+  final void Function(Device device)? onUnlock;
   final void Function(Device device) onForget;
 
   @override
@@ -568,6 +631,8 @@ class _DeviceTile extends StatelessWidget {
                 switch (action) {
                   case _DeviceAction.allowScreen:
                     onAllowScreen?.call(device);
+                  case _DeviceAction.unlock:
+                    onUnlock?.call(device);
                   case _DeviceAction.forget:
                     onForget(device);
                 }
@@ -577,6 +642,13 @@ class _DeviceTile extends StatelessWidget {
                   const PopupMenuItem(
                     value: _DeviceAction.allowScreen,
                     child: Text('Let this device ask for the screen…'),
+                  ),
+                if (onUnlock != null && unlocksWithFace(device.platform))
+                  PopupMenuItem(
+                    value: _DeviceAction.unlock,
+                    child: Text(
+                      'Let this device unlock this ${platformName(thisDevice)}…',
+                    ),
                   ),
                 const PopupMenuItem(
                   value: _DeviceAction.forget,

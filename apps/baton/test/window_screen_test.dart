@@ -198,6 +198,7 @@ void main() {
           private: false,
           sound: false,
           leave: false,
+          unlock: false,
         ),
       );
 
@@ -784,6 +785,340 @@ void main() {
     );
   });
 
+  group('a screen that is locked at its device', () {
+    WindowSession lockable({
+      bool unlock = true,
+      String device = 'Anna’s Mac',
+      bool leave = true,
+    }) => sampleWindowSession(
+      device: device,
+      display: true,
+      control: true,
+      private: true,
+      leave: leave,
+      unlock: unlock,
+    );
+
+    Future<void> lock(
+      WidgetTester tester,
+      _Shown shown, {
+      bool locked = true,
+    }) async {
+      shown.session.emit(Event.windowLocked(id: 1, locked: locked));
+      // The first frame takes the event in, and the second draws what it changed.
+      await tester.pump();
+      await tester.pump();
+    }
+
+    Future<void> say(
+      WidgetTester tester,
+      _Shown shown,
+      WindowUnlock step,
+    ) async {
+      shown.session.emit(Event.windowUnlock(id: 1, step: step));
+      await tester.pump();
+      await tester.pump();
+    }
+
+    // `FilledButton.icon` makes a button of a class of its own, which finders by type do not match.
+    Finder buttonLabelled(String label) => find.ancestor(
+      of: find.text(label),
+      matching: find.bySubtype<FilledButton>(),
+    );
+    final unlockButton = buttonLabelled('Unlock');
+    final tryAgainButton = buttonLabelled('Try again');
+
+    testWidgets('shows nothing over the picture until the device says so', (
+      tester,
+    ) async {
+      await _open(tester, window: lockable());
+
+      expect(find.text('Anna’s Mac is locked'), findsNothing);
+      expect(unlockButton, findsNothing);
+    });
+
+    testWidgets('is covered, with an Unlock button, once the device says so', (
+      tester,
+    ) async {
+      final shown = await _open(tester, window: lockable());
+
+      await lock(tester, shown);
+
+      expect(find.text('Anna’s Mac is locked'), findsOneWidget);
+      expect(
+        find.text(
+          'Face ID or Touch ID on this device confirms that it is you. Then '
+          'Anna’s Mac types its password itself.',
+        ),
+        findsOneWidget,
+      );
+      expect(unlockButton, findsOneWidget);
+      // Nothing was asked of the device yet, and the picture is still under the card.
+      expect(shown.session.windowUnlocks, isEmpty);
+      expect(find.byType(Texture), findsOneWidget);
+    });
+
+    testWidgets('is uncovered when the device says that it is not locked', (
+      tester,
+    ) async {
+      final shown = await _open(tester, window: lockable());
+      await lock(tester, shown);
+
+      await lock(tester, shown, locked: false);
+
+      expect(find.text('Anna’s Mac is locked'), findsNothing);
+      expect(unlockButton, findsNothing);
+    });
+
+    testWidgets('names the device without what turns text round', (
+      tester,
+    ) async {
+      final shown = await _open(
+        tester,
+        window: lockable(device: 'Mac\u202Eexe'),
+      );
+
+      await lock(tester, shown);
+
+      expect(find.text('Mac\uFFFDexe is locked'), findsOneWidget);
+    });
+
+    testWidgets('says what to do instead where the session takes no unlock', (
+      tester,
+    ) async {
+      final shown = await _open(tester, window: lockable(unlock: false));
+
+      await lock(tester, shown);
+
+      expect(find.text('Anna’s Mac is locked'), findsOneWidget);
+      expect(
+        find.textContaining('This session cannot unlock it.'),
+        findsOneWidget,
+      );
+      expect(unlockButton, findsNothing);
+    });
+
+    testWidgets('asks the device to unlock when the person taps Unlock', (
+      tester,
+    ) async {
+      final shown = await _open(tester, window: lockable());
+      await lock(tester, shown);
+
+      await tester.tap(unlockButton);
+      await tester.pump();
+
+      expect(shown.session.windowUnlocks, [1]);
+      expect(find.text('Asking Anna’s Mac to unlock…'), findsOneWidget);
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
+      // While it goes there is nothing to tap.
+      expect(unlockButton, findsNothing);
+      expect(tryAgainButton, findsNothing);
+    });
+
+    testWidgets('follows the unlock until the device is unlocked', (
+      tester,
+    ) async {
+      final shown = await _open(tester, window: lockable());
+      await lock(tester, shown);
+      await tester.tap(unlockButton);
+      await tester.pump();
+
+      await say(tester, shown, const WindowUnlock.asking());
+
+      expect(find.text('Waiting for Face ID or Touch ID…'), findsOneWidget);
+
+      await say(tester, shown, const WindowUnlock.typing());
+
+      expect(find.text('Anna’s Mac is typing its password…'), findsOneWidget);
+
+      await say(
+        tester,
+        shown,
+        const WindowUnlock.ended(result: UnlockResult.unlocked),
+      );
+
+      // The picture has not come back yet, and the card says so, with nothing to tap.
+      expect(find.text('Anna’s Mac is unlocked'), findsOneWidget);
+      expect(find.text('Its picture comes back in a moment.'), findsOneWidget);
+      expect(unlockButton, findsNothing);
+      expect(tryAgainButton, findsNothing);
+
+      await lock(tester, shown, locked: false);
+
+      expect(find.text('Anna’s Mac is unlocked'), findsNothing);
+      expect(find.text('Anna’s Mac is locked'), findsNothing);
+    });
+
+    testWidgets('says how a try ended, and lets the person try again', (
+      tester,
+    ) async {
+      final shown = await _open(tester, window: lockable());
+      await lock(tester, shown);
+      await tester.tap(unlockButton);
+      await tester.pump();
+
+      await say(
+        tester,
+        shown,
+        const WindowUnlock.ended(result: UnlockResult.declined),
+      );
+
+      expect(
+        find.text(
+          'Not unlocked. This device did not confirm that it was you, or you '
+          'cancelled. Try again.',
+        ),
+        findsOneWidget,
+      );
+      expect(tryAgainButton, findsOneWidget);
+      expect(unlockButton, findsNothing);
+
+      await tester.tap(tryAgainButton);
+      await tester.pump();
+
+      expect(shown.session.windowUnlocks, [1, 1]);
+      expect(find.text('Asking Anna’s Mac to unlock…'), findsOneWidget);
+      expect(tryAgainButton, findsNothing);
+    });
+
+    testWidgets('offers no other try where the set-up ended', (tester) async {
+      final shown = await _open(tester, window: lockable());
+      await lock(tester, shown);
+      await tester.tap(unlockButton);
+      await tester.pump();
+
+      await say(
+        tester,
+        shown,
+        const WindowUnlock.ended(result: UnlockResult.rejected),
+      );
+
+      expect(
+        find.text(
+          'Anna’s Mac did not accept the password it typed. If the password of '
+          'Anna’s Mac changed, set it up again in Baton on Anna’s Mac.',
+        ),
+        findsOneWidget,
+      );
+      expect(unlockButton, findsNothing);
+      expect(tryAgainButton, findsNothing);
+      // The card stays, with the name of the device and no button.
+      expect(find.text('Anna’s Mac is locked'), findsOneWidget);
+    });
+
+    testWidgets('tells the person when Baton did not take the request', (
+      tester,
+    ) async {
+      final shown = await _open(tester, window: lockable());
+      shown.session.windowUnlockTaken = false;
+      await lock(tester, shown);
+
+      await tester.tap(unlockButton);
+      await tester.pump();
+
+      expect(shown.session.windowUnlocks, [1]);
+      expect(
+        find.text('Baton could not ask Anna’s Mac to unlock. Try again.'),
+        findsOneWidget,
+      );
+      // Nothing is going, and the person can tap again.
+      expect(unlockButton, findsOneWidget);
+      expect(find.byType(LinearProgressIndicator), findsNothing);
+    });
+
+    testWidgets(
+      'takes the touches that land on it, and gives none to the device',
+      (tester) async {
+        final shown = await _open(tester, window: lockable());
+        await tester.tap(find.widgetWithText(FilterChip, 'Control'));
+        await tester.pump();
+
+        // A touch on the picture is given to the device, so this test sees the difference.
+        await tester.tapAt(const Offset(450, 600));
+        await tester.pump();
+        expect(shown.session.windowInputs, isNotEmpty);
+        shown.session.windowInputs.clear();
+
+        await lock(tester, shown);
+        await tester.tapAt(const Offset(450, 600));
+        await tester.pump();
+
+        expect(shown.session.windowInputs, isEmpty);
+      },
+    );
+
+    testWidgets('is not asked whether to lock a device that is locked', (
+      tester,
+    ) async {
+      final shown = await _open(tester, window: lockable());
+      await lock(tester, shown);
+
+      await tester.tap(find.byTooltip('Stop showing'));
+      await tester.pumpAndSettle();
+
+      // The device stays locked whatever the answer, so the usual question is the one asked.
+      expect(find.text('Lock Anna’s Mac?'), findsNothing);
+      expect(find.text('Stop showing this screen?'), findsOneWidget);
+      await tester.tap(find.text('Stop'));
+      await tester.pumpAndSettle();
+      expect(shown.session.windowsEnded, [1]);
+      expect(shown.session.windowsLeft, isEmpty);
+      expect(_onHome(tester), isTrue);
+    });
+
+    testWidgets('is asked whether to lock a device that is not locked', (
+      tester,
+    ) async {
+      final shown = await _open(tester, window: lockable());
+      await lock(tester, shown);
+      await lock(tester, shown, locked: false);
+
+      await tester.tap(find.byTooltip('Stop showing'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Lock Anna’s Mac?'), findsOneWidget);
+      expect(
+        find.text(
+          'Anna’s Mac locks when you stop showing it. If you leave it, anyone '
+          'at Anna’s Mac can use it until it is locked.',
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets(
+      'says that the person unlocked the device when asking whether to lock it',
+      (tester) async {
+        final shown = await _open(tester, window: lockable());
+        await lock(tester, shown);
+        await tester.tap(unlockButton);
+        await tester.pump();
+        await say(
+          tester,
+          shown,
+          const WindowUnlock.ended(result: UnlockResult.unlocked),
+        );
+        await lock(tester, shown, locked: false);
+
+        await tester.tap(find.byTooltip('Stop showing'));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Lock Anna’s Mac?'), findsOneWidget);
+        expect(
+          find.text(
+            'You unlocked Anna’s Mac from this device. Anna’s Mac locks when you '
+            'stop showing it. If you leave it, anyone at Anna’s Mac can use it '
+            'until it is locked.',
+          ),
+          findsOneWidget,
+        );
+        // The answers are the same ones.
+        expect(find.widgetWithText(FilledButton, 'Lock'), findsOneWidget);
+        expect(find.widgetWithText(TextButton, 'Leave it'), findsOneWidget);
+      },
+    );
+  });
+
   group('a whole screen', () {
     WindowSession screen({int? screen}) => sampleWindowSession(
       display: true,
@@ -829,6 +1164,7 @@ void main() {
           private: false,
           sound: false,
           leave: false,
+          unlock: false,
         ),
       );
 
@@ -1076,6 +1412,7 @@ void main() {
           private: false,
           sound: false,
           leave: false,
+          unlock: false,
         ),
       );
 

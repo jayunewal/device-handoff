@@ -175,6 +175,31 @@ abstract class Baton implements RustOpaqueInterface {
     required StartAccess access,
   });
 
+  /// Sets up the unlock of this device for the paired device `id`, so that it can unlock this one
+  /// while it is locked, with the face of the person there. What was set up for it before is
+  /// replaced. `password` is the password of the person who uses this device: the system here
+  /// checks it first (`UnlockSetUp.wrongPassword`, and nothing is asked of the other device), and
+  /// then it is kept in a box that only the other device opens, after the face of its person.
+  ///
+  /// The password cannot be wiped from Dart: the screen should hide it while it is typed, give it
+  /// to this call once, and let go of it at once. The call can last as long as the person at the
+  /// other device takes to answer, when the platform there asks them.
+  ///
+  /// A set-up that stops after the other device made its new key turns the unlock that was set
+  /// up before off, since what was sealed to the old key opens nothing now, and
+  /// `UnlockSetUp.notDone` says so: read `unlockStatus` again after it. A call that fails with
+  /// `ErrorKind.unreachable` may have stopped after that point without knowing it, and then
+  /// leaves what was set up before: it ends at the first tap that finds it stale.
+  ///
+  /// Throws `ErrorKind.notPaired`, `ErrorKind.unreachable`, `ErrorKind.declined` if the other
+  /// device cannot approve an unlock, `ErrorKind.storage` if it could not be kept, and
+  /// `ErrorKind.other` if this device cannot be unlocked from another
+  /// (`windowAbilities().canBeUnlocked`).
+  Future<UnlockSetUp> setUpUnlock({
+    required String id,
+    required String password,
+  });
+
   /// Lets the person pick a window or a whole screen of this device, and offers it to the
   /// paired device `id`. The call returns when the person at the other device has answered,
   /// which can take as long as a person takes to decide. `control` lets the other device
@@ -233,6 +258,34 @@ abstract class Baton implements RustOpaqueInterface {
   /// folder so that another `Baton` can start in it. Every later call throws
   /// `ErrorKind.stopped`, and the stream from `events` ends.
   Future<void> stop();
+
+  /// Turns the unlock of the paired device `id` off: the box and the keys are deleted, and the
+  /// device cannot unlock this one until the person sets it up again. Returns whether there was
+  /// one to turn off. Unpairing a device turns its unlock off as well. Throws
+  /// `ErrorKind.notPaired`, and `ErrorKind.storage` if the change could not be kept.
+  Future<bool> turnOffUnlock({required String id});
+
+  /// The last attempts to unlock this device, the latest first, up to a hundred: who tried, when
+  /// and how it ended. Each one comes as `Event.unlockAttempted` when it ends. It says nothing of
+  /// the password or of the keys.
+  List<UnlockEntry> unlockHistory();
+
+  /// How the unlock of the paired device `id` stands at this device: whether the person set it
+  /// up so that the device can unlock this one while it is locked, and whether it ended since.
+  /// Throws `ErrorKind.notPaired`.
+  UnlockStatus unlockStatus({required String id});
+
+  /// Asks the device that shares the screen `session`, which is shown here, to unlock it. It is
+  /// for a screen that is locked (`Event.windowLocked`), in a session whose
+  /// `WindowSession.unlock` is set: the person at the other device set the unlock up for this
+  /// one, and the screen is kept private there. This device then asks for the face of the person,
+  /// and the other device types its password if the face is recognised. `Event.windowUnlock`
+  /// tells how it goes and how it ends, and `Event.windowLocked` tells that the screen is not
+  /// locked any more. Returns whether the request was made, which is not so for a window that is
+  /// not shown here, a session that takes no unlock, one whose attempt is going, and a session
+  /// that is over. A person who declined the face at once and taps again within a moment may
+  /// get a false: the next tap is taken.
+  bool unlockWindow({required PlatformInt64 session});
 
   /// Forgets a paired device. It can no longer reach this one until it is paired again.
   Future<void> unpair({required String id});

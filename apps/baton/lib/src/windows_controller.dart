@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 
 import 'awake.dart';
 import 'backend.dart';
+import 'unlock_text.dart';
 import 'window_sound.dart';
 
 /// Something to tell the person about a window that is over, or that did not begin.
@@ -82,6 +83,11 @@ typedef WindowDropped = ({
 /// except in a private session, where the sound is asked for at once: the device that shares a
 /// private screen is quiet for the whole of the session, so there would be none to hear otherwise.
 ///
+/// A screen that is locked at the device that shares it ([lockedOf]) can be unlocked from here, if
+/// the person there set that up for this device ([unlock]): this device asks for the face of the
+/// person, and the other device types its password. [unlockOf] says how that stands, and
+/// [unlockedHereOf] whether it has been done in this session.
+///
 /// The screen of a phone stays on from an offer until the person has answered it and the window
 /// has begun, because Baton on a phone works only while it is on the screen. The screen that
 /// shows the window keeps it on from there; [screen] does the asking, and tests give it one of
@@ -116,6 +122,9 @@ class WindowsController extends ChangeNotifier {
   final Map<int, LiftedPrivacy> _lifted = {};
   final Map<int, ScreenSound> _sounds = {};
   final Set<int> _silenceClosed = {};
+  final Set<int> _locked = {};
+  final Map<int, ScreenUnlock> _unlocks = {};
+  final Set<int> _unlockedHere = {};
   final List<WindowNote> _notes = [];
 
   /// What this device does with windows. Offer only what is possible.
@@ -167,6 +176,24 @@ class WindowsController extends ChangeNotifier {
   /// session starts, and for a session whose `WindowSession.sound` is not set, which has none.
   ScreenSound soundOf(WindowSession session) =>
       _sounds[session.id.toInt()] ?? soundOff;
+
+  /// Whether the screen [session] is locked at the device that shares it, as that device said last.
+  /// It is not locked until it says so, and it says so right after the window starts when it is.
+  /// What it says is all that is known: a device that is asleep or has lost the connection shows
+  /// the last word it sent.
+  bool lockedOf(WindowSession session) => _locked.contains(session.id.toInt());
+
+  /// How an unlock that the person asked for stands, for a screen that is locked: nothing is going
+  /// on until they tap Unlock ([unlock]), and what was told of the last attempt stays until they
+  /// try again or the lock changes. [UnlockStage.idle] for a session that takes no unlock.
+  ScreenUnlock unlockOf(WindowSession session) =>
+      _unlocks[session.id.toInt()] ?? unlockIdle;
+
+  /// Whether this device unlocked the screen [session] in this session, so that the question at
+  /// its end can say that anyone at the other device can use it until it is locked, because it was
+  /// unlocked from here.
+  bool unlockedHereOf(WindowSession session) =>
+      _unlockedHere.contains(session.id.toInt());
 
   /// Whether the person put away the line that says why [session] has no sound. The speaker in the
   /// bar still shows that there is none. The line comes back when the sound stands differently: the
@@ -270,6 +297,40 @@ class WindowsController extends ChangeNotifier {
         // A line that was put away is about the sound as it stood.
         _silenceClosed.remove(id.toInt());
         notifyListeners();
+      case Event_WindowLocked(:final id, :final locked):
+        // Only a screen that runs here is locked at the other end. The other device tells a change
+        // once, so the same word again changes nothing to draw.
+        final shown = _sessions.any(
+          (s) => s.id == id && s.role == WindowRole.viewing,
+        );
+        if (!shown || locked == _locked.contains(id.toInt())) return;
+        if (locked) {
+          _locked.add(id.toInt());
+        } else {
+          _locked.remove(id.toInt());
+        }
+        // A lock that comes or goes starts the story of an unlock again: what was told of the last
+        // attempt was about the last lock.
+        _unlocks.remove(id.toInt());
+        notifyListeners();
+      case Event_WindowUnlock(:final id, :final step):
+        // Only a screen that runs here has an unlock to follow.
+        final shown = _sessions.any(
+          (s) => s.id == id && s.role == WindowRole.viewing,
+        );
+        if (!shown) return;
+        final next = switch (step) {
+          WindowUnlock_Asking() => (stage: UnlockStage.asking, result: null),
+          WindowUnlock_Typing() => (stage: UnlockStage.typing, result: null),
+          WindowUnlock_Ended(:final result) => (
+            stage: UnlockStage.ended,
+            result: result,
+          ),
+        };
+        if (next.result == UnlockResult.unlocked) _unlockedHere.add(id.toInt());
+        if (_unlocks[id.toInt()] == next) return;
+        _unlocks[id.toInt()] = next;
+        notifyListeners();
       case Event_WindowEnded(:final id, :final end):
         final index = _sessions.indexWhere((s) => s.id == id);
         if (index < 0) return;
@@ -277,6 +338,9 @@ class WindowsController extends ChangeNotifier {
         _lifted.remove(id.toInt());
         _sounds.remove(id.toInt());
         _silenceClosed.remove(id.toInt());
+        _locked.remove(id.toInt());
+        _unlocks.remove(id.toInt());
+        _unlockedHere.remove(id.toInt());
         final session = _sessions.removeAt(index);
         // The person who ended it knows.
         if (end is! WindowEnd_ThisDevice) _note(WindowOver(session, end));
@@ -403,6 +467,9 @@ class WindowsController extends ChangeNotifier {
     _lifted.remove(session.id.toInt());
     _sounds.remove(session.id.toInt());
     _silenceClosed.remove(session.id.toInt());
+    _locked.remove(session.id.toInt());
+    _unlocks.remove(session.id.toInt());
+    _unlockedHere.remove(session.id.toInt());
     return _sessions.length != kept;
   }
 
@@ -462,6 +529,20 @@ class WindowsController extends ChangeNotifier {
         : soundOff;
     // Asking again, or turning the sound off, is a new start for the line about the sound.
     _silenceClosed.remove(session.id.toInt());
+    notifyListeners();
+    return true;
+  }
+
+  /// Asks the device that shares [session], a screen that is shown here whose `WindowSession.unlock`
+  /// is set and that is locked ([lockedOf]), to unlock it. This device asks for the face of the
+  /// person, and the other device types its password if the face is recognised. Returns whether
+  /// Baton took the request. When it did not (the session is over, it takes no unlock, or an
+  /// attempt is going), things stay as they were, and [unlockOf] says so. The answer comes as
+  /// `Event_WindowUnlock` and, when the screen is unlocked, as `Event_WindowLocked`. The rules of
+  /// when the other device unlocks are kept in Rust and at that device, and not repeated here.
+  bool unlock(WindowSession session) {
+    if (!_session.unlockWindow(session.id.toInt())) return false;
+    _unlocks[session.id.toInt()] = (stage: UnlockStage.starting, result: null);
     notifyListeners();
     return true;
   }

@@ -3,6 +3,7 @@
 import 'package:baton/src/backend.dart';
 import 'package:baton/src/control_access.dart';
 import 'package:baton/src/format.dart';
+import 'package:baton/src/notice_access.dart';
 import 'package:baton/src/qr.dart';
 import 'package:baton/src/screens/devices_screen.dart';
 import 'package:flutter/material.dart';
@@ -10,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'fake_backend.dart';
 import 'fake_control_access.dart';
+import 'fake_notices.dart';
 
 final _now = DateTime(2026, 10, 15, 12);
 
@@ -40,8 +42,10 @@ Widget _screen(
   void Function(Device device, {required bool control})? onShareWindow,
   void Function(Device device, {required bool control})? onStartScreen,
   bool canGiveScreen = false,
+  bool canBeUnlocked = false,
   ControlAccessKeeper? controlAccess,
   ScreenAccessKeeper? screenAccess,
+  NoticeKeeper? notices,
 }) => MaterialApp(
   home: DevicesScreen(
     session: session,
@@ -51,9 +55,11 @@ Widget _screen(
     onShareWindow: onShareWindow,
     onStartScreen: onStartScreen,
     canGiveScreen: canGiveScreen,
+    canBeUnlocked: canBeUnlocked,
     controlAccess:
         controlAccess ?? FakeControlAccess(ControlAccess.unavailable),
     screenAccess: screenAccess ?? FakeScreenAccess(ScreenAccess.unavailable),
+    notices: notices ?? FakeNotices(NoticeAccess.unavailable),
   ),
 );
 
@@ -63,8 +69,10 @@ Future<void> _show(
   void Function(Device device, {required bool control})? onShareWindow,
   void Function(Device device, {required bool control})? onStartScreen,
   bool canGiveScreen = false,
+  bool canBeUnlocked = false,
   ControlAccessKeeper? controlAccess,
   ScreenAccessKeeper? screenAccess,
+  NoticeKeeper? notices,
 }) async {
   await tester.pumpWidget(
     _screen(
@@ -72,8 +80,10 @@ Future<void> _show(
       onShareWindow: onShareWindow,
       onStartScreen: onStartScreen,
       canGiveScreen: canGiveScreen,
+      canBeUnlocked: canBeUnlocked,
       controlAccess: controlAccess,
       screenAccess: screenAccess,
+      notices: notices,
     ),
   );
   await tester.pumpAndSettle();
@@ -1512,6 +1522,588 @@ void main() {
         findsOneWidget,
       );
       expect(visibleText(name), isNot(name));
+    });
+  });
+  group('what a device may do with the unlock of this one', () {
+    late FakeSession session;
+    late FakeNotices notices;
+    late Device phone;
+
+    Future<void> show(
+      WidgetTester tester, {
+      bool canBeUnlocked = true,
+      Platform platform = Platform.ios,
+      String name = 'Phone',
+      NoticeAccess access = NoticeAccess.allowed,
+    }) async {
+      phone = _device(name, platform);
+      session = _session(devices: [phone]);
+      notices = FakeNotices(access);
+      await _show(
+        tester,
+        session,
+        canBeUnlocked: canBeUnlocked,
+        notices: notices,
+      );
+    }
+
+    Future<void> open(WidgetTester tester, {String name = 'Phone'}) async {
+      await tester.tap(find.byTooltip('More about $name'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Let this device unlock this Mac…'));
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> typeAndSetUp(WidgetTester tester, String password) async {
+      await tester.enterText(find.byType(TextField), password);
+      await tester.pump();
+      await tester.tap(find.widgetWithText(FilledButton, 'Set up'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('is a choice in the menu of a phone or a tablet', (
+      tester,
+    ) async {
+      await show(tester);
+
+      await tester.tap(find.byTooltip('More about Phone'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Let this device unlock this Mac…'), findsOneWidget);
+      expect(find.text('Forget this device'), findsOneWidget);
+    });
+
+    testWidgets('is a choice for an iPad as well', (tester) async {
+      await show(tester, platform: Platform.ipadOs, name: 'Kitchen iPad');
+
+      await tester.tap(find.byTooltip('More about Kitchen iPad'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Let this device unlock this Mac…'), findsOneWidget);
+    });
+
+    testWidgets('is not a choice where this device cannot be unlocked', (
+      tester,
+    ) async {
+      await show(tester, canBeUnlocked: false);
+
+      await tester.tap(find.byTooltip('More about Phone'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Let this device unlock this Mac…'), findsNothing);
+      expect(find.text('Forget this device'), findsOneWidget);
+    });
+
+    testWidgets(
+      'is not a choice for a device that has no face to unlock with',
+      (tester) async {
+        for (final platform in [
+          Platform.macOs,
+          Platform.windows,
+          Platform.linux,
+          Platform.android,
+          Platform.other,
+        ]) {
+          await show(tester, platform: platform);
+
+          await tester.tap(find.byTooltip('More about Phone'));
+          await tester.pumpAndSettle();
+
+          expect(
+            find.text('Let this device unlock this Mac…'),
+            findsNothing,
+            reason: '$platform',
+          );
+          await tester.tapAt(const Offset(5, 5));
+          await tester.pumpAndSettle();
+        }
+      },
+    );
+
+    testWidgets('opens a dialog that says it is not set up', (tester) async {
+      await show(tester);
+
+      await open(tester);
+
+      expect(find.text('Unlock this Mac from Phone'), findsOneWidget);
+      expect(
+        find.text('Not set up. Phone cannot unlock this Mac.'),
+        findsOneWidget,
+      );
+      expect(find.text('Password of this Mac'), findsOneWidget);
+      expect(find.text('None yet.'), findsOneWidget);
+      // Nothing to set up with until a password is typed.
+      final setUp = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, 'Set up'),
+      );
+      expect(setUp.onPressed, isNull);
+      expect(find.text('Turn off'), findsNothing);
+    });
+
+    testWidgets(
+      'keeps the password out of sight and out of reach of suggestions',
+      (tester) async {
+        await show(tester);
+        await open(tester);
+
+        final field = tester.widget<TextField>(find.byType(TextField));
+
+        expect(field.obscureText, isTrue);
+        expect(field.autocorrect, isFalse);
+        expect(field.enableSuggestions, isFalse);
+        expect(field.enableIMEPersonalizedLearning, isFalse);
+        expect(field.autofillHints ?? const <String>[], isEmpty);
+      },
+    );
+
+    testWidgets('sets the unlock up with the password, and says so', (
+      tester,
+    ) async {
+      await show(tester);
+      await open(tester);
+
+      await typeAndSetUp(tester, 'correct horse');
+
+      expect(session.unlocksSetUp, [(id: phone.id, password: 'correct horse')]);
+      expect(find.text('Unlock this Mac from Phone'), findsNothing);
+      expect(
+        find.text('Phone can now unlock this Mac while it is locked.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('sets it up with the password typed on the keyboard key', (
+      tester,
+    ) async {
+      await show(tester);
+      await open(tester);
+
+      await tester.enterText(find.byType(TextField), 'pass word');
+      await tester.testTextInput.receiveAction(TextInputAction.done);
+      await tester.pumpAndSettle();
+
+      expect(session.unlocksSetUp, [(id: phone.id, password: 'pass word')]);
+    });
+
+    testWidgets('asks the system to show notifications, once it is set up', (
+      tester,
+    ) async {
+      await show(tester, access: NoticeAccess.needed);
+      await open(tester);
+
+      await typeAndSetUp(tester, 'pw');
+
+      expect(notices.requests, 1);
+      expect(
+        find.text('Phone can now unlock this Mac while it is locked.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('does not ask for notifications that are allowed already', (
+      tester,
+    ) async {
+      await show(tester);
+      await open(tester);
+
+      await typeAndSetUp(tester, 'pw');
+
+      expect(notices.requests, 0);
+    });
+
+    testWidgets('says where to allow notifications when the person said no', (
+      tester,
+    ) async {
+      await show(tester, access: NoticeAccess.needed);
+      notices.answer = NoticeAccess.denied;
+      await open(tester);
+
+      await typeAndSetUp(tester, 'pw');
+
+      expect(
+        find.text(
+          'Phone can now unlock this Mac while it is locked. Notifications '
+          'are off for Baton, so it cannot tell you when this Mac is '
+          'unlocked. Allow them in System Settings, under Notifications.',
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('does not ask for notifications when the set-up failed', (
+      tester,
+    ) async {
+      await show(tester, access: NoticeAccess.needed);
+      session.setUpResult = const UnlockSetUp.wrongPassword();
+      await open(tester);
+
+      await typeAndSetUp(tester, 'pw');
+
+      expect(notices.requests, 0);
+    });
+
+    testWidgets('says so when the system does not accept the password', (
+      tester,
+    ) async {
+      await show(tester);
+      session.setUpResult = const UnlockSetUp.wrongPassword();
+      await open(tester);
+
+      await typeAndSetUp(tester, 'not it');
+
+      expect(
+        find.text(
+          'That is not the password of this Mac, so nothing was kept. Type it '
+          'again.',
+        ),
+        findsOneWidget,
+      );
+      // The dialog stays for another try, with nothing left in the field.
+      expect(find.text('Unlock this Mac from Phone'), findsOneWidget);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        '',
+      );
+      final setUp = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, 'Set up'),
+      );
+      expect(setUp.onPressed, isNull);
+    });
+
+    testWidgets('empties the field whatever came of the set-up', (
+      tester,
+    ) async {
+      await show(tester);
+      session.setUpResult = const UnlockSetUp.notDone(
+        message: 'Phone could not make the key.',
+      );
+      await open(tester);
+
+      await typeAndSetUp(tester, 'secret');
+
+      expect(find.text('Phone could not make the key.'), findsOneWidget);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        '',
+      );
+      expect(find.text('secret'), findsNothing);
+    });
+
+    testWidgets(
+      'shows that the earlier unlock is off when the new key ended it',
+      (tester) async {
+        await show(tester);
+        session.unlockStatuses[phone.id] = UnlockStatus.on_(
+          since: _secondsAgo(const Duration(hours: 2)),
+        );
+        session.setUpResult = const UnlockSetUp.notDone(
+          message:
+              'Phone could not make the key. The unlock that was set up before '
+              'is turned off, because Phone made a new key for this device. Set '
+              'it up again.',
+        );
+        session.holdSetUp();
+        await open(tester);
+        await tester.enterText(find.byType(TextField), 'pw');
+        await tester.pump();
+        await tester.tap(find.widgetWithText(FilledButton, 'Set up again'));
+        await tester.pump();
+
+        // Baton turned the earlier unlock off when Phone made its new key, and the set-up stopped
+        // after that, so the dialog is asked again and does not keep saying that it is on.
+        session.unlockStatuses.remove(phone.id);
+        session.releaseSetUp();
+        await tester.pump();
+        await tester.pump();
+
+        expect(
+          find.textContaining('is turned off, because Phone'),
+          findsOneWidget,
+        );
+        expect(
+          find.text('Not set up. Phone cannot unlock this Mac.'),
+          findsOneWidget,
+        );
+        expect(find.text('Turn off'), findsNothing);
+        expect(find.widgetWithText(FilledButton, 'Set up'), findsOneWidget);
+      },
+    );
+
+    testWidgets('shows the sentence of an error from Baton', (tester) async {
+      await show(tester);
+      session.setUpFailure = const BatonError(
+        kind: ErrorKind.unreachable,
+        message: 'Phone cannot be reached right now.',
+      );
+      await open(tester);
+
+      await typeAndSetUp(tester, 'secret');
+
+      expect(find.text('Phone cannot be reached right now.'), findsOneWidget);
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.text,
+        '',
+      );
+      expect(session.unlocksSetUp, [(id: phone.id, password: 'secret')]);
+    });
+
+    testWidgets('can be tried again after it did not work', (tester) async {
+      await show(tester);
+      session.setUpResult = const UnlockSetUp.wrongPassword();
+      await open(tester);
+      await typeAndSetUp(tester, 'wrong');
+      session.setUpResult = const UnlockSetUp.done();
+
+      await typeAndSetUp(tester, 'right');
+
+      expect(session.unlocksSetUp, [
+        (id: phone.id, password: 'wrong'),
+        (id: phone.id, password: 'right'),
+      ]);
+      expect(find.text('Unlock this Mac from Phone'), findsNothing);
+    });
+
+    testWidgets('cannot be closed while the other device is asked', (
+      tester,
+    ) async {
+      await show(tester);
+      session.holdSetUp();
+      await open(tester);
+      await tester.enterText(find.byType(TextField), 'pw');
+      await tester.pump();
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Set up'));
+      await tester.pump();
+
+      expect(find.byType(LinearProgressIndicator), findsOneWidget);
+      final close = tester.widget<TextButton>(
+        find.widgetWithText(TextButton, 'Close'),
+      );
+      expect(close.onPressed, isNull);
+      expect(tester.widget<TextField>(find.byType(TextField)).enabled, isFalse);
+      // A second tap does not ask again.
+      await tester.tap(
+        find.widgetWithText(FilledButton, 'Set up'),
+        warnIfMissed: false,
+      );
+      await tester.pump();
+      expect(session.unlocksSetUp, hasLength(1));
+
+      session.releaseSetUp();
+      await tester.pumpAndSettle();
+
+      expect(find.text('Unlock this Mac from Phone'), findsNothing);
+    });
+
+    testWidgets('closes without doing anything on Close', (tester) async {
+      await show(tester);
+      await open(tester);
+
+      await tester.tap(find.text('Close'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Unlock this Mac from Phone'), findsNothing);
+      expect(session.unlocksSetUp, isEmpty);
+      expect(session.unlocksTurnedOff, isEmpty);
+      expect(find.byType(SnackBar), findsNothing);
+    });
+
+    testWidgets('says that it is set up, and since when', (tester) async {
+      await show(tester);
+      session.unlockStatuses[phone.id] = UnlockStatus.on_(
+        since: _secondsAgo(const Duration(hours: 2)),
+      );
+
+      await open(tester);
+
+      expect(
+        find.text(
+          'Set up 2 hours ago. Phone can unlock this Mac while it is locked, '
+          'when you control it from Phone and Face ID or Touch ID there '
+          'confirms that it is you.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Turn off'), findsOneWidget);
+      expect(find.text('Set up again'), findsOneWidget);
+      expect(find.widgetWithText(FilledButton, 'Set up'), findsNothing);
+    });
+
+    testWidgets('says that it ended, and that it is set up again below', (
+      tester,
+    ) async {
+      await show(tester);
+      session.unlockStatuses[phone.id] = UnlockStatus.ended(
+        since: _secondsAgo(const Duration(days: 2)),
+      );
+
+      await open(tester);
+
+      expect(
+        find.text(
+          'Set up 2 days ago, and it ended: the password was not accepted, or '
+          'Phone lost its key. Set it up again below.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Turn off'), findsOneWidget);
+      expect(find.text('Set up again'), findsOneWidget);
+    });
+
+    testWidgets('turns it off, and says so', (tester) async {
+      await show(tester);
+      session.unlockStatuses[phone.id] = UnlockStatus.on_(
+        since: _secondsAgo(const Duration(hours: 2)),
+      );
+      await open(tester);
+
+      await tester.tap(find.text('Turn off'));
+      await tester.pumpAndSettle();
+
+      expect(session.unlocksTurnedOff, [phone.id]);
+      expect(find.text('Unlock this Mac from Phone'), findsNothing);
+      expect(find.text('Phone can no longer unlock this Mac.'), findsOneWidget);
+      expect(session.unlockStatuses, isEmpty);
+    });
+
+    testWidgets('says why it could not be turned off', (tester) async {
+      await show(tester);
+      session.unlockStatuses[phone.id] = UnlockStatus.on_(
+        since: _secondsAgo(const Duration(hours: 2)),
+      );
+      session.turnOffFailure = const BatonError(
+        kind: ErrorKind.storage,
+        message: 'Baton could not keep the change.',
+      );
+      await open(tester);
+
+      await tester.tap(find.text('Turn off'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Baton could not keep the change.'), findsOneWidget);
+      expect(find.text('Unlock this Mac from Phone'), findsOneWidget);
+    });
+
+    testWidgets('lists the last attempts of this device, the latest first', (
+      tester,
+    ) async {
+      await show(tester);
+      final other = _device('Tablet', Platform.ipadOs);
+      session.unlockEntries = [
+        sampleUnlockEntry(
+          at: _secondsAgo(const Duration(minutes: 5)),
+          deviceId: phone.id,
+          device: 'Phone',
+        ),
+        // Another device's attempt is in its own dialog.
+        sampleUnlockEntry(
+          at: _secondsAgo(const Duration(minutes: 7)),
+          deviceId: other.id,
+          device: 'Tablet',
+        ),
+        sampleUnlockEntry(
+          at: _secondsAgo(const Duration(hours: 3)),
+          deviceId: phone.id,
+          device: 'Phone',
+          result: UnlockResult.declined,
+        ),
+      ];
+      await open(tester);
+
+      expect(find.text('Recent attempts from Phone'), findsOneWidget);
+      expect(
+        find.text('Phone unlocked this device. (5 minutes ago)'),
+        findsOneWidget,
+      );
+      expect(
+        find.text(
+          'Phone asked, and the person there did not confirm: their face was '
+          'not recognised, or they cancelled. Nothing was typed. (3 hours ago)',
+        ),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Tablet'), findsNothing);
+      expect(find.text('None yet.'), findsNothing);
+    });
+
+    testWidgets('shows only the last five attempts', (tester) async {
+      await show(tester);
+      session.unlockEntries = [
+        for (var i = 1; i <= 8; i++)
+          sampleUnlockEntry(
+            at: _secondsAgo(Duration(minutes: i)),
+            deviceId: phone.id,
+            device: 'Phone',
+          ),
+      ];
+      await open(tester);
+
+      expect(
+        find.textContaining('Phone unlocked this device.'),
+        findsNWidgets(5),
+      );
+      expect(find.textContaining('(5 minutes ago)'), findsOneWidget);
+      expect(find.textContaining('(6 minutes ago)'), findsNothing);
+    });
+
+    testWidgets('says when the system will not show notifications', (
+      tester,
+    ) async {
+      await show(tester, access: NoticeAccess.denied);
+
+      await open(tester);
+
+      expect(
+        find.text(
+          'Notifications are off for Baton, so it cannot tell you when this '
+          'Mac is unlocked. Allow them in System Settings, under Notifications.',
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('says nothing of notifications that are allowed', (
+      tester,
+    ) async {
+      await show(tester);
+
+      await open(tester);
+
+      expect(find.textContaining('Notifications are off'), findsNothing);
+      expect(find.textContaining('cannot show notifications'), findsNothing);
+    });
+
+    testWidgets('names the device as fit to show', (tester) async {
+      const name = 'Pad\u202Eexe';
+      await show(tester, name: name);
+
+      await open(tester, name: name);
+
+      expect(find.text('Unlock this Mac from Pad\uFFFDexe'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.textContaining('\u202E'),
+        ),
+        findsNothing,
+      );
+    });
+
+    testWidgets('says so when the device was forgotten meanwhile', (
+      tester,
+    ) async {
+      await show(tester);
+      session.unlockStatusFailure = const BatonError(
+        kind: ErrorKind.notPaired,
+        message: 'Phone is not paired with this device.',
+      );
+
+      await open(tester);
+
+      expect(
+        find.text('Phone is not paired with this Mac any more.'),
+        findsOneWidget,
+      );
     });
   });
 }

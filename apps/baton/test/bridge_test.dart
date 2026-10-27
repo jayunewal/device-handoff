@@ -226,6 +226,8 @@ void main() {
       expect(abilities.canShare, isFalse);
       expect(abilities.canControl, isFalse);
       expect(abilities.canGiveScreen, isFalse);
+      expect(abilities.canBeUnlocked, isFalse);
+      expect(abilities.canUnlock, isFalse);
     }
 
     // Paired devices are told so when one tries: the call fails with a sentence, before the
@@ -284,6 +286,23 @@ void main() {
       expect(a.hearSetting(id: b.me().id), setting);
       expect(b.hearSetting(id: a.me().id), isNull);
     }
+
+    // The unlock is off for a paired device, nothing was tried, and a device that has no platform
+    // code to keep a password in a box says that it cannot be unlocked, before it keeps anything.
+    expect(a.unlockStatus(id: b.me().id), const UnlockStatus.off());
+    expect(a.unlockHistory(), isEmpty);
+    expect(await a.turnOffUnlock(id: b.me().id), isFalse);
+    await expectLater(
+      a.setUpUnlock(id: b.me().id, password: 'a password'),
+      throwsA(
+        isA<BatonError>()
+            .having((e) => e.kind, 'kind', ErrorKind.other)
+            .having((e) => e.message, 'message', contains('cannot')),
+      ),
+    );
+    expect(a.unlockStatus(id: b.me().id), const UnlockStatus.off());
+    expect(a.unlockWindow(session: 1), isFalse);
+    expect(a.unlockWindow(session: -1), isFalse);
 
     // Nothing waits for an answer or runs, and a number that is no number is no window either.
     expect(a.answerWindow(request: 1, accept: true), isFalse);
@@ -382,6 +401,19 @@ void main() {
     );
     await expectLater(
       a.setHearSetting(id: '0' * 64, setting: true),
+      throwsA(_batonError(ErrorKind.notPaired)),
+    );
+    // Nor is its unlock looked at, set up or turned off.
+    expect(
+      () => a.unlockStatus(id: '0' * 64),
+      throwsA(_batonError(ErrorKind.notPaired)),
+    );
+    await expectLater(
+      a.setUpUnlock(id: '0' * 64, password: 'a password'),
+      throwsA(_batonError(ErrorKind.notPaired)),
+    );
+    await expectLater(
+      a.turnOffUnlock(id: '0' * 64),
       throwsA(_batonError(ErrorKind.notPaired)),
     );
   });

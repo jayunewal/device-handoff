@@ -10,7 +10,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'model.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// A device that is paired with this one.
 class Device {
@@ -196,6 +196,45 @@ sealed class Event with _$Event {
     /// How the sound stands now.
     required WindowSound sound,
   }) = Event_WindowSound;
+
+  /// The screen that is shown here is locked at the device that shares it, or is no longer. Show
+  /// it as locked, with an Unlock button where `WindowSession.unlock` is set, and take that
+  /// down when the screen is unlocked. The source says so when it pauses the picture because it
+  /// locked or its display went off, and when the pictures go on. It comes after the
+  /// `Event.windowStarted` of the same window, and not for a window that is shared from this
+  /// device. A screen that is locked when the window starts is told right after it. Only a
+  /// change is told.
+  const factory Event.windowLocked({
+    /// The `WindowSession.id` whose screen this is.
+    required PlatformInt64 id,
+
+    /// Whether it is locked now.
+    required bool locked,
+  }) = Event_WindowLocked;
+
+  /// An unlock that the person here asked for with `Baton.unlockWindow` moved on: this device
+  /// asks for their face, the key went to the device that shares the screen, or it is over and
+  /// this is how. Show how it stands in the place of the button. An attempt ends with
+  /// `WindowUnlock.ended`, unless the window ends first (`Event.windowEnded`). It comes only for
+  /// a session whose `WindowSession.unlock` is set, and after the person asked. The screen is
+  /// unlocked when the pictures go on (`Event.windowLocked`): an `ended` that says `unlocked` and
+  /// one that says `noResult` are what the other device said and did not say.
+  const factory Event.windowUnlock({
+    /// The `WindowSession.id` whose screen this is.
+    required PlatformInt64 id,
+
+    /// How the attempt stands now.
+    required WindowUnlock step,
+  }) = Event_WindowUnlock;
+
+  /// Someone tried to unlock this device, or the person at a paired device did, and the attempt
+  /// ended: it is in the history now (`Baton.unlockHistory`). When `UnlockEntry.notify` is set,
+  /// tell the person here, when they are next at this device. Every attempt is in the history
+  /// all the same.
+  const factory Event.unlockAttempted({
+    /// The attempt.
+    required UnlockEntry entry,
+  }) = Event_UnlockAttempted;
 
   /// A window that was shown or shared is over.
   const factory Event.windowEnded({
@@ -881,6 +920,159 @@ sealed class TransferResult with _$TransferResult {
   const factory TransferResult.dropped() = TransferResult_Dropped;
 }
 
+/// An attempt to unlock this device, in the history that it keeps. It says nothing of the
+/// password or of the keys.
+class UnlockEntry {
+  /// When it ended, in seconds since the Unix epoch.
+  final PlatformInt64 at;
+
+  /// The id of the paired device that asked.
+  final String deviceId;
+
+  /// The name of that device as the person gave it, at that time.
+  final String deviceName;
+
+  /// How it ended.
+  final UnlockResult result;
+
+  /// Whether to tell the person here of it, when they are next at this device: it succeeded, or
+  /// it got as far as a try and failed. A refusal that came before anything was typed, a person
+  /// who cancelled, and a session that ended say nothing worth a notification. Every attempt is
+  /// in the history all the same.
+  final bool notify;
+
+  const UnlockEntry({
+    required this.at,
+    required this.deviceId,
+    required this.deviceName,
+    required this.result,
+    required this.notify,
+  });
+
+  @override
+  int get hashCode =>
+      at.hashCode ^
+      deviceId.hashCode ^
+      deviceName.hashCode ^
+      result.hashCode ^
+      notify.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is UnlockEntry &&
+          runtimeType == other.runtimeType &&
+          at == other.at &&
+          deviceId == other.deviceId &&
+          deviceName == other.deviceName &&
+          result == other.result &&
+          notify == other.notify;
+}
+
+/// How an attempt to unlock a screen ended. It is what the person who tapped Unlock is told
+/// (`WindowUnlock.ended`) and what the history at the device that was unlocked holds
+/// (`UnlockEntry.result`).
+enum UnlockResult {
+  /// The screen is unlocked.
+  unlocked,
+
+  /// No unlock is set up for the device that asked, or the one that was has ended. The person
+  /// at the device that is unlocked has to set it up again there.
+  notSetUp,
+
+  /// The screen was not locked, so nothing was typed.
+  notLocked,
+
+  /// The screen, the keys or the pointer of the device that is unlocked were not kept private,
+  /// because they were lifted or the device could not vouch for them, so nothing was typed.
+  notPrivate,
+
+  /// Another unlock was going on.
+  busy,
+
+  /// The key did not open the box, so nothing was typed. The person at the device that is
+  /// unlocked has to set it up again there.
+  stale,
+
+  /// The password was typed and the screen stayed locked. The person at the device that is
+  /// unlocked has to set it up again there.
+  rejected,
+
+  /// The device that asked did not answer in time.
+  timedOut,
+
+  /// The device that is unlocked could not do it for a reason of its own.
+  failed,
+
+  /// An outcome that this version does not know.
+  other,
+
+  /// The person did not agree, their face was not recognised, or they cancelled.
+  declined,
+
+  /// The device that asked no longer has the key that opens the sealed one: a face was added or
+  /// removed, or the device was restored. The person at the device that is unlocked has to set
+  /// the unlock up again there.
+  keyLost,
+
+  /// The device that asked gave up for a reason of its own.
+  gaveUp,
+
+  /// The device that is unlocked sent no question in time. Only the device that asked ends this
+  /// way.
+  noQuestion,
+
+  /// The key was sent and the device that is unlocked did not say what came of it in time. The
+  /// screen may be unlocked: look at it. Only the device that asked ends this way.
+  noResult,
+
+  /// The session ended while the device that is unlocked waited for the one that asked. Only the
+  /// history at the device that is unlocked holds this.
+  sessionEnded,
+}
+
+@freezed
+sealed class UnlockSetUp with _$UnlockSetUp {
+  const UnlockSetUp._();
+
+  /// It is set up: the device can unlock this one while it is locked, in a private session. What
+  /// was set up before is replaced.
+  const factory UnlockSetUp.done() = UnlockSetUp_Done;
+
+  /// The system here does not accept the password. Nothing was kept, and the other device was
+  /// not asked for anything.
+  const factory UnlockSetUp.wrongPassword() = UnlockSetUp_WrongPassword;
+
+  /// It is not set up. What was set up before is as it was, unless the sentence says otherwise:
+  /// when the other device had made its new key already, what was set up before opens nothing,
+  /// and the sentence says that it is turned off.
+  const factory UnlockSetUp.notDone({
+    /// One sentence that says why, in words that name the device.
+    required String message,
+  }) = UnlockSetUp_NotDone;
+}
+
+@freezed
+sealed class UnlockStatus with _$UnlockStatus {
+  const UnlockStatus._();
+
+  /// Not set up. The device cannot unlock this one.
+  const factory UnlockStatus.off() = UnlockStatus_Off;
+
+  /// Set up, and the device can try it.
+  const factory UnlockStatus.on_({
+    /// When the person set it up, in seconds since the Unix epoch.
+    required PlatformInt64 since,
+  }) = UnlockStatus_On;
+
+  /// Set up once, and ended: the password was not accepted, the box was not opened by its key,
+  /// or the device lost its key. Only the person here can set it up again.
+  const factory UnlockStatus.ended({
+    /// When the person set it up, in seconds since the Unix epoch.
+    required PlatformInt64 since,
+  }) = UnlockStatus_Ended;
+}
+
 /// What this device does with windows, so that a screen offers only what is possible.
 class WindowAbilities {
   /// This device shows the windows that paired devices offer.
@@ -897,11 +1089,23 @@ class WindowAbilities {
   /// this is so.
   final bool canGiveScreen;
 
+  /// This device can let a paired device unlock its screen when it is locked, with the face of
+  /// the person there, once the person here has set that up (`Baton.setUpUnlock`). Offer the
+  /// settings for it only where this is so.
+  final bool canBeUnlocked;
+
+  /// This device can unlock the screen of a paired device that is locked, with the face of the
+  /// person here. Offer the Unlock button only where this is so, and only for a session whose
+  /// `WindowSession.unlock` is set.
+  final bool canUnlock;
+
   const WindowAbilities({
     required this.canShow,
     required this.canShare,
     required this.canControl,
     required this.canGiveScreen,
+    required this.canBeUnlocked,
+    required this.canUnlock,
   });
 
   @override
@@ -909,7 +1113,9 @@ class WindowAbilities {
       canShow.hashCode ^
       canShare.hashCode ^
       canControl.hashCode ^
-      canGiveScreen.hashCode;
+      canGiveScreen.hashCode ^
+      canBeUnlocked.hashCode ^
+      canUnlock.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -919,7 +1125,9 @@ class WindowAbilities {
           canShow == other.canShow &&
           canShare == other.canShare &&
           canControl == other.canControl &&
-          canGiveScreen == other.canGiveScreen;
+          canGiveScreen == other.canGiveScreen &&
+          canBeUnlocked == other.canBeUnlocked &&
+          canUnlock == other.canUnlock;
 }
 
 /// A button of a pointer on the picture of a window. A finger is the left one.
@@ -1260,6 +1468,13 @@ class WindowSession {
   /// otherwise. `false` for a window that this device shares.
   final bool leave;
 
+  /// Whether the person here can ask the device that shares the screen to unlock it when it is
+  /// locked, with `Baton.unlockWindow`: the person there set the unlock up for this device, the
+  /// screen is kept private, and the platform here asks for the face of the person. The device
+  /// unlocks only while it is locked (`Event.windowLocked`) and while the screen and the keys
+  /// and the pointer there have not been lifted. `false` for a window that this device shares.
+  final bool unlock;
+
   /// What to draw the picture with when the window is shown on this device: the number of
   /// the screen, which on Flutter is the id of a `Texture`. `null` when the window is shared
   /// from this device.
@@ -1279,6 +1494,7 @@ class WindowSession {
     required this.private,
     required this.sound,
     required this.leave,
+    required this.unlock,
     this.screen,
   });
 
@@ -1297,6 +1513,7 @@ class WindowSession {
       private.hashCode ^
       sound.hashCode ^
       leave.hashCode ^
+      unlock.hashCode ^
       screen.hashCode;
 
   @override
@@ -1317,6 +1534,7 @@ class WindowSession {
           private == other.private &&
           sound == other.sound &&
           leave == other.leave &&
+          unlock == other.unlock &&
           screen == other.screen;
 }
 
@@ -1376,4 +1594,23 @@ enum WindowSound {
   /// Asking again with `Baton.hearWindow` is taken once they have allowed it, also in this
   /// session.
   notAllowed,
+}
+
+@freezed
+sealed class WindowUnlock with _$WindowUnlock {
+  const WindowUnlock._();
+
+  /// The device that shares the screen sent its question, and this device is asking for the face
+  /// of the person.
+  const factory WindowUnlock.asking() = WindowUnlock_Asking;
+
+  /// The face was recognised and the key went to the device that shares the screen, which types
+  /// the password now.
+  const factory WindowUnlock.typing() = WindowUnlock_Typing;
+
+  /// It is over, and this is how.
+  const factory WindowUnlock.ended({
+    /// How it ended.
+    required UnlockResult result,
+  }) = WindowUnlock_Ended;
 }
