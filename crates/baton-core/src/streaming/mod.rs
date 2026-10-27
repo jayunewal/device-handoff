@@ -58,6 +58,8 @@ mod answer;
 #[cfg(test)]
 mod answer_tests;
 mod approve;
+#[cfg(test)]
+mod leave_tests;
 mod offer;
 #[cfg(test)]
 mod offer_tests;
@@ -294,6 +296,7 @@ impl Streaming {
             private,
             sound: false,
             unlock: false,
+            leave: false,
         };
         self.view_granted(peer, connection, session, viewing, granted)
     }
@@ -320,10 +323,12 @@ impl Streaming {
     /// messages of the source. `viewing.takes` is what the viewer said it can take: a source that
     /// describes a picture beyond it breaks a rule. `granted` is what the offer granted the viewer
     /// and said of the source: control of the window, without which the session sends nothing that
-    /// the person does, a private screen, without which it sends no [`ViewHandle::lift`], and
-    /// sound, without which the person cannot ask to hear it. The session ends, and the decoder is
-    /// told, when the source ends it, when it breaks a rule, when the connection ends, when the
-    /// returned handle is dropped and when the source does not open its control stream in time.
+    /// the person does, a private screen, without which it sends no [`ViewHandle::lift`], sound,
+    /// without which the person cannot ask to hear it, and leaving, without which the person
+    /// cannot ask for the screen to be left as it is ([`ViewHandle::end_leaving`]). The session
+    /// ends, and the decoder is told, when the source ends it, when it breaks a rule, when the
+    /// connection ends, when the returned handle is dropped and when the source does not open its
+    /// control stream in time.
     ///
     /// # Errors
     ///
@@ -516,8 +521,11 @@ fn stop(recv: &mut RecvStream, error: u32) {
 pub(super) enum ControlEnd {
     /// The session ended first, and the stream was stopped.
     Over,
-    /// The other device finished the stream between two messages, or reset it, or the connection
-    /// went: it has ended the session.
+    /// The other device finished the stream between two messages: it has ended the session, and
+    /// said everything it had to say first.
+    Finished,
+    /// The other device reset the stream, or the connection went: it has ended the session, and
+    /// what it had begun to say may be lost.
     Peer,
     /// The other device broke a rule, and the stream was stopped with the code that says so.
     Violation,
@@ -553,9 +561,8 @@ pub(super) async fn read_control<M: Message>(
                     return ControlEnd::Violation;
                 }
             }
-            Ok(None) | Err(ReadFailure::Reset(_) | ReadFailure::Transport(_)) => {
-                return ControlEnd::Peer;
-            }
+            Ok(None) => return ControlEnd::Finished,
+            Err(ReadFailure::Reset(_) | ReadFailure::Transport(_)) => return ControlEnd::Peer,
             Err(ReadFailure::BadHeader(_) | ReadFailure::BadPayload(_)) => {
                 stop(&mut recv, close_code::PROTOCOL_VIOLATION);
                 return ControlEnd::Violation;
@@ -588,12 +595,19 @@ const OPEN_GRACE: Duration = Duration::from_secs(1);
 /// side reads the end of the stream as the end of the session, and a reset as a statement that
 /// the session broke a rule. A session that has ended before the stream was opened opens it all
 /// the same, and ends it at once, because the other side that has seen no stream waits for one.
+///
+/// A session that ended with a last word to say (`farewell`, set before the session is ended) has
+/// it written after the messages of the queue and before the stream is finished, so the other
+/// side reads it before it reads the end. A message that waits in the queue when the session ends
+/// may or may not be written, and the farewell is not written to a stream that is reset: a session
+/// that broke a rule has nothing to say.
 pub(super) async fn write_control<M: Message>(
     connection: &Connection,
     session: SessionId,
     mut queue: mpsc::Receiver<M>,
     over: &CancellationToken,
     how: &OnceLock<End>,
+    farewell: Option<&OnceLock<M>>,
 ) -> std::result::Result<(), WriteEnd> {
     let opened = tokio::select! {
         opened = connection.open_uni() => opened,
@@ -628,6 +642,11 @@ pub(super) async fn write_control<M: Message>(
             let _ = send.reset(code(close_code::INTERNAL));
         }
         _ => {
+            if let Some(last) = farewell.and_then(OnceLock::get) {
+                // A stream that the other device has stopped has no one to hear it, and the end
+                // that follows is the end of the session all the same.
+                let _ = write_message(&mut send, last).await;
+            }
             let _ = send.finish();
         }
     }

@@ -67,6 +67,7 @@ const STOP_WAIT: Duration = Duration::from_secs(10);
 pub(crate) const SETTLE: Duration = Duration::from_secs(3);
 
 /// What a device needs to take part as a source.
+#[allow(clippy::struct_excessive_bools)] // what the device can do, each of its own
 pub(crate) struct Sharer {
     /// Whether the device takes input from a viewer in a session where the person granted
     /// control, which is whether it advertises `stream.control`.
@@ -84,6 +85,10 @@ pub(crate) struct Sharer {
     /// What it needs to be unlocked from a paired device, if it can be, which is whether it
     /// advertises `unlock.target`. Only a device that keeps its screen private can.
     pub(crate) unlock: Option<Unlocks>,
+    /// Whether the device can leave its screen as it is when a private session ends, if the
+    /// person at the viewer asks, which is whether its offer of a private session says `leave`.
+    /// Only a device that keeps its screen private can.
+    pub(crate) leave: bool,
 }
 
 /// The place of the one session that a device has as a source, from the offer to the session.
@@ -209,8 +214,9 @@ impl WindowShare {
 
     /// The offer that asks a device to show this window under `session`. `unlock` is whether the
     /// person at this device set up the unlock of its screen for that device, so that it may ask
-    /// to unlock it.
-    pub(crate) fn offer(&self, session: SessionId, unlock: bool) -> Offer {
+    /// to unlock it, and `leave` whether this device will leave its screen as it is if the person
+    /// at that device asks when they end the session.
+    pub(crate) fn offer(&self, session: SessionId, unlock: bool, leave: bool) -> Offer {
         Offer {
             session,
             source: self.source,
@@ -221,14 +227,17 @@ impl WindowShare {
             control: self.control,
             private: self.private,
             unlock,
+            leave,
         }
     }
 
     /// Whether the offer is within the limits of the protocol, and of what a source may offer.
     pub(crate) fn check(&self) -> Result<()> {
-        Request::Stream(StreamRequest::Offer(
-            self.offer(SessionId::from_bytes([0; SessionId::LEN]), false),
-        ))
+        Request::Stream(StreamRequest::Offer(self.offer(
+            SessionId::from_bytes([0; SessionId::LEN]),
+            false,
+            false,
+        )))
         .validate()
         .map_err(|error| Error::BadItem(error.to_string()))
     }
@@ -300,6 +309,9 @@ pub(crate) struct Offered<'a> {
     pub(crate) sound: SoundPlan,
     /// What the source does about an unlock in the session: what the offer said of it.
     pub(crate) unlock: UnlockSetup,
+    /// Whether the offer said `leave`: the person at the viewer may ask, when they end the
+    /// session, for the screen to be left as it is.
+    pub(crate) leave: bool,
 }
 
 impl Streaming {
@@ -352,6 +364,14 @@ impl Streaming {
         } else {
             UnlockSetup::NotOffered
         }
+    }
+
+    /// Whether the offer of a session says `leave`: this device can leave its screen as it is when
+    /// the session ends, if the person at the viewer asks, and the session is private (protocol
+    /// section 9). A session that is not private does not lock the screen at its end, so there is
+    /// nothing to leave.
+    pub(crate) fn leaves(&self, private: bool) -> bool {
+        private && self.sharer.as_ref().is_some_and(|sharer| sharer.leave)
     }
 
     /// Whether this device takes input from a viewer, which is whether it advertises
@@ -475,6 +495,7 @@ impl Streaming {
             takes,
             sound: offered.sound,
             unlock: offered.unlock,
+            leave: offered.leave,
             params: SourceParams::default(),
         };
         let started = self.source(

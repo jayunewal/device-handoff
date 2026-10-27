@@ -190,6 +190,7 @@ impl SourceRig {
             takes: takes(),
             sound: plan,
             unlock: UnlockSetup::Unsupported,
+            leave: false,
             params,
         };
         let handle = streaming
@@ -679,6 +680,7 @@ impl ViewRig {
             private: false,
             sound: source_sounds,
             unlock: false,
+            leave: false,
         };
         let handle = streaming
             .view_granted(&paired, accepted, session_id(), viewing, granted)

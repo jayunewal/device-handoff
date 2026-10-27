@@ -24,7 +24,8 @@
 //!   screen private, whether the people at the source see the screen and use the keys and the
 //!   pointer there ([`Lift`]) and, when the person at the source set it up, a request to unlock
 //!   the source, the answer to its question and giving up ([`ViewerMessage::Unlock`], [`Opened`]
-//!   and [`Cancelled`]).
+//!   and [`Cancelled`]) and, when the source offered it, that the person ended the session and
+//!   chose that the source stay as it is, not locked ([`ViewerMessage::Leave`]).
 //!
 //! Everything here is checked when it is encoded and when it is decoded, because the other
 //! device is not trusted: a number out of range or a list that is too long is a violation.
@@ -305,6 +306,11 @@ pub enum ViewerMessage {
     UnlockOpened(Opened),
     /// The viewer gives up on the unlock. The same conditions as [`Unlock`](Self::Unlock).
     UnlockCancelled(Cancelled),
+    /// The person at the viewer ended the session, and chose that the source leave its screen as
+    /// it is and not lock it. The last message of the viewer: it finishes its control stream right
+    /// after, and the stream is what ends the session. Only to a source whose offer set `leave`,
+    /// which a source sets only with `private`; to any other it is a violation.
+    Leave,
 }
 
 impl Config {
@@ -445,7 +451,8 @@ impl Message for ViewerMessage {
             | Self::Lift(_)
             | Self::Unlock(_)
             | Self::UnlockOpened(_)
-            | Self::UnlockCancelled(_) => Ok(()),
+            | Self::UnlockCancelled(_)
+            | Self::Leave => Ok(()),
             Self::Want(want) => want.validate(),
             Self::Input(batch) => batch.validate(),
         }
@@ -832,6 +839,11 @@ mod tests {
             // {"UnlockCancelled": {"reason": "KeyLost"}}
             "00000021a16f556e6c6f636b43616e63656c6c6564a166726561736f6e674b65794c6f7374"
         );
+        assert_eq!(
+            encoded(&ViewerMessage::Leave),
+            // "Leave"
+            "00000006654c65617665"
+        );
     }
 
     #[test]
@@ -841,6 +853,12 @@ mod tests {
         assert_eq!(
             frame::decode_payload::<SourceMessage>(&payload),
             Ok(SourceMessage::Resume)
+        );
+        // And so is `Leave`, the unit variant of the viewer.
+        let payload = cbor_bytes(&cbor!({ "Leave" => null }).unwrap());
+        assert_eq!(
+            frame::decode_payload::<ViewerMessage>(&payload),
+            Ok(ViewerMessage::Leave)
         );
     }
 
@@ -1083,6 +1101,13 @@ mod tests {
             cbor_bytes(&cbor!({ "UnlockCancelled" => { "reason" => "Declined" } }).unwrap());
         assert!(frame::decode_payload::<ViewerMessage>(&cancelled).is_ok());
         assert!(frame::decode_payload::<SourceMessage>(&cancelled).is_err());
+        // Nor the message of leaving.
+        let leave = cbor_bytes(&Value::Text("Leave".into()));
+        assert_eq!(
+            frame::decode_payload::<ViewerMessage>(&leave),
+            Ok(ViewerMessage::Leave)
+        );
+        assert!(frame::decode_payload::<SourceMessage>(&leave).is_err());
     }
 
     #[test]
@@ -1739,6 +1764,7 @@ mod tests {
                 Just(CancelReason::Other)
             ]
             .prop_map(|reason| ViewerMessage::UnlockCancelled(Cancelled { reason })),
+            Just(ViewerMessage::Leave),
         ]
     }
 

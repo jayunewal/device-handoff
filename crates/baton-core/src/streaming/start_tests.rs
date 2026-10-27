@@ -160,6 +160,7 @@ fn display_offer(session: SessionId, control: bool) -> StreamRequest {
         control,
         private: false,
         unlock: false,
+        leave: false,
     })
 }
 
