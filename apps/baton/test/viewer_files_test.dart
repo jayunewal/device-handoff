@@ -22,6 +22,8 @@ const _files = [
   'BatonCapture.swift',
   'BatonControl.swift',
   'BatonEngineOutput.swift',
+  'BatonFace.swift',
+  'BatonFaceKeys.swift',
   'BatonGuard.swift',
   'BatonH264Decoder.swift',
   'BatonH264Encoder.swift',
@@ -101,6 +103,8 @@ void main() {
       'BatonCapture.swift',
       'BatonControl.swift',
       'BatonEngineOutput.swift',
+      'BatonFace.swift',
+      'BatonFaceKeys.swift',
       'BatonGuard.swift',
       'BatonH264Decoder.swift',
       'BatonH264Encoder.swift',
@@ -122,6 +126,7 @@ void main() {
     // The files with the rules must build and be tested everywhere.
     for (final file in [
       'BatonViewer.swift',
+      'BatonFace.swift',
       'BatonSource.swift',
       'BatonInput.swift',
       'BatonPrivacy.swift',

@@ -44,6 +44,14 @@ void main() {
     }
   });
 
+  test('the iOS app says why it asks for a face, which an unlock needs', () {
+    // The system may fail a request for Face ID from a program that has no such text.
+    expect(
+      _read('ios/Runner/Info.plist'),
+      contains('<key>NSFaceIDUsageDescription'),
+    );
+  });
+
   test('the Mac app says why it records the sound of the Mac', () {
     // The system gives silence to a program that has no such text, and asks nothing.
     expect(

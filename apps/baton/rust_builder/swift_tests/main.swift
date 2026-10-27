@@ -1515,6 +1515,269 @@ tests += [
   ),
 ]
 
+tests += [
+  (
+    "a face device is read from an id of thirty two bytes and a name",
+    testAFaceDeviceIsReadFromAnIdOfThirtyTwoBytesAndAName
+  ),
+  (
+    "a face device is not read when the id or the name is wrong",
+    testAFaceDeviceIsNotReadWhenTheIdOrTheNameIsWrong
+  ),
+  (
+    "a name that is not UTF-8 is repaired and nothing of a device is printed",
+    testANameThatIsNotUtf8IsRepairedAndNothingOfADeviceIsPrinted
+  ),
+  (
+    "a request for a key is read with renew as zero or one and nothing else",
+    testARequestForAKeyIsReadWithRenewAsZeroOrOneAndNothingElse
+  ),
+  (
+    "a request from a struct that is too short is not read",
+    testARequestFromAStructThatIsTooShortIsNotRead
+  ),
+  (
+    "a question is read as a copy within the sizes of a sealed key",
+    testAQuestionIsReadAsACopyWithinTheSizesOfASealedKey
+  ),
+  (
+    "a question that is not well formed is not read",
+    testAQuestionThatIsNotWellFormedIsNotRead
+  ),
+  (
+    "a public key is written into the room and nothing else is touched",
+    testAPublicKeyIsWrittenIntoTheRoomAndNothingElseIsTouched
+  ),
+  (
+    "a public key that does not fit is not written at all",
+    testAPublicKeyThatDoesNotFitIsNotWrittenAtAll
+  ),
+  (
+    "only sixty five bytes that begin with four can be a point of P-256",
+    testOnlySixtyFiveBytesThatBeginWithFourCanBeAPointOfP256
+  ),
+  (
+    "each failure to make a key has its number and a sentence",
+    testEachFailureToMakeAKeyHasItsNumberAndASentence
+  ),
+  (
+    "each reason to decline has its number of the interface",
+    testEachReasonToDeclineHasItsNumberOfTheInterface
+  ),
+  (
+    "the codes of the system are the numbers of its headers",
+    testTheCodesOfTheSystemAreTheNumbersOfItsHeaders
+  ),
+  (
+    "what the system says is sorted into the three reasons to decline",
+    testWhatTheSystemSaysIsSortedIntoTheThreeReasonsToDecline
+  ),
+  (
+    "a code of another domain is never taken for one of the system",
+    testACodeOfAnotherDomainIsNeverTakenForOneOfTheSystem
+  ),
+  (
+    "the chain of an error is read as domains and codes and no further than eight",
+    testTheChainOfAnErrorIsReadAsDomainsAndCodesAndNoFurtherThanEight
+  ),
+  (
+    "a face that cannot be asked for is told by what LocalAuthentication says",
+    testAFaceThatCannotBeAskedForIsToldByWhatLocalAuthenticationSays
+  ),
+  (
+    "a step of making the key that did not work is told by what the keychain said",
+    testAStepOfMakingTheKeyThatDidNotWorkIsToldByWhatTheKeychainSaid
+  ),
+  (
+    "the tag of a key is made of the id and nothing else",
+    testTheTagOfAKeyIsMadeOfTheIdAndNothingElse
+  ),
+  (
+    "the prompt names the device and nothing can change what it says",
+    testThePromptNamesTheDeviceAndNothingCanChangeWhatItSays
+  ),
+  (
+    "a long name is cut in the prompt between two characters",
+    testALongNameIsCutInThePromptBetweenTwoCharacters
+  ),
+  (
+    "a key of a box is wiped when asked and when let go of",
+    testAKeyOfABoxIsWipedWhenAskedAndWhenLetGoOf
+  ),
+  (
+    "a key of a box is copied only when it has bytes and not too many",
+    testAKeyOfABoxIsCopiedOnlyWhenItHasBytesAndNotTooMany
+  ),
+  (
+    "a key of a box is printed as its size and nothing of its bytes",
+    testAKeyOfABoxIsPrintedAsItsSizeAndNothingOfItsBytes
+  ),
+  (
+    "a key of a box can be read and wiped from many threads",
+    testAKeyOfABoxCanBeReadAndWipedFromManyThreads
+  ),
+  (
+    "a question is worked on by a queue of its own and answered once with its number",
+    testAQuestionIsWorkedOnByAQueueOfItsOwnAndAnsweredOnceWithItsNumber
+  ),
+  (
+    "a question that waits for the person does not hold the caller",
+    testAQuestionThatWaitsForThePersonDoesNotHoldTheCaller
+  ),
+  (
+    "a second question while one is open is refused and asks nothing",
+    testASecondQuestionWhileOneIsOpenIsRefusedAndAsksNothing
+  ),
+  (
+    "a question is answered once and the next is taken after it",
+    testAQuestionIsAnsweredOnceAndTheNextIsTakenAfterIt
+  ),
+  (
+    "a decline carries its reason and nothing else is answered",
+    testADeclineCarriesItsReasonAndNothingElseIsAnswered
+  ),
+  (
+    "the keys are asked for one device and the prompt names it",
+    testTheKeysAreAskedForOneDeviceAndThePromptNamesIt
+  ),
+  (
+    "a cancel before the work begins asks nothing and answers nothing",
+    testACancelBeforeTheWorkBeginsAsksNothingAndAnswersNothing
+  ),
+  (
+    "a cancel while the face is asked takes the prompt down and answers nothing",
+    testACancelWhileTheFaceIsAskedTakesThePromptDownAndAnswersNothing
+  ),
+  (
+    "a prompt that stays after a cancel does not hold back the next question",
+    testAPromptThatStaysAfterACancelDoesNotHoldBackTheNextQuestion
+  ),
+  (
+    "closing takes the question back and no other is taken",
+    testClosingTakesTheQuestionBackAndNoOtherIsTaken
+  ),
+  (
+    "a key that was opened and not sent is wiped",
+    testAKeyThatWasOpenedAndNotSentIsWiped
+  ),
+  (
+    "a cancel does not wait for an answer that is on its way",
+    testACancelDoesNotWaitForAnAnswerThatIsOnItsWay
+  ),
+  (
+    "a cancel and an answer that come together answer at most once",
+    testACancelAndAnAnswerThatComeTogetherAnswerAtMostOnce
+  ),
+  (
+    "a key of the wrong length is not sent and is wiped",
+    testAKeyOfTheWrongLengthIsNotSentAndIsWiped
+  ),
+  (
+    "the answer goes to the library with the link the number and the key",
+    testTheAnswerGoesToTheLibraryWithTheLinkTheNumberAndTheKey
+  ),
+  (
+    "an answer that the library refuses is not an error and the next question is taken",
+    testAnAnswerThatTheLibraryRefusesIsNotAnErrorAndTheNextQuestionIsTaken
+  ),
+  (
+    "a key that was wiped before it was sent is declined as failed",
+    testAKeyThatWasWipedBeforeItWasSentIsDeclinedAsFailed
+  ),
+  (
+    "the answer is made with no lock held so the library may wait for its own",
+    testTheAnswerIsMadeWithNoLockHeldSoTheLibraryMayWaitForItsOwn
+  ),
+  (
+    "a key is given for the device and renewed when asked",
+    testAKeyIsGivenForTheDeviceAndRenewedWhenAsked
+  ),
+  (
+    "a key that is not a point of P-256 is not given on",
+    testAKeyThatIsNotAPointOfP256IsNotGivenOn
+  ),
+  (
+    "a failure to make a key reaches the caller as it was",
+    testAFailureToMakeAKeyReachesTheCallerAsItWas
+  ),
+  (
+    "two calls for a key never run at the same time",
+    testTwoCallsForAKeyNeverRunAtTheSameTime
+  ),
+  (
+    "each screen gets an asker of its own that answers with its link",
+    testEachScreenGetsAnAskerOfItsOwnThatAnswersWithItsLink
+  ),
+  (
+    "a platform that can unlock gives the three entries and one that cannot gives none",
+    testAPlatformThatCanUnlockGivesTheThreeEntriesAndOneThatCannotGivesNone
+  ),
+  (
+    "a platform that plays sound and can unlock gives all six entries",
+    testAPlatformThatPlaysSoundAndCanUnlockGivesAllSixEntries
+  ),
+  (
+    "a platform and a screen that say nothing of the face cannot unlock",
+    testAPlatformAndAScreenThatSayNothingOfTheFaceCannotUnlock
+  ),
+  (
+    "unlock_key writes the key and passes the request to the platform",
+    testUnlockKeyWritesTheKeyAndPassesTheRequestToThePlatform
+  ),
+  (
+    "unlock_key maps each failure to its number and writes its sentence",
+    testUnlockKeyMapsEachFailureToItsNumberAndWritesItsSentence
+  ),
+  (
+    "a sentence of a failed key is cut between two characters where it does not fit",
+    testASentenceOfAFailedKeyIsCutBetweenTwoCharactersWhereItDoesNotFit
+  ),
+  (
+    "unlock_key never traps on what it is given and never asks the platform for it",
+    testUnlockKeyNeverTrapsOnWhatItIsGivenAndNeverAsksThePlatformForIt
+  ),
+  (
+    "a key that does not fit the room of the rust side is refused without being written",
+    testAKeyThatDoesNotFitTheRoomOfTheRustSideIsRefusedWithoutBeingWritten
+  ),
+  (
+    "unlock_open gives the screen a copy of the question and says whether it was taken",
+    testUnlockOpenGivesTheScreenACopyOfTheQuestionAndSaysWhetherItWasTaken
+  ),
+  (
+    "unlock_open never traps on what it is given and the screen never hears of it",
+    testUnlockOpenNeverTrapsOnWhatItIsGivenAndTheScreenNeverHearsOfIt
+  ),
+  (
+    "unlock_cancel reaches the screen and a missing screen is nothing",
+    testUnlockCancelReachesTheScreenAndAMissingScreenIsNothing
+  ),
+  (
+    "a screen that cannot ask for a face refuses the question so that the library declines it",
+    testAScreenThatCannotAskForAFaceRefusesTheQuestionSoThatTheLibraryDeclinesIt
+  ),
+  (
+    "a window screen hands the question to its asker and takes it back on cancel",
+    testAWindowScreenHandsTheQuestionToItsAskerAndTakesItBackOnCancel
+  ),
+  (
+    "the end and the release of a window screen take the question back without a cancel",
+    testTheEndAndTheReleaseOfAWindowScreenTakeTheQuestionBackWithoutACancel
+  ),
+  (
+    "a window screen without an asker takes no question",
+    testAWindowScreenWithoutAnAskerTakesNoQuestion
+  ),
+  (
+    "a question goes through the table to the keys and the answer comes from another thread",
+    testAQuestionGoesThroughTheTableToTheKeysAndTheAnswerComesFromAnotherThread
+  ),
+  (
+    "a cancel through the table takes the prompt down and nothing is answered",
+    testACancelThroughTheTableTakesThePromptDownAndNothingIsAnswered
+  ),
+]
+
 #if canImport(AudioToolbox)
   tests += [
     (
@@ -1616,6 +1879,15 @@ tests += [
       "the pump makes pictures of images with the encoder of the system",
       testThePumpMakesPicturesOfImagesWithTheEncoderOfTheSystem
     ),
+  ]
+#endif
+
+#if canImport(LocalAuthentication) && canImport(Security)
+  tests += [
+    (
+      "the numbers of the system that the sorting knows are those of its SDK",
+      testTheNumbersOfTheSystemThatTheSortingKnowsAreThoseOfItsSdk
+    )
   ]
 #endif
 
