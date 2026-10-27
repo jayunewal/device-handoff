@@ -567,6 +567,223 @@ void main() {
     );
   });
 
+  group('leaving a screen whose device can be left as it is', () {
+    WindowSession leavable({String device = 'Anna’s Mac'}) =>
+        sampleWindowSession(
+          device: device,
+          display: true,
+          control: true,
+          private: true,
+          leave: true,
+        );
+
+    Future<void> askToStop(WidgetTester tester) async {
+      await tester.tap(find.byTooltip('Stop showing'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('asks whether to lock the device, with Lock as the default', (
+      tester,
+    ) async {
+      final shown = await _open(tester, window: leavable());
+
+      await askToStop(tester);
+
+      expect(find.text('Lock Anna’s Mac?'), findsOneWidget);
+      expect(
+        find.text(
+          'Anna’s Mac locks when you stop showing it. If you leave it, anyone '
+          'at Anna’s Mac can use it until it is locked.',
+        ),
+        findsOneWidget,
+      );
+      // The usual question is not asked as well.
+      expect(find.text('Stop showing this screen?'), findsNothing);
+      final lock = tester.widget<FilledButton>(
+        find.widgetWithText(FilledButton, 'Lock'),
+      );
+      expect(lock.autofocus, isTrue);
+      expect(find.widgetWithText(TextButton, 'Leave it'), findsOneWidget);
+      expect(find.widgetWithText(TextButton, 'Cancel'), findsOneWidget);
+      // Nothing was ended or asked of the device by asking.
+      expect(shown.session.windowsEnded, isEmpty);
+      expect(shown.session.windowsLeft, isEmpty);
+      expect(find.byType(Texture), findsOneWidget);
+    });
+
+    testWidgets('names the device as fit to show', (tester) async {
+      await _open(tester, window: leavable(device: 'Mac\u202Eexe'));
+
+      await askToStop(tester);
+
+      expect(find.text('Lock Mac\uFFFDexe?'), findsOneWidget);
+    });
+
+    testWidgets('locks the device with the ordinary end, and goes back', (
+      tester,
+    ) async {
+      final shown = await _open(tester, window: leavable());
+      await askToStop(tester);
+
+      await tester.tap(find.text('Lock'));
+      await tester.pumpAndSettle();
+
+      expect(shown.session.windowsEnded, [1]);
+      expect(shown.session.windowsLeft, isEmpty);
+      expect(shown.controller.sessions, isEmpty);
+      expect(shown.controller.notes, isEmpty);
+      expect(_onHome(tester), isTrue);
+    });
+
+    testWidgets('asks the device to stay as it is, and goes back', (
+      tester,
+    ) async {
+      final shown = await _open(tester, window: leavable());
+      await askToStop(tester);
+
+      await tester.tap(find.text('Leave it'));
+      await tester.pumpAndSettle();
+
+      expect(shown.session.windowsLeft, [1]);
+      expect(shown.session.windowsEnded, isEmpty);
+      expect(shown.controller.sessions, isEmpty);
+      // The device does not answer, so the person is told that it was asked.
+      expect(shown.controller.notes.single, isA<WindowLeft>());
+      expect(_onHome(tester), isTrue);
+    });
+
+    testWidgets('keeps showing on Cancel, and asks nothing of the device', (
+      tester,
+    ) async {
+      final shown = await _open(tester, window: leavable());
+      await askToStop(tester);
+
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Lock Anna’s Mac?'), findsNothing);
+      expect(find.byType(Texture), findsOneWidget);
+      expect(shown.session.windowsEnded, isEmpty);
+      expect(shown.session.windowsLeft, isEmpty);
+      expect(shown.controller.sessions, [shown.window]);
+      expect(_onHome(tester), isFalse);
+    });
+
+    testWidgets('keeps showing if the question is closed without an answer', (
+      tester,
+    ) async {
+      final shown = await _open(tester, window: leavable());
+      await askToStop(tester);
+
+      // A tap on the dimmed part of the screen closes the question and answers nothing.
+      await tester.tapAt(const Offset(5, 5));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Lock Anna’s Mac?'), findsNothing);
+      expect(shown.session.windowsEnded, isEmpty);
+      expect(shown.session.windowsLeft, isEmpty);
+      expect(shown.controller.sessions, [shown.window]);
+      expect(_onHome(tester), isFalse);
+    });
+
+    testWidgets('asks the same when the system takes the person back', (
+      tester,
+    ) async {
+      final shown = await _open(tester, window: leavable());
+
+      final navigator = tester.state<NavigatorState>(find.byType(Navigator));
+      await navigator.maybePop();
+      await tester.pumpAndSettle();
+
+      expect(find.text('Lock Anna’s Mac?'), findsOneWidget);
+      expect(shown.session.windowsEnded, isEmpty);
+      expect(shown.session.windowsLeft, isEmpty);
+      expect(_onHome(tester), isFalse);
+    });
+
+    testWidgets(
+      'closes the question when the session ends under it, and answers nothing',
+      (tester) async {
+        final shown = await _open(tester, window: leavable());
+        await askToStop(tester);
+
+        // The device ended it, as the guard at the Mac does, and locked.
+        shown.session.emit(
+          const Event.windowEnded(id: 1, end: WindowEnd.otherDevice()),
+        );
+        await tester.pumpAndSettle();
+
+        // The question is gone with nothing asked of the device, and the screen says how the
+        // session ended, as it does for every end that is not the person's.
+        expect(find.text('Lock Anna’s Mac?'), findsNothing);
+        expect(find.text('Leave it'), findsNothing);
+        expect(shown.session.windowsEnded, isEmpty);
+        expect(shown.session.windowsLeft, isEmpty);
+        expect(_onHome(tester), isFalse);
+        expect(shown.controller.over(shown.window), isNotNull);
+      },
+    );
+
+    testWidgets(
+      'does not take a second screen away when the question closes twice',
+      (tester) async {
+        final shown = await _open(tester, window: leavable());
+        await askToStop(tester);
+
+        // The person dismissed the question and the session ended in the same moment.
+        await tester.tapAt(const Offset(5, 5));
+        shown.session.emit(
+          const Event.windowEnded(id: 1, end: WindowEnd.otherDevice()),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('Lock Anna’s Mac?'), findsNothing);
+        // The screen under the question is still there, to say how the session ended.
+        expect(_onHome(tester), isFalse);
+      },
+    );
+
+    testWidgets(
+      'takes the first of two answers that come before the question is gone',
+      (tester) async {
+        final shown = await _open(tester, window: leavable());
+        await askToStop(tester);
+
+        // Two fingers, and no frame between them.
+        await tester.tap(find.text('Lock'));
+        await tester.tap(find.text('Leave it'), warnIfMissed: false);
+        await tester.pumpAndSettle();
+
+        expect(shown.session.windowsEnded, [1]);
+        expect(shown.session.windowsLeft, isEmpty);
+        expect(_onHome(tester), isTrue);
+      },
+    );
+
+    testWidgets(
+      'is not asked of a private screen whose device cannot be left',
+      (tester) async {
+        final shown = await _open(
+          tester,
+          window: sampleWindowSession(
+            display: true,
+            control: true,
+            private: true,
+          ),
+        );
+
+        await askToStop(tester);
+
+        expect(find.text('Stop showing this screen?'), findsOneWidget);
+        expect(find.textContaining('Lock '), findsNothing);
+        await tester.tap(find.text('Stop'));
+        await tester.pumpAndSettle();
+        expect(shown.session.windowsEnded, [1]);
+        expect(shown.session.windowsLeft, isEmpty);
+      },
+    );
+  });
+
   group('a whole screen', () {
     WindowSession screen({int? screen}) => sampleWindowSession(
       display: true,

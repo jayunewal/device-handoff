@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../backend.dart';
 import '../format.dart';
 import '../windows_controller.dart';
+import 'lock_or_leave_dialog.dart';
 
 /// The windows and screens, at the bottom of the home screen where both places can show it: the
 /// offers for the person to answer, the one that is being opened, the offer that this device is
 /// making, the screen that it is asking for, the ones that run, and how the last ones ended. It
-/// takes no room when there is nothing to show.
+/// takes no room when there is nothing to show. Stopping a screen whose device can be left as it
+/// is asks first whether to lock the device ([endAskingToLock]).
 class WindowsPanel extends StatelessWidget {
   const WindowsPanel({
     required this.controller,
@@ -48,7 +52,8 @@ class WindowsPanel extends StatelessWidget {
             _SessionCard(
               session: session,
               onOpen: () => onOpen(session),
-              onStop: () => controller.end(session),
+              onStop: () =>
+                  unawaited(endAskingToLock(context, controller, session)),
             ),
           for (final note in controller.notes)
             _NoteCard(note: note, onDismiss: () => controller.dismiss(note)),
@@ -426,6 +431,15 @@ class _NoteCard extends StatelessWidget {
           problem: true,
         ),
       };
+    case WindowLeft(:final session):
+      // The device does not answer, so this says that it was asked, and nothing of how it is.
+      final device = visibleText(session.deviceName);
+      return (
+        title: 'You asked $device not to lock',
+        detail:
+            'It locks if the connection broke first. Look at $device to see.',
+        problem: false,
+      );
     case WindowWithdrawn(:final request):
       final noun = windowNoun(display: request.display);
       return (

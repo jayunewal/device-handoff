@@ -662,6 +662,117 @@ void main() {
     });
   });
 
+  group('a screen whose device can be left as it is', () {
+    WindowSession leavable({int id = 1}) =>
+        sampleWindowSession(id: id, control: true, private: true, leave: true);
+
+    test('is ended with the device asked not to lock, and the person is told only that it was asked', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = leavable();
+      await _begin(session, window);
+      var told = 0;
+      controller.addListener(() => told++);
+
+      expect(controller.endLeaving(window), isTrue);
+
+      // The device is asked to leave, and not told of an ordinary end.
+      expect(session.windowsLeft, [1]);
+      expect(session.windowsEnded, isEmpty);
+      expect(controller.sessions, isEmpty);
+      expect(told, 1);
+      final note = controller.notes.single;
+      expect(note, isA<WindowLeft>());
+      expect((note as WindowLeft).session, window);
+
+      // The end that comes back is the person's own, and says nothing more.
+      await _end(session, 1, const WindowEnd.thisDevice());
+
+      expect(controller.notes, [note]);
+      expect(told, 1);
+    });
+
+    test('is ended all the same when the device is not asked, and nothing is said of leaving', () async {
+      final session = _session()..windowLeaveTaken = false;
+      final controller = await _controller(session);
+      final window = leavable();
+      await _begin(session, window);
+
+      expect(controller.endLeaving(window), isFalse);
+
+      expect(session.windowsLeft, [1]);
+      expect(controller.sessions, isEmpty);
+      expect(controller.notes, isEmpty);
+    });
+
+    test('is ended with the ordinary call at every other end, which asks nothing of the device', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = leavable();
+      await _begin(session, window);
+
+      expect(controller.end(window), isTrue);
+
+      expect(session.windowsEnded, [1]);
+      expect(session.windowsLeft, isEmpty);
+      expect(controller.notes, isEmpty);
+    });
+
+    test(
+      'has everything kept for it forgotten when it is left, as at any end',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        final window = leavable();
+        await _begin(session, window);
+        session.emit(Event.windowPicture(id: 1, width: 1920, height: 1200));
+        await pumpEventQueue();
+        expect(controller.lift(window, screen: true), isTrue);
+        expect(controller.pictureOf(window), (width: 1920, height: 1200));
+        expect(controller.liftedOf(window), (screen: true, input: false));
+
+        controller.endLeaving(window);
+
+        expect(controller.pictureOf(window), isNull);
+        expect(controller.liftedOf(window), (screen: false, input: false));
+      },
+    );
+
+    test(
+      'that is left twice has a note for the first and none for the second',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        final window = leavable();
+        await _begin(session, window);
+        expect(controller.endLeaving(window), isTrue);
+        session.windowLeaveTaken = false;
+
+        expect(controller.endLeaving(window), isFalse);
+
+        // The second answer of the device is no, and the first note stays the only one.
+        expect(controller.notes, hasLength(1));
+      },
+    );
+
+    test(
+      'has the screens told of the note whenever the device was asked',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        var told = 0;
+        controller.addListener(() => told++);
+
+        // The library says that the device was asked for a screen that this controller does not
+        // hold, which is the library's word to take.
+        expect(controller.endLeaving(leavable()), isTrue);
+
+        expect(controller.notes.single, isA<WindowLeft>());
+        expect(told, 1);
+      },
+    );
+  });
+
   group('the picture of a window that runs', () {
     Future<void> say(FakeSession session, int id, int width, int height) async {
       session.emit(Event.windowPicture(id: id, width: width, height: height));

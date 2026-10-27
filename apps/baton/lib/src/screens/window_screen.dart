@@ -11,6 +11,7 @@ import '../format.dart';
 import '../window_control.dart';
 import '../window_sound.dart';
 import '../windows_controller.dart';
+import 'lock_or_leave_dialog.dart';
 import 'windows_panel.dart';
 
 /// A window of another device, drawn live. The picture comes from the platform: the session gives
@@ -27,7 +28,10 @@ import 'windows_panel.dart';
 /// A screen that this device controls and that the other device keeps private (dark, with its
 /// keyboard and trackpad out of use) has settings for the session, which the person opens from the
 /// bar: two switches, to show the screen at the other device and to let its keyboard and trackpad
-/// be used, each on and off as often as they like. Both are off when the session starts.
+/// be used, each on and off as often as they like. Both are off when the session starts. The other
+/// device locks itself when the session ends. If it can also be left as it is, leaving the screen
+/// asks "Lock" or "Leave it" instead of the usual question ([endAskingToLock]); only that answer
+/// leaves it unlocked.
 ///
 /// A whole screen whose device can send its sound has a speaker in the bar, which turns the sound
 /// on and off and shows how it stands. When the other device says that it sends none, a line over
@@ -166,8 +170,19 @@ class _WindowScreenState extends State<WindowScreen> {
     ),
   );
 
-  /// Asks before the window is ended: the other device has to share it again to bring it back.
+  /// Asks before the window is ended: the other device has to share it again to bring it back. A
+  /// screen whose device can be left as it is asks whether to lock the device instead, and that
+  /// question is the one that ends the session.
   Future<void> _confirmStop() async {
+    if (widget.session.leave) {
+      final ended = await endAskingToLock(
+        context,
+        widget.controller,
+        widget.session,
+      );
+      if (ended && mounted) Navigator.of(context).pop();
+      return;
+    }
     final stop = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
