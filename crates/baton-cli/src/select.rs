@@ -122,6 +122,7 @@ mod tests {
             relay: None,
             addrs: Vec::new(),
             policy: DevicePolicy::default(),
+            unlock: None,
         }
     }
 

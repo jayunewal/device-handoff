@@ -932,6 +932,7 @@ mod tests {
             relay: None,
             addrs: Vec::new(),
             policy: crate::DevicePolicy::default(),
+            unlock: None,
         }
     }
 

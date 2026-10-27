@@ -44,13 +44,14 @@ use baton_proto::{
     device::{FALLBACK_NAME, sanitize_display_name},
     ticket::is_valid_relay_hint,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use tokio::sync::broadcast;
 
 use crate::{
     error::{Error, Result},
     fsutil::{Access, read_text, write_atomic},
     policy::DevicePolicy,
+    unlock_record::{PairedUnlock, UnlockEntry, UnlockHistory},
 };
 
 /// Most devices that can be paired at once.
@@ -115,6 +116,16 @@ pub struct PairedDevice {
     /// What this device does with what it receives from that one.
     #[serde(default)]
     pub policy: DevicePolicy,
+    /// The unlock that the person set up at this device for that one, if they did: the box with
+    /// the password, which only that device can open the key of. It is deleted with the device.
+    /// A record that cannot be read, or that is beyond a limit, is left out as if it had not been
+    /// set up.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "readable_unlock"
+    )]
+    pub unlock: Option<PairedUnlock>,
 }
 
 impl PairedDevice {
@@ -132,6 +143,7 @@ impl PairedDevice {
             relay: None,
             addrs: Vec::new(),
             policy: DevicePolicy::default(),
+            unlock: None,
         }
     }
 
@@ -161,7 +173,54 @@ impl PairedDevice {
         {
             self.relay = None;
         }
+        if self
+            .unlock
+            .as_ref()
+            .is_some_and(|unlock| !unlock.is_valid())
+        {
+            self.unlock = None;
+        }
     }
+}
+
+/// Reads the unlock of a device from the file. One that cannot be read is left out, and the
+/// rest of the list is kept: an unlock that is gone is set up again by the person, and a list
+/// that cannot be read at all would lock them out of every device.
+fn readable_unlock<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<PairedUnlock>, D::Error> {
+    let Some(raw) = Option::<serde_json::Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    let unlock = serde_json::from_value(raw);
+    if unlock.is_err() {
+        tracing::warn!("an unlock in the list of paired devices could not be read");
+    }
+    Ok(unlock.ok())
+}
+
+/// Reads the history of unlocks from the file. A line that cannot be read is left out, and so is
+/// a history that is not a list: it is the least of what the file holds, and a list that cannot
+/// be read at all would lock the person out of every device.
+fn readable_history<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<UnlockEntry>, D::Error> {
+    let serde_json::Value::Array(lines) = serde_json::Value::deserialize(deserializer)? else {
+        tracing::warn!("the history of unlocks in the list of paired devices could not be read");
+        return Ok(Vec::new());
+    };
+    let total = lines.len();
+    let entries: Vec<UnlockEntry> = lines
+        .into_iter()
+        .filter_map(|line| serde_json::from_value(line).ok())
+        .collect();
+    if entries.len() < total {
+        tracing::warn!(
+            left_out = total - entries.len(),
+            "lines of the history of unlocks in the list of paired devices could not be read"
+        );
+    }
+    Ok(entries)
 }
 
 /// The addresses worth remembering from `addrs`: usable ones, each once, in a fixed order.
@@ -226,6 +285,14 @@ pub enum TrustEvent {
 struct StoredTrust {
     version: u32,
     devices: Vec<PairedDevice>,
+    /// The last attempts to unlock this device, oldest first. It is in this file so that an
+    /// unlock that ends a setup and the line that says so are one write.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "readable_history"
+    )]
+    unlock_history: Vec<UnlockEntry>,
 }
 
 type Devices = BTreeMap<DeviceId, PairedDevice>;
@@ -238,6 +305,8 @@ struct Inner {
     /// The list as last saved. A reader copies the `Arc` and lets go of the lock at once, and a
     /// writer takes the write lock only to put a finished list in place, so nobody waits for the disk.
     current: RwLock<Arc<Devices>>,
+    /// The attempts to unlock this device as last saved, kept the same way.
+    history: RwLock<Arc<UnlockHistory>>,
     /// Held by a writer from the moment it starts working on a change until its event is sent,
     /// disk write included. It keeps changes, saves and events in one order.
     writer: Mutex<()>,
@@ -265,8 +334,8 @@ impl TrustStore {
 
     fn load_with(path: impl Into<PathBuf>, save: Saver) -> Result<Self> {
         let path = path.into();
-        let devices = match read_text(&path, Access::OwnerOnly)? {
-            None => Devices::new(),
+        let (devices, history) = match read_text(&path, Access::OwnerOnly)? {
+            None => (Devices::new(), UnlockHistory::default()),
             Some(text) => parse(&path, &text)?,
         };
         let (events, _) = broadcast::channel(64);
@@ -274,6 +343,7 @@ impl TrustStore {
             inner: Arc::new(Inner {
                 path,
                 current: RwLock::new(Arc::new(devices)),
+                history: RwLock::new(Arc::new(history)),
                 writer: Mutex::new(()),
                 events,
                 save,
@@ -294,6 +364,17 @@ impl TrustStore {
             &self
                 .inner
                 .current
+                .read()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
+    }
+
+    /// The attempts to unlock this device as they are right now. Cheap, and never waits for a save.
+    pub(crate) fn history(&self) -> Arc<UnlockHistory> {
+        Arc::clone(
+            &self
+                .inner
+                .history
                 .read()
                 .unwrap_or_else(PoisonError::into_inner),
         )
@@ -414,6 +495,36 @@ impl TrustStore {
         Ok(true)
     }
 
+    /// Changes a paired device and the history of attempts to unlock this one in one step, if
+    /// `change` finds something to change: it is given the device and the history, and returns
+    /// what it wants to hand back, or `None` to leave everything as it is. Returns `None` too if
+    /// there is no such device.
+    ///
+    /// This is [`update`](Self::update) for a change that depends on what is there. The closure
+    /// runs while other changes to the list wait, so what it reads is what it changes, and it
+    /// must not change the list itself. The change is saved before it takes effect, in one write
+    /// that holds the device and the history together.
+    pub(crate) fn amend<T>(
+        &self,
+        id: &DeviceId,
+        change: impl FnOnce(&mut PairedDevice, &mut UnlockHistory) -> Option<T>,
+    ) -> Result<Option<T>> {
+        let writer = self.lock_writers();
+        let mut next = Devices::clone(&self.snapshot());
+        let mut history = UnlockHistory::clone(&self.history());
+        let Some(device) = next.get_mut(id) else {
+            return Ok(None);
+        };
+        let Some(answer) = change(device, &mut history) else {
+            return Ok(None);
+        };
+        device.id = *id;
+        device.normalize();
+        self.commit_with(&writer, next, Arc::new(history))?;
+        self.emit(TrustEvent::Updated(*id));
+        Ok(Some(answer))
+    }
+
     /// Unpairs a device. Returns what was removed, if anything.
     ///
     /// When this returns, [`contains`](Self::contains) is `false` for the device.
@@ -486,10 +597,22 @@ impl TrustStore {
     /// Saves `next`, and only if that worked makes it the current list.
     ///
     /// The caller holds the writer lock, which is what the guard argument stands for.
-    fn commit(&self, _writer: &MutexGuard<'_, ()>, next: Devices) -> Result<()> {
+    fn commit(&self, writer: &MutexGuard<'_, ()>, next: Devices) -> Result<()> {
+        self.commit_with(writer, next, self.history())
+    }
+
+    /// The same, with a history that changes too: both are saved in one file, and both take
+    /// effect when it is saved.
+    fn commit_with(
+        &self,
+        _writer: &MutexGuard<'_, ()>,
+        next: Devices,
+        history: Arc<UnlockHistory>,
+    ) -> Result<()> {
         let stored = StoredTrust {
             version: FORMAT_VERSION,
             devices: next.values().cloned().collect(),
+            unlock_history: history.entries().to_vec(),
         };
         let json =
             serde_json::to_vec_pretty(&stored).map_err(|e| Error::invalid(&self.inner.path, &e))?;
@@ -499,6 +622,11 @@ impl TrustStore {
             .current
             .write()
             .unwrap_or_else(PoisonError::into_inner) = Arc::new(next);
+        *self
+            .inner
+            .history
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = history;
         Ok(())
     }
 
@@ -573,7 +701,7 @@ impl std::fmt::Debug for TrustStore {
     }
 }
 
-fn parse(path: &Path, text: &str) -> Result<Devices> {
+fn parse(path: &Path, text: &str) -> Result<(Devices, UnlockHistory)> {
     let stored: StoredTrust = serde_json::from_str(text).map_err(|e| Error::invalid(path, &e))?;
     if stored.version > FORMAT_VERSION {
         return Err(Error::UnsupportedVersion {
@@ -602,7 +730,7 @@ fn parse(path: &Path, text: &str) -> Result<Devices> {
             ));
         }
     }
-    Ok(devices)
+    Ok((devices, UnlockHistory::from_stored(stored.unlock_history)))
 }
 
 /// Device ids are written as hexadecimal text so the file is readable.
@@ -643,7 +771,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::policy::{ClipboardPolicy, LinkPolicy};
+    use crate::{
+        policy::{ClipboardPolicy, LinkPolicy},
+        streaming::{UnlockFinish, UnlockOutcome},
+    };
 
     fn id(n: u8) -> DeviceId {
         DeviceId::from_bytes([n; DeviceId::LEN])
@@ -1782,5 +1913,211 @@ mod tests {
             TrustStore::load(&path),
             Err(Error::Invalid { .. })
         ));
+    }
+
+    fn line(at: u64) -> UnlockEntry {
+        UnlockEntry {
+            at,
+            device: id(1),
+            name: "Laptop".to_owned(),
+            finish: UnlockFinish::Done(UnlockOutcome::Unlocked),
+        }
+    }
+
+    /// A list whose saves are counted.
+    fn counting_store() -> (TempDir, TrustStore, Arc<AtomicUsize>) {
+        let saves = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&saves);
+        let (dir, store) = store_with(Box::new(move |path, bytes| {
+            counter.fetch_add(1, SeqCst);
+            write_atomic(path, bytes)
+        }));
+        (dir, store, saves)
+    }
+
+    #[test]
+    fn an_amendment_changes_a_device_and_the_history_in_one_save() {
+        let (_dir, store, saves) = counting_store();
+        store.pair(id(1), &info("Laptop"), 1).unwrap();
+        let mut events = store.subscribe();
+        let before = saves.load(SeqCst);
+
+        let answer = store
+            .amend(&id(1), |device, history| {
+                device.policy.links = LinkPolicy::Open;
+                history.push(line(10));
+                Some("done")
+            })
+            .unwrap();
+
+        assert_eq!(answer, Some("done"));
+        assert_eq!(saves.load(SeqCst), before + 1);
+        assert_eq!(store.get(&id(1)).unwrap().policy.links, LinkPolicy::Open);
+        assert_eq!(store.unlock_history(), [line(10)]);
+        assert_eq!(events.try_recv().unwrap(), TrustEvent::Updated(id(1)));
+        let again = reload(&store);
+        assert_eq!(again.list(), store.list());
+        assert_eq!(again.unlock_history(), [line(10)]);
+    }
+
+    #[test]
+    fn an_amendment_that_finds_nothing_to_change_is_not_saved_or_announced() {
+        let (_dir, store, saves) = counting_store();
+        store.pair(id(1), &info("Laptop"), 1).unwrap();
+        let mut events = store.subscribe();
+        let before = (store.list(), saves.load(SeqCst));
+
+        let answer = store
+            .amend(&id(1), |device, history| {
+                // Whatever it did to its copies is dropped with them.
+                device.policy.links = LinkPolicy::Open;
+                history.push(line(10));
+                None::<()>
+            })
+            .unwrap();
+
+        assert_eq!(answer, None);
+        assert_eq!((store.list(), saves.load(SeqCst)), before);
+        assert_eq!(store.unlock_history(), Vec::new());
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn amending_a_device_that_is_not_paired_does_nothing() {
+        let (_dir, store, saves) = counting_store();
+        let answer = store
+            .amend(&id(1), |_, _| -> Option<()> { panic!("must not run") })
+            .unwrap();
+        assert_eq!(answer, None);
+        assert_eq!(saves.load(SeqCst), 0);
+        assert!(!store.path().exists());
+    }
+
+    #[test]
+    fn an_amendment_cannot_change_who_the_device_is() {
+        let (_dir, store) = store();
+        store.pair(id(1), &info("Laptop"), 1).unwrap();
+        store
+            .amend(&id(1), |device, _| {
+                device.id = id(9);
+                device.name = "Evil\u{202e}".to_owned();
+                Some(())
+            })
+            .unwrap()
+            .unwrap();
+
+        assert!(!store.contains(&id(9)));
+        let device = store.get(&id(1)).unwrap();
+        assert_eq!(device.id, id(1));
+        assert!(!device.name.contains('\u{202e}'));
+        assert_eq!(reload(&store).get(&id(1)).unwrap(), device);
+    }
+
+    #[test]
+    fn a_failed_save_leaves_the_device_and_the_history_as_they_were() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = TrustStore::load(dir.path().join("state").join("devices.json")).unwrap();
+        fs::create_dir(dir.path().join("state")).unwrap();
+        store.pair(id(1), &info("Laptop"), 1).unwrap();
+        store
+            .amend(&id(1), |_, history| {
+                history.push(line(1));
+                Some(())
+            })
+            .unwrap();
+        let before = (store.list(), store.unlock_history());
+        let mut events = store.subscribe();
+
+        fs::remove_dir_all(dir.path().join("state")).unwrap();
+        let failed = store.amend(&id(1), |device, history| {
+            device.policy.links = LinkPolicy::Open;
+            history.push(line(2));
+            Some(())
+        });
+
+        assert!(matches!(failed, Err(Error::Io { .. })), "{failed:?}");
+        assert_eq!((store.list(), store.unlock_history()), before);
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn an_amendment_is_in_effect_for_readers_only_once_it_is_saved() {
+        let (_dir, store, gate) = gated_store();
+        store.pair(id(1), &info("Laptop"), 1).unwrap();
+
+        gate.arm();
+        let writer = thread::spawn({
+            let store = store.clone();
+            move || {
+                store.amend(&id(1), |device, history| {
+                    device.policy.links = LinkPolicy::Open;
+                    history.push(line(10));
+                    Some(())
+                })
+            }
+        });
+        gate.wait_for_save();
+
+        let reader = store.clone();
+        promptly("a reader", move || {
+            assert_ne!(reader.get(&id(1)).unwrap().policy.links, LinkPolicy::Open);
+            assert_eq!(reader.unlock_history(), Vec::new());
+        });
+
+        gate.let_save_finish();
+        assert_eq!(writer.join().unwrap().unwrap(), Some(()));
+        assert_eq!(store.get(&id(1)).unwrap().policy.links, LinkPolicy::Open);
+        assert_eq!(store.unlock_history(), [line(10)]);
+    }
+
+    #[test]
+    fn amendments_from_many_threads_are_all_kept() {
+        let (_dir, store) = store();
+        store.pair(id(1), &info("Laptop"), 1).unwrap();
+        let threads: Vec<_> = (0..20)
+            .map(|at| {
+                let store = store.clone();
+                thread::spawn(move || {
+                    store
+                        .amend(&id(1), |_, history| {
+                            history.push(line(at));
+                            Some(())
+                        })
+                        .unwrap()
+                })
+            })
+            .collect();
+        for handle in threads {
+            handle.join().unwrap().unwrap();
+        }
+
+        assert_eq!(store.unlock_history().len(), 20);
+        assert_eq!(reload(&store).unlock_history().len(), 20);
+    }
+
+    #[test]
+    fn the_history_is_not_lost_when_the_list_changes_in_other_ways() {
+        let (_dir, store) = store();
+        store.pair(id(1), &info("Laptop"), 1).unwrap();
+        store
+            .amend(&id(1), |_, history| {
+                history.push(line(1));
+                Some(())
+            })
+            .unwrap();
+
+        store.pair(id(2), &info("Phone"), 2).unwrap();
+        store
+            .update(&id(2), |d| d.name = "Tablet".to_owned())
+            .unwrap();
+        store.remove(&id(2)).unwrap();
+        let hints = ContactHints {
+            relay: None,
+            addrs: vec!["10.0.0.1:1".parse().unwrap()],
+        };
+        store.record_contact(&id(1), 99_999, &hints).unwrap();
+
+        assert_eq!(store.unlock_history(), [line(1)]);
+        assert_eq!(reload(&store).unlock_history(), [line(1)]);
     }
 }

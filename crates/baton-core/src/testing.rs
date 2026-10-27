@@ -317,3 +317,46 @@ pub(crate) async fn stopped_with(send: &SendStream) -> u64 {
         .expect("the stream was finished and not stopped")
         .into_inner()
 }
+
+/// Unlocks as the platform hands them over, for the tests of the record, the store and the node.
+///
+/// The bytes are not real keys and boxes, and nothing here opens or checks them: `version` tells
+/// one record from another, so that a test can see which of them it was given.
+pub(crate) mod unlocks {
+    use baton_proto::unlock::{SealedKey, Sealing, SealingKey};
+
+    use crate::{streaming::unlock::Replacement, unlock_record::NewUnlock};
+
+    /// A public key as the Secure Enclave gives it out: a point of P-256, uncompressed.
+    pub(crate) fn point(seed: u8) -> Vec<u8> {
+        let mut point = vec![0x04];
+        point.extend((0..64_u8).map(|byte| seed ^ byte));
+        point
+    }
+
+    pub(crate) fn boxed(version: u8) -> Vec<u8> {
+        vec![0xb0 + version; 40]
+    }
+
+    pub(crate) fn sealed(version: u8) -> SealedKey {
+        SealedKey::new(vec![0x50 + version; 113])
+    }
+
+    /// The unlock that the person sets up, in the way this version seals.
+    pub(crate) fn new_unlock(version: u8) -> NewUnlock {
+        NewUnlock {
+            boxed: boxed(version),
+            sealed: sealed(version),
+            sealing: Sealing::EciesP256,
+            public: SealingKey::new(point(0xc0)),
+        }
+    }
+
+    /// What a session puts in the place of the box and the sealed key after an unlock.
+    pub(crate) fn replacement(version: u8) -> Replacement {
+        Replacement {
+            boxed: boxed(version),
+            sealed: sealed(version),
+        }
+    }
+}

@@ -67,7 +67,7 @@ mod source;
 mod start;
 #[cfg(test)]
 mod start_tests;
-mod unlock;
+pub(crate) mod unlock;
 #[cfg(test)]
 mod unlock_tests;
 mod view;
@@ -103,7 +103,8 @@ use start::Pending;
 pub(crate) use start::Starter;
 pub use start::{StartHandler, StartOutcome, StartRequest, StartSlot, StartVerdict};
 pub use unlock::{
-    CancelReason, KeepError, Question, Settled, UnlockAttempt, UnlockOutcome, Unlocker,
+    CancelReason, Finish as UnlockFinish, KeepError, Question, Settled, UnlockAttempt,
+    UnlockOutcome, Unlocker,
 };
 pub(crate) use view::ViewParams;
 pub use view::{DecodeError, Decoder, DecoderState, ViewHandle, ViewStats};

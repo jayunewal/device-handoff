@@ -41,6 +41,7 @@ use baton_stream::{
     control::{Lift, SourceMessage, ViewerMessage},
     unlock::{Ask, Cancelled, Done, Opened, Sealed},
 };
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::util::random_bytes;
@@ -86,13 +87,6 @@ impl fmt::Debug for Record {
 }
 
 /// The box and the sealed key that replace the ones of a record, after an unlock.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "the store that writes it comes with the node, which is next"
-    )
-)]
 pub(crate) struct Replacement {
     /// The password in a new box, under a new key.
     pub(crate) boxed: Vec<u8>,
@@ -101,8 +95,8 @@ pub(crate) struct Replacement {
 }
 
 /// How an attempt ended, for the history that the source keeps of it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Finish {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Finish {
     /// The source ended it with this outcome. A refusal is one.
     Done(UnlockOutcome),
     /// The viewer gave up.

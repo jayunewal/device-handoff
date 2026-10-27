@@ -52,6 +52,7 @@ pub mod session;
 pub mod streaming;
 pub mod transfer;
 pub mod trust;
+pub mod unlock_record;
 pub mod util;
 
 mod fsutil;
@@ -64,6 +65,14 @@ mod slots;
 mod testing;
 mod transport;
 mod uni;
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the node gives the store to a session when it offers an unlock, which is the next commit"
+    )
+)]
+mod unlock_store;
 mod wire;
 
 pub use baton_proto::pair::ConfirmationCode;
@@ -78,3 +87,4 @@ pub use policy::{ClipboardPolicy, DevicePolicy, LinkPolicy, StartPolicy};
 pub use session::{HandoffHandler, NoHandoff};
 pub use transfer::incoming::{Ending, TransferHandler, Verdict};
 pub use trust::{ContactHints, PairOutcome, PairedDevice, Provenance, TrustEvent, TrustStore};
+pub use unlock_record::{MAX_UNLOCK_HISTORY, NewUnlock, PairedUnlock, UnlockEntry};
