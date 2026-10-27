@@ -46,7 +46,8 @@ use iroh::endpoint::Connection;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    SoundPlan, SourceEvents, SourceHandle, SourceParams, SourceSetup, Streaming, Table, Takes,
+    MayHear, SoundPlan, SourceEvents, SourceHandle, SourceParams, SourceSetup, Streaming, Table,
+    Takes,
     start::Starter,
     unlock::{UnlockSetup, UnlockStore},
 };
@@ -307,6 +308,9 @@ pub(crate) struct Offered<'a> {
     pub(crate) private: bool,
     /// What the source does about sound in the session.
     pub(crate) sound: SoundPlan,
+    /// Whether the person here lets the viewer hear, which a display asks each time the viewer
+    /// asks to.
+    pub(crate) may_hear: MayHear,
     /// What the source does about an unlock in the session: what the offer said of it.
     pub(crate) unlock: UnlockSetup,
     /// Whether the offer said `leave`: the person at the viewer may ask, when they end the
@@ -494,6 +498,7 @@ impl Streaming {
             private: offered.private,
             takes,
             sound: offered.sound,
+            may_hear: offered.may_hear,
             unlock: offered.unlock,
             leave: offered.leave,
             params: SourceParams::default(),

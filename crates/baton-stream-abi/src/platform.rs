@@ -505,7 +505,9 @@ impl ScreenHandle {
             Some(SilentReason::Window) => SILENT_WINDOW,
             Some(SilentReason::NoPermission) => SILENT_NO_PERMISSION,
             Some(SilentReason::Failed) => SILENT_FAILED,
-            Some(SilentReason::Other) => SILENT_OTHER,
+            // Nothing the platform does depends on which of the rest it is: the person is told by
+            // the application, and the platform has no reason of its own to tell it apart.
+            Some(SilentReason::Other | SilentReason::NotAllowed) => SILENT_OTHER,
         };
         // SAFETY: `context` is the screen the platform gave, not yet released.
         within(|| unsafe { call(self.context.as_ptr(), why) });
@@ -1452,6 +1454,7 @@ mod tests {
             Some(SilentReason::NoPermission),
             Some(SilentReason::Failed),
             Some(SilentReason::Other),
+            Some(SilentReason::NotAllowed),
         ];
         for why in reasons {
             opened.screen.stopped(why);
@@ -1475,7 +1478,7 @@ mod tests {
             Some(SilentReason::Window) => Call::Stopped(SILENT_WINDOW),
             Some(SilentReason::NoPermission) => Call::Stopped(SILENT_NO_PERMISSION),
             Some(SilentReason::Failed) => Call::Stopped(SILENT_FAILED),
-            Some(SilentReason::Other) => Call::Stopped(SILENT_OTHER),
+            Some(SilentReason::Other | SilentReason::NotAllowed) => Call::Stopped(SILENT_OTHER),
         });
         let mut expected = vec![
             form(48_000, 2, 1024, SOUND_CODEC_AAC),

@@ -226,6 +226,13 @@ class _RustSession implements Session {
       _baton.setStartAccess(id: id, access: access);
 
   @override
+  bool? hearSetting(String id) => _baton.hearSetting(id: id);
+
+  @override
+  Future<void> setHearSetting(String id, bool? setting) =>
+      _baton.setHearSetting(id: id, setting: setting);
+
+  @override
   bool endWindow(int session) => _baton.endWindow(session: session);
 
   @override

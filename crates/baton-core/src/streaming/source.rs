@@ -68,7 +68,7 @@ use tokio::{sync::mpsc, time::MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ControlEnd, End, SoundPacket, SoundPlan, Streaming, Takes, UnlockAttempt, WriteEnd,
+    ControlEnd, End, MayHear, SoundPacket, SoundPlan, Streaming, Takes, UnlockAttempt, WriteEnd,
     read_control, sound, stop,
     unlock::{Handoff, Job, Step, UnlockSetup, Unlocking, Waiting},
     write_control,
@@ -324,6 +324,9 @@ pub(crate) struct SourceSetup {
     pub(crate) takes: Takes,
     /// What the session does about sound.
     pub(crate) sound: SoundPlan,
+    /// Whether the person at this device lets the viewer hear, which a display asks each time the
+    /// viewer asks to.
+    pub(crate) may_hear: MayHear,
     /// What the session does about an unlock.
     pub(crate) unlock: UnlockSetup,
     /// Whether the offer said `leave`, so that a viewer which ends the session can ask for the
@@ -508,6 +511,8 @@ pub(super) struct Source {
     takes: Takes,
     /// What the session does about sound.
     sound: SoundPlan,
+    /// Whether the person here lets the viewer hear.
+    may_hear: MayHear,
     began: Instant,
     core: Mutex<Core>,
     /// What the source says to the viewer, in the order in which it says it.
@@ -835,6 +840,7 @@ impl Source {
             private,
             takes,
             sound,
+            may_hear,
             unlock,
             leave,
             params,
@@ -887,6 +893,7 @@ impl Source {
             left: AtomicBool::new(false),
             takes,
             sound,
+            may_hear,
             began: Instant::now(),
             core: Mutex::new(Core {
                 sender,
@@ -1167,7 +1174,19 @@ impl Source {
                         }));
                     }
                 }
-                SoundPlan::Display => core.heard(on),
+                SoundPlan::Display => {
+                    if on && !self.may_hear.now() {
+                        // The person here does not let this viewer hear, or no longer does. The
+                        // platform is told to stop if it was listening, so this device plays its
+                        // own sound again, and the viewer is told why.
+                        core.heard(false);
+                        self.say(SourceMessage::Silent(Silent {
+                            reason: SilentReason::NotAllowed,
+                        }));
+                    } else {
+                        core.heard(on);
+                    }
+                }
             },
             // A viewer sends the messages of an unlock only to a source that advertised
             // `unlock.target` and offered the session with `unlock` (protocol.md section 9).
@@ -1572,6 +1591,7 @@ mod tests {
             private: false,
             takes: takes(),
             sound: SoundPlan::None,
+            may_hear: MayHear::always(),
             unlock: UnlockSetup::Unsupported,
             leave: false,
             params,

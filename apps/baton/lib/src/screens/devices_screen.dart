@@ -152,17 +152,26 @@ class _DevicesScreenState extends State<DevicesScreen>
   Future<void> _allowScreen(Device device) async {
     final current = _controller.startAccess(device);
     if (current == null) return;
-    final chosen = await showDialog<StartAccess>(
+    final heard = _controller.hearSetting(device);
+    final choice = await showDialog<StartChoice>(
       context: context,
       builder: (context) => StartAccessDialog(
         device: device,
         thisDevice: _controller.me.platform,
         current: current,
+        hear: heard,
         canControl: _access != ControlAccess.unavailable,
       ),
     );
-    if (chosen == null || !mounted) return;
-    final problem = await _controller.setStartAccess(device, chosen);
+    if (choice == null || !mounted) return;
+    final chosen = choice.access;
+    final problem =
+        (chosen == current
+            ? null
+            : await _controller.setStartAccess(device, chosen)) ??
+        (choice.hear == heard
+            ? null
+            : await _controller.setHearSetting(device, choice.hear));
     if (!mounted) return;
     if (problem != null) {
       _tell(problem);

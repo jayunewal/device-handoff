@@ -1347,6 +1347,30 @@ void main() {
       },
     );
 
+    test('is told when the other device does not let this one hear, and asks again when the person does', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(display: true, sound: true);
+      await _begin(session, window);
+      controller.hear(window, listen: true);
+
+      await hearOf(session, 1, WindowSound.notAllowed);
+      expect(controller.soundOf(window), (
+        stage: SoundStage.silent,
+        why: WindowSound.notAllowed,
+      ));
+
+      // The person there said yes since: the next ask is taken, in the same session.
+      expect(controller.hear(window, listen: true), isTrue);
+      expect(controller.soundOf(window), asking);
+      await hearOf(session, 1, WindowSound.playing);
+      expect(controller.soundOf(window), playing);
+      expect(session.windowHears, [
+        (session: 1, listen: true),
+        (session: 1, listen: true),
+      ]);
+    });
+
     test('is told when this device could not play it, and asks again when the person does', () async {
       final session = _session();
       final controller = await _controller(session);

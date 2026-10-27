@@ -386,6 +386,7 @@ impl From<app::WindowSound> for WindowSound {
             app::WindowSound::Failed => Self::Failed,
             app::WindowSound::Other => Self::Other,
             app::WindowSound::CannotPlay => Self::CannotPlay,
+            app::WindowSound::NotAllowed => Self::NotAllowed,
         }
     }
 }
@@ -1181,6 +1182,7 @@ mod tests {
             (app::WindowSound::Failed, WindowSound::Failed),
             (app::WindowSound::Other, WindowSound::Other),
             (app::WindowSound::CannotPlay, WindowSound::CannotPlay),
+            (app::WindowSound::NotAllowed, WindowSound::NotAllowed),
         ] {
             assert_eq!(WindowSound::from(sound), expected, "{sound:?}");
         }

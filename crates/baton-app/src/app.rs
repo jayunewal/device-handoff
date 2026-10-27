@@ -592,6 +592,48 @@ impl App {
         }
     }
 
+    /// What the person at this device said of the paired device `id` hearing the sound of this
+    /// device's screen (`docs/adr/0012-sound.md`): `Some(true)` that it may, `Some(false)` that it
+    /// may not, and `None` when they have not said, which means that it may if it may control the
+    /// screen ([`StartAccess::Control`]) and may not if it can only look. A device that may hear
+    /// makes this device quiet while it listens.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::NotPaired`] if `id` is not a paired device.
+    pub fn hear_setting(&self, id: &str) -> Result<Option<bool>> {
+        let (peer, _) = self.paired(id)?;
+        let device = self.inner.trust.get(&peer).ok_or_else(Error::not_paired)?;
+        Ok(device.policy.hear)
+    }
+
+    /// Says whether the paired device `id` may hear the sound of this device's screen, or takes
+    /// what was said back with `None` ([`hear_setting`](Self::hear_setting)). Only the person at
+    /// this device can: nothing a paired device sends changes it.
+    ///
+    /// It counts the next time the device asks to hear, also in a session that runs: a device that
+    /// was told that it may not ([`WindowSound::NotAllowed`](crate::WindowSound::NotAllowed)) asks
+    /// again, and is taken. A sound that plays is not stopped by turning this off until the device
+    /// asks again, or the session ends: end it with [`end_window`](Self::end_window) to be sure.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::NotPaired`] if `id` is not a paired device, and [`ErrorKind::Storage`] if the
+    /// setting could not be kept.
+    pub fn set_hear_setting(&self, id: &str, setting: Option<bool>) -> Result<()> {
+        let (peer, _) = self.paired(id)?;
+        let kept = self
+            .inner
+            .trust
+            .update(&peer, |device| device.policy.hear = setting)
+            .map_err(|e| Error::local(&e))?;
+        if kept {
+            Ok(())
+        } else {
+            Err(Error::not_paired())
+        }
+    }
+
     /// Answers a [`WindowRequest`]. Returns `false` if it is not waiting any more, because it was
     /// answered already or the other device gave up.
     ///

@@ -74,6 +74,12 @@ abstract class Baton implements RustOpaqueInterface {
   /// it and lets go of the folder, as the app layer does when it is dropped.
   Future<Stream<Event>> events();
 
+  /// What the person at this device said of the paired device `id` hearing the sound of this
+  /// device's screen: `true` that it may, `false` that it may not, and `null` when they have not
+  /// said, which means that it may if it may control the screen (`StartAccess.control`) and may
+  /// not if it can only look. Throws `ErrorKind.notPaired`.
+  bool? hearSetting({required String id});
+
   /// Asks the device that shares the screen `session`, which is shown here, to send its sound
   /// (`listen`), or to stop. The sound plays on this device, and the other device keeps its own
   /// speakers quiet for as long as it is sent. Sound is off when a session starts. It is for a
@@ -138,6 +144,13 @@ abstract class Baton implements RustOpaqueInterface {
 
   /// Sends text, such as what was on the clipboard, to a paired device.
   Future<void> sendText({required String id, required String text});
+
+  /// Says whether the paired device `id` may hear the sound of this device's screen, or takes
+  /// what was said back with `null`. Only the person at this device can say so: nothing a paired
+  /// device sends changes it. It counts the next time the device asks to hear, also in a session
+  /// that runs, but a sound that plays is not stopped until then. Throws `ErrorKind.notPaired`,
+  /// and `ErrorKind.storage` if the setting could not be kept.
+  Future<void> setHearSetting({required String id, bool? setting});
 
   /// Lets the paired device `id` ask this device to start sharing its screen with it, to look at
   /// or to look at and control, or does not (`StartAccess.off`). Only the person at this device

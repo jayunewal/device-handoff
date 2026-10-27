@@ -80,10 +80,10 @@ use crate::{
     shared::Shared,
     slots::{MAX_PAIRING_CONNECTIONS, PairSlots},
     streaming::{
-        CONTROL_STREAMS, FRAME_STREAMS, KeyOutcome, Offered, Reservation, SETTLE, SOUND_STREAMS,
-        ShareOutcome, Sharer, SoundPlan, SourceEvents, StartHandler, StartOutcome, StartSlot,
-        Starter, Streaming, Takes, UnlockApprover, Viewer, Viewing, Wanted, WhyNot, WindowHandler,
-        WindowShare, Withdraw, ask,
+        CONTROL_STREAMS, FRAME_STREAMS, KeyOutcome, MayHear, Offered, Reservation, SETTLE,
+        SOUND_STREAMS, ShareOutcome, Sharer, SoundPlan, SourceEvents, StartHandler, StartOutcome,
+        StartSlot, Starter, Streaming, Takes, UnlockApprover, Viewer, Viewing, Wanted, WhyNot,
+        WindowHandler, WindowShare, Withdraw, ask,
     },
     transfer::{
         incoming::{FINISH_WAIT, Incoming, LANE_STREAMS, TransferHandler},
@@ -1221,6 +1221,17 @@ impl Node {
         if reservation.is_cancelled() {
             return self.cancelled_offer(&paired.id, &reservation);
         }
+        // Whether the device may hear is asked each time it asks to, from what the person here has
+        // said by then: they may say it while the session runs, and the device is to try again.
+        let may_hear = {
+            let trust = self.shared.trust.clone();
+            let peer = paired.id;
+            MayHear::new(move || {
+                trust
+                    .get(&peer)
+                    .is_some_and(|device| device.policy.may_hear())
+            })
+        };
         let offered = Offered {
             peer: paired,
             connection: &session.connection,
@@ -1233,6 +1244,7 @@ impl Node {
                 session.peer.supports(capability::STREAM_HEAR),
                 window.is_display(),
             ),
+            may_hear,
             unlock,
             leave,
         };

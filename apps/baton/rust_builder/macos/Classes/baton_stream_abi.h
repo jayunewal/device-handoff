@@ -224,7 +224,8 @@ extern "C" {
 #define BATON_SILENT_WINDOW 1u        /* the screen is a window, and only a display has sound */
 #define BATON_SILENT_NO_PERMISSION 2u /* the system has not let the program record the sound */
 #define BATON_SILENT_FAILED 3u        /* something went wrong where the sound is recorded */
-#define BATON_SILENT_OTHER 4u         /* any other reason */
+#define BATON_SILENT_OTHER 4u         /* any other reason, also that the person there does not
+                                          let this device hear */
 
 /* What baton_stream_source_sound says became of the packet. */
 #define BATON_SOUND_SENT 0u      /* it went out; the number says which packet it is */
