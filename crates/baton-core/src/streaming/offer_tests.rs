@@ -303,13 +303,14 @@ fn what_is_shared_is_printed_as_a_kind_and_a_size_and_not_by_name() {
 }
 
 #[test]
-fn no_offer_lets_the_viewer_unlock_while_no_device_unlocks() {
+fn an_offer_says_unlock_only_when_the_node_decided_that_it_does() {
     for share in [
         window(),
         window().with_control(),
         window().with_control().with_private(),
     ] {
-        assert!(!share.offer(session(1)).unlock);
+        assert!(!share.offer(session(1), false).unlock);
+        assert!(share.offer(session(1), true).unlock);
     }
 }
 

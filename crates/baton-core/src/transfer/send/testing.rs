@@ -682,6 +682,7 @@ pub(super) fn sender_device() -> PairedDevice {
         relay: None,
         addrs: Vec::new(),
         policy: crate::DevicePolicy::default(),
+        unlock: None,
     }
 }
 

@@ -41,6 +41,7 @@ use baton_stream::{
     control::{Lift, SourceMessage, ViewerMessage},
     unlock::{Ask, Cancelled, Done, Opened, Sealed},
 };
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::util::random_bytes;
@@ -86,13 +87,6 @@ impl fmt::Debug for Record {
 }
 
 /// The box and the sealed key that replace the ones of a record, after an unlock.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "the store that writes it comes with the node, which is next"
-    )
-)]
 pub(crate) struct Replacement {
     /// The password in a new box, under a new key.
     pub(crate) boxed: Vec<u8>,
@@ -101,10 +95,14 @@ pub(crate) struct Replacement {
 }
 
 /// How an attempt ended, for the history that the source keeps of it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Finish {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Finish {
     /// The source ended it with this outcome. A refusal is one.
     Done(UnlockOutcome),
+    /// The platform said this outcome, which it only says after it has kept a new box, and it
+    /// had kept none. The viewer was told the outcome, and the setup ended: the key that was sent
+    /// still opens the box that the source holds.
+    Unkept(UnlockOutcome),
     /// The viewer gave up.
     Cancelled(CancelReason),
     /// The session ended while the source waited for the viewer.
@@ -115,14 +113,29 @@ impl Finish {
     /// Whether the setup of the viewer ends with this: the source marks it as unusable, answers
     /// `NotSetUp` to every later `Unlock`, and the person has to set it up again at the source
     /// (ADR 0013). A password that the system did not accept ends it, so does a box that the key
-    /// did not open, and so does a viewer that says it has lost its key.
+    /// did not open, so does a viewer that says it has lost its key, and so does a platform that
+    /// did not keep the new box.
     pub(crate) fn ends_setup(self) -> bool {
         matches!(
             self,
             Self::Done(UnlockOutcome::Stale | UnlockOutcome::Rejected)
+                | Self::Unkept(_)
                 | Self::Cancelled(CancelReason::KeyLost)
         )
     }
+}
+
+/// Whether a platform says `outcome` only after it has kept the new box. It keeps the box before
+/// it checks anything else, so that every outcome but `Stale` (the key did not open the box) and
+/// `Failed` (it could not keep one, or any reason of its own) comes after it.
+fn follows_a_keep(outcome: UnlockOutcome) -> bool {
+    matches!(
+        outcome,
+        UnlockOutcome::Unlocked
+            | UnlockOutcome::Rejected
+            | UnlockOutcome::NotLocked
+            | UnlockOutcome::NotPrivate
+    )
 }
 
 /// What the node is told about an attempt that is over, to write down.
@@ -161,13 +174,6 @@ pub(crate) trait UnlockStore: Send + Sync + 'static {
 
 /// What a session does about an unlock.
 #[derive(Clone)]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "the node offers an unlock when it keeps a record, which is next"
-    )
-)]
 pub(crate) enum UnlockSetup {
     /// This device did not advertise `unlock.target`, or the viewer did not advertise
     /// `unlock.approve`. The viewer was not told that it may unlock, and the messages of an
@@ -178,6 +184,13 @@ pub(crate) enum UnlockSetup {
     NotOffered,
     /// The offer said `unlock`: the session takes the messages of an unlock, with this record.
     Offered(Arc<dyn UnlockStore>),
+}
+
+impl UnlockSetup {
+    /// Whether the offer of the session says `unlock`.
+    pub(crate) fn is_offered(&self) -> bool {
+        matches!(self, Self::Offered(_))
+    }
 }
 
 impl fmt::Debug for UnlockSetup {
@@ -221,6 +234,8 @@ pub(super) struct Reported {
     /// The sealed key that the record of the attempt had when it ended: the new one if the box was
     /// replaced.
     sealed: SealedKey,
+    /// Whether the platform kept a new box.
+    kept: bool,
 }
 
 /// An unlock that the platform of the source is to carry out.
@@ -239,6 +254,12 @@ pub(super) struct Reported {
 /// `Stale` (the key did not open the box), `Failed` (anything else that is the source's own),
 /// `NotLocked` and `NotPrivate` (nothing was typed). The session takes any other outcome as
 /// `Failed`. An attempt that is dropped without a word reports `Failed`.
+///
+/// Every outcome but `Stale` and `Failed` comes after [`keep`](Self::keep): the box is kept
+/// before the lock and the privacy are checked. A platform that reports `Unlocked`, `Rejected`,
+/// `NotLocked` or `NotPrivate` without having kept one has broken that order, and the source ends
+/// the setup, whatever the platform said: the key that was sent would still open the box that the
+/// source holds, and a copy of it would be good for one more unlock.
 ///
 /// The methods do not wait for the session, so they may be called from any thread, also from
 /// within [`SourceEvents::unlock`](super::SourceEvents::unlock). [`keep`](Self::keep) waits for
@@ -339,6 +360,7 @@ impl UnlockAttempt {
             let _ = done.send(Reported {
                 outcome,
                 sealed: self.sealed.clone(),
+                kept: self.kept,
             });
         }
     }
@@ -439,9 +461,17 @@ struct Working {
     live: Arc<AtomicBool>,
     /// The viewer gave up. It is told nothing more.
     cancelled: bool,
-    /// What the platform reported, and the sealed key of the record it was about, once it has.
-    /// There is no key when the platform did not report.
-    reported: Option<(UnlockOutcome, Option<SealedKey>)>,
+    /// What the platform reported, once it has.
+    reported: Option<Told>,
+}
+
+/// What the platform reported of an attempt, which the viewer is told once it is written down.
+struct Told {
+    outcome: UnlockOutcome,
+    /// The sealed key of the record it was about. There is none when the platform did not report.
+    sealed: Option<SealedKey>,
+    /// The outcome comes after a new box is kept, and the platform kept none: the setup ended.
+    unkept: bool,
 }
 
 enum Attempt {
@@ -751,9 +781,13 @@ impl Unlocking {
             return None;
         }
         working.live.store(false, Ordering::SeqCst);
-        let (outcome, sealed) = match report {
-            Some(Reported { outcome, sealed }) => (outcome, Some(sealed)),
-            None => (UnlockOutcome::Failed, None),
+        let (outcome, sealed, kept) = match report {
+            Some(Reported {
+                outcome,
+                sealed,
+                kept,
+            }) => (outcome, Some(sealed), kept),
+            None => (UnlockOutcome::Failed, None, false),
         };
         // What the platform may say. It does not decide what the source answers to a viewer.
         let outcome = match outcome {
@@ -764,17 +798,30 @@ impl Unlocking {
             | UnlockOutcome::NotPrivate => outcome,
             _ => UnlockOutcome::Failed,
         };
-        let finish = Finish::Done(outcome);
+        // The platform keeps the new box before it checks anything else. One that says what only
+        // comes after that without having kept it leaves the key that was sent good for the box
+        // that the source holds, so the setup ends, whatever it said.
+        let unkept = follows_a_keep(outcome) && !kept;
+        let finish = if unkept {
+            Finish::Unkept(outcome)
+        } else {
+            Finish::Done(outcome)
+        };
         if finish.ends_setup() {
             self.shut = true;
         }
-        working.reported = Some((outcome, sealed.clone()));
+        working.reported = Some(Told {
+            outcome,
+            sealed: sealed.clone(),
+            unkept,
+        });
         Some(self.job(Work::Conclude(Concluded { finish, sealed })))
     }
 
     /// The record of what the platform reported is written. Returns what the viewer is told,
     /// unless it gave up. A password that was rejected is right after all if the screen is no
-    /// longer locked: the job takes the setup back, and the viewer is told when it is done.
+    /// longer locked: the job takes the setup back, and the viewer is told `Unlocked` when it is
+    /// done, since the screen is unlocked.
     pub(super) fn closed(&mut self, number: u64, now: Duration) -> Step {
         if !matches!(&self.attempt, Attempt::Working(working) if working.number == number) {
             return Step::default();
@@ -782,19 +829,29 @@ impl Unlocking {
         let Attempt::Working(working) = std::mem::replace(&mut self.attempt, Attempt::Idle) else {
             return Step::default();
         };
-        let Some((outcome, sealed)) = working.reported else {
+        let Some(Told {
+            outcome,
+            sealed,
+            unkept,
+        }) = working.reported
+        else {
             return Step::default();
         };
+        let mut told = outcome;
         let mut step = Step::default();
-        if let (UnlockOutcome::Rejected, Some(sealed)) = (outcome, sealed) {
+        // A platform that typed without keeping a new box is not given the benefit of the doubt.
+        if let (UnlockOutcome::Rejected, Some(sealed), false) = (outcome, sealed, unkept) {
             if self.locked {
                 self.rejected = Some(Grace { at: now, sealed });
             } else {
                 step = self.take_back(sealed);
+                told = UnlockOutcome::Unlocked;
             }
         }
-        step.say =
-            (!working.cancelled).then_some(SourceMessage::UnlockDone(Done { number, outcome }));
+        step.say = (!working.cancelled).then_some(SourceMessage::UnlockDone(Done {
+            number,
+            outcome: told,
+        }));
         step
     }
 }

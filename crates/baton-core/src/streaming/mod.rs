@@ -57,6 +57,7 @@ use crate::{
 mod answer;
 #[cfg(test)]
 mod answer_tests;
+mod approve;
 mod offer;
 #[cfg(test)]
 mod offer_tests;
@@ -67,7 +68,9 @@ mod source;
 mod start;
 #[cfg(test)]
 mod start_tests;
-mod unlock;
+pub(crate) mod unlock;
+#[cfg(test)]
+mod unlock_node_tests;
 #[cfg(test)]
 mod unlock_tests;
 mod view;
@@ -89,6 +92,7 @@ const _: () = assert!(SOUND_STREAMS as usize == baton_stream::MAX_SOUND_STREAMS)
 use answer::Offers;
 pub(crate) use answer::Viewer;
 pub use answer::{Viewing, WindowHandler, WindowOffer, WindowVerdict};
+pub use approve::{KeyOutcome, UnlockApprover};
 
 use offer::Sending;
 pub(crate) use offer::{Offered, Reservation, SETTLE, Sharer, Withdraw, ask};
@@ -103,7 +107,8 @@ use start::Pending;
 pub(crate) use start::Starter;
 pub use start::{StartHandler, StartOutcome, StartRequest, StartSlot, StartVerdict};
 pub use unlock::{
-    CancelReason, KeepError, Question, Settled, UnlockAttempt, UnlockOutcome, Unlocker,
+    CancelReason, Finish as UnlockFinish, KeepError, Question, Settled, UnlockAttempt,
+    UnlockOutcome, Unlocker,
 };
 pub(crate) use view::ViewParams;
 pub use view::{DecodeError, Decoder, DecoderState, ViewHandle, ViewStats};
