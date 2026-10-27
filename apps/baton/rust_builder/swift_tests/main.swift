@@ -1046,6 +1046,18 @@ tests += [
     testAQuietScreenKeepsTheMacQuietForTheWholeSessionAndSendsOnlyWhatIsWanted
   ),
   (
+    "a quiet screen that is shown at the Mac lets it play when nobody listens and is quiet again when the cover is back",
+    testAQuietScreenThatIsShownAtTheMacLetsItPlayWhenNobodyListensAndIsQuietAgainWhenTheCoverIsBack
+  ),
+  (
+    "a quiet screen that is shown at the Mac while the other device listens keeps the run and the Mac quiet",
+    testAQuietScreenThatIsShownAtTheMacWhileTheOtherDeviceListensKeepsTheRunAndTheMacQuiet
+  ),
+  (
+    "a screen that is not private ignores the cover and a pump that is closed does too",
+    testAScreenThatIsNotPrivateIgnoresTheCoverAndAPumpThatIsClosedDoesToo
+  ),
+  (
     "listening again with no stop between begins another run from nothing",
     testListeningAgainWithNoStopBetweenBeginsAnotherRunFromNothing
   ),
@@ -1060,6 +1072,14 @@ tests += [
   (
     "a program that begins just before the end of the count is not taken for a Mac that has not let the app record",
     testAProgramThatBeginsJustBeforeTheEndOfTheCountIsNotTakenForAMacThatHasNotLetTheAppRecord
+  ),
+  (
+    "a program that plays when the count begins and is gone before it ends is not taken for a Mac that has not let the app record",
+    testAProgramThatPlaysWhenTheCountBeginsAndIsGoneBeforeItEndsIsNotTakenForAMacThatHasNotLetTheAppRecord
+  ),
+  (
+    "a second run looks afresh for the program that plays when its count begins",
+    testASecondRunLooksAfreshForTheProgramThatPlaysWhenItsCountBegins
   ),
   (
     "sound that was heard once rests the question of the permission",

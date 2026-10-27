@@ -411,6 +411,103 @@ func testAQuietScreenKeepsTheMacQuietForTheWholeSessionAndSendsOnlyWhatIsWanted(
   check(rig.taps.taps.count == 1 && rig.session.begun.count == 2, "something began after the end")
 }
 
+func testAQuietScreenThatIsShownAtTheMacLetsItPlayWhenNobodyListensAndIsQuietAgainWhenTheCoverIsBack() {
+  let rig = SoundRig(quiet: true)
+  rig.pump.keepQuiet()
+  check(rig.taps.taps.count == 1 && rig.taps.latest?.starts == [true], "the Mac is not quiet")
+
+  // The person at the other device shows the screen on the Mac, and nobody listens: it plays.
+  rig.pump.screenShown(true)
+  rig.pump.idle()
+  check(rig.taps.taps.count == 1 && rig.taps.latest?.stops == 1, "the Mac stayed quiet with nobody listening")
+  // The same word again changes nothing.
+  rig.pump.screenShown(true)
+  rig.pump.idle()
+  check(rig.taps.taps.count == 1 && rig.taps.latest?.stops == 1, "a second stop")
+
+  // The other device listens: the Mac is quiet for as long as it does, as for any other screen.
+  rig.pump.hear(true)
+  rig.pump.idle()
+  check(rig.taps.taps.count == 2 && rig.taps.latest?.starts == [true], "\(rig.taps.taps.count) taps")
+  rig.feed(1024)
+  check(rig.session.packets.count == 1, "\(rig.session.packets.count) packets")
+  rig.pump.hear(false)
+  rig.pump.idle()
+  check(rig.taps.latest?.stops == 1, "the Mac stayed quiet after the other device stopped listening")
+
+  // The cover goes back: the Mac is quiet again at once, and stays so while nobody listens.
+  rig.pump.screenShown(false)
+  rig.pump.idle()
+  check(rig.taps.taps.count == 3 && rig.taps.latest?.starts == [true], "\(rig.taps.taps.count) taps")
+  check(rig.taps.latest?.stops == 0, "the tap was stopped as the cover went back")
+  rig.pump.hear(true)
+  rig.pump.idle()
+  check(rig.taps.taps.count == 3, "another tap for a screen that is quiet already")
+  rig.feed(1024)
+  check(rig.session.packets.count == 2, "\(rig.session.packets.count) packets")
+  rig.pump.hear(false)
+  rig.pump.idle()
+  check(rig.taps.latest?.stops == 0, "the Mac played again while the screen is dark")
+  rig.pump.close()
+  check(rig.taps.latest?.stops == 1)
+}
+
+func testAQuietScreenThatIsShownAtTheMacWhileTheOtherDeviceListensKeepsTheRunAndTheMacQuiet() {
+  let rig = SoundRig(quiet: true)
+  rig.pump.keepQuiet()
+  rig.pump.hear(true)
+  rig.feed(1024)
+  check(rig.session.packets.count == 1 && rig.session.begun == [form48], "\(rig.session.begun)")
+
+  // Showing the screen and putting the cover back do not touch a run that goes.
+  rig.pump.screenShown(true)
+  rig.pump.idle()
+  check(rig.taps.taps.count == 1 && rig.taps.latest?.stops == 0, "the Mac played while the other device listens")
+  rig.feed(1024)
+  check(rig.session.packets.count == 2, "\(rig.session.packets.count) packets")
+  rig.pump.screenShown(false)
+  rig.pump.idle()
+  check(rig.taps.taps.count == 1 && rig.taps.latest?.stops == 0, "the tap was made again or stopped")
+  rig.feed(1024)
+  check(rig.session.packets.count == 3, "\(rig.session.packets.count) packets")
+  check(rig.session.begun == [form48], "a run began anew: \(rig.session.begun)")
+
+  // The listening stops with the cover on: the Mac stays quiet.
+  rig.pump.hear(false)
+  rig.pump.idle()
+  check(rig.taps.latest?.stops == 0, "the Mac played again while the screen is dark")
+  rig.pump.close()
+  check(rig.taps.latest?.stops == 1)
+}
+
+func testAScreenThatIsNotPrivateIgnoresTheCoverAndAPumpThatIsClosedDoesToo() {
+  let rig = SoundRig()
+  // There is no cover to put back, and so no reason to make a tap and keep the Mac quiet.
+  rig.pump.screenShown(false)
+  rig.pump.idle()
+  check(rig.taps.taps.isEmpty, "a tap was made for a screen that is not private")
+  rig.pump.hear(true)
+  rig.pump.idle()
+  rig.pump.screenShown(true)
+  rig.pump.screenShown(false)
+  rig.pump.idle()
+  check(rig.taps.taps.count == 1 && rig.taps.latest?.stops == 0, "\(rig.taps.taps.count) taps")
+  rig.pump.hear(false)
+  rig.pump.idle()
+  check(rig.taps.latest?.stops == 1, "the Mac was not left to play when the listening stopped")
+  rig.pump.close()
+
+  // After the end, with the Mac locked again, nothing is made.
+  let over = SoundRig(quiet: true)
+  over.pump.keepQuiet()
+  over.pump.close()
+  over.pump.screenShown(false)
+  over.pump.screenShown(true)
+  over.pump.screenShown(false)
+  over.pump.idle()
+  check(over.taps.taps.count == 1 && over.taps.latest?.stops == 1, "\(over.taps.taps.count) taps")
+}
+
 func testListeningAgainWithNoStopBetweenBeginsAnotherRunFromNothing() {
   let rig = SoundRig()
   rig.pump.hear(true)
@@ -500,6 +597,52 @@ func testAProgramThatBeginsJustBeforeTheEndOfTheCountIsNotTakenForAMacThatHasNot
   check(rig.session.silences.isEmpty, "\(rig.session.silences)")
   check(rig.taps.latest?.stops == 0)
   check(rig.session.packets.count == 94 + 1 + 300, "\(rig.session.packets.count) packets")
+  rig.pump.close()
+}
+
+func testAProgramThatPlaysWhenTheCountBeginsAndIsGoneBeforeItEndsIsNotTakenForAMacThatHasNotLetTheAppRecord() {
+  let rig = SoundRig()
+  rig.taps.playing = true
+  rig.pump.hear(true)
+  rig.pump.idle()
+  // A Mac that has let the app record. A program plays when the count begins, and the tap has not
+  // read its sound yet. It stops before the two seconds are over: the sign is a program at both
+  // ends of the count, and this is one at the first only.
+  rig.silence(blocks: 1)
+  rig.taps.latest?.setPlaying(false)
+  rig.silence(blocks: 93)
+  check(rig.taps.latest?.looks == 2, "\(String(describing: rig.taps.latest?.looks)) looks")
+  check(rig.session.silences.isEmpty, "\(rig.session.silences)")
+  check(rig.taps.latest?.stops == 0, "the Mac was left quiet")
+  // The count after it begins with nothing playing, and ends the same way.
+  rig.silence(blocks: 94)
+  check(rig.session.silences.isEmpty, "\(rig.session.silences)")
+  check(rig.taps.latest?.looks == 3, "\(String(describing: rig.taps.latest?.looks)) looks")
+  rig.pump.close()
+}
+
+func testASecondRunLooksAfreshForTheProgramThatPlaysWhenItsCountBegins() {
+  let rig = SoundRig()
+  rig.taps.playing = true
+  rig.pump.hear(true)
+  rig.pump.idle()
+  // The first run looks when its count begins, and finds a program.
+  rig.silence(blocks: 1)
+  check(rig.taps.latest?.looks == 1, "\(String(describing: rig.taps.latest?.looks)) looks")
+  // The person asks anew with no stop between, so the tap stays and the run begins from nothing.
+  // The program is gone, and another starts after the first look of the new run.
+  rig.taps.latest?.setPlaying(false)
+  rig.pump.hear(true)
+  rig.pump.idle()
+  check(rig.taps.taps.count == 1 && rig.session.begun.count == 2, "\(rig.taps.taps.count) taps")
+  rig.silence(blocks: 1)
+  check(rig.taps.latest?.looks == 2, "the new run did not look for itself: \(String(describing: rig.taps.latest?.looks))")
+  rig.taps.latest?.setPlaying(true)
+  // The count of the new run ends with a program that was not there when it began: not the sign.
+  rig.silence(blocks: 93)
+  check(rig.taps.latest?.looks == 3, "\(String(describing: rig.taps.latest?.looks)) looks")
+  check(rig.session.silences.isEmpty, "the first run's program was taken for the second's: \(rig.session.silences)")
+  check(rig.taps.latest?.stops == 0, "the Mac was left quiet")
   rig.pump.close()
 }
 
