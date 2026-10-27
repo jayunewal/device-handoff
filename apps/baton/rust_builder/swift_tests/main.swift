@@ -1312,6 +1312,209 @@ tests += [
   ),
 ]
 
+tests += [
+  (
+    "a secret is wiped when it is told to and when it is let go of",
+    testASecretIsWipedWhenItIsToldToAndWhenItIsLetGoOf
+  ),
+  (
+    "a secret is made only of a size that is allowed and of a fill that works",
+    testASecretIsMadeOnlyOfASizeThatIsAllowedAndOfAFillThatWorks
+  ),
+  (
+    "a secret is a copy of what it was made from and says nothing of its bytes",
+    testASecretIsACopyOfWhatItWasMadeFromAndSaysNothingOfItsBytes
+  ),
+  (
+    "a secret is read from what the Rust side passes and only within the range",
+    testASecretIsReadFromWhatTheRustSidePassesAndOnlyWithinTheRange
+  ),
+  (
+    "a word of a secret is read only where there is one",
+    testAWordOfASecretIsReadOnlyWhereThereIsOne
+  ),
+  (
+    "a setup is read with its password in memory that is wiped",
+    testASetupIsReadWithItsPasswordInMemoryThatIsWiped
+  ),
+  ("a setup that is not whole is not read", testASetupThatIsNotWholeIsNotRead),
+  (
+    "an attempt is read with its key in memory that is wiped",
+    testAnAttemptIsReadWithItsKeyInMemoryThatIsWiped
+  ),
+  ("an attempt that is not whole is not opened", testAnAttemptThatIsNotWholeIsNotOpened),
+  ("the way of sealing is known by its number", testTheWayOfSealingIsKnownByItsNumber),
+  (
+    "what set up made is written only to room that is there and is enough",
+    testWhatSetUpMadeIsWrittenOnlyToRoomThatIsThereAndIsEnough
+  ),
+  (
+    "every printable character of ASCII has its own key of the US layout",
+    testEveryPrintableCharacterOfAsciiHasItsOwnKeyOfTheUsLayout
+  ),
+  (
+    "the keys of letters digits and symbols are those of the US layout",
+    testTheKeysOfLettersDigitsAndSymbolsAreThoseOfTheUsLayout
+  ),
+  (
+    "characters that are not part of a password have no key and others are typed with their character",
+    testCharactersThatAreNotPartOfAPasswordHaveNoKeyAndOthersAreTypedWithTheirCharacter
+  ),
+  (
+    "well formed UTF-8 is decoded and the decoder moves past what it read",
+    testWellFormedUtf8IsDecodedAndTheDecoderMovesPastWhatItRead
+  ),
+  (
+    "UTF-8 that is not well formed is not decoded and the decoder stays where it was",
+    testUtf8ThatIsNotWellFormedIsNotDecodedAndTheDecoderStaysWhereItWas
+  ),
+  (
+    "a password is read as characters whole or not at all",
+    testAPasswordIsReadAsCharactersWholeOrNotAtAll
+  ),
+  (
+    "an unlock is set up by checking the password boxing it and sealing the key",
+    testAnUnlockIsSetUpByCheckingThePasswordBoxingItAndSealingTheKey
+  ),
+  (
+    "an unlock is not set up with a way of sealing or a key that this Mac does not have",
+    testAnUnlockIsNotSetUpWithAWayOfSealingOrAKeyThatThisMacDoesNotHave
+  ),
+  (
+    "what the system says of the password is what the setup says and nothing is boxed for a password it refuses",
+    testWhatTheSystemSaysOfThePasswordIsWhatTheSetupSaysAndNothingIsBoxedForAPasswordItRefuses
+  ),
+  (
+    "a password that cannot be typed is refused at the setup and not at the first unlock",
+    testAPasswordThatCannotBeTypedIsRefusedAtTheSetupAndNotAtTheFirstUnlock
+  ),
+  (
+    "a setup that cannot be boxed or sealed fails and wipes what it made",
+    testASetupThatCannotBeBoxedOrSealedFailsAndWipesWhatItMade
+  ),
+  (
+    "an unlock does its steps in order and types the whole password then return",
+    testAnUnlockDoesItsStepsInOrderAndTypesTheWholePasswordThenReturn
+  ),
+  (
+    "an attempt that is over types nothing and keeps nothing",
+    testAnAttemptThatIsOverTypesNothingAndKeepsNothing
+  ),
+  (
+    "a key that does not open the box is stale and nothing is kept or typed",
+    testAKeyThatDoesNotOpenTheBoxIsStaleAndNothingIsKeptOrTyped
+  ),
+  (
+    "an unlock that cannot make seal or keep the new box types nothing",
+    testAnUnlockThatCannotMakeSealOrKeepTheNewBoxTypesNothing
+  ),
+  (
+    "an unlock of a password that cannot be typed whole types nothing at all",
+    testAnUnlockOfAPasswordThatCannotBeTypedWholeTypesNothingAtAll
+  ),
+  ("a screen that is not locked is not typed at", testAScreenThatIsNotLockedIsNotTypedAt),
+  (
+    "a screen whose privacy is not in place is not woken or typed at",
+    testAScreenWhosePrivacyIsNotInPlaceIsNotWokenOrTypedAt
+  ),
+  (
+    "the cover is verified again after the wake and nothing is typed if it is lost",
+    testTheCoverIsVerifiedAgainAfterTheWakeAndNothingIsTypedIfItIsLost
+  ),
+  (
+    "an unlock stops before the first key that is not for a locked screen whatever key that is",
+    testAnUnlockStopsBeforeTheFirstKeyThatIsNotForALockedScreenWhateverKeyThatIs
+  ),
+  (
+    "a key that cannot be posted ends the attempt and no key follows it",
+    testAKeyThatCannotBePostedEndsTheAttemptAndNoKeyFollowsIt
+  ),
+  (
+    "the screen is waited for and the answer is what it proves to be",
+    testTheScreenIsWaitedForAndTheAnswerIsWhatItProvesToBe
+  ),
+  (
+    "the last key is return and nothing is typed after it",
+    testTheLastKeyIsReturnAndNothingIsTypedAfterIt
+  ),
+  (
+    "the library is asked whether the attempt goes on and anything but a yes is a no",
+    testTheLibraryIsAskedWhetherTheAttemptGoesOnAndAnythingButAYesIsANo
+  ),
+  (
+    "the new box is kept only when the library clearly says it is",
+    testTheNewBoxIsKeptOnlyWhenTheLibraryClearlySaysItIs
+  ),
+  (
+    "the library is told whether the privacy is in place",
+    testTheLibraryIsToldWhetherThePrivacyIsInPlace
+  ),
+  (
+    "the table has the three entries to unlock together or not at all",
+    testTheTableHasTheThreeEntriesToUnlockTogetherOrNotAtAll
+  ),
+  (
+    "the password is checked by the platform and what it says is what the Rust side hears",
+    testThePasswordIsCheckedByThePlatformAndWhatItSaysIsWhatTheRustSideHears
+  ),
+  (
+    "a check that cannot be read is refused and the number of bytes is what the interface allows",
+    testACheckThatCannotBeReadIsRefusedAndTheNumberOfBytesIsWhatTheInterfaceAllows
+  ),
+  (
+    "an unlock is set up by the platform and what it made is written for the Rust side",
+    testAnUnlockIsSetUpByThePlatformAndWhatItMadeIsWrittenForTheRustSide
+  ),
+  (
+    "an unlock that the system refuses or cannot make is told as the interface says",
+    testAnUnlockThatTheSystemRefusesOrCannotMakeIsToldAsTheInterfaceSays
+  ),
+  (
+    "a setup that cannot be read is refused and reaches nothing",
+    testASetupThatCannotBeReadIsRefusedAndReachesNothing
+  ),
+  (
+    "each outcome of an unlock is the number that the Rust side expects",
+    testEachOutcomeOfAnUnlockIsTheNumberThatTheRustSideExpects
+  ),
+  (
+    "an attempt that cannot be read or has no window is a failure that reaches nothing",
+    testAnAttemptThatCannotBeReadOrHasNoWindowIsAFailureThatReachesNothing
+  ),
+  (
+    "a window that cannot unlock says it failed and still wipes the key",
+    testAWindowThatCannotUnlockSaysItFailedAndStillWipesTheKey
+  ),
+  (
+    "the session says its privacy is in place only while everything is and tells each change",
+    testTheSessionSaysItsPrivacyIsInPlaceOnlyWhileEverythingIsAndTellsEachChange
+  ),
+  (
+    "a session that could not be raised never says that its privacy is in place",
+    testASessionThatCouldNotBeRaisedNeverSaysThatItsPrivacyIsInPlace
+  ),
+  (
+    "something at the Mac takes the privacy out of place before the Mac is locked and nothing puts it back",
+    testSomethingAtTheMacTakesThePrivacyOutOfPlaceBeforeTheMacIsLockedAndNothingPutsItBack
+  ),
+  (
+    "the library is never told with a lock of the session held",
+    testTheLibraryIsNeverToldWithALockOfTheSessionHeld
+  ),
+  (
+    "words that come from many threads are told in order and the last is how things stand",
+    testWordsThatComeFromManyThreadsAreToldInOrderAndTheLastIsHowThingsStand
+  ),
+  (
+    "the cover is put on again only for a session that is raised and the answer is what the curtain says",
+    testTheCoverIsPutOnAgainOnlyForASessionThatIsRaisedAndTheAnswerIsWhatTheCurtainSays
+  ),
+  (
+    "a curtain that cannot put the cover on again is dark while it is well",
+    testACurtainThatCannotPutTheCoverOnAgainIsDarkWhileItIsWell
+  ),
+]
+
 #if canImport(AudioToolbox)
   tests += [
     (
@@ -1425,6 +1628,42 @@ tests += [
     (
       "a private screen is given only to an app that can keep it private and changes nothing until it starts",
       testAPrivateScreenIsGivenOnlyToAnAppThatCanKeepItPrivateAndChangesNothingUntilItStarts
+    ),
+    (
+      "a box holds the password whole and its size does not say how long it is",
+      testABoxHoldsThePasswordWholeAndItsSizeDoesNotSayHowLongItIs
+    ),
+    (
+      "a box opens nothing with another key other ids another form or any change",
+      testABoxOpensNothingWithAnotherKeyOtherIdsAnotherFormOrAnyChange
+    ),
+    (
+      "the key of a box is sealed to a key of P-256 and only that key opens it",
+      testTheKeyOfABoxIsSealedToAKeyOfP256AndOnlyThatKeyOpensIt
+    ),
+    (
+      "an unlock is set up and opened with nothing but the phone's key and the box key it sealed",
+      testAnUnlockIsSetUpAndOpenedWithNothingButThePhonesKeyAndTheBoxKeyItSealed
+    ),
+    (
+      "a key is pressed and released with shift if it needs it and the character is set on the events",
+      testAKeyIsPressedAndReleasedWithShiftIfItNeedsItAndTheCharacterIsSetOnTheEvents
+    ),
+    (
+      "a key that cannot be posted is reported and shift is released whatever happened",
+      testAKeyThatCannotBePostedIsReportedAndShiftIsReleasedWhateverHappened
+    ),
+    (
+      "a password that is not well formed UTF-8 is not checked at all",
+      testAPasswordThatIsNotWellFormedUtf8IsNotCheckedAtAll
+    ),
+    (
+      "the Mac can be unlocked and sets an unlock up only for a way of sealing and a key it has",
+      testTheMacCanBeUnlockedAndSetsAnUnlockUpOnlyForAWayOfSealingAndAKeyItHas
+    ),
+    (
+      "a screen that never started is not unlocked and its key is wiped",
+      testAScreenThatNeverStartedIsNotUnlockedAndItsKeyIsWiped
     ),
   ]
 #endif

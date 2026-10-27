@@ -107,6 +107,14 @@ protocol SharerPlatform: AnyObject {
   /// every end.
   var canLeave: Bool { get }
 
+  /// Whether the person at a paired device can unlock the screen of this one when it is locked,
+  /// with their face (`unlockCheck`, `unlockSetup` and `SharedWindow.unlock`,
+  /// docs/adr/0013-unlock-from-a-phone.md). It is asked once, when the platform is registered, and
+  /// counts only for a platform that can give its screen, since an unlock goes with the privacy of
+  /// a screen that is given private: a device that can tells the devices it is paired with that
+  /// they can be approved to unlock it, and one that cannot says nothing of it.
+  var canUnlock: Bool { get }
+
   /// Shows the picker of the system. It does not wait for the person: the answer is given to
   /// `answerPick`, once for each request, from any thread but not from inside this call. Throws
   /// `SharerFailure` if the picker cannot be shown, and nothing is answered then.
@@ -125,12 +133,26 @@ protocol SharerPlatform: AnyObject {
   /// changes nothing at the device. Only the size and the kind of the info are read: a screen given
   /// this way is not named.
   func screen(privacy: ScreenPrivacy) throws -> (window: SharedWindow, info: PickedWindowInfo)
+
+  /// The person typed the password of their account to set an unlock up: checks it against the
+  /// account of the person who uses this device, the way the lock screen does, and changes nothing.
+  /// It may wait for the system. The password is wiped by the caller, and is not kept.
+  func unlockCheck(_ password: Secret) -> PasswordCheck
+
+  /// The password was accepted and the other device gave the key that the unlock is sealed to: puts
+  /// the password in a box that only the other device opens (`makeUnlock`). It may wait. The
+  /// password is wiped by the caller, and is not kept.
+  func unlockSetup(_ setup: UnlockSetup) -> UnlockMade
 }
 
 extension SharerPlatform {
   var canGiveScreen: Bool { false }
   var canSendSound: Bool { false }
   var canLeave: Bool { false }
+  var canUnlock: Bool { false }
+
+  func unlockCheck(_ password: Secret) -> PasswordCheck { .unsupported }
+  func unlockSetup(_ setup: UnlockSetup) -> UnlockMade { .unsupported }
 
   func screen(privacy: ScreenPrivacy) throws -> (window: SharedWindow, info: PickedWindowInfo) {
     throw SharerFailure(sentence: "This device cannot give its screen without asking.")
@@ -196,6 +218,15 @@ protocol SharedWindow: AnyObject {
   /// begins at each. A `true` comes again, with no `false` between, when the person at the other
   /// device asks anew while no sound is being sent. A window that sends no sound has nothing to do.
   func hear(_ on: Bool)
+
+  /// The face of the person at the other device was recognised and the key of the box came with it
+  /// (docs/adr/0013-unlock-from-a-phone.md): unlocks the screen with the password in the box, and
+  /// says what came of it (`runUnlock` has the steps and their order). Called after a `start` that
+  /// worked and not after `ended`, in turn with the calls above, and only for a window that was
+  /// given as `ScreenPrivacy.private`, one attempt at a time. It takes as long as the system takes,
+  /// ten seconds and more. The key of the box is wiped by the caller, whatever this returns. A
+  /// window that cannot be unlocked says `failed` and types nothing.
+  func unlock(_ attempt: UnlockAttempt) -> UnlockOutcome
 }
 
 extension SharedWindow {
@@ -204,6 +235,7 @@ extension SharedWindow {
   func lift(screen: Bool, input: Bool) {}
   func hear(_ on: Bool) {}
   func endedLeaving() { ended() }
+  func unlock(_ attempt: UnlockAttempt) -> UnlockOutcome { .failed }
 }
 
 // MARK: - The answer to a pick
@@ -515,6 +547,66 @@ private func sharerHear(_ picked: UnsafeMutableRawPointer?, _ on: UInt32) {
   windowOf(picked)?.hear(on == 1)
 }
 
+/// The person typed the password of their account to set an unlock up. The password is copied to
+/// memory that is wiped, and checked; it is never made a string here, nor kept.
+private func sharerUnlockCheck(
+  _ context: UnsafeMutableRawPointer?, _ password: UnsafePointer<BatonBytes>?,
+  _ message: UnsafeMutablePointer<BatonMessage>?
+) -> Int32 {
+  guard let platform = sharerOf(context), platform.canUnlock, let password, let message,
+    message.pointee.size >= UInt32(MemoryLayout<BatonMessage>.size),
+    let secret = Secret(reading: password.pointee, within: 1...UnlockLimits.passwordMax)
+  else { return badArgument }
+  defer { secret.wipe() }
+  switch platform.unlockCheck(secret) {
+  case .accepted: return ok
+  case .wrong: return Int32(BATON_PASSWORD_WRONG)
+  case .unsupported: return Int32(BATON_PASSWORD_UNSUPPORTED)
+  case .failed(let sentence):
+    write(sentence, to: message)
+    return platformFailure
+  }
+}
+
+/// The password was accepted and the other device gave its key: the password goes in a box that
+/// only that device opens, and the box and the sealed key are written to `made`.
+private func sharerUnlockSetup(
+  _ context: UnsafeMutableRawPointer?, _ setup: UnsafePointer<BatonUnlockSetup>?,
+  _ made: UnsafeMutablePointer<BatonUnlockMade>?, _ message: UnsafeMutablePointer<BatonMessage>?
+) -> Int32 {
+  guard let platform = sharerOf(context), platform.canUnlock, let setup, let made, let message,
+    message.pointee.size >= UInt32(MemoryLayout<BatonMessage>.size),
+    made.pointee.size >= UInt32(MemoryLayout<BatonUnlockMade>.size),
+    let request = UnlockSetup(reading: setup)
+  else { return badArgument }
+  defer { request.password.wipe() }
+  switch platform.unlockSetup(request) {
+  case .made(let boxed, let sealed):
+    guard writeMade(boxed: boxed, sealed: sealed, to: made) else {
+      write("This Mac could not hand over the box for the unlock.", to: message)
+      return platformFailure
+    }
+    return ok
+  case .wrong: return Int32(BATON_PASSWORD_WRONG)
+  case .unsupported: return Int32(BATON_PASSWORD_UNSUPPORTED)
+  case .failed(let sentence):
+    write(sentence, to: message)
+    return platformFailure
+  }
+}
+
+/// The other device sent the key of the box: the screen is unlocked, and what came of it is
+/// returned. An attempt that is not well formed is not opened. The key of the box is wiped here
+/// whatever the window does.
+private func sharerUnlock(
+  _ picked: UnsafeMutableRawPointer?, _ unlock: UnsafePointer<BatonUnlock>?
+) -> UInt32 {
+  guard let window = windowOf(picked), let unlock, let attempt = UnlockAttempt(reading: unlock)
+  else { return UnlockOutcome.failed.number }
+  defer { attempt.boxKey.wipe() }
+  return window.unlock(attempt).number
+}
+
 /// Gives the Rust side the platform's sharer: a device that has registered one lets the person
 /// share a window, and a device that has not shares none. Call it once, at launch, before the app
 /// starts. Returns what `baton_stream_register_sharer` returned.
@@ -551,6 +643,14 @@ func registerSharer(_ platform: SharerPlatform) -> Int32 {
     table.lift = sharerLift
     if platform.canLeave {
       table.leave = sharerLeave
+    }
+    // The unlock goes with a screen that is given private, which is why it is not given to a
+    // device that cannot give its screen. All three entries or none: a table that gives some of
+    // them reads as none.
+    if platform.canUnlock {
+      table.unlock_check = sharerUnlockCheck
+      table.unlock_setup = sharerUnlockSetup
+      table.unlock = sharerUnlock
     }
   }
   // A device that cannot send sound leaves the entry out, and the devices it is paired with are not

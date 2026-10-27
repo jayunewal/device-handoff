@@ -282,7 +282,7 @@ final class ScreenCover {
     CGDisplayRestoreColorSyncSettings()
   }
 
-  private static func online() -> [CGDirectDisplayID]? {
+  static func online() -> [CGDirectDisplayID]? {
     var ids = [CGDirectDisplayID](repeating: 0, count: 32)
     var count: UInt32 = 0
     guard CGGetOnlineDisplayList(UInt32(ids.count), &ids, &count) == .success else { return nil }
@@ -493,6 +493,17 @@ final class MacCurtain: Curtain {
     mac.lock(attempt: attempt)
   }
 
+  func darken() -> Bool {
+    mutex.lock()
+    let raised = covered
+    let showing = screenLifted
+    mutex.unlock()
+    guard raised, !showing else { return false }
+    // On the queue of the looks, so that a look is never half way through when the cover is put
+    // on once more, and the two never put a cover on a screen at the same moment.
+    return queue.sync { cover.apply() }
+  }
+
   /// Whether the cover and the hold are up and the looks at them go on. The guard hears that the
   /// session is well only while this is true.
   var healthy: Bool {
@@ -571,14 +582,18 @@ final class MacCurtain: Curtain {
 /// The privacy of a session that another device controls, on this Mac. `ledger` is the one that
 /// the poster of the events uses, so that the keys the other device sends are not taken for the
 /// keys of somebody at the Mac. `end` ends the session with a sentence for the person there.
-func makePrivateSession(ledger: PostLedger, end: @escaping (String) -> Void) -> PrivateSession {
+/// `placed` is told whether the privacy is in place, each time that changes
+/// (`PrivateSession.inPlace`).
+func makePrivateSession(
+  ledger: PostLedger, end: @escaping (String) -> Void, placed: @escaping (Bool) -> Void = { _ in }
+) -> PrivateSession {
   let curtain = MacCurtain(ledger: ledger)
   // The guard is inside the app, next to its own program. A build without it has no private
   // session.
   let guardian = GuardLink(executable: Bundle.main.url(forAuxiliaryExecutable: "BatonGuard"))
   let session = PrivateSession(
     curtain: curtain, guardian: guardian, end: end,
-    log: { privacyLog.notice("Baton: \($0, privacy: .public)") })
+    log: { privacyLog.notice("Baton: \($0, privacy: .public)") }, placed: placed)
   // A quit of the app is an end of the session like any other: `finish` returns when the Mac is
   // locked and the cover is down, and only then does the quit go on and the process end.
   curtain.whenTheAppQuits = { [weak session] in session?.finish(.sessionOver) }

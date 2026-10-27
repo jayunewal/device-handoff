@@ -132,6 +132,23 @@ final class FakeCurtain: Curtain {
     }
   }
 
+  /// What `darken` says of the screens when the curtain is well, and how often it was asked.
+  var screensAreDark = true
+  private var darkened = 0
+
+  var darkens: Int {
+    mutex.lock()
+    defer { mutex.unlock() }
+    return darkened
+  }
+
+  func darken() -> Bool {
+    mutex.lock()
+    defer { mutex.unlock() }
+    darkened += 1
+    return isHealthy && screensAreDark
+  }
+
   func raise(alarm: @escaping (PrivacyAlarm) -> Void) throws {
     journal?.add("raise")
     mutex.lock()
