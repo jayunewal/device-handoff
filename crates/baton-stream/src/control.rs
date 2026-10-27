@@ -131,6 +131,10 @@ pub enum SilentReason {
     NoPermission,
     /// Something went wrong at the source that the viewer did not cause.
     Failed,
+    /// The person at the source has not allowed this device to hear the sound of the screen. The
+    /// setting is theirs, kept at the source for each paired device, and a viewer that is told so
+    /// asks again only when its person does.
+    NotAllowed,
     /// Any reason this version does not know about.
     #[serde(other)]
     Other,
@@ -652,6 +656,13 @@ mod tests {
             })),
             // {"Silent": {"reason": "NoPermission"}}
             "0000001da16653696c656e74a166726561736f6e6c4e6f5065726d697373696f6e"
+        );
+        assert_eq!(
+            encoded(&SourceMessage::Silent(Silent {
+                reason: SilentReason::NotAllowed
+            })),
+            // {"Silent": {"reason": "NotAllowed"}}
+            "0000001ba16653696c656e74a166726561736f6e6a4e6f74416c6c6f776564"
         );
     }
 
@@ -1182,6 +1193,7 @@ mod tests {
             SilentReason::Window,
             SilentReason::NoPermission,
             SilentReason::Failed,
+            SilentReason::NotAllowed,
             SilentReason::Other,
         ] {
             assert!(frame::encode(&SourceMessage::Silent(Silent { reason })).is_ok());
@@ -1683,6 +1695,7 @@ mod tests {
                 Just(SilentReason::Window),
                 Just(SilentReason::NoPermission),
                 Just(SilentReason::Failed),
+                Just(SilentReason::NotAllowed),
                 Just(SilentReason::Other)
             ]
             .prop_map(|reason| SourceMessage::Silent(Silent { reason })),

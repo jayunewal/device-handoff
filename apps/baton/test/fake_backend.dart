@@ -404,6 +404,34 @@ class FakeSession implements Session {
     startAccesses[id] = access;
   }
 
+  /// What `hearSetting` gives for each device. A device that is not here has not been told: `null`.
+  final Map<String, bool> hearSettings = {};
+
+  @override
+  bool? hearSetting(String id) {
+    final failure = startAccessUnknown;
+    if (failure != null) throw failure;
+    return hearSettings[id];
+  }
+
+  /// What `setHearSetting` was asked, in order.
+  final List<({String id, bool? setting})> hearSettingSet = [];
+
+  /// What `setHearSetting` throws, if it should fail.
+  Object? hearSettingFailure;
+
+  @override
+  Future<void> setHearSetting(String id, bool? setting) async {
+    hearSettingSet.add((id: id, setting: setting));
+    final failure = hearSettingFailure;
+    if (failure != null) throw failure;
+    if (setting == null) {
+      hearSettings.remove(id);
+    } else {
+      hearSettings[id] = setting;
+    }
+  }
+
   /// The sessions that `endWindow` was asked to end, in order.
   final List<int> windowsEnded = [];
 

@@ -223,6 +223,12 @@ impl Rig {
         let sharing = Dev::start("Studio Mac", windows).await;
         let viewing = Dev::start("Kitchen iPad", viewing_registry.windows()).await;
         pair(&sharing, &viewing).await;
+        // The person at the Mac lets the iPad hear, as the tests of sound assume. The one about
+        // that setting takes it back.
+        sharing
+            .app
+            .set_hear_setting(&viewing.id(), Some(true))
+            .unwrap();
         let (sharing_events, viewing_events) = (sharing.app.events(), viewing.app.events());
         Self {
             sharing,
@@ -3248,6 +3254,41 @@ async fn the_sound_of_a_display_goes_from_the_functions_the_platform_calls_to_th
         .filter(|call| matches!(call, Call::Sound(_)))
         .count();
     assert_eq!(forms, 2);
+
+    assert!(rig.viewing.app.end_window(session));
+    rig.nothing_is_left().await;
+}
+
+#[tokio::test]
+async fn a_device_that_the_person_does_not_let_hear_is_told_so_and_the_platform_is_not_asked() {
+    let mut rig = Rig::new().await;
+    rig.sharing
+        .app
+        .set_hear_setting(&rig.viewing.id(), None)
+        .unwrap();
+    let shown = rig.share_of(true, false).await;
+    let (window, session) = (shown.window, shown.viewing.id);
+
+    // The speaker of the other platform is told that the sound stopped, for a reason that is
+    // another one to it, and the platform that records is never asked.
+    assert!(rig.viewing.app.hear_window(session, true));
+    until("the speaker to be told why there is no sound", || {
+        rig.sound_calls(1) == [Call::Stopped(SILENT_OTHER)]
+    })
+    .await;
+    tokio::time::sleep(QUIET).await;
+    assert_eq!(rig.platform.hear_calls(window), []);
+
+    // The person at the Mac says yes, and the next request is taken in the session that runs.
+    rig.sharing
+        .app
+        .set_hear_setting(&rig.viewing.id(), Some(true))
+        .unwrap();
+    assert!(rig.viewing.app.hear_window(session, true));
+    until("the platform to be asked for the sound", || {
+        rig.platform.hear_calls(window) == [RECORD]
+    })
+    .await;
 
     assert!(rig.viewing.app.end_window(session));
     rig.nothing_is_left().await;

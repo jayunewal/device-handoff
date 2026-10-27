@@ -256,6 +256,24 @@ void main() {
       },
     );
 
+    test('lets a device hear as the person says, where they say it', () async {
+      final mac = await _device('Device A');
+      final phone = await _device('Device B');
+      final events = StreamIterator(await mac.events());
+      addTearDown(() => unawaited(events.cancel()));
+      await _pair(mac, events, phone);
+
+      // Nobody has said to a device that was just paired.
+      expect(mac.hearSetting(phone.me.id), isNull);
+      // A yes, a no and "not said" again go to the library and come back as they went, and they
+      // are kept at the device where they were said, not at the other.
+      for (final setting in <bool?>[true, false, null]) {
+        await mac.setHearSetting(phone.me.id, setting);
+        expect(mac.hearSetting(phone.me.id), setting);
+        expect(phone.hearSetting(mac.me.id), isNull);
+      }
+    });
+
     test('is not shown by a computer that has no way to show it', () async {
       final mac = await _device('Device A');
       final phone = await _device('Device B');
@@ -287,6 +305,8 @@ void main() {
         session.setStartAccess(nobody, StartAccess.look),
         notPaired(),
       );
+      expect(() => session.hearSetting(nobody), notPaired());
+      await expectLater(session.setHearSetting(nobody, true), notPaired());
     });
   });
 }

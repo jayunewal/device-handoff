@@ -107,7 +107,8 @@ pub enum Event {
     /// has allowed it to record the sound, and then [`WindowSound::Playing`] follows; a person
     /// who asks again with `hear_window` makes it try at once. A device that could not play it
     /// ([`WindowSound::CannotPlay`]) has the other device stop sending, and does not try again by
-    /// itself: only the person asking again does.
+    /// itself: only the person asking again does. Nor does one that the other device does not let
+    /// hear ([`WindowSound::NotAllowed`]), until the person there has allowed it.
     WindowSound {
         /// The [`WindowSession::id`] whose sound this is.
         id: u64,

@@ -494,6 +494,11 @@ pub enum WindowSound {
     /// call holds the audio of a phone, say, or there is nothing to play on. The other device was
     /// told to stop. Turning the sound on again with `Baton.hearWindow` tries again.
     CannotPlay,
+    /// The other device sends none: the person there has not allowed this device to hear the sound
+    /// of its screen, a setting that they keep there for each device (`Baton.setHearSetting`).
+    /// Asking again with `Baton.hearWindow` is taken once they have allowed it, also in this
+    /// session.
+    NotAllowed,
 }
 
 /// How a window session ended.

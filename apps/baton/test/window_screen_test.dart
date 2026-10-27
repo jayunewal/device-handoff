@@ -1336,6 +1336,39 @@ void main() {
     );
 
     testWidgets(
+      'says that the other device does not let this one hear, and asks again with a tap',
+      (tester) async {
+        final shown = await _open(tester, window: screenWithSound());
+        await tester.tap(off);
+        await tester.pumpAndSettle();
+
+        hearOf(shown, WindowSound.notAllowed);
+        await tester.pumpAndSettle();
+        expect(silent, findsOneWidget);
+        expect(
+          find.textContaining('does not let this device hear'),
+          findsOneWidget,
+        );
+
+        // The person at the other device allowed it meanwhile: the next tap is taken.
+        await tester.tap(silent);
+        await tester.pumpAndSettle();
+        expect(asking, findsOneWidget);
+        expect(
+          find.textContaining('does not let this device hear'),
+          findsNothing,
+        );
+        hearOf(shown, WindowSound.playing);
+        await tester.pumpAndSettle();
+        expect(playing, findsOneWidget);
+        expect(shown.session.windowHears, [
+          (session: 1, listen: true),
+          (session: 1, listen: true),
+        ]);
+      },
+    );
+
+    testWidgets(
       'says that this device could not play the sound, and plays it when the person asks again',
       (tester) async {
         final shown = await _open(tester, window: screenWithSound());
@@ -1537,6 +1570,12 @@ void main() {
         (
           WindowSound.cannotPlay,
           'This device could not play the sound of Anna’s Mac. Tap the '
+              'speaker to try again.',
+        ),
+        (
+          WindowSound.notAllowed,
+          'Anna’s Mac does not let this device hear it. Someone at Anna’s Mac '
+              'can allow it in the settings for this device. Then tap the '
               'speaker to try again.',
         ),
       ]) {

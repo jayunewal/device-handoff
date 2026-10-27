@@ -9,7 +9,10 @@
 //! real viewer in front of a source that a test writes by hand, and the third has two nodes.
 
 use std::{
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -30,9 +33,9 @@ use iroh::endpoint::{Connection, RecvStream, SendStream};
 use tokio::sync::mpsc;
 
 use super::{
-    End, Granted, NotSent, Play, ShareOutcome, SoundPacket, SoundPlan, SourceEvents, SourceHandle,
-    SourceParams, SourceSetup, Streaming, Takes, ViewHandle, ViewParams, Viewer, Viewing,
-    WindowHandler, WindowOffer, WindowShare, WindowVerdict,
+    End, Granted, MayHear, NotSent, Play, ShareOutcome, SoundPacket, SoundPlan, SourceEvents,
+    SourceHandle, SourceParams, SourceSetup, Streaming, Takes, ViewHandle, ViewParams, Viewer,
+    Viewing, WindowHandler, WindowOffer, WindowShare, WindowVerdict,
     answer_tests::{App, Heard, Plan, Platform, Speaking, Speech, Spoken, quick},
     offer_tests::fit,
     unlock::UnlockSetup,
@@ -40,6 +43,7 @@ use super::{
 use crate::{
     Config, Error, Identity, NodeBuilder, TrustStore,
     config::RelayMode,
+    policy::{DevicePolicy, StartPolicy},
     testing::{Device, PATIENCE, QUIET, TestNode, connect, next, nothing_arrives, stopped_with},
     trust::PairedDevice,
     uni::{Arrival, Kind, Sinks},
@@ -173,6 +177,11 @@ impl SourceRig {
     }
 
     async fn with(plan: SoundPlan, params: SourceParams) -> Self {
+        Self::letting(plan, params, MayHear::always()).await
+    }
+
+    /// A rig whose person at the source answers `may_hear` each time the viewer asks to hear.
+    async fn letting(plan: SoundPlan, params: SourceParams, may_hear: MayHear) -> Self {
         let streaming = Streaming::new();
         let sinks = Sinks::default().install(Kind::Control, 1, streaming.clone());
         let source = Device::new(sinks, PATIENCE).await;
@@ -189,6 +198,7 @@ impl SourceRig {
             private: false,
             takes: takes(),
             sound: plan,
+            may_hear,
             unlock: UnlockSetup::Unsupported,
             leave: false,
             params,
@@ -252,7 +262,16 @@ impl SourceRig {
     /// A viewer that asks to hear, and a platform that begins the sound: the viewer's control
     /// stream, and the source's after the `Sound`.
     async fn listening(plan: SoundPlan, params: SourceParams) -> (Self, SendStream, RecvStream) {
-        let mut rig = Self::with(plan, params).await;
+        Self::listening_letting(plan, params, MayHear::always()).await
+    }
+
+    /// The same, for a person at the source who answers `may_hear`.
+    async fn listening_letting(
+        plan: SoundPlan,
+        params: SourceParams,
+        may_hear: MayHear,
+    ) -> (Self, SendStream, RecvStream) {
+        let mut rig = Self::letting(plan, params, may_hear).await;
         let mut control = rig.source_control().await;
         let mut viewer = rig.viewer_control().await;
         // The viewer is there from the start, so that it is not quiet.
@@ -390,6 +409,77 @@ async fn a_session_of_a_window_answers_a_hear_that_is_on_with_silent_and_asks_no
     );
     assert_eq!(rig.asks.all(), []);
     assert_eq!(rig.handle.sound(packet(1, 0)).unwrap(), None);
+}
+
+/// What the person at a source says of a viewer that hears: nothing is allowed until the flag is
+/// set, and what the flag says by then is what counts each time the viewer asks.
+fn permission() -> (Arc<AtomicBool>, MayHear) {
+    let allowed = Arc::new(AtomicBool::new(false));
+    let may_hear = MayHear::new({
+        let allowed = Arc::clone(&allowed);
+        move || allowed.load(Ordering::SeqCst)
+    });
+    (allowed, may_hear)
+}
+
+#[tokio::test]
+async fn a_viewer_that_may_not_hear_a_display_is_told_so_and_the_platform_is_not_asked() {
+    let (allowed, may_hear) = permission();
+    let mut rig = SourceRig::letting(SoundPlan::Display, quick_source(), may_hear).await;
+    let mut control = rig.source_control().await;
+    let mut viewer = rig.viewer_control().await;
+    let hear = |on| ViewerMessage::Hear(Hear { on });
+    let not_allowed = SourceMessage::Silent(Silent {
+        reason: SilentReason::NotAllowed,
+    });
+    write_message(&mut viewer, &report()).await.unwrap();
+    write_message(&mut viewer, &hear(true)).await.unwrap();
+    assert_eq!(read_source_message(&mut control).await, not_allowed);
+    // Off says nothing, and on says it again.
+    write_message(&mut viewer, &hear(false)).await.unwrap();
+    write_message(&mut viewer, &hear(true)).await.unwrap();
+    assert_eq!(read_source_message(&mut control).await, not_allowed);
+    // The platform was never asked, and what it hands over goes nowhere.
+    assert_eq!(rig.asks.all(), []);
+    rig.handle.begin_sound(aac()).unwrap();
+    assert_eq!(rig.handle.sound(packet(1, 0)).unwrap(), None);
+    nothing_arrives(&mut rig.packets).await;
+    // The person lets the device hear. Its next request is taken, in the session that runs.
+    allowed.store(true, Ordering::SeqCst);
+    write_message(&mut viewer, &hear(true)).await.unwrap();
+    rig.until_asked(&[Asked::Hear(true)]).await;
+    rig.handle.begin_sound(aac()).unwrap();
+    assert_eq!(
+        read_source_message(&mut control).await,
+        SourceMessage::Sound(aac())
+    );
+    assert_eq!(rig.handle.sound(packet(1, 100)).unwrap(), Some(0));
+}
+
+#[tokio::test]
+async fn a_run_goes_on_when_the_person_takes_the_permission_back_until_the_viewer_asks_again() {
+    let (allowed, may_hear) = permission();
+    allowed.store(true, Ordering::SeqCst);
+    let (rig, mut viewer, mut control) =
+        SourceRig::listening_letting(SoundPlan::Display, quick_source(), may_hear).await;
+    allowed.store(false, Ordering::SeqCst);
+    // Nothing is asked of the viewer or the platform when the person says so.
+    assert_eq!(rig.handle.sound(packet(1, 100)).unwrap(), Some(0));
+    assert_eq!(rig.asks.all(), [Asked::Hear(true)]);
+    // The next request is the one that it governs: the platform is told to stop, so the device
+    // that shares plays its own sound again, and the viewer is told why.
+    write_message(&mut viewer, &ViewerMessage::Hear(Hear { on: true }))
+        .await
+        .unwrap();
+    assert_eq!(
+        read_source_message(&mut control).await,
+        SourceMessage::Silent(Silent {
+            reason: SilentReason::NotAllowed
+        })
+    );
+    rig.until_asked(&[Asked::Hear(true), Asked::Hear(false)])
+        .await;
+    assert_eq!(rig.handle.sound(packet(2, 200)).unwrap(), None);
 }
 
 #[tokio::test]
@@ -1393,11 +1483,25 @@ impl NodeRig {
         })
         .await;
         source.pair_with(&viewer);
+        // The person at the source lets the viewer hear, which the tests that follow assume. The
+        // one about the setting begins from what a device that was just paired has.
+        source
+            .trust
+            .update(&viewer.id, |device| device.policy.hear = Some(true))
+            .unwrap();
         Self {
             viewer,
             source,
             app,
         }
+    }
+
+    /// What the person at the source says of the viewer from now on.
+    fn say(&self, says: impl FnOnce(&mut DevicePolicy)) {
+        self.source
+            .trust
+            .update(&self.viewer.id, |device| says(&mut device.policy))
+            .unwrap();
     }
 
     /// Offers `window`, and gives the session that a yes starts and what its platform hears.
@@ -1559,6 +1663,49 @@ async fn sound_goes_from_the_platform_of_the_source_to_the_speaker_of_the_viewer
         rig.app.speech.all().last() == Some(&Spoken::Ended)
     })
     .await;
+}
+
+#[tokio::test]
+async fn what_the_person_at_the_source_says_of_the_viewer_counts_at_its_next_request_to_hear() {
+    let rig = NodeRig::new().await;
+    // A device that was just paired has been given nothing, so it may not hear.
+    rig.say(|policy| *policy = DevicePolicy::default());
+    let (handle, heard) = rig.share(display()).await;
+    let viewing = rig.app.handle(0);
+    assert!(viewing.hear(true));
+    until("the speaker to be told why", || {
+        rig.app.speech.all() == [Spoken::Stopped(Some(SilentReason::NotAllowed))]
+    })
+    .await;
+    assert_eq!(heard.count("hear"), 0);
+
+    // The person lets it control the screen, which lets it hear when they have not said. It
+    // asks again, in the session that runs, and the platform is asked for the sound.
+    rig.say(|policy| policy.start = StartPolicy::Control);
+    assert!(viewing.hear(true));
+    until("the platform to be asked for sound", || {
+        heard.count("hear") == 1
+    })
+    .await;
+    handle.begin_sound(aac()).unwrap();
+    until("the speaker to be told the form", || {
+        rig.app.speech.all().last() == Some(&Spoken::Sound(aac()))
+    })
+    .await;
+
+    // What they said of this device itself beats that. The next request ends the run, and the
+    // platform is told, so that the device that shares plays its own sound again.
+    rig.say(|policy| policy.hear = Some(false));
+    assert!(viewing.hear(true));
+    until("the platform to be told to let the sound play", || {
+        heard.count("hush") == 1
+    })
+    .await;
+    until("the speaker to be told why", || {
+        rig.app.speech.all().last() == Some(&Spoken::Stopped(Some(SilentReason::NotAllowed)))
+    })
+    .await;
+    assert_eq!(handle.sound(packet(1, 0)).unwrap(), None);
 }
 
 #[tokio::test]

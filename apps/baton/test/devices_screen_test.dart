@@ -934,6 +934,202 @@ void main() {
       expect(session.startAccessSet, isEmpty);
     });
 
+    final hearing = find.byType(SwitchListTile);
+
+    bool hears(WidgetTester tester) =>
+        tester.widget<SwitchListTile>(hearing).value;
+
+    Future<void> flip(WidgetTester tester) async {
+      await tester.tap(hearing);
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> save(WidgetTester tester) async {
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('shows the sound as on only where the device may control', (
+      tester,
+    ) async {
+      await show(tester);
+      for (final (access, heard) in [
+        (StartAccess.off, false),
+        (StartAccess.look, false),
+        (StartAccess.control, true),
+      ]) {
+        session.startAccesses[phone.id] = access;
+        await open(tester);
+        expect(find.text('Let Phone hear the sound'), findsOneWidget);
+        expect(hears(tester), heard, reason: '$access');
+        await tester.tap(find.text('Cancel'));
+        await tester.pumpAndSettle();
+      }
+    });
+
+    testWidgets(
+      'shows what was said of the sound, whatever the device may do',
+      (tester) async {
+        await show(tester);
+        session.startAccesses[phone.id] = StartAccess.look;
+        session.hearSettings[phone.id] = true;
+        await open(tester);
+        expect(hears(tester), isTrue);
+        await tester.tap(find.text('Cancel'));
+        await tester.pumpAndSettle();
+
+        session.startAccesses[phone.id] = StartAccess.control;
+        session.hearSettings[phone.id] = false;
+        await open(tester);
+        expect(hears(tester), isFalse);
+      },
+    );
+
+    testWidgets('follows the choice of the screen until the person moves the '
+        'switch', (tester) async {
+      await show(tester);
+      await open(tester);
+
+      await tester.tap(find.text('Show it to look at and control'));
+      await tester.pumpAndSettle();
+      expect(hears(tester), isTrue);
+      await tester.tap(find.text('Show it to look at'));
+      await tester.pumpAndSettle();
+      expect(hears(tester), isFalse);
+
+      await flip(tester);
+      expect(hears(tester), isTrue);
+      await tester.tap(find.text('Show it to look at and control'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Do not show it'));
+      await tester.pumpAndSettle();
+      expect(hears(tester), isTrue, reason: 'the person said so');
+    });
+
+    testWidgets('keeps that a device that can only look may hear', (
+      tester,
+    ) async {
+      await show(tester);
+      session.startAccesses[phone.id] = StartAccess.look;
+      await open(tester);
+
+      await flip(tester);
+      await save(tester);
+
+      expect(session.hearSettingSet, [(id: phone.id, setting: true)]);
+      expect(
+        session.startAccessSet,
+        isEmpty,
+        reason: 'the choice is as it was',
+      );
+      expect(find.text('Save'), findsNothing, reason: 'the dialog is closed');
+    });
+
+    testWidgets('keeps that a device that may control may not hear', (
+      tester,
+    ) async {
+      await show(tester);
+      session.startAccesses[phone.id] = StartAccess.control;
+      await open(tester);
+
+      await flip(tester);
+      await save(tester);
+
+      expect(session.hearSettingSet, [(id: phone.id, setting: false)]);
+      expect(session.startAccessSet, isEmpty);
+    });
+
+    testWidgets('keeps nothing of the sound when it is left to the choice', (
+      tester,
+    ) async {
+      await show(tester);
+      await open(tester);
+
+      await choose(tester, 'Show it to look at and control');
+
+      expect(session.startAccessSet, [
+        (id: phone.id, access: StartAccess.control),
+      ]);
+      expect(session.hearSettingSet, isEmpty);
+    });
+
+    testWidgets(
+      'keeps nothing when the switch is moved back to what the device '
+      'gets anyway',
+      (tester) async {
+        await show(tester);
+        session.startAccesses[phone.id] = StartAccess.look;
+        await open(tester);
+
+        await flip(tester);
+        await flip(tester);
+        await save(tester);
+
+        expect(session.hearSettingSet, isEmpty);
+        expect(session.startAccessSet, isEmpty);
+      },
+    );
+
+    testWidgets('takes back what was said when it is moved to what the device '
+        'gets anyway', (tester) async {
+      await show(tester);
+      session.startAccesses[phone.id] = StartAccess.look;
+      session.hearSettings[phone.id] = true;
+      await open(tester);
+
+      await flip(tester);
+      await save(tester);
+
+      expect(session.hearSettingSet, [(id: phone.id, setting: null)]);
+      expect(session.hearSettings, isEmpty);
+    });
+
+    testWidgets('keeps nothing again when what was said is left as it was', (
+      tester,
+    ) async {
+      await show(tester);
+      session.startAccesses[phone.id] = StartAccess.control;
+      session.hearSettings[phone.id] = true;
+      await open(tester);
+
+      await save(tester);
+
+      expect(session.hearSettingSet, isEmpty);
+      expect(session.startAccessSet, isEmpty);
+    });
+
+    testWidgets('keeps the choice of the screen and the sound together', (
+      tester,
+    ) async {
+      await show(tester);
+      await open(tester);
+
+      await tester.tap(find.text('Show it to look at'));
+      await tester.pumpAndSettle();
+      await flip(tester);
+      await save(tester);
+
+      expect(session.startAccessSet, [
+        (id: phone.id, access: StartAccess.look),
+      ]);
+      expect(session.hearSettingSet, [(id: phone.id, setting: true)]);
+    });
+
+    testWidgets('says why the sound could not be kept', (tester) async {
+      await show(tester);
+      session.startAccesses[phone.id] = StartAccess.look;
+      session.hearSettingFailure = const BatonError(
+        kind: ErrorKind.storage,
+        message: 'Baton could not keep the setting.',
+      );
+      await open(tester);
+
+      await flip(tester);
+      await save(tester);
+
+      expect(find.text('Baton could not keep the setting.'), findsOneWidget);
+    });
+
     testWidgets(
       'lets the device control the screen when the system allows it',
       (tester) async {

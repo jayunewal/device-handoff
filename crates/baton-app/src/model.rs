@@ -712,6 +712,12 @@ pub enum WindowSound {
     /// told to stop, so it is not quiet for nothing. The person can try again with
     /// [`App::hear_window`](crate::App::hear_window).
     CannotPlay,
+    /// The other device sends none: the person there has not allowed this device to hear the
+    /// sound of the screen. It is a setting for each device that they keep there
+    /// ([`App::set_hear_setting`](crate::App::set_hear_setting)), and it is read each time this
+    /// device asks to hear. Asking again is taken once they have allowed it, also in this
+    /// session.
+    NotAllowed,
 }
 
 impl From<SilentReason> for WindowSound {
@@ -720,6 +726,7 @@ impl From<SilentReason> for WindowSound {
             SilentReason::Window => Self::Window,
             SilentReason::NoPermission => Self::NoPermission,
             SilentReason::Failed => Self::Failed,
+            SilentReason::NotAllowed => Self::NotAllowed,
             SilentReason::Other => Self::Other,
         }
     }
