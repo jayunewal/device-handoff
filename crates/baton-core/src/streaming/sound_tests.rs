@@ -35,6 +35,7 @@ use super::{
     WindowHandler, WindowOffer, WindowShare, WindowVerdict,
     answer_tests::{App, Heard, Plan, Platform, Speaking, Speech, Spoken, quick},
     offer_tests::fit,
+    unlock::UnlockSetup,
 };
 use crate::{
     Config, Error, Identity, NodeBuilder, TrustStore,
@@ -188,6 +189,7 @@ impl SourceRig {
             private: false,
             takes: takes(),
             sound: plan,
+            unlock: UnlockSetup::Unsupported,
             params,
         };
         let handle = streaming
@@ -676,6 +678,7 @@ impl ViewRig {
             control: false,
             private: false,
             sound: source_sounds,
+            unlock: false,
         };
         let handle = streaming
             .view_granted(&paired, accepted, session_id(), viewing, granted)

@@ -8,9 +8,10 @@
 //! The exchange has one question and one answer that carry secrets, and a few small messages
 //! around them:
 //!
-//! 1. the viewer asks, with [`ViewerMessage::Unlock`](crate::control::ViewerMessage::Unlock);
+//! 1. the viewer asks ([`Ask`], in [`ViewerMessage::Unlock`](crate::control::ViewerMessage::Unlock)),
+//!    and numbers the attempt;
 //! 2. the source sends the key of its box, sealed to the viewer, and a challenge
-//!    ([`Sealed`]), or says at once that it will not try ([`Done`]);
+//!    ([`Sealed`]), or says at once that it will not try ([`Done`]); both repeat the number;
 //! 3. the viewer has its person's face recognised, which opens the sealed key, and answers with
 //!    the key and the challenge ([`Opened`]), or gives up ([`Cancelled`]);
 //! 4. the source opens its box with the key, types the password, and says what came of it
@@ -22,6 +23,21 @@
 use baton_proto::unlock::{BoxKey, Challenge, SealedKey};
 use serde::{Deserialize, Serialize};
 
+/// The viewer's person asks to unlock the source, which is locked.
+///
+/// It starts an attempt. The number is the viewer's own, and the source repeats it in the question
+/// ([`Sealed`]) and in what comes of the attempt ([`Done`]), so that a late answer to an attempt
+/// that the viewer gave up on is not taken for the answer to the next one. Only to a source that
+/// advertised
+/// [`capability::UNLOCK_TARGET`](baton_proto::message::capability::UNLOCK_TARGET), in a session
+/// whose offer set `unlock`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ask {
+    /// The number that the viewer gave this attempt. The first version counts up from 1, and a
+    /// source takes whatever number it is given.
+    pub number: u64,
+}
+
 /// The source has made a question for the viewer to answer with its person's face.
 ///
 /// It is the key of the source's box, sealed to a key that only the viewer can use, and the
@@ -30,6 +46,9 @@ use serde::{Deserialize, Serialize};
 /// whose offer set `unlock`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sealed {
+    /// The number of the [`Ask`] that this answers. A viewer drops a question whose number is not
+    /// the one of the attempt it waits for.
+    pub number: u64,
     /// Made at random for this question and never used for another. The answer repeats it, so
     /// that an answer that comes late, or twice, answers nothing.
     pub challenge: Challenge,
@@ -116,6 +135,9 @@ pub enum Outcome {
 /// at once when the source will not try.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Done {
+    /// The number of the [`Ask`] that this ends. A viewer drops an end whose number is not the one
+    /// of the attempt it waits for.
+    pub number: u64,
     /// What came of it.
     pub outcome: Outcome,
 }

@@ -69,7 +69,9 @@ use tokio_util::sync::CancellationToken;
 use super::{
     ControlEnd, End, Streaming, Takes, Viewing, WriteEnd, read_control,
     sound::{Hearing, Said},
-    stop, write_control,
+    stop,
+    unlock::{Answer, Asking, Patience},
+    write_control,
 };
 use crate::{trust::PairedDevice, uni::Arrival, util::lock};
 
@@ -97,6 +99,8 @@ pub(crate) struct ViewParams {
     pub(crate) tick_every: Duration,
     /// How long the source has to open its control stream once the session has been made.
     pub(crate) control_within: Duration,
+    /// How long the viewer waits for the answers of the source to an unlock.
+    pub(crate) unlock: Patience,
 }
 
 impl Default for ViewParams {
@@ -108,6 +112,7 @@ impl Default for ViewParams {
             report_every: Duration::from_millis(500),
             tick_every: Duration::from_millis(100),
             control_within: Duration::from_secs(10),
+            unlock: Patience::default(),
         }
     }
 }
@@ -205,6 +210,9 @@ struct State {
     decoder: Box<dyn Decoder>,
     /// The sound of the session, if the application gave it a speaker.
     sound: Option<Hearing>,
+    /// The unlock of the session, if the offer allows one and the application gave it an
+    /// unlocker.
+    asking: Option<Asking>,
     /// Whether the decoder was told that the session is over. It is set under the lock that every
     /// call to the decoder is made with, and the decoder is called no more once it is set, whatever
     /// was on its way: a frame that was whole as the session ended, a message of the source, a tick.
@@ -223,6 +231,7 @@ enum Stop {
 
 /// What the offer of a source granted the viewer, and said of the source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // what the offer granted, each of its own
 pub(super) struct Granted {
     /// Whether the person at the source granted the viewer control of the window. Only then does
     /// the session send what the person does.
@@ -232,9 +241,14 @@ pub(super) struct Granted {
     pub(super) private: bool,
     /// Whether the source advertised that it sends sound, so that the person can ask to hear it.
     pub(super) sound: bool,
+    /// Whether the offer said that the person at the source set up the unlock of its screen for
+    /// this viewer, which a source says only when both devices advertised it. Only then does the
+    /// session send an unlock, and only then are the messages of one a rule that the source keeps.
+    pub(super) unlock: bool,
 }
 
 /// The viewer's side of one session.
+#[allow(clippy::struct_excessive_bools)] // what the offer fixed for the session, each of its own
 pub(super) struct View {
     registry: Weak<Streaming>,
     session: SessionId,
@@ -257,6 +271,9 @@ pub(super) struct View {
     hears: bool,
     /// Whether the source advertised `stream.sound`, so that the person can ask to hear it.
     source_sounds: bool,
+    /// Whether the offer allows the person to unlock the source. A source sends the messages of an
+    /// unlock only then.
+    unlocks: bool,
     /// Tells the task that plays the packets that wait that one arrived.
     sound_wake: Notify,
     /// Whether the source's control stream has been taken. A second one is a violation.
@@ -422,6 +439,45 @@ impl ViewHandle {
         true
     }
 
+    /// Whether the person can ask to unlock the screen of the source: the offer said that the person
+    /// at the source set the unlock up for this device, and the application gave the session an
+    /// unlocker ([`Viewing::with_unlocker`]). If not, [`unlock`](Self::unlock) does nothing. The
+    /// source unlocks only while it is locked, which it says with a `Pause`, and only while it is
+    /// private (the screen and the keys and the pointer have not been lifted).
+    #[must_use]
+    pub fn can_unlock(&self) -> bool {
+        lock(&self.view.state).asking.is_some()
+    }
+
+    /// Asks the source to unlock its screen, which is locked. Returns whether the request was made,
+    /// which it is not when the session is over, [`can_unlock`](Self::can_unlock) is false, an
+    /// attempt is going, or the messages that wait for the source fill the queue.
+    ///
+    /// The source answers with a question, which the unlocker is given
+    /// ([`Unlocker::open`](super::Unlocker::open)), or says that it will not try. The unlocker is
+    /// told how the attempt ended ([`Unlocker::settled`](super::Unlocker::settled)), unless it
+    /// ended it by declining the question.
+    pub fn unlock(&self) -> bool {
+        let view = &self.view;
+        let mut guard = lock(&view.state);
+        let state = &mut *guard;
+        if state.closed {
+            return false;
+        }
+        let Some(asking) = state.asking.as_mut() else {
+            return false;
+        };
+        let Some(message) = asking.ask(view.now()) else {
+            return false;
+        };
+        // Said under the lock, so that it is said before whatever the source answers is read.
+        if view.outbox.try_send(message).is_err() {
+            asking.unasked();
+            return false;
+        }
+        true
+    }
+
     /// Ends the session.
     pub fn end(&self) {
         self.view.end(End::Local);
@@ -501,17 +557,27 @@ impl View {
             control,
             private,
             sound: source_sounds,
+            unlock: unlocks,
         } = granted;
         let Viewing {
             decoder,
             speaker,
+            unlocker,
             takes,
             params,
         } = viewing;
+        let params = *params;
         let sound = speaker
             .filter(|_| hears)
             .map(|speaker| Hearing::new(speaker, params.sound));
         let plays = sound.is_some();
+        let (asking, answers) = match unlocker.filter(|_| unlocks) {
+            Some(unlocker) => {
+                let (asking, answers) = Asking::new(unlocker, params.unlock);
+                (Some(asking), Some(answers))
+            }
+            None => (None, None),
+        };
         let (outbox, queue) = mpsc::channel(OUTBOX);
         let view = Arc::new(Self {
             registry,
@@ -526,6 +592,7 @@ impl View {
                 pictures: HashMap::new(),
                 decoder,
                 sound,
+                asking,
                 closed: false,
             }),
             outbox,
@@ -534,6 +601,7 @@ impl View {
             input_ready: Notify::new(),
             hears,
             source_sounds,
+            unlocks,
             sound_wake: Notify::new(),
             source_control: AtomicBool::new(false),
             control_taken: CancellationToken::new(),
@@ -548,6 +616,9 @@ impl View {
         }
         if plays {
             tokio::spawn(Arc::clone(&view).keep_sound_time());
+        }
+        if let Some(answers) = answers {
+            tokio::spawn(Arc::clone(&view).keep_answers(answers));
         }
         let handle = ViewHandle {
             view: Arc::clone(&view),
@@ -584,6 +655,9 @@ impl View {
         state.decoder.ended();
         if let Some(sound) = state.sound.as_mut() {
             sound.ended();
+        }
+        if let Some(asking) = state.asking.as_mut() {
+            asking.ended();
         }
         drop(state);
         tracing::debug!(peer = %self.peer.short(), reason = ?how, "a window streaming session ended");
@@ -633,8 +707,12 @@ impl View {
 
     fn tick(&self) {
         let mut state = lock(&self.state);
-        let actions = state.viewer.tick(self.now());
+        let now = self.now();
+        let actions = state.viewer.tick(now);
         let consistent = self.apply(&mut state, actions);
+        if let Some(message) = state.asking.as_mut().and_then(|asking| asking.tick(now)) {
+            self.say(message);
+        }
         drop(state);
         if !consistent {
             self.end(End::Internal);
@@ -648,6 +726,35 @@ impl View {
         match &mut state.sound {
             Some(sound) if !state.closed => Some(each(sound)),
             _ => None,
+        }
+    }
+
+    /// Calls `each` with the unlock of the session, if it has one. Once the session is over the
+    /// rules have no attempt, and take no message or answer.
+    fn with_asking<T>(&self, each: impl FnOnce(&mut Asking) -> T) -> Option<T> {
+        lock(&self.state).asking.as_mut().map(each)
+    }
+
+    /// Sends the answers that the platform gives to the questions of the source, in the order in
+    /// which it gives them. They come through a queue so that a platform that answers from within
+    /// the call that gave it the question, or drops the question there, does not meet the lock of
+    /// the session.
+    async fn keep_answers(self: Arc<Self>, mut answers: mpsc::UnboundedReceiver<Answer>) {
+        loop {
+            let answer = tokio::select! {
+                () = self.ended.cancelled() => return,
+                answer = answers.recv() => match answer {
+                    Some(answer) => answer,
+                    None => return,
+                },
+            };
+            let now = self.now();
+            // Said under the lock, in the order of the messages of the viewer's person.
+            self.with_asking(|asking| {
+                if let Some(message) = asking.answered(answer, now) {
+                    self.say(message);
+                }
+            });
         }
     }
 
@@ -834,9 +941,17 @@ impl View {
                 self.with_sound(|hearing| hearing.silent(silent.reason));
             }
             // A source sends the messages of an unlock only to a viewer that advertised
-            // `unlock.approve`. This viewer does not yet (protocol.md section 9).
-            SourceMessage::UnlockSealed(_) | SourceMessage::UnlockDone(_) => {
+            // `unlock.approve`, in a session whose offer said `unlock` (protocol.md section 9).
+            SourceMessage::UnlockSealed(_) | SourceMessage::UnlockDone(_) if !self.unlocks => {
                 return ControlFlow::Break(());
+            }
+            // A message can cross the end of an attempt on the wire, and the viewer asked for
+            // none if its application gave it no unlocker. It is dropped, and is no violation.
+            SourceMessage::UnlockSealed(sealed) => {
+                self.with_asking(|asking| asking.sealed(sealed, self.peer));
+            }
+            SourceMessage::UnlockDone(done) => {
+                self.with_asking(|asking| asking.done(done));
             }
             // The source keeps within what the viewer said it can take.
             SourceMessage::Config(config) if !self.takes.allows(&config) => {
@@ -1931,10 +2046,12 @@ mod tests {
     async fn the_messages_of_an_unlock_are_a_violation_while_the_viewer_takes_no_unlock() {
         for message in [
             SourceMessage::UnlockSealed(Sealed {
+                number: 1,
                 challenge: Challenge::from_bytes([1; Challenge::LEN]),
                 sealed: SealedKey::new(vec![3; 113]),
             }),
             SourceMessage::UnlockDone(Done {
+                number: 1,
                 outcome: Outcome::Unlocked,
             }),
         ] {

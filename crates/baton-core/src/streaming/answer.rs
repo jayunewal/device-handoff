@@ -34,7 +34,7 @@ use baton_proto::{
 use iroh::endpoint::Connection;
 use tokio_util::sync::CancellationToken;
 
-use super::{Decoder, Granted, Speaker, Streaming, Takes, ViewHandle, ViewParams};
+use super::{Decoder, Granted, Speaker, Streaming, Takes, Unlocker, ViewHandle, ViewParams};
 use crate::{
     error::{Error, Result},
     transfer::incoming::Link,
@@ -126,8 +126,10 @@ impl fmt::Debug for WindowOffer {
 pub struct Viewing {
     pub(super) decoder: Box<dyn Decoder>,
     pub(super) speaker: Option<Box<dyn Speaker>>,
+    pub(super) unlocker: Option<Box<dyn Unlocker>>,
     pub(super) takes: Takes,
-    pub(super) params: ViewParams,
+    // Boxed, so that the verdict that holds a `Viewing` is not too large for its other variants.
+    pub(super) params: Box<ViewParams>,
 }
 
 impl Viewing {
@@ -153,13 +155,14 @@ impl Viewing {
         let viewing = Self {
             decoder: Box::new(decoder),
             speaker: None,
+            unlocker: None,
             takes: Takes {
                 max_width,
                 max_height,
                 max_fps,
                 codecs,
             },
-            params: ViewParams::default(),
+            params: Box::default(),
         };
         viewing
             .accepted(SessionId::from_bytes([0; 16]))
@@ -179,10 +182,20 @@ impl Viewing {
         self
     }
 
+    /// Asks for the face of the person with `unlocker` when the source of the session asks a
+    /// question to unlock its screen, which the person can start with
+    /// [`ViewHandle::unlock`](super::ViewHandle::unlock). The offer has to allow an unlock, and
+    /// the node has to be set up to approve one: on any other session the unlocker is never used.
+    #[must_use]
+    pub fn with_unlocker(mut self, unlocker: impl Unlocker) -> Self {
+        self.unlocker = Some(Box::new(unlocker));
+        self
+    }
+
     /// The same, with the time limits of the session changed, for a test.
     #[cfg(test)]
     pub(crate) fn within(mut self, params: ViewParams) -> Self {
-        self.params = params;
+        self.params = Box::new(params);
         self
     }
 
@@ -193,8 +206,9 @@ impl Viewing {
         Self {
             decoder: Box::new(decoder),
             speaker: None,
+            unlocker: None,
             takes,
-            params,
+            params: Box::new(params),
         }
     }
 
@@ -214,6 +228,7 @@ impl fmt::Debug for Viewing {
         f.debug_struct("Viewing")
             .field("takes", &self.takes)
             .field("speaker", &self.speaker.is_some())
+            .field("unlocker", &self.unlocker.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -544,6 +559,8 @@ impl Streaming {
                             control: offer.control,
                             private: offer.private,
                             sound: sounding,
+                            // No device advertises `unlock.approve` yet.
+                            unlock: false,
                         },
                     )
                 };

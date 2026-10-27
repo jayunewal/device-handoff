@@ -45,7 +45,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     gate,
     input::{self, Event, InputError},
-    unlock::{Cancelled, Done, Opened, Sealed},
+    unlock::{Ask, Cancelled, Done, Opened, Sealed},
 };
 
 /// The picture that the source sends from now on.
@@ -299,7 +299,7 @@ pub enum ViewerMessage {
     /// source that advertised
     /// [`capability::UNLOCK_TARGET`](baton_proto::message::capability::UNLOCK_TARGET), in a
     /// session whose offer set `unlock`.
-    Unlock,
+    Unlock(Ask),
     /// The viewer's person was recognised, and the sealed key is open. The same conditions as
     /// [`Unlock`](Self::Unlock).
     UnlockOpened(Opened),
@@ -443,7 +443,7 @@ impl Message for ViewerMessage {
             | Self::KeyFrame(_)
             | Self::Hear(_)
             | Self::Lift(_)
-            | Self::Unlock
+            | Self::Unlock(_)
             | Self::UnlockOpened(_)
             | Self::UnlockCancelled(_) => Ok(()),
             Self::Want(want) => want.validate(),
@@ -566,10 +566,11 @@ mod tests {
         out
     }
 
-    /// The question of an unlock as a source sends it: a challenge of 16 bytes, and the key of the
-    /// box sealed with ECIES to a P-256 key, which is 113 bytes.
+    /// The question of an unlock as a source sends it: the number of the attempt, a challenge of 16
+    /// bytes, and the key of the box sealed with ECIES to a P-256 key, which is 113 bytes.
     fn question() -> Sealed {
         Sealed {
+            number: 1,
             challenge: Challenge::from_bytes(counting(0xc0)),
             sealed: SealedKey::new(counting::<113>(0).to_vec()),
         }
@@ -749,10 +750,13 @@ mod tests {
         assert_eq!(
             encoded(&SourceMessage::UnlockSealed(question())),
             concat!(
-                "000000a4", // the frame: 164 bytes follow
+                "000000ac", // the frame: 172 bytes follow
                 "a1",
                 "6c556e6c6f636b5365616c6564", // {"UnlockSealed":
-                "a2",                         //   map of 2
+                "a3",                         //   map of 3
+                "66",
+                "6e756d626572", //   "number":
+                "01",           //     1,
                 "69",
                 "6368616c6c656e6765", //   "challenge":
                 "50",
@@ -772,22 +776,29 @@ mod tests {
         );
         assert_eq!(
             encoded(&SourceMessage::UnlockDone(Done {
+                number: 1,
                 outcome: Outcome::Unlocked
             })),
-            // {"UnlockDone": {"outcome": "Unlocked"}}
-            "0000001ea16a556e6c6f636b446f6e65a1676f7574636f6d6568556e6c6f636b6564"
+            // {"UnlockDone": {"number": 1, "outcome": "Unlocked"}}
+            "00000026a16a556e6c6f636b446f6e65a2666e756d62657201676f7574636f6d6568556e6c6f636b6564"
         );
         assert_eq!(
             encoded(&SourceMessage::UnlockDone(Done {
+                number: 1,
                 outcome: Outcome::Rejected
             })),
-            // {"UnlockDone": {"outcome": "Rejected"}}
-            "0000001ea16a556e6c6f636b446f6e65a1676f7574636f6d656852656a6563746564"
+            // {"UnlockDone": {"number": 1, "outcome": "Rejected"}}
+            "00000026a16a556e6c6f636b446f6e65a2666e756d62657201676f7574636f6d656852656a6563746564"
         );
         assert_eq!(
-            encoded(&ViewerMessage::Unlock),
-            // "Unlock"
-            "0000000766556e6c6f636b"
+            encoded(&ViewerMessage::Unlock(Ask { number: 1 })),
+            // {"Unlock": {"number": 1}}
+            "00000011a166556e6c6f636ba1666e756d62657201"
+        );
+        assert_eq!(
+            encoded(&ViewerMessage::Unlock(Ask { number: 7 })),
+            // {"Unlock": {"number": 7}}
+            "00000011a166556e6c6f636ba1666e756d62657207"
         );
         assert_eq!(
             encoded(&ViewerMessage::UnlockOpened(answer())),
@@ -831,10 +842,40 @@ mod tests {
             frame::decode_payload::<SourceMessage>(&payload),
             Ok(SourceMessage::Resume)
         );
-        let payload = cbor_bytes(&cbor!({ "Unlock" => null }).unwrap());
+    }
+
+    #[test]
+    fn an_unlock_that_does_not_say_which_attempt_it_starts_is_not_read() {
+        // The number has no default, and the message is no unit variant: a source that took
+        // `Unlock` as bare text, or as a map with null, would have no number to repeat.
+        for message in [
+            Value::Text("Unlock".into()),
+            cbor!({ "Unlock" => null }).unwrap(),
+            cbor!({ "Unlock" => {} }).unwrap(),
+            cbor!({ "Unlock" => { "number" => "1" } }).unwrap(),
+            cbor!({ "Unlock" => { "number" => -1 } }).unwrap(),
+        ] {
+            assert!(
+                matches!(
+                    frame::decode_payload::<ViewerMessage>(&cbor_bytes(&message)),
+                    Err(FrameError::Decode(_))
+                ),
+                "{message:?}"
+            );
+        }
+        // Any number is one: the viewer counts as it likes, and the source repeats it.
+        for number in [0, 1, u64::MAX] {
+            let message = cbor!({ "Unlock" => { "number" => number } }).unwrap();
+            assert_eq!(
+                frame::decode_payload::<ViewerMessage>(&cbor_bytes(&message)),
+                Ok(ViewerMessage::Unlock(Ask { number }))
+            );
+        }
+        // A field of a later version is ignored.
+        let message = cbor!({ "Unlock" => { "number" => 3, "hurry" => true } }).unwrap();
         assert_eq!(
-            frame::decode_payload::<ViewerMessage>(&payload),
-            Ok(ViewerMessage::Unlock)
+            frame::decode_payload::<ViewerMessage>(&cbor_bytes(&message)),
+            Ok(ViewerMessage::Unlock(Ask { number: 3 }))
         );
     }
 
@@ -980,8 +1021,9 @@ mod tests {
         );
         // And for an unlock. An outcome of a later version is not an unlocked screen.
         assert_eq!(
-            decode(cbor!({ "UnlockDone" => { "outcome" => "Postponed" } }).unwrap()),
+            decode(cbor!({ "UnlockDone" => { "number" => 1, "outcome" => "Postponed" } }).unwrap()),
             Ok(SourceMessage::UnlockDone(Done {
+                number: 1,
                 outcome: Outcome::Other
             }))
         );
@@ -1026,10 +1068,12 @@ mod tests {
         let sealed = payload_of_frame(&SourceMessage::UnlockSealed(question()));
         assert!(frame::decode_payload::<SourceMessage>(&sealed).is_ok());
         assert!(frame::decode_payload::<ViewerMessage>(&sealed).is_err());
-        let done = cbor_bytes(&cbor!({ "UnlockDone" => { "outcome" => "Unlocked" } }).unwrap());
+        let done = cbor_bytes(
+            &cbor!({ "UnlockDone" => { "number" => 1, "outcome" => "Unlocked" } }).unwrap(),
+        );
         assert!(frame::decode_payload::<SourceMessage>(&done).is_ok());
         assert!(frame::decode_payload::<ViewerMessage>(&done).is_err());
-        let unlock = cbor_bytes(&Value::Text("Unlock".into()));
+        let unlock = payload_of_frame(&ViewerMessage::Unlock(Ask { number: 1 }));
         assert!(frame::decode_payload::<ViewerMessage>(&unlock).is_ok());
         assert!(frame::decode_payload::<SourceMessage>(&unlock).is_err());
         let opened = payload_of_frame(&ViewerMessage::UnlockOpened(answer()));
@@ -1175,7 +1219,7 @@ mod tests {
         let bytes = |len: usize| Value::Bytes(vec![7; len]);
         let sealed = |challenge: usize, sealed: usize| {
             let message = cbor!({ "UnlockSealed" => {
-                "challenge" => bytes(challenge), "sealed" => bytes(sealed) } })
+                "number" => 1, "challenge" => bytes(challenge), "sealed" => bytes(sealed) } })
             .unwrap();
             frame::decode_payload::<SourceMessage>(&cbor_bytes(&message))
         };
@@ -1231,12 +1275,18 @@ mod tests {
         // An outcome and a reason have no default. A `Done` that leaves its outcome out does not
         // say that the screen is unlocked, or anything else, and is refused.
         let outcome = |value: Value| {
-            let message = cbor!({ "UnlockDone" => { "outcome" => value } }).unwrap();
+            let message = cbor!({ "UnlockDone" => { "number" => 1, "outcome" => value } }).unwrap();
             frame::decode_payload::<SourceMessage>(&cbor_bytes(&message))
         };
         let nothing = cbor!({ "UnlockDone" => {} }).unwrap();
         assert!(matches!(
             frame::decode_payload::<SourceMessage>(&cbor_bytes(&nothing)),
+            Err(FrameError::Decode(_))
+        ));
+        // Nor does one that does not say which attempt it ends.
+        let unnumbered = cbor!({ "UnlockDone" => { "outcome" => "Unlocked" } }).unwrap();
+        assert!(matches!(
+            frame::decode_payload::<SourceMessage>(&cbor_bytes(&unnumbered)),
             Err(FrameError::Decode(_))
         ));
         for wrong in [Value::from(0), Value::from(true), Value::Null] {
@@ -1251,7 +1301,7 @@ mod tests {
             Err(FrameError::Decode(_))
         ));
 
-        // An answer needs both of its parts, and a question does too.
+        // An answer needs both of its parts, and a question needs all three of its own.
         let key = Value::Bytes(vec![7; 32]);
         let challenge = Value::Bytes(vec![7; 16]);
         let sealed = Value::Bytes(vec![7; 113]);
@@ -1269,8 +1319,10 @@ mod tests {
             );
         }
         for message in [
-            cbor!({ "UnlockSealed" => { "challenge" => challenge } }).unwrap(),
-            cbor!({ "UnlockSealed" => { "sealed" => sealed } }).unwrap(),
+            cbor!({ "UnlockSealed" => { "number" => 1, "challenge" => challenge.clone() } })
+                .unwrap(),
+            cbor!({ "UnlockSealed" => { "number" => 1, "sealed" => sealed.clone() } }).unwrap(),
+            cbor!({ "UnlockSealed" => { "challenge" => challenge, "sealed" => sealed } }).unwrap(),
         ] {
             assert!(
                 matches!(
@@ -1296,7 +1348,8 @@ mod tests {
             Outcome::Failed,
             Outcome::Other,
         ] {
-            assert!(frame::encode(&SourceMessage::UnlockDone(Done { outcome })).is_ok());
+            let done = Done { number: 1, outcome };
+            assert!(frame::encode(&SourceMessage::UnlockDone(done)).is_ok());
         }
         for reason in [
             CancelReason::Declined,
@@ -1307,7 +1360,9 @@ mod tests {
             let cancelled = ViewerMessage::UnlockCancelled(Cancelled { reason });
             assert!(frame::encode(&cancelled).is_ok());
         }
-        assert!(frame::encode(&ViewerMessage::Unlock).is_ok());
+        for number in [0, 1, u64::MAX] {
+            assert!(frame::encode(&ViewerMessage::Unlock(Ask { number })).is_ok());
+        }
         assert!(frame::encode(&ViewerMessage::UnlockOpened(answer())).is_ok());
     }
 
@@ -1318,7 +1373,7 @@ mod tests {
         let sealed = SourceMessage::UnlockSealed(question());
         assert_eq!(
             format!("{sealed:?}"),
-            "UnlockSealed(Sealed { challenge: Challenge(..), sealed: SealedKey(113 bytes) })"
+            "UnlockSealed(Sealed { number: 1, challenge: Challenge(..), sealed: SealedKey(113 bytes) })"
         );
         let opened = ViewerMessage::UnlockOpened(answer());
         assert_eq!(
@@ -1607,28 +1662,33 @@ mod tests {
             ]
             .prop_map(|reason| SourceMessage::Silent(Silent { reason })),
             (
+                any::<u64>(),
                 any::<[u8; Challenge::LEN]>(),
                 proptest::collection::vec(any::<u8>(), 1..=MAX_SEALED_KEY_BYTES)
             )
-                .prop_map(|(challenge, sealed)| {
+                .prop_map(|(number, challenge, sealed)| {
                     SourceMessage::UnlockSealed(Sealed {
+                        number,
                         challenge: Challenge::from_bytes(challenge),
                         sealed: SealedKey::new(sealed),
                     })
                 }),
-            prop_oneof![
-                Just(Outcome::Unlocked),
-                Just(Outcome::NotSetUp),
-                Just(Outcome::NotLocked),
-                Just(Outcome::NotPrivate),
-                Just(Outcome::Busy),
-                Just(Outcome::Stale),
-                Just(Outcome::Rejected),
-                Just(Outcome::TimedOut),
-                Just(Outcome::Failed),
-                Just(Outcome::Other)
-            ]
-            .prop_map(|outcome| SourceMessage::UnlockDone(Done { outcome })),
+            (
+                any::<u64>(),
+                prop_oneof![
+                    Just(Outcome::Unlocked),
+                    Just(Outcome::NotSetUp),
+                    Just(Outcome::NotLocked),
+                    Just(Outcome::NotPrivate),
+                    Just(Outcome::Busy),
+                    Just(Outcome::Stale),
+                    Just(Outcome::Rejected),
+                    Just(Outcome::TimedOut),
+                    Just(Outcome::Failed),
+                    Just(Outcome::Other)
+                ]
+            )
+                .prop_map(|(number, outcome)| SourceMessage::UnlockDone(Done { number, outcome })),
         ]
     }
 
@@ -1663,7 +1723,7 @@ mod tests {
                 .prop_map(|(screen, input)| ViewerMessage::Lift(Lift { screen, input })),
             proptest::collection::vec(event(), 1..=input::MAX_BATCH).prop_map(batch),
             any::<bool>().prop_map(|on| ViewerMessage::Hear(Hear { on })),
-            Just(ViewerMessage::Unlock),
+            any::<u64>().prop_map(|number| ViewerMessage::Unlock(Ask { number })),
             (any::<[u8; Challenge::LEN]>(), any::<[u8; BoxKey::LEN]>()).prop_map(
                 |(challenge, key)| {
                     ViewerMessage::UnlockOpened(Opened {
