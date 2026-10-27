@@ -240,6 +240,24 @@ impl Baton {
         Ok(self.app.set_start_access(&id, access.into())?)
     }
 
+    /// What the person at this device said of the paired device `id` hearing the sound of this
+    /// device's screen: `true` that it may, `false` that it may not, and `null` when they have not
+    /// said, which means that it may if it may control the screen (`StartAccess.control`) and may
+    /// not if it can only look. Throws `ErrorKind.notPaired`.
+    #[frb(sync)]
+    pub fn hear_setting(&self, id: String) -> Result<Option<bool>, BatonError> {
+        Ok(self.app.hear_setting(&id)?)
+    }
+
+    /// Says whether the paired device `id` may hear the sound of this device's screen, or takes
+    /// what was said back with `null`. Only the person at this device can say so: nothing a paired
+    /// device sends changes it. It counts the next time the device asks to hear, also in a session
+    /// that runs, but a sound that plays is not stopped until then. Throws `ErrorKind.notPaired`,
+    /// and `ErrorKind.storage` if the setting could not be kept.
+    pub fn set_hear_setting(&self, id: String, setting: Option<bool>) -> Result<(), BatonError> {
+        Ok(self.app.set_hear_setting(&id, setting)?)
+    }
+
     /// Ends the window `session`, which is shown here or shared from here, and tells the other
     /// device. `Event.windowEnded` follows. Returns whether there was such a window.
     #[frb(sync)]

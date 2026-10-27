@@ -46,5 +46,9 @@ String? describeSilence(WindowSound sound, String device) {
     WindowSound.cannotPlay =>
       'This device could not play the sound of $name. Tap the speaker to try '
           'again.',
+    WindowSound.notAllowed =>
+      '$name does not let this device hear it. Someone at $name can allow it '
+          'in the settings for this device. Then tap the speaker to try '
+          'again.',
   };
 }

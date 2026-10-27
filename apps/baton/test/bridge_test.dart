@@ -275,6 +275,16 @@ void main() {
       expect(b.startAccess(id: a.me().id), StartAccess.off);
     }
 
+    // Whether a paired device may hear the sound of the screen is kept in the same way. Nobody
+    // has said at first, and a yes, a no and "not said" again go over the bridge and come back as
+    // they went, at the device where they were said and not at the other.
+    expect(a.hearSetting(id: b.me().id), isNull);
+    for (final setting in <bool?>[true, false, null]) {
+      await a.setHearSetting(id: b.me().id, setting: setting);
+      expect(a.hearSetting(id: b.me().id), setting);
+      expect(b.hearSetting(id: a.me().id), isNull);
+    }
+
     // Nothing waits for an answer or runs, and a number that is no number is no window either.
     expect(a.answerWindow(request: 1, accept: true), isFalse);
     expect(a.answerWindow(request: -1, accept: true), isFalse);
@@ -364,6 +374,14 @@ void main() {
     );
     await expectLater(
       a.setStartAccess(id: '0' * 64, access: StartAccess.look),
+      throwsA(_batonError(ErrorKind.notPaired)),
+    );
+    expect(
+      () => a.hearSetting(id: '0' * 64),
+      throwsA(_batonError(ErrorKind.notPaired)),
+    );
+    await expectLater(
+      a.setHearSetting(id: '0' * 64, setting: true),
       throwsA(_batonError(ErrorKind.notPaired)),
     );
   });

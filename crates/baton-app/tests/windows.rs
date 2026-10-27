@@ -798,6 +798,14 @@ impl Pair {
         }
     }
 
+    /// The person at the sharing device lets the viewing device hear the sound of its screen.
+    fn allow_hear(&self) {
+        self.sharing
+            .app
+            .set_hear_setting(&self.viewing.id(), Some(true))
+            .unwrap();
+    }
+
     /// The window that the viewing device is asked about.
     async fn requested(&self, events: &mut Events) -> WindowRequest {
         next_matching(events, |event| match event {
@@ -2882,6 +2890,14 @@ impl Asking {
             .unwrap();
     }
 
+    /// What the person at the Mac says of the phone hearing the sound, or takes back.
+    fn allow_hear(&self, setting: Option<bool>) {
+        self.mac
+            .app
+            .set_hear_setting(&self.phone.id(), setting)
+            .unwrap();
+    }
+
     /// The person at the phone asks for the screen of the Mac.
     async fn asks(&self, control: bool) -> ScreenStarted {
         self.phone
@@ -3606,7 +3622,11 @@ fn packet(number: u64) -> SoundPacket {
 
 /// A Mac that sends the sound of a whole display, an iPad that plays it, and the two paired.
 async fn sounding() -> Pair {
-    Pair::with_platforms(Sharer::with_sound(whole_display()), Viewer::playing()).await
+    let pair = Pair::with_platforms(Sharer::with_sound(whole_display()), Viewer::playing()).await;
+    // The person at the Mac lets the iPad hear, as the tests that use this assume. The ones about
+    // that setting begin from what a device that was just paired has.
+    pair.allow_hear();
+    pair
 }
 
 /// The next time the screens hear how the sound of the window `id` stands.
@@ -3887,10 +3907,132 @@ async fn a_device_that_cannot_play_the_sound_says_so_and_the_source_stops_sendin
 }
 
 #[tokio::test]
+async fn what_the_person_at_the_mac_says_of_a_device_hearing_is_kept_and_read_back() {
+    let pair = Pair::new(false).await;
+    let app = &pair.sharing.app;
+    let id = pair.viewing.id();
+    // Nothing is said of a device that was just paired.
+    assert_eq!(app.hear_setting(&id).unwrap(), None);
+    for setting in [Some(true), Some(false), None, Some(true)] {
+        app.set_hear_setting(&id, setting).unwrap();
+        assert_eq!(app.hear_setting(&id).unwrap(), setting);
+    }
+    // It is the setting of the device, and of no other.
+    assert_eq!(
+        pair.viewing.app.hear_setting(&pair.sharing.id()).unwrap(),
+        None
+    );
+    // A device that is not paired has none.
+    for nobody in ["not an id", &"0".repeat(64)] {
+        assert_eq!(
+            app.hear_setting(nobody).unwrap_err().kind(),
+            ErrorKind::NotPaired
+        );
+        assert_eq!(
+            app.set_hear_setting(nobody, Some(true)).unwrap_err().kind(),
+            ErrorKind::NotPaired
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_device_that_the_person_at_the_mac_does_not_let_hear_is_told_so_until_they_say_yes() {
+    // The Mac was not told to let the iPad hear: nothing is said of a device that was just paired,
+    // and it is not allowed to control either.
+    let pair = Pair::with_platforms(Sharer::with_sound(whole_display()), Viewer::playing()).await;
+    let mut viewing_events = pair.viewing.app.events();
+    let WindowShared::Started(_) = pair.offered_and_answered(true, false).await else {
+        panic!("the screen was not shared");
+    };
+    let shown = shown_window(&mut viewing_events).await;
+    let handle = source_handle(&pair.sharer).await;
+    assert!(shown.sound, "the iPad cannot tell, and shows the speaker");
+
+    // The iPad asks. It is told why, and the Mac is not asked to record or to be quiet.
+    assert!(pair.viewing.app.hear_window(shown.id, true));
+    assert_eq!(
+        next_sound(&mut viewing_events, shown.id).await,
+        WindowSound::NotAllowed
+    );
+    handle.begin_sound(AAC).unwrap();
+    tokio::time::sleep(QUIET).await;
+    assert_eq!(pair.sharer.heard.count("hear"), 0);
+    assert_eq!(pair.viewer.sounds.all(), ["stopped Some(NotAllowed)"]);
+
+    // The person at the Mac says yes. The next tap on the speaker is taken, in the same session.
+    pair.allow_hear();
+    assert!(pair.viewing.app.hear_window(shown.id, true));
+    until("the platform of the Mac to be asked for the sound", || {
+        pair.sharer.heard.count("hear 1") == 1
+    })
+    .await;
+    handle.begin_sound(AAC).unwrap();
+    assert_eq!(
+        next_sound(&mut viewing_events, shown.id).await,
+        WindowSound::Playing
+    );
+
+    // They take it back. What plays goes on until the iPad asks again, and then it is stopped and
+    // the Mac plays again.
+    pair.sharing
+        .app
+        .set_hear_setting(&pair.viewing.id(), Some(false))
+        .unwrap();
+    tokio::time::sleep(QUIET).await;
+    assert_eq!(pair.sharer.heard.count("hear 0"), 0);
+    assert!(pair.viewing.app.hear_window(shown.id, true));
+    assert_eq!(
+        next_sound(&mut viewing_events, shown.id).await,
+        WindowSound::NotAllowed
+    );
+    until("the platform of the Mac to be told to stop", || {
+        pair.sharer.heard.count("hear 0") == 1
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_device_that_may_control_hears_unless_the_person_said_no_and_one_that_may_only_look_does_not_unless_they_said_yes()
+ {
+    for (access, said, heard) in [
+        (StartAccess::Look, None, false),
+        (StartAccess::Look, Some(true), true),
+        (StartAccess::Look, Some(false), false),
+        (StartAccess::Control, None, true),
+        (StartAccess::Control, Some(true), true),
+        (StartAccess::Control, Some(false), false),
+    ] {
+        let what = format!("{access:?}, said {said:?}");
+        let asking =
+            Asking::with_platforms(Sharer::with_screen_and_sound(true), Viewer::playing()).await;
+        asking.allow(access);
+        asking.allow_hear(said);
+        let mut events = asking.phone.app.events();
+        // What the device may do decides, and not what it wished for in this session.
+        let session = asking.started(false).await;
+        assert!(asking.phone.app.hear_window(session.id, true), "{what}");
+        if heard {
+            until("the platform of the Mac to be asked", || {
+                asking.sharer.heard.has("hear 1")
+            })
+            .await;
+        } else {
+            assert_eq!(
+                next_sound(&mut events, session.id).await,
+                WindowSound::NotAllowed,
+                "{what}"
+            );
+            assert_eq!(asking.sharer.heard.count("hear"), 0, "{what}");
+        }
+    }
+}
+
+#[tokio::test]
 async fn the_sound_of_a_screen_that_a_phone_asked_for_can_be_heard_too() {
     let asking =
         Asking::with_platforms(Sharer::with_screen_and_sound(false), Viewer::playing()).await;
     asking.allow(StartAccess::Look);
+    asking.allow_hear(Some(true));
     let session = asking.started(false).await;
     assert!(session.display);
     assert!(session.sound);

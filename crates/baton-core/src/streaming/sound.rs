@@ -15,7 +15,7 @@
 //! provides. The session code is in `source.rs` and `view.rs`, next to the code for the frames of
 //! video that it resembles.
 
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, fmt, sync::Arc, time::Duration};
 
 use baton_proto::message::Message;
 use baton_stream::{
@@ -127,7 +127,8 @@ pub(crate) enum SoundPlan {
     /// The session is of a window, and sound goes with a whole display only. A `Hear` that is on
     /// is answered with a `Silent` whose reason is `Window`.
     Window,
-    /// The session is of a display. The platform is told what the viewer wants.
+    /// The session is of a display. The platform is told what the viewer wants, if the person at
+    /// this device lets the viewer hear ([`MayHear`]).
     Display,
 }
 
@@ -141,6 +142,39 @@ impl SoundPlan {
             (true, false) => Self::Window,
             (true, true) => Self::Display,
         }
+    }
+}
+
+/// Whether the person at this device lets the viewer of a session hear the sound of the screen.
+///
+/// It is asked each time the viewer asks to hear, and not once when the session begins: the
+/// person may say it while the session runs, and the next tap of the viewer on the speaker then
+/// counts. A run that goes on is not ended by a change of mind; the next request is what it
+/// governs. A window has no sound whatever the person says, so this is asked of a display only.
+#[derive(Clone)]
+pub(crate) struct MayHear(Arc<dyn Fn() -> bool + Send + Sync>);
+
+impl MayHear {
+    /// A question that `says` answers each time, from what the person has said by then.
+    pub(crate) fn new(says: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Self(Arc::new(says))
+    }
+
+    /// Whether the viewer may hear now.
+    pub(crate) fn now(&self) -> bool {
+        (self.0)()
+    }
+
+    /// A viewer that may always hear, for a test of something else.
+    #[cfg(test)]
+    pub(crate) fn always() -> Self {
+        Self::new(|| true)
+    }
+}
+
+impl fmt::Debug for MayHear {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("MayHear")
     }
 }
 

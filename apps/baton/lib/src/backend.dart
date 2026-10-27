@@ -234,6 +234,19 @@ abstract interface class Session {
   /// `BatonError` of kind `notPaired`, or `storage` if the setting could not be kept.
   Future<void> setStartAccess(String id, StartAccess access);
 
+  /// What the person at this device said of the paired device [id] hearing the sound of this
+  /// device's screen: `true` that it may, `false` that it may not, and `null` when they have not
+  /// said, which means that it may if it may control the screen (`StartAccess.control`) and may
+  /// not if it can only look. Throws a `BatonError` of kind `notPaired`.
+  bool? hearSetting(String id);
+
+  /// Says whether the paired device [id] may hear the sound of this device's screen, or takes what
+  /// was said back with `null`. Only the person at this device can say so. It counts the next time
+  /// the device asks to hear, also in a session that runs, but a sound that plays is not stopped
+  /// until then. Throws a `BatonError` of kind `notPaired`, or `storage` if the setting could not
+  /// be kept.
+  Future<void> setHearSetting(String id, bool? setting);
+
   /// Ends the window [session], which is shown here or shared from here, and tells the other
   /// device. `Event_WindowEnded` follows. Returns whether there was such a window.
   bool endWindow(int session);

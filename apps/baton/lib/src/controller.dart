@@ -213,6 +213,28 @@ class DevicesController extends ChangeNotifier {
     }
   }
 
+  /// What the person here said of [device] hearing the sound of this device's screen: `true` that
+  /// it may, `false` that it may not, and `null` when they have not said (or the device is not
+  /// paired with this one any more), and then it may if it may control the screen.
+  bool? hearSetting(Device device) {
+    try {
+      return _session.hearSetting(device.id);
+    } on BatonError {
+      return null;
+    }
+  }
+
+  /// Says whether [device] may hear the sound of this device's screen, or takes that back with
+  /// `null`. Returns what to tell the person if that did not work, and `null` if it did.
+  Future<String?> setHearSetting(Device device, bool? setting) async {
+    try {
+      await _session.setHearSetting(device.id, setting);
+      return null;
+    } on BatonError catch (e) {
+      return e.message;
+    }
+  }
+
   Future<void> _readDevices() async {
     if (_readingDevices) {
       // Something changed after the read that is going on began, so read again after it.

@@ -232,7 +232,8 @@ impl Rig {
         Self::build(plan, allowed, tuning, takes_input, false, configure).await
     }
 
-    /// The same, with a phone that plays sound and a Mac that was set up to send it.
+    /// The same, with a phone that plays sound and a Mac that was set up to send it and lets the
+    /// phone hear.
     async fn sounding(plan: Plan, allowed: StartPolicy) -> Self {
         Self::build(plan, allowed, Tuning::default(), true, true, |_| {}).await
     }
@@ -268,7 +269,10 @@ impl Rig {
         .await;
         mac.pair_with(&phone);
         mac.trust
-            .update(&phone.id, |device| device.policy.start = allowed)
+            .update(&phone.id, |device| {
+                device.policy.start = allowed;
+                device.policy.hear = sound.then_some(true);
+            })
             .unwrap();
         Self {
             phone,

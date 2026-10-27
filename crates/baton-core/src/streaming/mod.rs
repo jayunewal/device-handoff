@@ -100,7 +100,7 @@ use offer::Sending;
 pub(crate) use offer::{Offered, Reservation, SETTLE, Sharer, Withdraw, ask};
 pub use offer::{ShareOutcome, WindowShare};
 
-pub(crate) use sound::SoundPlan;
+pub(crate) use sound::{MayHear, SoundPlan};
 pub use sound::{Play, SoundPacket, Speaker, playable};
 use source::Source;
 pub use source::{NotSent, Picture, SourceEvents, SourceHandle, SourceStats};

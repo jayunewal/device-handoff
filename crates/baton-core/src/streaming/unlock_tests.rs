@@ -38,8 +38,8 @@ use iroh::endpoint::{Connection, RecvStream, SendStream};
 use tokio::sync::mpsc;
 
 use super::{
-    CancelReason, DecodeError, Decoder, DecoderState, End, Granted, KeepError, Question, Settled,
-    SoundPlan, SourceEvents, SourceHandle, SourceParams, SourceSetup, Streaming, Takes,
+    CancelReason, DecodeError, Decoder, DecoderState, End, Granted, KeepError, MayHear, Question,
+    Settled, SoundPlan, SourceEvents, SourceHandle, SourceParams, SourceSetup, Streaming, Takes,
     UnlockAttempt, UnlockOutcome, Unlocker, ViewHandle, ViewParams, Viewing,
     answer_tests::quick,
     unlock::{
@@ -1822,6 +1822,7 @@ fn source_setup(params: SourceParams, private: bool, unlock: UnlockSetup) -> Sou
         private,
         takes: takes(),
         sound: SoundPlan::None,
+        may_hear: MayHear::always(),
         unlock,
         leave: false,
         params,
