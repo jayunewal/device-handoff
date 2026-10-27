@@ -52,6 +52,7 @@ use baton_proto::{
     pair::{ConfirmationCode, PairSecret},
     stream::{Start, StreamReply, StreamRequest},
     ticket::{MAX_ADDRS, MAX_RELAY_BYTES, PairTicket},
+    unlock::{KeyRequest, UnlockRequest},
 };
 use iroh::{
     Endpoint, EndpointAddr, RelayMode, RelayUrl, SecretKey,
@@ -79,9 +80,10 @@ use crate::{
     shared::Shared,
     slots::{MAX_PAIRING_CONNECTIONS, PairSlots},
     streaming::{
-        CONTROL_STREAMS, FRAME_STREAMS, Offered, Reservation, SETTLE, SOUND_STREAMS, ShareOutcome,
-        Sharer, SoundPlan, SourceEvents, StartHandler, StartOutcome, StartSlot, Starter, Streaming,
-        Takes, Viewer, Viewing, Wanted, WhyNot, WindowHandler, WindowShare, Withdraw, ask,
+        CONTROL_STREAMS, FRAME_STREAMS, KeyOutcome, Offered, Reservation, SETTLE, SOUND_STREAMS,
+        ShareOutcome, Sharer, SoundPlan, SourceEvents, StartHandler, StartOutcome, StartSlot,
+        Starter, Streaming, Takes, UnlockApprover, Viewer, Viewing, Wanted, WhyNot, WindowHandler,
+        WindowShare, Withdraw, ask,
     },
     transfer::{
         incoming::{FINISH_WAIT, Incoming, LANE_STREAMS, TransferHandler},
@@ -92,6 +94,7 @@ use crate::{
     transport,
     trust::{PairedDevice, TrustEvent, TrustStore},
     uni::{Kind, Sinks, Uni},
+    unlock_store::Unlocks,
     util::random_bytes,
 };
 
@@ -236,6 +239,7 @@ impl Tuning {
 }
 
 /// Sets up a [`Node`].
+#[allow(clippy::struct_excessive_bools)] // what the device is set up to do, each of its own
 pub struct NodeBuilder {
     secret: SecretKey,
     trust: TrustStore,
@@ -253,6 +257,11 @@ pub struct NodeBuilder {
     plays_sound: bool,
     /// Whether this device keeps its screen private while a paired device controls it.
     private_sessions: bool,
+    /// Whether this device can be unlocked from a paired device that the person set up for that.
+    unlockable: bool,
+    /// Who gives the key that an unlock is sealed to, if this device unlocks others with the face
+    /// of its person.
+    approver: Option<Arc<dyn UnlockApprover>>,
     /// What the application does when a paired device asks this one to start a session, if it
     /// starts them.
     starts: Option<Arc<dyn StartHandler>>,
@@ -289,6 +298,8 @@ impl NodeBuilder {
             sends_sound: false,
             plays_sound: false,
             private_sessions: false,
+            unlockable: false,
+            approver: None,
             starts: None,
             holds: None,
             clock: Arc::new(SystemClock),
@@ -341,6 +352,7 @@ impl NodeBuilder {
             private: false,
             starter: None,
             sound: false,
+            unlock: None,
         });
         self
     }
@@ -381,6 +393,37 @@ impl NodeBuilder {
     #[must_use]
     pub fn private_sessions(mut self) -> Self {
         self.private_sessions = true;
+        self
+    }
+
+    /// Has this device let a paired device unlock its screen, when the person here set that up for
+    /// it and the device asks in a private session. The platform checks the password when the
+    /// person sets the unlock up, and types it in the lock screen when the paired device asks
+    /// ([`SourceEvents::unlock`]). The unlock is kept in the list of paired devices
+    /// ([`TrustStore::set_up_unlock`]), and a device is asked for the key it is sealed to with
+    /// [`Node::unlock_key`].
+    ///
+    /// It needs [`private_sessions`](Self::private_sessions), and [`bind`](Self::bind) fails without
+    /// it. Without it, a device is not unlocked and says nothing about it. With it, the device
+    /// advertises `unlock.target`. It offers an unlock only to a device that advertised
+    /// `unlock.approve`.
+    #[must_use]
+    pub fn allow_unlock(mut self) -> Self {
+        self.unlockable = true;
+        self
+    }
+
+    /// Has this device give a source that asks the key that an unlock is sealed to, asking
+    /// `approver` each time. The application also gives each session that it shows an
+    /// [`Unlocker`](crate::streaming::Unlocker) ([`Viewing::with_unlocker`]), which opens the
+    /// question of the source with the face of the person.
+    ///
+    /// It needs [`window_handler`](Self::window_handler), and [`bind`](Self::bind) fails without
+    /// it. Without an approver, a device unlocks no other and says nothing about it. With one, it
+    /// advertises `unlock.approve`.
+    #[must_use]
+    pub fn approve_unlocks(mut self, approver: impl UnlockApprover) -> Self {
+        self.approver = Some(Arc::new(approver));
         self
     }
 
@@ -475,6 +518,10 @@ impl NodeBuilder {
             "sending sound needs the device to share its windows"
         } else if self.plays_sound && self.windows.is_none() {
             "playing sound needs the device to show the windows of others"
+        } else if self.unlockable && !self.private_sessions {
+            "being unlocked needs the device to keep its screen private"
+        } else if self.approver.is_some() && self.windows.is_none() {
+            "approving unlocks needs the device to show the windows of others"
         } else {
             return Ok(());
         };
@@ -499,6 +546,8 @@ impl NodeBuilder {
             sends_sound,
             plays_sound,
             private_sessions,
+            unlockable,
+            approver,
             starts,
             holds,
             clock,
@@ -517,11 +566,18 @@ impl NodeBuilder {
         let intake = Intake::new(&config.handoff);
         let incoming = incoming_table(transfers, &intake, &tuning);
         let viewer = windows.map(|handler| {
-            Viewer::new(handler, intake.item_charge(), tuning.approval_timeout).hearing(plays_sound)
+            let viewer = Viewer::new(handler, intake.item_charge(), tuning.approval_timeout)
+                .hearing(plays_sound);
+            match approver {
+                Some(approver) => viewer.approving(approver),
+                None => viewer,
+            }
         });
+        let unlocks = unlockable.then(|| Unlocks::new(trust.clone(), Arc::clone(&clock), id));
         let sharing = sharing.map(|sharer| Sharer {
             private: private_sessions,
             sound: sends_sound,
+            unlock: unlocks,
             ..sharer
         });
         let (sinks, streaming) = take_streams(
@@ -1087,7 +1143,7 @@ impl Node {
         let streaming = &self.shared.streaming;
         let wait = self.shared.tuning.offer_reply_deadline();
         let mut attempt = 0;
-        let (session, hold, id, reply) = loop {
+        let (session, hold, id, unlock, reply) = loop {
             attempt += 1;
             let (session, reused) = self
                 .pool
@@ -1105,6 +1161,9 @@ impl Node {
                 Some(id) => id,
                 None => SessionId::from_bytes(random_bytes()?),
             };
+            // What the viewer is told of an unlock, which this connection's introduction decides.
+            let unlock = streaming.unlock_setup(paired, &session.peer, window.private());
+            let offer = window.offer(id, unlock.is_offered());
             // A device that asked for the offer may have taken its asking back since the place was
             // taken, while the application got ready. Then nothing is offered, and the person
             // there is not asked about an offer that nobody wants: the cancellation is looked at
@@ -1112,10 +1171,10 @@ impl Node {
             let offered = tokio::select! {
                 biased;
                 () = reservation.cancelled() => return self.cancelled_offer(&paired.id, &reservation),
-                offered = ask(streaming, paired.id, &session.connection, window.offer(id), wait) => offered,
+                offered = ask(streaming, paired.id, &session.connection, offer, wait) => offered,
             };
             match offered {
-                Ok(reply) => break (session, hold, id, reply),
+                Ok(reply) => break (session, hold, id, unlock, reply),
                 // A connection that sat idle may have been closed. An offer that nobody answered
                 // is not repeated: the person there may be deciding.
                 Err(e)
@@ -1147,6 +1206,7 @@ impl Node {
                 session.peer.supports(capability::STREAM_HEAR),
                 window.is_display(),
             ),
+            unlock,
         };
         streaming.begin(offered, reply, events, choose).await
     }
@@ -1282,6 +1342,44 @@ impl Node {
         }
     }
 
+    /// Asks a paired device for the public key that the unlock of this device is sealed to, when the
+    /// person here sets the unlock up for it. `renew` has the device replace the key it made for
+    /// this one, so that what was sealed to the old key opens nothing from then on: the person
+    /// sets the unlock up again.
+    ///
+    /// The platform seals the key of the box of the password to the key that comes back, and the
+    /// person's setup is kept with [`TrustStore::set_up_unlock`]. The key is a point of P-256 in
+    /// the uncompressed form ([`Sealing::EciesP256`](baton_proto::unlock::Sealing::EciesP256)); one
+    /// that is not is an error here.
+    ///
+    /// The device may ask its person first, so the answer can take as long as a person may take.
+    /// A device that is reached but will not give a key is not an error: the [`KeyOutcome`] says
+    /// so.
+    ///
+    /// # Errors
+    ///
+    /// If this device was not set up to be unlocked ([`NodeBuilder::allow_unlock`]); if the device
+    /// is not paired, cannot be reached, does not advertise `unlock.approve` or breaks the
+    /// protocol; or if the key it gives is of a kind that this version does not know
+    /// ([`Error::Unsupported`]) or is not a key of that kind ([`Error::Protocol`]).
+    pub async fn unlock_key(&self, peer: &DeviceId, renew: bool) -> Result<KeyOutcome> {
+        if !self.shared.streaming.lets_unlock() {
+            return Err(Error::Config(
+                "this device was not set up to be unlocked from others".to_owned(),
+            ));
+        }
+        let request = Request::Unlock(UnlockRequest::Key(KeyRequest { renew }));
+        let exchange = self
+            .exchange_within(
+                peer,
+                &request,
+                Some(capability::UNLOCK_APPROVE),
+                self.shared.tuning.offer_reply_deadline(),
+            )
+            .await?;
+        KeyOutcome::of(exchange.response)
+    }
+
     /// What a failure while a device was asked really was. This node stopping and the device being
     /// unpaired both close the connection, and the closed connection can be what the call sees
     /// first.
@@ -1322,6 +1420,18 @@ impl Node {
         request: &Request,
         capability: Option<&'static str>,
     ) -> Result<Exchange> {
+        self.exchange_within(peer, request, capability, self.shared.tuning.reply_deadline)
+            .await
+    }
+
+    /// The same, waiting as long as `deadline` for the answer: a person may be asked first.
+    async fn exchange_within(
+        &self,
+        peer: &DeviceId,
+        request: &Request,
+        capability: Option<&'static str>,
+        deadline: Duration,
+    ) -> Result<Exchange> {
         let paired = self.shared.trust.get(peer).ok_or(Error::NotPaired(*peer))?;
         let mut attempt = 0;
         loop {
@@ -1336,13 +1446,7 @@ impl Node {
                 return Err(Error::Unsupported(capability.to_owned()));
             }
             let started = Instant::now();
-            match call(
-                &session.connection,
-                request,
-                self.shared.tuning.reply_deadline,
-            )
-            .await
-            {
+            match call(&session.connection, request, deadline).await {
                 Ok(response) => {
                     return Ok(Exchange {
                         response,

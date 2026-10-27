@@ -78,22 +78,30 @@ impl NewUnlock {
         if self.sealed.validate().is_err() {
             return Err("the sealed key of an unlock is empty or too large");
         }
-        if self.public.validate().is_err() {
-            return Err("the public key of an unlock is empty or too large");
-        }
-        match self.sealing {
-            Sealing::EciesP256 => {
-                let point = self.public.as_bytes();
-                if point.len() != P256_POINT_BYTES || point.first() != Some(&P256_UNCOMPRESSED) {
-                    return Err("the public key of an unlock is not a point of P-256");
-                }
-            }
-            Sealing::Other => {
-                return Err("an unlock cannot be set up with a way of sealing that is not known");
-            }
-        }
-        Ok(())
+        check_sealing_key(self.sealing, &self.public)
     }
+}
+
+/// Whether `public` is a key that a secret can be sealed to the way `sealing` says, and one that
+/// this version seals with. A viewer holds the key it gives to this, and so does a target that is
+/// given one. The size of the key is the size that the way of sealing has: one that is added
+/// later checks its own.
+pub(crate) fn check_sealing_key(
+    sealing: Sealing,
+    public: &SealingKey,
+) -> std::result::Result<(), &'static str> {
+    match sealing {
+        Sealing::EciesP256 => {
+            let point = public.as_bytes();
+            if point.len() != P256_POINT_BYTES || point.first() != Some(&P256_UNCOMPRESSED) {
+                return Err("the public key of an unlock is not a point of P-256");
+            }
+        }
+        Sealing::Other => {
+            return Err("an unlock cannot be set up with a way of sealing that is not known");
+        }
+    }
+    Ok(())
 }
 
 /// The unlock that the person set up at this device for a paired device, as it is kept.

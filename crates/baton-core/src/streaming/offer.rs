@@ -38,7 +38,7 @@ use std::{
 use baton_proto::{
     DeviceId,
     id::SessionId,
-    message::{DeclineReason, Message, Request, Response},
+    message::{DeclineReason, Hello, Message, Request, Response, capability},
     stream::{Offer, SourceKind, Stop, StopReason, StreamReply, StreamRequest},
 };
 use baton_stream::control::Config;
@@ -47,12 +47,14 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     SoundPlan, SourceEvents, SourceHandle, SourceParams, SourceSetup, Streaming, Table, Takes,
-    start::Starter, unlock::UnlockSetup,
+    start::Starter,
+    unlock::{UnlockSetup, UnlockStore},
 };
 use crate::{
     error::{Error, Result},
     session::{Hold, call},
     trust::PairedDevice,
+    unlock_store::Unlocks,
     util::lock,
 };
 
@@ -79,6 +81,9 @@ pub(crate) struct Sharer {
     /// Whether the device sends the sound of a display it shares, which is whether it advertises
     /// `stream.sound`.
     pub(crate) sound: bool,
+    /// What it needs to be unlocked from a paired device, if it can be, which is whether it
+    /// advertises `unlock.target`. Only a device that keeps its screen private can.
+    pub(crate) unlock: Option<Unlocks>,
 }
 
 /// The place of the one session that a device has as a source, from the offer to the session.
@@ -202,8 +207,10 @@ impl WindowShare {
         self
     }
 
-    /// The offer that asks a device to show this window under `session`.
-    pub(crate) fn offer(&self, session: SessionId) -> Offer {
+    /// The offer that asks a device to show this window under `session`. `unlock` is whether the
+    /// person at this device set up the unlock of its screen for that device, so that it may ask
+    /// to unlock it.
+    pub(crate) fn offer(&self, session: SessionId, unlock: bool) -> Offer {
         Offer {
             session,
             source: self.source,
@@ -213,15 +220,14 @@ impl WindowShare {
             height: self.height,
             control: self.control,
             private: self.private,
-            // No device offers an unlock yet.
-            unlock: false,
+            unlock,
         }
     }
 
     /// Whether the offer is within the limits of the protocol, and of what a source may offer.
     pub(crate) fn check(&self) -> Result<()> {
         Request::Stream(StreamRequest::Offer(
-            self.offer(SessionId::from_bytes([0; SessionId::LEN])),
+            self.offer(SessionId::from_bytes([0; SessionId::LEN]), false),
         ))
         .validate()
         .map_err(|error| Error::BadItem(error.to_string()))
@@ -292,6 +298,8 @@ pub(crate) struct Offered<'a> {
     pub(crate) private: bool,
     /// What the source does about sound in the session.
     pub(crate) sound: SoundPlan,
+    /// What the source does about an unlock in the session: what the offer said of it.
+    pub(crate) unlock: UnlockSetup,
 }
 
 impl Streaming {
@@ -304,6 +312,46 @@ impl Streaming {
     /// `stream.sound`.
     pub(crate) fn sounds(&self) -> bool {
         self.sharer.as_ref().is_some_and(|sharer| sharer.sound)
+    }
+
+    /// Whether this device can be unlocked from a paired device, which is whether it advertises
+    /// `unlock.target`.
+    pub(crate) fn lets_unlock(&self) -> bool {
+        self.sharer
+            .as_ref()
+            .is_some_and(|sharer| sharer.unlock.is_some())
+    }
+
+    /// What a session with `viewer`, which introduced itself with `hello`, does about an unlock,
+    /// and so what the offer to it says (protocol section 9).
+    ///
+    /// The offer says `unlock` when the person at this device set the unlock up for the viewer, and
+    /// it can still be tried, in a private session, to a viewer that advertised `unlock.approve`.
+    /// It says so whether or not the screen is locked now: a person who picks up the viewer after
+    /// the screen locked can unlock it. A viewer that did not advertise `unlock.approve` is not told
+    /// that the screen can be unlocked, and is not sent the messages of an unlock.
+    pub(crate) fn unlock_setup(
+        &self,
+        viewer: &PairedDevice,
+        hello: &Hello,
+        private: bool,
+    ) -> UnlockSetup {
+        let Some(unlocks) = self
+            .sharer
+            .as_ref()
+            .and_then(|sharer| sharer.unlock.as_ref())
+        else {
+            return UnlockSetup::Unsupported;
+        };
+        if !hello.supports(capability::UNLOCK_APPROVE) {
+            return UnlockSetup::Unsupported;
+        }
+        let store = unlocks.store_for(viewer.id);
+        if private && store.record().is_some() {
+            UnlockSetup::Offered(Arc::new(store))
+        } else {
+            UnlockSetup::NotOffered
+        }
     }
 
     /// Whether this device takes input from a viewer, which is whether it advertises
@@ -426,8 +474,7 @@ impl Streaming {
             private: offered.private,
             takes,
             sound: offered.sound,
-            // No device offers an unlock yet.
-            unlock: UnlockSetup::Unsupported,
+            unlock: offered.unlock,
             params: SourceParams::default(),
         };
         let started = self.source(

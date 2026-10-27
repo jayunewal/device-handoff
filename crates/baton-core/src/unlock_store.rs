@@ -67,6 +67,39 @@ enum Change {
     Unwritable,
 }
 
+/// What a device needs to be unlocked from a paired device: the list that keeps the records and
+/// the history, the clock of the history, and what could not be written down. A session with a
+/// paired device is given the store for it.
+pub(crate) struct Unlocks {
+    trust: TrustStore,
+    clock: Arc<dyn Clock>,
+    /// This device.
+    target: DeviceId,
+    unwritten: Arc<UnwrittenEnds>,
+}
+
+impl Unlocks {
+    pub(crate) fn new(trust: TrustStore, clock: Arc<dyn Clock>, target: DeviceId) -> Self {
+        Self {
+            trust,
+            clock,
+            target,
+            unwritten: Arc::default(),
+        }
+    }
+
+    /// The store for the unlock of `viewer`, a paired device.
+    pub(crate) fn store_for(&self, viewer: DeviceId) -> NodeUnlockStore {
+        NodeUnlockStore::new(
+            self.trust.clone(),
+            Arc::clone(&self.clock),
+            self.target,
+            viewer,
+            Arc::clone(&self.unwritten),
+        )
+    }
+}
+
 /// The record of the unlock of one paired device, and the history, kept in the list of paired
 /// devices. It is what the sessions with that device are given.
 pub(crate) struct NodeUnlockStore {
@@ -80,7 +113,7 @@ pub(crate) struct NodeUnlockStore {
 }
 
 impl NodeUnlockStore {
-    pub(crate) fn new(
+    fn new(
         trust: TrustStore,
         clock: Arc<dyn Clock>,
         target: DeviceId,

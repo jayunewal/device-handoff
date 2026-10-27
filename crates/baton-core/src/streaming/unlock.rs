@@ -155,13 +155,6 @@ pub(crate) trait UnlockStore: Send + Sync + 'static {
 
 /// What a session does about an unlock.
 #[derive(Clone)]
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "the node offers an unlock when it keeps a record, which is next"
-    )
-)]
 pub(crate) enum UnlockSetup {
     /// This device did not advertise `unlock.target`, or the viewer did not advertise
     /// `unlock.approve`. The viewer was not told that it may unlock, and the messages of an
@@ -172,6 +165,13 @@ pub(crate) enum UnlockSetup {
     NotOffered,
     /// The offer said `unlock`: the session takes the messages of an unlock, with this record.
     Offered(Arc<dyn UnlockStore>),
+}
+
+impl UnlockSetup {
+    /// Whether the offer of the session says `unlock`.
+    pub(crate) fn is_offered(&self) -> bool {
+        matches!(self, Self::Offered(_))
+    }
 }
 
 impl fmt::Debug for UnlockSetup {

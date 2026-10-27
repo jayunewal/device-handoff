@@ -34,7 +34,10 @@ use baton_proto::{
 use iroh::endpoint::Connection;
 use tokio_util::sync::CancellationToken;
 
-use super::{Decoder, Granted, Speaker, Streaming, Takes, Unlocker, ViewHandle, ViewParams};
+use super::{
+    Decoder, Granted, Speaker, Streaming, Takes, UnlockApprover, Unlocker, ViewHandle, ViewParams,
+    approve::KeyPlace,
+};
 use crate::{
     error::{Error, Result},
     transfer::incoming::Link,
@@ -288,12 +291,17 @@ impl<T: WindowHandler + ?Sized> WindowHandler for Arc<T> {
 pub(crate) struct Viewer {
     handler: Arc<dyn WindowHandler>,
     /// Whether the device may send one more item now. It counts the item.
-    charge: Box<dyn Fn(&DeviceId) -> bool + Send + Sync>,
+    pub(super) charge: Box<dyn Fn(&DeviceId) -> bool + Send + Sync>,
     /// How long a person has to answer.
-    approval: Duration,
+    pub(super) approval: Duration,
     /// Whether the device plays the sound of the screens it is shown, which is whether it
     /// advertises `stream.hear`.
     hears: bool,
+    /// Who gives the key that an unlock is sealed to, if the device unlocks others with the face
+    /// of its person, which is whether it advertises `unlock.approve`.
+    pub(super) approver: Option<Arc<dyn UnlockApprover>>,
+    /// The one question about a key that is asked at a time.
+    pub(super) keying: KeyPlace,
 }
 
 impl Viewer {
@@ -307,12 +315,20 @@ impl Viewer {
             charge: Box::new(charge),
             approval,
             hears: false,
+            approver: None,
+            keying: KeyPlace::default(),
         }
     }
 
     /// Whether the device plays sound.
     pub(crate) fn hearing(mut self, hears: bool) -> Self {
         self.hears = hears;
+        self
+    }
+
+    /// Has `approver` give the key that an unlock is sealed to.
+    pub(crate) fn approving(mut self, approver: Arc<dyn UnlockApprover>) -> Self {
+        self.approver = Some(approver);
         self
     }
 }
@@ -349,7 +365,8 @@ impl Seen {
 }
 
 /// What the viewer keeps about offers: the one that waits for the person, the ids seen on each
-/// connection, and the connections on which the other device said that it sends sound.
+/// connection, and the connections on which the other device said what it does of the things a
+/// viewer may use.
 #[derive(Default)]
 pub(super) struct Offers {
     pub(super) waiting: Option<Waiting>,
@@ -357,11 +374,28 @@ pub(super) struct Offers {
     /// The connections whose device introduced itself as one that sends sound. A viewer sends a
     /// `Hear` only to such a device.
     pub(super) sounding: HashSet<Link>,
+    /// The connections whose device introduced itself as one that can be unlocked, which a viewer
+    /// that unlocks with a face is told of. A viewer sends the messages of an unlock only to such
+    /// a device, and in a session whose offer said so.
+    pub(super) unlocking: HashSet<Link>,
 }
 
 impl Offers {
     pub(super) fn note(&mut self, link: Link, session: SessionId) -> bool {
         self.seen.entry(link).or_default().note(session)
+    }
+
+    /// What `offer`, which came on the connection `link`, granted the viewer, and what the source
+    /// on it said of itself. The offer says `unlock` only of a private session, and a viewer takes
+    /// it only from a source that advertised `unlock.target`, as it advertised `unlock.approve`
+    /// itself.
+    pub(super) fn granted(&self, link: Link, offer: &Offer) -> Granted {
+        Granted {
+            control: offer.control,
+            private: offer.private,
+            sound: self.sounding.contains(&link),
+            unlock: offer.unlock && offer.private && self.unlocking.contains(&link),
+        }
     }
 
     /// Withdraws the offer that waits, if `doomed` says it is from a device that is gone.
@@ -434,8 +468,16 @@ impl Streaming {
     /// viewer is told by this which of the things it may say to a source the source takes, since
     /// the offer does not say.
     pub(crate) fn introduced(&self, link: Link, hello: &Hello) {
-        if self.hears() && hello.supports(capability::STREAM_SOUND) {
-            lock(&self.table).offers.sounding.insert(link);
+        let sounds = self.hears() && hello.supports(capability::STREAM_SOUND);
+        let unlocks = self.approves_unlock() && hello.supports(capability::UNLOCK_TARGET);
+        if sounds || unlocks {
+            let mut table = lock(&self.table);
+            if sounds {
+                table.offers.sounding.insert(link);
+            }
+            if unlocks {
+                table.offers.unlocking.insert(link);
+            }
         }
     }
 
@@ -495,12 +537,12 @@ impl Streaming {
             // The offer that a start of this device asked for is taken without asking a person:
             // the person asked when they chose to start. It is not charged to the device either,
             // since this device asked for it.
-            let sounding = table.offers.sounding.contains(&link);
+            let granted = table.offers.granted(link, &offer);
             if let Some(pending) = table
                 .starting
                 .take_if(|pending| pending.peer == paired.id && pending.session == session)
             {
-                return self.take_asked(&mut table, paired, connection, pending, &offer, sounding);
+                return self.take_asked(&mut table, paired, connection, pending, &offer, granted);
             }
             // Too many items from the device, another offer that waits for a person, a window
             // that is shown already, or a start that waits for its own offer.
@@ -522,7 +564,7 @@ impl Streaming {
             session,
             withdrawn,
         };
-        let sounding = lock(&self.table).offers.sounding.contains(&link);
+        let granted = lock(&self.table).offers.granted(link, &offer);
 
         let shown = WindowOffer::new(&offer);
         let verdict = tokio::select! {
@@ -555,13 +597,7 @@ impl Streaming {
                         connection.clone(),
                         session,
                         viewing,
-                        Granted {
-                            control: offer.control,
-                            private: offer.private,
-                            sound: sounding,
-                            // No device advertises `unlock.approve` yet.
-                            unlock: false,
-                        },
+                        granted,
                     )
                 };
                 // The window is shown now, and that keeps other offers out from here on.
@@ -617,6 +653,7 @@ impl Streaming {
         let mut table = lock(&self.table);
         table.offers.seen.remove(&link);
         table.offers.sounding.remove(&link);
+        table.offers.unlocking.remove(&link);
     }
 }
 

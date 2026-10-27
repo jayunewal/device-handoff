@@ -57,6 +57,7 @@ use crate::{
 mod answer;
 #[cfg(test)]
 mod answer_tests;
+mod approve;
 mod offer;
 #[cfg(test)]
 mod offer_tests;
@@ -89,6 +90,7 @@ const _: () = assert!(SOUND_STREAMS as usize == baton_stream::MAX_SOUND_STREAMS)
 use answer::Offers;
 pub(crate) use answer::Viewer;
 pub use answer::{Viewing, WindowHandler, WindowOffer, WindowVerdict};
+pub use approve::{KeyOutcome, UnlockApprover};
 
 use offer::Sending;
 pub(crate) use offer::{Offered, Reservation, SETTLE, Sharer, Withdraw, ask};

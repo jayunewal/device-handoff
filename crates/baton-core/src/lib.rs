@@ -65,13 +65,6 @@ mod slots;
 mod testing;
 mod transport;
 mod uni;
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "the node gives the store to a session when it offers an unlock, which is the next commit"
-    )
-)]
 mod unlock_store;
 mod wire;
 

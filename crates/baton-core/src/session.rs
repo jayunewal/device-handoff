@@ -26,7 +26,6 @@ use baton_proto::{
         Response, capability,
     },
     transfer::{Cancelled, Declined, TransferReply, TransferRequest},
-    unlock::UnlockReply,
 };
 use iroh::{
     Endpoint, EndpointAddr, RelayUrl,
@@ -134,6 +133,14 @@ pub(crate) fn our_hello(shared: &Shared) -> Hello {
     // the session, instead of waiting to be told which window to offer.
     if shared.streaming.starts() {
         capabilities.push(capability::STREAM_START.to_owned());
+    }
+    // A device that can be unlocked from a paired device, after the person at it set that up, says
+    // so, as one that unlocks others with the face of its person does.
+    if shared.streaming.lets_unlock() {
+        capabilities.push(capability::UNLOCK_TARGET.to_owned());
+    }
+    if shared.streaming.approves_unlock() {
+        capabilities.push(capability::UNLOCK_APPROVE.to_owned());
     }
     Hello {
         protocol_minor: PROTOCOL_MINOR,
@@ -430,8 +437,10 @@ async fn serve_stream(
                 .await,
         ),
         // A device that does not approve unlocks has no key to give for one, and declines every
-        // request for it as unsupported (section 9). None approves one yet.
-        Request::Unlock(_) => Response::Unlock(UnlockReply::Declined(DeclineReason::Unsupported)),
+        // request for it as unsupported (section 9).
+        Request::Unlock(request) => {
+            Response::Unlock(shared.streaming.answer_unlock(&paired, request).await)
+        }
     };
     respond(&mut send, &response).await;
 }

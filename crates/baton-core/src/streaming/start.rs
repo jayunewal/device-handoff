@@ -393,7 +393,7 @@ impl Streaming {
         connection: &Connection,
         pending: Pending,
         offer: &Offer,
-        sounding: bool,
+        granted: Granted,
     ) -> StreamReply {
         let session = offer.session;
         let declined = |reason| StreamReply::Declined(Declined { session, reason });
@@ -415,10 +415,7 @@ impl Streaming {
         // The viewer takes no more control than it wished for.
         let granted = Granted {
             control: control && offer.control,
-            private: offer.private,
-            sound: sounding,
-            // No device advertises `unlock.approve` yet.
-            unlock: false,
+            ..granted
         };
         match self.view_in(table, paired, connection.clone(), session, viewing, granted) {
             Ok(handle) => {
