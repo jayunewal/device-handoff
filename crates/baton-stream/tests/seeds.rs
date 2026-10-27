@@ -175,6 +175,8 @@ const SEEDS: &[(&str, Outcome)] = &[
     ("viewer-hear-without-saying-whether", Refused),
     ("viewer-keyframe", Written),
     ("viewer-keyframe-of-the-biggest-frame", Written),
+    ("viewer-leave", Written),
+    ("viewer-leave-as-a-map", Read),
     ("viewer-lift", Written),
     ("viewer-lift-a-field-of-a-later-version", Read),
     ("viewer-lift-input-not-a-bool", Refused),

@@ -17,3 +17,4 @@ Short notes on decisions that are expensive to reverse, written when the decisio
 | [0011](0011-privacy-mode.md) | Privacy mode: a Mac that another device controls shows nothing, takes no input, and locks when the session ends |
 | [0012](0012-sound.md) | Sound: the Mac sends what it plays, and is quiet while the other device listens |
 | [0013](0013-unlock-from-a-phone.md) | Unlock from a phone: the face on the phone opens a key, and the Mac types its own password |
+| [0014](0014-lock-the-mac-or-leave-it.md) | Lock the Mac or leave it: the person who ends a private session at the other device is asked |

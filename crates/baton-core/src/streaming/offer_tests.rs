@@ -309,8 +309,8 @@ fn an_offer_says_unlock_only_when_the_node_decided_that_it_does() {
         window().with_control(),
         window().with_control().with_private(),
     ] {
-        assert!(!share.offer(session(1), false).unlock);
-        assert!(share.offer(session(1), true).unlock);
+        assert!(!share.offer(session(1), false, false).unlock);
+        assert!(share.offer(session(1), true, false).unlock);
     }
 }
 

@@ -125,6 +125,7 @@ pub enum StopReason {
 /// This is all the person at the viewer is shown before they decide, so it says what is shared
 /// and whether the viewer may control it.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)] // what the source says of the session, each of its own
 pub struct Offer {
     /// Chosen at random by the source for each offer and never used again.
     pub session: SessionId,
@@ -156,6 +157,13 @@ pub struct Offer {
     /// Left out when the viewer may not.
     #[serde(default, skip_serializing_if = "is_default")]
     pub unlock: bool,
+    /// Whether the source will leave its screen as it is when the session ends, and not lock it,
+    /// if the person at the viewer chose that and the viewer says so with a `Leave` on the control
+    /// stream before it finishes the stream. Only a source whose platform can end the privacy of a
+    /// session without locking sets it, and only with `private`. The viewer cannot turn it on
+    /// later. Left out when the source will not.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub leave: bool,
 }
 
 // The title of a window can name a document, a person or a page, and the application tells
@@ -172,6 +180,7 @@ impl fmt::Debug for Offer {
             .field("control", &self.control)
             .field("private", &self.private)
             .field("unlock", &self.unlock)
+            .field("leave", &self.leave)
             .finish()
     }
 }
@@ -393,6 +402,7 @@ mod tests {
             control: true,
             private: false,
             unlock: false,
+            leave: false,
         }
     }
 
@@ -437,6 +447,17 @@ mod tests {
             StreamRequest::Offer(Offer {
                 private: true,
                 unlock: true,
+                ..offer()
+            }),
+            StreamRequest::Offer(Offer {
+                private: true,
+                leave: true,
+                ..offer()
+            }),
+            StreamRequest::Offer(Offer {
+                private: true,
+                unlock: true,
+                leave: true,
                 ..offer()
             }),
             StreamRequest::Stop(Stop {
@@ -600,6 +621,68 @@ mod tests {
             )
         );
         assert_eq!(unlocking.len(), private.len() + 8);
+    }
+
+    #[test]
+    fn the_vectors_of_an_offer_that_may_be_left_are_what_the_code_writes() {
+        let private = frame::encode(&Request::Stream(StreamRequest::Offer(Offer {
+            private: true,
+            ..offer()
+        })))
+        .unwrap();
+        // A source that will leave its screen as it is has one more key behind `private`, which
+        // is seven bytes more.
+        let leaving = frame::encode(&Request::Stream(StreamRequest::Offer(Offer {
+            private: true,
+            leave: true,
+            ..offer()
+        })))
+        .unwrap();
+        assert_eq!(
+            hex(&leaving),
+            concat!(
+                "00000080",                           // the frame: 128 bytes follow
+                "a16653747265616d",                   // {"Stream":
+                "a1654f66666572",                     //   {"Offer":
+                "a9",                                 //     map of 9
+                "6773657373696f6e",                   //     "session":
+                "50a0a1a2a3a4a5a6a7a8a9aaabacadaeaf", //       16 bytes
+                "66736f75726365",                     //     "source":
+                "6657696e646f77",                     //       "Window",
+                "657469746c65",                       //     "title":
+                "6a5265706f72742e706466",             //       "Report.pdf",
+                "63617070",                           //     "app":
+                "6750726576696577",                   //       "Preview",
+                "6577696474681905a0",                 //     "width": 1440,
+                "66686569676874190384",               //     "height": 900,
+                "67636f6e74726f6c",                   //     "control":
+                "f5",                                 //       true,
+                "6770726976617465",                   //     "private":
+                "f5",                                 //       true,
+                "656c65617665",                       //     "leave":
+                "f5",                                 //       true
+            )
+        );
+        assert_eq!(leaving.len(), private.len() + 7);
+
+        // And one that may be unlocked as well has `leave` behind `unlock`.
+        let both = frame::encode(&Request::Stream(StreamRequest::Offer(Offer {
+            private: true,
+            unlock: true,
+            leave: true,
+            ..offer()
+        })))
+        .unwrap();
+        assert_eq!(
+            hex(&both[both.len() - 15..]),
+            concat!(
+                "66756e6c6f636b", // "unlock":
+                "f5",             //   true,
+                "656c65617665",   // "leave":
+                "f5",             //   true
+            )
+        );
+        assert_eq!(both.len(), private.len() + 8 + 7);
     }
 
     #[test]
@@ -874,5 +957,19 @@ mod tests {
         );
         assert!(shown.contains("unlock: true"), "{shown}");
         assert!(format!("{:?}", offer()).contains("unlock: false"));
+    }
+
+    #[test]
+    fn a_log_says_whether_the_source_will_leave_its_screen_as_it_is() {
+        let shown = format!(
+            "{:?}",
+            Offer {
+                private: true,
+                leave: true,
+                ..offer()
+            }
+        );
+        assert!(shown.contains("leave: true"), "{shown}");
+        assert!(format!("{:?}", offer()).contains("leave: false"));
     }
 }

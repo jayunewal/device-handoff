@@ -199,6 +199,24 @@ pub trait SourceEvents: Send + 'static {
         drop(attempt);
     }
 
+    /// The session is over, and the person at the viewer chose, when they ended it, that the
+    /// screen be left as it is. The platform lets go of everything it holds for the session, as it
+    /// does for [`ended`](Self::ended), and does not lock the screen. A screen that is locked
+    /// stays locked, and nothing is unlocked. This is called instead of `ended`, and the platform
+    /// is called no more.
+    ///
+    /// It is called only for a session whose offer said `leave`, which is a private session of a
+    /// node that was set up to leave its screen ([`NodeBuilder::allow_leave`](crate::NodeBuilder::allow_leave)),
+    /// and only when the viewer's last message was `Leave` and it then finished its control
+    /// stream. Every other end, whatever its cause, calls `ended`: the viewer going away, the
+    /// connection ending, a rule broken, the person at the source, the node stopping.
+    ///
+    /// The default calls `ended`: a platform that cannot leave the screen as it is locks it, as it
+    /// does at every other end.
+    fn ended_leaving(&mut self) {
+        self.ended();
+    }
+
     /// The session is over. The platform lets go of everything it holds for it, and is called no
     /// more.
     fn ended(&mut self);
@@ -239,6 +257,10 @@ impl SourceEvents for Box<dyn SourceEvents> {
 
     fn unlock(&mut self, attempt: UnlockAttempt) {
         (**self).unlock(attempt);
+    }
+
+    fn ended_leaving(&mut self) {
+        (**self).ended_leaving();
     }
 
     fn ended(&mut self) {
@@ -304,6 +326,9 @@ pub(crate) struct SourceSetup {
     pub(crate) sound: SoundPlan,
     /// What the session does about an unlock.
     pub(crate) unlock: UnlockSetup,
+    /// Whether the offer said `leave`, so that a viewer which ends the session can ask for the
+    /// screen to be left as it is, and not locked.
+    pub(crate) leave: bool,
     /// The limits.
     pub(crate) params: SourceParams,
 }
@@ -472,6 +497,13 @@ pub(super) struct Source {
     control: bool,
     /// Whether the screen is kept private, which the viewer may lift in part.
     private: bool,
+    /// Whether the offer said `leave`: the viewer can ask, with a last `Leave`, for the screen to
+    /// be left as it is when the session ends.
+    leave: bool,
+    /// Whether the viewer has said `Leave`, which is the last thing it says. It counts when the
+    /// viewer then finishes its control stream, and not when the stream is reset or the connection
+    /// ends: the person chose, but the end that follows is one that locks.
+    left: AtomicBool,
     /// What the viewer takes, which the pictures stay within.
     takes: Takes,
     /// What the session does about sound.
@@ -804,8 +836,16 @@ impl Source {
             takes,
             sound,
             unlock,
+            leave,
             params,
         } = setup;
+        // The offer says `leave` only of a private session (protocol.md section 9): a screen that
+        // is not kept private is not locked when the session ends, so there is nothing to leave.
+        if leave && !private {
+            return Err(Error::Config(
+                "leaving the screen as it is is offered only in a private session".to_owned(),
+            ));
+        }
         let sender = Sender::new(whom.session, params.rules);
         config.epoch = sender.epoch();
         let first = SourceMessage::Config(config);
@@ -843,6 +883,8 @@ impl Source {
             params,
             control,
             private,
+            leave,
+            left: AtomicBool::new(false),
             takes,
             sound,
             began: Instant::now(),
@@ -910,6 +952,20 @@ impl Source {
 
     /// Ends the session, once. The caller does not hold the session's lock.
     pub(super) fn end(&self, how: End) {
+        self.end_leaving_if(how, false);
+    }
+
+    /// Ends the session because the viewer, whose person chose that the screen be left as it is,
+    /// said so with a `Leave` and finished its control stream. The platform is told to leave the
+    /// screen if the offer said `leave`, and told of an ordinary end if it did not. Does nothing
+    /// if the session has ended already: the first end of a session is the only one, and a session
+    /// that ended some other way was ended as that way ends it.
+    fn end_leaving(&self) {
+        self.end_leaving_if(End::Peer, self.leave);
+    }
+
+    /// Ends the session, once, and tells the platform to leave the screen as it is if `leave`.
+    fn end_leaving_if(&self, how: End, leave: bool) {
         if self.end.set(how).is_err() {
             return;
         }
@@ -935,7 +991,11 @@ impl Source {
         }
         let job = {
             let mut core = lock(&self.core);
-            core.events.ended();
+            if leave {
+                core.events.ended_leaving();
+            } else {
+                core.events.ended();
+            }
             let now = self.now();
             core.unlocking()
                 .and_then(|unlocking| unlocking.ended(now).job)
@@ -972,6 +1032,7 @@ impl Source {
             queue,
             &self.ended,
             &self.end,
+            None,
         )
         .await
         {
@@ -1050,7 +1111,10 @@ impl Source {
         drop(slot);
         match ended {
             ControlEnd::Over => {}
-            ControlEnd::Peer => self.end(End::Peer),
+            // The viewer finished its stream, having said everything it had to say. If its last
+            // word was that the person chose to leave the screen as it is, that is how it ends.
+            ControlEnd::Finished if self.left.load(Ordering::SeqCst) => self.end_leaving(),
+            ControlEnd::Finished | ControlEnd::Peer => self.end(End::Peer),
             ControlEnd::Violation => self.end(End::Violation),
             ControlEnd::Stalled => self.end(End::Stalled),
         }
@@ -1062,6 +1126,10 @@ impl Source {
         let mut core = lock(&self.core);
         if self.end.get().is_some() {
             return ControlFlow::Continue(());
+        }
+        // `Leave` is the last thing that a viewer says.
+        if self.left.load(Ordering::SeqCst) {
+            return ControlFlow::Break(());
         }
         match message {
             ViewerMessage::Report(report) => {
@@ -1107,6 +1175,16 @@ impl Source {
             | ViewerMessage::UnlockOpened(_)
             | ViewerMessage::UnlockCancelled(_)) => {
                 return self.unlock_said(&mut core, now, message);
+            }
+            // The person at the viewer ended the session and chose that the screen stay as it is.
+            // The offer told the viewer whether it may say so, and a viewer that may not breaks a
+            // rule, as one does that sends a `Hear` to a source with no sound. It counts when the
+            // viewer finishes its stream next.
+            ViewerMessage::Leave => {
+                if !self.leave {
+                    return ControlFlow::Break(());
+                }
+                self.left.store(true, Ordering::SeqCst);
             }
             // The offer told the viewer whether it may ask. A message from a viewer that may not is
             // dropped, and is no violation.
@@ -1367,7 +1445,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        testing::{Device, PATIENCE, connect, next, nothing_arrives, stopped_with},
+        testing::{Device, PATIENCE, QUIET, connect, next, nothing_arrives, stopped_with},
         uni::{Kind, Sinks},
         wire::{read_next, write_message},
     };
@@ -1382,6 +1460,8 @@ mod tests {
         Lift(Lift),
         Recovery,
         Ended,
+        /// The session ended and the screen is to be left as it is.
+        Left,
     }
 
     #[derive(Clone, Default)]
@@ -1443,6 +1523,10 @@ mod tests {
             self.note(Heard::Recovery);
         }
 
+        fn ended_leaving(&mut self) {
+            self.note(Heard::Left);
+        }
+
         fn ended(&mut self) {
             self.note(Heard::Ended);
         }
@@ -1489,6 +1573,7 @@ mod tests {
             takes: takes(),
             sound: SoundPlan::None,
             unlock: UnlockSetup::Unsupported,
+            leave: false,
             params,
         }
     }
@@ -1498,6 +1583,34 @@ mod tests {
         SourceSetup {
             private: true,
             ..setup(true, quick())
+        }
+    }
+
+    /// A session that keeps the screen private, and whose offer said that the screen can be left
+    /// as it is when the session ends.
+    fn leaving_setup() -> SourceSetup {
+        SourceSetup {
+            leave: true,
+            ..private_setup()
+        }
+    }
+
+    /// A platform that cannot leave a screen as it is: it is told of the end and nothing else.
+    struct Plain(Log);
+
+    impl SourceEvents for Plain {
+        fn report(&mut self, _: Report) {}
+
+        fn want(&mut self, _: Want) {}
+
+        fn input(&mut self, _: InputBatch, _: Duration) {}
+
+        fn held(&mut self, _: Vec<LtrToken>) {}
+
+        fn recovery(&mut self) {}
+
+        fn ended(&mut self) {
+            lock(&(self.0).heard).push(Heard::Ended);
         }
     }
 
@@ -1524,6 +1637,13 @@ mod tests {
 
         /// A rig whose source takes `control_streams` control streams at once.
         async fn with(setup: SourceSetup, control_streams: u32) -> Self {
+            Self::starting(setup, control_streams)
+                .await
+                .expect("the session did not start")
+        }
+
+        /// The same, for a setup that the session may refuse.
+        async fn starting(setup: SourceSetup, control_streams: u32) -> Result<Self> {
             let streaming = Streaming::new();
             let sinks = Sinks::default()
                 .install(Kind::Control, control_streams, streaming.clone())
@@ -1536,17 +1656,15 @@ mod tests {
             let (dialed, accepted) = connect(&source, &viewer).await;
             let log = Log::default();
             let paired = source.trust.get(&viewer.id).unwrap();
-            let handle = streaming
-                .source(
-                    &paired,
-                    dialed.clone(),
-                    None,
-                    session_id(),
-                    setup,
-                    Recording(log.clone()),
-                )
-                .unwrap();
-            Self {
+            let handle = streaming.source(
+                &paired,
+                dialed.clone(),
+                None,
+                session_id(),
+                setup,
+                Recording(log.clone()),
+            )?;
+            Ok(Self {
                 source,
                 dialed,
                 viewer,
@@ -1556,7 +1674,7 @@ mod tests {
                 streaming,
                 handle,
                 log,
-            }
+            })
         }
 
         /// The source's control stream, as the viewer reads it.
@@ -1595,6 +1713,11 @@ mod tests {
                 .unwrap()
                 .expect("the frame was dropped");
             (kind, number)
+        }
+
+        /// Whether the source has read a `Leave` of the viewer.
+        fn left(&self) -> bool {
+            self.handle.source.left.load(Ordering::SeqCst)
         }
 
         /// Whether a picture is wanted, asked without leaving the question open.
@@ -2379,6 +2502,224 @@ mod tests {
         drop(handle);
         assert!(log.has(&Heard::Ended));
         assert!(streaming.is_empty());
+    }
+
+    /// How often the platform was told of an ordinary end, and of an end that leaves the screen.
+    fn ends_heard(log: &Log) -> (usize, usize) {
+        (log.count(&Heard::Ended), log.count(&Heard::Left))
+    }
+
+    #[tokio::test]
+    async fn an_end_that_leaves_the_screen_as_it_is_tells_the_platform_so_and_nothing_else() {
+        let mut rig = Rig::with(leaving_setup(), 1).await;
+        let mut control = rig.source_control().await;
+        read_source_message(&mut control).await;
+        rig.handle.source.end_leaving();
+        assert_eq!(rig.ended().await, End::Peer);
+        // Once, and not as an ordinary end.
+        assert_eq!(ends_heard(&rig.log), (0, 1));
+        // The viewer is told as it is of any end: the control stream is finished, not reset.
+        assert_eq!(read_source_message(&mut control).await, None);
+        assert!(rig.streaming.is_empty());
+    }
+
+    #[tokio::test]
+    async fn every_other_end_of_a_session_that_may_be_left_has_the_platform_lock_the_screen() {
+        for what in ["the platform ends it", "the connection ends"] {
+            let rig = Rig::with(leaving_setup(), 1).await;
+            match what {
+                "the platform ends it" => rig.handle.end(),
+                _ => rig.accepted.close(code(close_code::NORMAL), b"done"),
+            }
+            rig.ended().await;
+            assert_eq!(ends_heard(&rig.log), (1, 0), "{what}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_viewer_that_finishes_its_control_stream_has_the_platform_lock_a_screen_that_may_be_left()
+     {
+        let mut rig = Rig::with(leaving_setup(), 1).await;
+        let mut control = rig.source_control().await;
+        read_source_message(&mut control).await;
+        let mut send = rig.open_viewer_control().await;
+        send.finish().unwrap();
+        assert_eq!(rig.ended().await, End::Peer);
+        assert_eq!(ends_heard(&rig.log), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn a_viewer_that_says_leave_and_finishes_its_stream_has_the_platform_leave_the_screen() {
+        let mut rig = Rig::with(leaving_setup(), 1).await;
+        let mut control = rig.source_control().await;
+        read_source_message(&mut control).await;
+        let mut send = rig.open_viewer_control().await;
+        write_message(&mut send, &ViewerMessage::Leave)
+            .await
+            .unwrap();
+        // The choice counts with the end of the stream that follows, and the session goes on until.
+        tokio::time::sleep(QUIET).await;
+        assert!(rig.handle.source.end.get().is_none());
+        assert_eq!(ends_heard(&rig.log), (0, 0));
+        send.finish().unwrap();
+        assert_eq!(rig.ended().await, End::Peer);
+        // Once, and not as an ordinary end. The viewer is told as it is of any end.
+        assert_eq!(ends_heard(&rig.log), (0, 1));
+        assert_eq!(read_source_message(&mut control).await, None);
+        assert!(rig.streaming.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_viewer_that_says_leave_and_then_resets_its_stream_has_the_platform_lock_the_screen()
+    {
+        // The person chose, and the end that followed was not the viewer finishing its stream: it
+        // may have crashed, or been cut off. Everything that is not the end that was asked for locks.
+        let mut rig = Rig::with(leaving_setup(), 1).await;
+        let mut control = rig.source_control().await;
+        read_source_message(&mut control).await;
+        let mut send = rig.open_viewer_control().await;
+        write_message(&mut send, &ViewerMessage::Leave)
+            .await
+            .unwrap();
+        // A stream that is reset before the Mac has read what was written is reset before it
+        // began, as far as the Mac can tell, so the reset waits for the Leave to be read.
+        rig.until("the source to read the Leave", Rig::left).await;
+        send.reset(code(close_code::CANCELLED)).unwrap();
+        assert_eq!(rig.ended().await, End::Peer);
+        assert_eq!(ends_heard(&rig.log), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn a_viewer_that_says_leave_and_loses_the_connection_has_the_platform_lock_the_screen() {
+        let mut rig = Rig::with(leaving_setup(), 1).await;
+        let mut control = rig.source_control().await;
+        read_source_message(&mut control).await;
+        let mut send = rig.open_viewer_control().await;
+        write_message(&mut send, &ViewerMessage::Leave)
+            .await
+            .unwrap();
+        rig.until("the source to read the Leave", Rig::left).await;
+        rig.accepted.close(code(close_code::NORMAL), b"gone");
+        rig.ended().await;
+        assert_eq!(ends_heard(&rig.log), (1, 0));
+        drop(send);
+    }
+
+    #[tokio::test]
+    async fn a_leave_for_a_session_whose_offer_did_not_say_leave_breaks_a_rule_and_locks() {
+        let mut rig = Rig::with(private_setup(), 1).await;
+        let mut control = rig.source_control().await;
+        read_source_message(&mut control).await;
+        let mut send = rig.open_viewer_control().await;
+        write_message(&mut send, &ViewerMessage::Leave)
+            .await
+            .unwrap();
+        assert_eq!(rig.ended().await, End::Violation);
+        assert_eq!(stopped_with(&send).await, 400);
+        assert_eq!(ends_heard(&rig.log), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn a_message_after_leave_breaks_a_rule_and_locks() {
+        // `Leave` is the last thing a viewer says, so there is no knowing what the rest means.
+        for (what, after) in [
+            (
+                "a report",
+                ViewerMessage::Report(Report {
+                    shown: None,
+                    decode_us: 0,
+                    dropped: 0,
+                    thermal: Thermal::Nominal,
+                }),
+            ),
+            ("another leave", ViewerMessage::Leave),
+        ] {
+            let mut rig = Rig::with(leaving_setup(), 1).await;
+            let mut control = rig.source_control().await;
+            read_source_message(&mut control).await;
+            let mut send = rig.open_viewer_control().await;
+            write_message(&mut send, &ViewerMessage::Leave)
+                .await
+                .unwrap();
+            write_message(&mut send, &after).await.unwrap();
+            assert_eq!(rig.ended().await, End::Violation, "{what}");
+            assert_eq!(ends_heard(&rig.log), (1, 0), "{what}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_leave_that_comes_after_the_session_ended_changes_nothing() {
+        let mut rig = Rig::with(leaving_setup(), 1).await;
+        let mut control = rig.source_control().await;
+        read_source_message(&mut control).await;
+        let mut send = rig.open_viewer_control().await;
+        rig.handle.end();
+        assert_eq!(ends_heard(&rig.log), (1, 0));
+        // The stream may still take what the viewer wrote before it saw the end, and the session,
+        // which has ended, takes none of it.
+        let _ = write_message(&mut send, &ViewerMessage::Leave).await;
+        let _ = send.finish();
+        tokio::time::sleep(QUIET).await;
+        assert_eq!(ends_heard(&rig.log), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn dropping_the_handle_of_a_session_that_may_be_left_has_the_platform_lock_the_screen() {
+        let rig = Rig::with(leaving_setup(), 1).await;
+        let Rig { handle, log, .. } = rig;
+        drop(handle);
+        assert_eq!(ends_heard(&log), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn the_first_end_of_a_session_is_the_only_one_whether_it_leaves_the_screen_or_not() {
+        let rig = Rig::with(leaving_setup(), 1).await;
+        rig.handle.end();
+        rig.handle.source.end_leaving();
+        assert_eq!(ends_heard(&rig.log), (1, 0));
+
+        let rig = Rig::with(leaving_setup(), 1).await;
+        rig.handle.source.end_leaving();
+        rig.handle.end();
+        assert_eq!(ends_heard(&rig.log), (0, 1));
+    }
+
+    #[tokio::test]
+    async fn a_session_whose_offer_did_not_say_leave_locks_the_screen_even_when_the_viewer_asks() {
+        let rig = Rig::with(private_setup(), 1).await;
+        rig.handle.source.end_leaving();
+        assert_eq!(rig.ended().await, End::Peer);
+        assert_eq!(ends_heard(&rig.log), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn a_screen_that_is_not_private_is_never_one_to_leave() {
+        let setup = SourceSetup {
+            leave: true,
+            ..setup(true, quick())
+        };
+        let Err(error) = Rig::starting(setup, 1).await else {
+            panic!("the session started");
+        };
+        assert!(matches!(error, Error::Config(_)), "{error:?}");
+    }
+
+    #[test]
+    fn a_platform_that_cannot_leave_a_screen_as_it_is_is_told_of_an_ordinary_end() {
+        let log = Log::default();
+        Plain(log.clone()).ended_leaving();
+        assert_eq!(log.all(), [Heard::Ended]);
+    }
+
+    #[test]
+    fn a_platform_behind_a_box_is_asked_to_leave_the_screen_as_it_is() {
+        let log = Log::default();
+        let mut boxed: Box<dyn SourceEvents> = Box::new(Recording(log.clone()));
+        boxed.ended_leaving();
+        assert_eq!(log.all(), [Heard::Left]);
+        let mut plain: Box<dyn SourceEvents> = Box::new(Plain(log.clone()));
+        plain.ended_leaving();
+        assert_eq!(log.all(), [Heard::Left, Heard::Ended]);
     }
 
     #[tokio::test]

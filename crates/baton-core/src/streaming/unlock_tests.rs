@@ -1823,6 +1823,7 @@ fn source_setup(params: SourceParams, private: bool, unlock: UnlockSetup) -> Sou
         takes: takes(),
         sound: SoundPlan::None,
         unlock,
+        leave: false,
         params,
     }
 }
@@ -2496,6 +2497,7 @@ impl ViewRig {
             private: true,
             sound: false,
             unlock,
+            leave: false,
         };
         let handle = streaming
             .view_granted(&paired, accepted, session_id(), viewing, granted)
@@ -2889,6 +2891,7 @@ impl PairRig {
             private: true,
             sound: false,
             unlock: true,
+            leave: false,
         };
         let view = viewer_side
             .view_granted(
