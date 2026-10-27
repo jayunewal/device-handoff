@@ -655,6 +655,80 @@ mod tests {
     }
 
     #[test]
+    fn the_stores_that_a_node_gives_its_sessions_share_what_it_could_not_write_down() {
+        let rig = Rig::new();
+        let unlocks = Unlocks::new(
+            rig.trust.clone(),
+            Arc::clone(&rig.clock) as Arc<dyn Clock>,
+            target(),
+        );
+        // A store is for the device it is asked for, on the device that the node is.
+        let first = unlocks.store_for(phone());
+        assert_eq!(first.record().unwrap().sealed, sealed(1));
+        assert!(unlocks.store_for(tablet()).record().is_none());
+
+        // A session ends the setup, and the disk does not take the word of it.
+        rig.disk_fails();
+        first.concluded(Concluded {
+            finish: rejected(),
+            sealed: Some(sealed(1)),
+        });
+        assert!(first.record().is_none());
+
+        // The session that comes after is given a store of the same node, and the setup is over
+        // for it as well.
+        assert!(unlocks.store_for(phone()).record().is_none());
+    }
+
+    #[test]
+    fn the_ledger_holds_an_end_once_however_often_it_is_told() {
+        let ends = UnwrittenEnds::default();
+        ends.add(phone(), &sealed(1));
+        for _ in 0..70 {
+            ends.add(tablet(), &sealed(2));
+        }
+        assert!(ends.holds(tablet(), &sealed(2)));
+        assert!(
+            ends.holds(phone(), &sealed(1)),
+            "an end that is told again takes no further place and pushes no other out"
+        );
+    }
+
+    #[test]
+    fn the_ledger_remembers_the_last_sixty_four_ends() {
+        let ends = UnwrittenEnds::default();
+        for version in 0..65 {
+            ends.add(phone(), &sealed(version));
+        }
+        assert!(!ends.holds(phone(), &sealed(0)), "the oldest is forgotten");
+        for version in 1..65 {
+            assert!(ends.holds(phone(), &sealed(version)), "{version}");
+        }
+    }
+
+    #[test]
+    fn forgetting_an_end_leaves_every_other() {
+        let ends = UnwrittenEnds::default();
+        ends.add(phone(), &sealed(1));
+        // The unlock of the same device was set up again, and ended again.
+        ends.add(phone(), &sealed(2));
+        // Another device with a key of the same bytes.
+        ends.add(tablet(), &sealed(2));
+
+        ends.remove(phone(), &sealed(2));
+
+        assert!(!ends.holds(phone(), &sealed(2)));
+        assert!(
+            ends.holds(phone(), &sealed(1)),
+            "another key of that device"
+        );
+        assert!(
+            ends.holds(tablet(), &sealed(2)),
+            "that key of another device"
+        );
+    }
+
+    #[test]
     fn a_finish_that_does_not_end_the_setup_and_could_not_be_written_does_not_end_it_for_the_run() {
         let rig = Rig::new();
         rig.disk_fails();

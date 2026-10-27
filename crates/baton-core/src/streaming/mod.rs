@@ -70,6 +70,8 @@ mod start;
 mod start_tests;
 pub(crate) mod unlock;
 #[cfg(test)]
+mod unlock_node_tests;
+#[cfg(test)]
 mod unlock_tests;
 mod view;
 
