@@ -88,8 +88,8 @@ abstract class Baton implements RustOpaqueInterface {
 
   /// What the person at this device said of the paired device `id` hearing the sound of this
   /// device's screen: `true` that it may, `false` that it may not, and `null` when they have not
-  /// said, which means that it may if it may control the screen (`StartAccess.control`) and may
-  /// not if it can only look. Throws `ErrorKind.notPaired`.
+  /// said, which means that it may in a session that lets it control the screen and may not in
+  /// one that lets it only look, whoever started the session. Throws `ErrorKind.notPaired`.
   bool? hearSetting({required String id});
 
   /// Asks the device that shares the screen `session`, which is shown here, to send its sound

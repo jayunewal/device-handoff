@@ -236,8 +236,9 @@ abstract interface class Session {
 
   /// What the person at this device said of the paired device [id] hearing the sound of this
   /// device's screen: `true` that it may, `false` that it may not, and `null` when they have not
-  /// said, which means that it may if it may control the screen (`StartAccess.control`) and may
-  /// not if it can only look. Throws a `BatonError` of kind `notPaired`.
+  /// said, which means that it may in a session that lets it control the screen and may not in
+  /// one that lets it only look, whoever started the session. Throws a `BatonError` of kind
+  /// `notPaired`.
   bool? hearSetting(String id);
 
   /// Says whether the paired device [id] may hear the sound of this device's screen, or takes what

@@ -87,8 +87,9 @@ pub struct DevicePolicy {
     #[serde(default)]
     pub start: StartPolicy,
     /// Whether this device may hear the sound of this machine's screen, and so make this machine
-    /// quiet while it listens. `None` when the person here has not said, and then it may if it may
-    /// control the screen ([`may_hear`](Self::may_hear)).
+    /// quiet while it listens. `None` when the person here has not said, and then it may in a
+    /// session that lets it control the screen and may not in one that lets it only look
+    /// ([`may_hear`](Self::may_hear)).
     ///
     /// Not kept at all while nobody has said, so that a file stays as an older version wrote it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -96,14 +97,20 @@ pub struct DevicePolicy {
 }
 
 impl DevicePolicy {
-    /// Whether this device may hear the sound of the screen of this machine: what the person here
-    /// said of it, and when they have not, whether the device may control the screen. A device
-    /// that can only look is not to silence this machine by listening unless they say so.
+    /// Whether this device may hear the sound of the screen of this machine in a session, which
+    /// lets it control the screen if `controls`: what the person here said of it, and when they
+    /// have not, whether the session lets it control. A device that can only look is not to
+    /// silence this machine by listening unless they say so.
+    ///
+    /// What the device may ask for in general ([`start`](Self::start)) does not enter into it. A
+    /// session is as the person here made it or allowed it to be made, whoever started it: a
+    /// screen that they share with control to a device that may not ask for it is heard, and one
+    /// that they share for looking is not heard by a device that may ask for control.
     #[must_use]
-    pub const fn may_hear(&self) -> bool {
+    pub const fn may_hear(&self, controls: bool) -> bool {
         match self.hear {
             Some(hear) => hear,
-            None => self.start.allows_control(),
+            None => controls,
         }
     }
 }
@@ -120,30 +127,35 @@ mod tests {
         assert!(!policy.sync_clipboard_to);
         assert_eq!(policy.start, StartPolicy::Off);
         assert_eq!(policy.hear, None);
-        assert!(!policy.may_hear());
+        // Nothing is said of a device just paired: it does not hear where it can only look.
+        assert!(!policy.may_hear(false));
     }
 
     #[test]
-    fn a_device_hears_when_the_person_said_so_and_otherwise_when_it_may_control() {
-        let with = |start, hear| DevicePolicy {
-            start,
-            hear,
-            ..DevicePolicy::default()
-        };
-        for (start, hear, heard) in [
-            // Not said: it follows the right to control.
-            (StartPolicy::Off, None, false),
-            (StartPolicy::Look, None, false),
-            (StartPolicy::Control, None, true),
+    fn a_device_hears_when_the_person_said_so_and_otherwise_when_the_session_lets_it_control() {
+        for (hear, controls, heard) in [
+            // Not said: it follows the session.
+            (None, false, false),
+            (None, true, true),
             // Said: that is all that counts, either way.
-            (StartPolicy::Off, Some(true), true),
-            (StartPolicy::Look, Some(true), true),
-            (StartPolicy::Control, Some(true), true),
-            (StartPolicy::Off, Some(false), false),
-            (StartPolicy::Look, Some(false), false),
-            (StartPolicy::Control, Some(false), false),
+            (Some(true), false, true),
+            (Some(true), true, true),
+            (Some(false), false, false),
+            (Some(false), true, false),
         ] {
-            assert_eq!(with(start, hear).may_hear(), heard, "{start:?} {hear:?}");
+            // What the device may ask for in general makes no difference to any of them.
+            for start in [StartPolicy::Off, StartPolicy::Look, StartPolicy::Control] {
+                let policy = DevicePolicy {
+                    start,
+                    hear,
+                    ..DevicePolicy::default()
+                };
+                assert_eq!(
+                    policy.may_hear(controls),
+                    heard,
+                    "{start:?}, said {hear:?}, controls {controls}"
+                );
+            }
         }
     }
 
@@ -163,7 +175,8 @@ mod tests {
         }
         let policy: DevicePolicy = serde_json::from_str(r#"{"start":"control"}"#).unwrap();
         assert_eq!(policy.hear, None);
-        assert!(policy.may_hear());
+        assert!(policy.may_hear(true));
+        assert!(!policy.may_hear(false));
         // A value that is not a yes or a no is an error, not a guess at what was meant.
         assert!(serde_json::from_str::<DevicePolicy>(r#"{"hear":"yes"}"#).is_err());
     }

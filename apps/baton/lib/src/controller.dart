@@ -215,7 +215,7 @@ class DevicesController extends ChangeNotifier {
 
   /// What the person here said of [device] hearing the sound of this device's screen: `true` that
   /// it may, `false` that it may not, and `null` when they have not said (or the device is not
-  /// paired with this one any more), and then it may if it may control the screen.
+  /// paired with this one any more), and then it may in a session that lets it control the screen.
   bool? hearSetting(Device device) {
     try {
       return _session.hearSetting(device.id);
