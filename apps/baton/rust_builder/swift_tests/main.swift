@@ -302,6 +302,18 @@ var tests: [(String, () -> Void)] = [
     testWhatIsHeardReachesTheWindowAsYesOrNoAndAnyOtherNumberIsNo
   ),
   (
+    "the table has an entry to leave only when the platform can give the screen and can leave",
+    testTheTableHasAnEntryToLeaveOnlyWhenThePlatformCanGiveTheScreenAndSaysItCanLeave
+  ),
+  (
+    "the end that the person chose to leave reaches the window as its own call",
+    testTheEndThatThePersonChoseToLeaveReachesTheWindowAsItsOwnCallAndNotAsTheEnd
+  ),
+  (
+    "a window that cannot leave is told that the session ended",
+    testAWindowThatCannotLeaveIsToldThatTheSessionEndedWhenThePersonChoseToLeave
+  ),
+  (
     "a window is prepared within what the other device takes",
     testAWindowIsPreparedWithinWhatTheOtherDeviceTakes
   ),

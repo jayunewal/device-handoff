@@ -55,7 +55,7 @@ use crate::{
         BatonPlay, BatonPost, BatonRect, BatonScreen, BatonSharerVTable, BatonSound,
         BatonSourceMessage, BatonSurroundings, BatonTakes, BatonViewerVTable, BatonWindow,
         CancelPickFn, ControlFn, DecodeFn, EndedFn, FRONT_MENU, FRONT_SAME_APPLICATION, FRONTS_MAX,
-        HearFn, KEYBOARD_ELSEWHERE, KEYBOARD_SHARED, KEYBOARD_UNKNOWN, LiftFn, LimitsFn,
+        HearFn, KEYBOARD_ELSEWHERE, KEYBOARD_SHARED, KEYBOARD_UNKNOWN, LeaveFn, LiftFn, LimitsFn,
         MESSAGE_MAX, OK, OpenFn, PICKED_DISPLAY, PLAY_FIRST, POINTER_DOWN, POINTER_MOVE,
         POINTER_SCROLL, POINTER_UP, POST_KEY, POST_POINTER, PickFn, PlayFn, PostFn, PrepareFn,
         ReleaseFn, SCREEN_NEEDS_INPUT_PERMISSION, SCREEN_NEEDS_PERMISSION, SCREEN_PRIVATE,
@@ -583,6 +583,9 @@ pub(crate) struct SharerCalls {
     lift: Option<LiftFn>,
     /// `hear`, which a platform that cannot send the sound of its screen leaves out.
     hear: Option<HearFn>,
+    /// `leave`, which a platform that cannot end the privacy of a screen without locking the
+    /// device leaves out.
+    leave: Option<LeaveFn>,
 }
 
 // SAFETY: a `SharerCalls` exists only for a vtable that the platform registered, and the header's
@@ -607,7 +610,7 @@ impl SharerCalls {
     /// table that ends before it, as the tables of platforms older than the call do, reads as one
     /// without it. So may `lift`, in the same way: a platform without it gives a private screen
     /// that stays as it was given for the whole session. So may `hear`: a platform without it
-    /// sends no sound.
+    /// sends no sound. So may `leave`: a platform without it locks the device at every end.
     ///
     /// # Safety
     ///
@@ -646,6 +649,7 @@ impl SharerCalls {
                 screen: table.screen,
                 lift: table.lift,
                 hear: table.hear,
+                leave: table.leave,
             }),
             _ => Err(Error::Argument),
         }
@@ -692,6 +696,12 @@ impl SharerCalls {
     /// Whether the platform gave the function that says when the sound of its screen is wanted.
     pub(crate) fn can_hear(&self) -> bool {
         self.hear.is_some()
+    }
+
+    /// Whether the platform gave the function that ends the privacy of a screen without locking
+    /// the device.
+    pub(crate) fn can_leave(&self) -> bool {
+        self.leave.is_some()
     }
 
     /// Has the platform give its main display, without the person choosing it, and keep it
@@ -918,6 +928,18 @@ impl PickedHandle {
     pub(crate) fn ended(&mut self) {
         // SAFETY: `context` is the window the platform gave, not yet released.
         within(|| unsafe { (self.calls.ended)(self.context.as_ptr()) });
+    }
+
+    /// Tells the platform that the session is over and that the person at the other device chose
+    /// that the device stay as it is: `leave` in place of `ended`. A platform that gave no `leave`
+    /// is told that the session is over as it is at every other end, and locks.
+    pub(crate) fn ended_leaving(&mut self) {
+        let Some(call) = self.calls.leave else {
+            self.ended();
+            return;
+        };
+        // SAFETY: `context` is the window the platform gave, not yet released.
+        within(|| unsafe { call(self.context.as_ptr()) });
     }
 }
 
@@ -2185,6 +2207,88 @@ mod tests {
             window.hear(false);
         }
         assert_eq!(fake.count(is_hear), 0);
+        fake.assert_no_complaints();
+    }
+
+    #[test]
+    fn a_platform_that_cannot_leave_is_told_that_the_session_ended_as_at_every_other_end() {
+        let fake = FakeSharer::new();
+        let whole = fake.vtable();
+        assert!(read_table(&whole).unwrap().can_leave());
+        let tables = [
+            // Written before a private session could end without the lock: the table ends at
+            // `hear`, or earlier.
+            ("a table that ends at hear", fake.vtable_without_leave()),
+            ("a table that ends at lift", fake.vtable_without_hear()),
+            (
+                "a table without leave",
+                BatonSharerVTable {
+                    leave: None,
+                    ..whole
+                },
+            ),
+            // A size that cuts a function in two gives half of a pointer to nobody: the function
+            // is not read.
+            (
+                "a size that cuts leave",
+                BatonSharerVTable {
+                    size: u32::try_from(offset_of!(BatonSharerVTable, leave)).unwrap() + 4,
+                    ..whole
+                },
+            ),
+            ("a table that ends at screen", fake.vtable_without_lift()),
+            ("a table that ends at post", fake.vtable_without_screen()),
+            ("a table that ends at release", fake.vtable_without_input()),
+        ];
+        for (what, table) in tables {
+            let calls = read_table(&table).unwrap();
+            assert!(!calls.can_leave(), "{what}");
+            // The window is told that the session ended, as it is at every end that is not the
+            // choice, and the device locks.
+            started_private(&fake, &calls).ended_leaving();
+        }
+        assert_eq!(fake.count(|call| *call == SharerCall::Leave), 0);
+        assert_eq!(fake.count(|call| *call == SharerCall::Ended), tables.len());
+
+        // The whole table is told that the person chose to leave the device as it is, in place of
+        // the end.
+        let calls = fake.platform();
+        assert!(calls.can_leave());
+        started_private(&fake, &calls).ended_leaving();
+        let number = fake.windows_made() as u64;
+        let ends: Vec<_> = fake
+            .calls(number)
+            .into_iter()
+            .filter(|call| {
+                matches!(
+                    call,
+                    SharerCall::Ended | SharerCall::Leave | SharerCall::Release
+                )
+            })
+            .collect();
+        assert_eq!(ends, [SharerCall::Leave, SharerCall::Release]);
+        assert_eq!(fake.count(|call| *call == SharerCall::Ended), tables.len());
+        fake.assert_no_complaints();
+    }
+
+    #[test]
+    fn the_end_that_is_not_the_choice_is_told_with_ended_also_to_a_platform_that_can_leave() {
+        let fake = FakeSharer::new();
+        let calls = fake.platform();
+        assert!(calls.can_leave());
+        started_private(&fake, &calls).ended();
+        let number = fake.windows_made() as u64;
+        let ends: Vec<_> = fake
+            .calls(number)
+            .into_iter()
+            .filter(|call| {
+                matches!(
+                    call,
+                    SharerCall::Ended | SharerCall::Leave | SharerCall::Release
+                )
+            })
+            .collect();
+        assert_eq!(ends, [SharerCall::Ended, SharerCall::Release]);
         fake.assert_no_complaints();
     }
 

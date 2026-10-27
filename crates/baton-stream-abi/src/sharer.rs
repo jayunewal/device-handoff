@@ -253,6 +253,10 @@ impl WindowSharer for AbiSharer {
         self.shared.calls.can_lift()
     }
 
+    fn can_leave(&self) -> bool {
+        self.shared.calls.can_leave()
+    }
+
     /// A platform that gave no way to be told when the sound is wanted cannot send it.
     fn sends_sound(&self) -> bool {
         self.shared.calls.can_hear()

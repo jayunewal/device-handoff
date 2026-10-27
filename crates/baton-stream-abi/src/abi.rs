@@ -714,13 +714,18 @@ pub type ScreenFn = unsafe extern "C" fn(
 pub type LiftFn = unsafe extern "C" fn(picked: *mut c_void, lifted: u32);
 /// Whether the sound of the screen is wanted: 1 if it is, 0 if it is not.
 pub type HearFn = unsafe extern "C" fn(picked: *mut c_void, on: u32);
+/// The session is over, and the person at the other device chose that this device stay as it is:
+/// the same as [`EndedFn`], except that the device is not locked.
+pub type LeaveFn = unsafe extern "C" fn(picked: *mut c_void);
 
 /// What the platform registers to share windows. A function that is `None` here is a registration
 /// that is refused, except `surroundings` and `post`, which a platform that cannot post input
 /// leaves out, `screen`, which a platform that cannot give its screen without a picker leaves out,
-/// `lift`, which a platform that cannot keep a screen private leaves out, and `hear`, which a
-/// platform that cannot send the sound of its screen leaves out. `ended` and `release` are called
-/// with the pointer of the window, where the viewer's are called with the pointer of a screen.
+/// `lift`, which a platform that cannot keep a screen private leaves out, `hear`, which a
+/// platform that cannot send the sound of its screen leaves out, and `leave`, which a platform that
+/// cannot end the privacy of a screen without locking the device leaves out. `ended` and `release`
+/// are called with the pointer of the window, where the viewer's are called with the pointer of a
+/// screen.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct BatonSharerVTable {
@@ -754,4 +759,7 @@ pub struct BatonSharerVTable {
     pub lift: Option<LiftFn>,
     /// See [`HearFn`]. A platform that cannot send the sound of its screen leaves it out.
     pub hear: Option<HearFn>,
+    /// See [`LeaveFn`]. A platform that cannot end the privacy of a screen without locking the
+    /// device leaves it out.
+    pub leave: Option<LeaveFn>,
 }
