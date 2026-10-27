@@ -13,9 +13,10 @@ use baton_core::{
     InboxEntry, InboxItem, PairedDevice, StartPolicy,
     link::PathKind,
     node::{NodeStatus, PingReport},
+    streaming::{CancelReason, Settled, UnlockFinish, UnlockOutcome},
     transfer::send::{Progress, Stage},
 };
-use baton_proto::Platform as ProtoPlatform;
+use baton_proto::{DeviceId, Platform as ProtoPlatform};
 use baton_stream::{
     control::SilentReason,
     gate::Reason,
@@ -553,7 +554,7 @@ pub struct FilesSent {
 }
 
 /// What a device does with windows, as a screen needs to know it to offer only what is possible.
-// Four things a device can do, each of which it can or cannot on its own: a state that combined
+// Six things a device can do, each of which it can or cannot on its own: a state that combined
 // them would only hide which one a screen means.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -568,6 +569,16 @@ pub struct WindowAbilities {
     /// person here allowed that device ([`App::set_start_access`](crate::App::set_start_access)).
     /// A screen offers that setting only where this is so.
     pub can_give_screen: bool,
+    /// This device can let a paired device unlock its screen when it is locked: the platform keeps
+    /// the password of the person here in a box and types it, and the private screens of this
+    /// device can be controlled and lifted (`docs/adr/0013-unlock-from-a-phone.md`). A screen
+    /// offers the settings for it ([`App::set_up_unlock`](crate::App::set_up_unlock)) only where
+    /// this is so.
+    pub can_be_unlocked: bool,
+    /// This device can unlock the screen of a paired device that is locked, with the face of the
+    /// person here: the platform makes the key for it and asks for the face. A screen offers the
+    /// Unlock button ([`App::unlock_window`](crate::App::unlock_window)) only where this is so.
+    pub can_unlock: bool,
 }
 
 /// A window, or a whole display, that a paired device offers to show on this one, for the person
@@ -623,8 +634,8 @@ pub enum WindowRole {
 }
 
 /// A window, or a whole display, that is shown on this device or shared from it.
-// Five facts about a session (a whole display, control, private, sound, leave), each of its own: a
-// state that combined them would only hide which one a screen means.
+// Six facts about a session (a whole display, control, private, sound, leave, unlock), each of its
+// own: a state that combined them would only hide which one a screen means.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct WindowSession {
@@ -671,6 +682,14 @@ pub struct WindowSession {
     /// such a session, and the device is locked unless they say otherwise. `false` for a window
     /// that this device shares.
     pub leave: bool,
+    /// Whether the person here can ask the device that shares the screen to unlock it when it is
+    /// locked, with [`App::unlock_window`](crate::App::unlock_window): the person there set the
+    /// unlock up for this device, the screen is kept private, and the platform here asks for the
+    /// face of the person (`docs/adr/0013-unlock-from-a-phone.md`). The device unlocks only while
+    /// it is locked ([`Event::WindowLocked`](crate::Event::WindowLocked)) and while the screen and
+    /// the keys and the pointer there have not been lifted. `false` for a window that this device
+    /// shares.
+    pub unlock: bool,
     /// What to draw the picture with, when the window is shown on this device: the number that the
     /// platform gave the screen. `None` when the window is shared from this device.
     pub screen: Option<i64>,
@@ -689,6 +708,7 @@ impl fmt::Debug for WindowSession {
             .field("private", &self.private)
             .field("sound", &self.sound)
             .field("leave", &self.leave)
+            .field("unlock", &self.unlock)
             .field("screen", &self.screen)
             .finish_non_exhaustive()
     }
@@ -1002,6 +1022,224 @@ impl From<Reason> for WindowNoticeReason {
     }
 }
 
+/// Where the unlock of a paired device stands at this device: whether the person set it up here
+/// for that device, so that the device can unlock this one when it is locked
+/// (`docs/adr/0013-unlock-from-a-phone.md`). It is changed at this device only, with
+/// [`App::set_up_unlock`](crate::App::set_up_unlock) and
+/// [`App::turn_off_unlock`](crate::App::turn_off_unlock).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnlockStatus {
+    /// Not set up. The device cannot unlock this one.
+    Off,
+    /// Set up, and the device can try it. `since` is when the person set it up, in seconds since
+    /// the Unix epoch.
+    On {
+        /// When it was set up.
+        since: u64,
+    },
+    /// Set up once, and ended: the password was not accepted, the box was not opened by its key, or
+    /// the device lost its key. Only the person here can set it up again. `since` is when they
+    /// set it up.
+    Ended {
+        /// When it was set up.
+        since: u64,
+    },
+}
+
+impl UnlockStatus {
+    /// How the unlock that was set up for `device` stands at the device `me`. A record that was
+    /// made for another device, because the file was copied, is of no use at `me` and stands as
+    /// ended.
+    pub(crate) fn of(device: &PairedDevice, me: &DeviceId) -> Self {
+        match &device.unlock {
+            None => Self::Off,
+            Some(unlock) if device.can_unlock(me) => Self::On {
+                since: unlock.set_up_at(),
+            },
+            Some(unlock) => Self::Ended {
+                since: unlock.set_up_at(),
+            },
+        }
+    }
+}
+
+/// What came of setting the unlock up for a paired device
+/// ([`App::set_up_unlock`](crate::App::set_up_unlock)).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnlockSetUp {
+    /// It is set up: the device can unlock this one while it is locked, in a private session. What
+    /// was set up before is replaced.
+    Done,
+    /// The system here does not accept the password. Nothing was kept, and the other device was
+    /// not asked for anything.
+    WrongPassword,
+    /// It is not set up, and the sentence says why, in words that name the device. What was set up
+    /// before is as it was, unless the sentence says otherwise.
+    NotDone(String),
+}
+
+/// How an attempt to unlock a screen ended. It is what the person who tapped Unlock is told
+/// ([`WindowUnlock::Ended`]) and what the history at the device that was unlocked holds
+/// ([`UnlockEntry::result`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnlockResult {
+    /// The screen is unlocked.
+    Unlocked,
+    /// No unlock is set up for the device that asked, or the one that was has ended. The person
+    /// at the device that is unlocked has to set it up again there.
+    NotSetUp,
+    /// The screen was not locked, so nothing was typed.
+    NotLocked,
+    /// The screen, the keys or the pointer of the device that is unlocked were not kept private,
+    /// because they were lifted or the device could not vouch for them, so nothing was typed.
+    NotPrivate,
+    /// Another unlock was going on.
+    Busy,
+    /// The key did not open the box, so nothing was typed. The person at the device that is
+    /// unlocked has to set it up again there.
+    Stale,
+    /// The password was typed and the screen stayed locked. The person at the device that is
+    /// unlocked has to set it up again there.
+    Rejected,
+    /// The device that asked did not answer in time.
+    TimedOut,
+    /// The device that is unlocked could not do it for a reason of its own.
+    Failed,
+    /// An outcome that this version does not know.
+    Other,
+    /// The person did not agree, their face was not recognised, or they cancelled. Only the
+    /// device that asked ends this way.
+    Declined,
+    /// The device that asked no longer has the key that opens the sealed one: a face was added or
+    /// removed, or the device was restored. The person at the device that is unlocked has to set
+    /// the unlock up again there.
+    KeyLost,
+    /// The device that asked gave up for a reason of its own.
+    GaveUp,
+    /// The device that is unlocked sent no question in time. Only the device that asked ends this
+    /// way.
+    NoQuestion,
+    /// The key was sent and the device that is unlocked did not say what came of it in time. The
+    /// screen may be unlocked: look at it. Only the device that asked ends this way.
+    NoResult,
+    /// The session ended while the device that is unlocked waited for the one that asked. Only the
+    /// history at the device that is unlocked holds this.
+    SessionEnded,
+}
+
+impl UnlockResult {
+    /// Whether the person at the device that was unlocked is told of an attempt that ended like
+    /// this, when they are next at it: it succeeded, or it got as far as a try and failed. A
+    /// refusal that came before anything was typed, a person who cancelled, and a session that
+    /// ended say nothing worth a notification. Every attempt is in the history all the same.
+    #[must_use]
+    pub const fn notifies(self) -> bool {
+        matches!(
+            self,
+            Self::Unlocked
+                | Self::Stale
+                | Self::Rejected
+                | Self::TimedOut
+                | Self::Failed
+                | Self::Other
+                | Self::KeyLost
+                | Self::GaveUp
+        )
+    }
+}
+
+impl From<UnlockOutcome> for UnlockResult {
+    fn from(outcome: UnlockOutcome) -> Self {
+        match outcome {
+            UnlockOutcome::Unlocked => Self::Unlocked,
+            UnlockOutcome::NotSetUp => Self::NotSetUp,
+            UnlockOutcome::NotLocked => Self::NotLocked,
+            UnlockOutcome::NotPrivate => Self::NotPrivate,
+            UnlockOutcome::Busy => Self::Busy,
+            UnlockOutcome::Stale => Self::Stale,
+            UnlockOutcome::Rejected => Self::Rejected,
+            UnlockOutcome::TimedOut => Self::TimedOut,
+            UnlockOutcome::Failed => Self::Failed,
+            UnlockOutcome::Other => Self::Other,
+        }
+    }
+}
+
+impl From<CancelReason> for UnlockResult {
+    fn from(reason: CancelReason) -> Self {
+        match reason {
+            CancelReason::Declined => Self::Declined,
+            CancelReason::KeyLost => Self::KeyLost,
+            CancelReason::Failed | CancelReason::Other => Self::GaveUp,
+        }
+    }
+}
+
+impl From<UnlockFinish> for UnlockResult {
+    fn from(finish: UnlockFinish) -> Self {
+        match finish {
+            UnlockFinish::Done(outcome) => outcome.into(),
+            // The platform said an outcome without having kept a new box, which the setup does not
+            // survive. Whatever it said, the attempt did not go as it should have.
+            UnlockFinish::Unkept(_) => Self::Failed,
+            UnlockFinish::Cancelled(reason) => reason.into(),
+            UnlockFinish::Ended => Self::SessionEnded,
+        }
+    }
+}
+
+impl From<Settled> for UnlockResult {
+    fn from(settled: Settled) -> Self {
+        match settled {
+            Settled::Said(outcome) => outcome.into(),
+            Settled::NoQuestion => Self::NoQuestion,
+            Settled::NoResult => Self::NoResult,
+            // How a later version ends one is not known.
+            _ => Self::Other,
+        }
+    }
+}
+
+/// An attempt to unlock this device, in the history that it keeps.
+///
+/// It says nothing of the password, the keys or the challenge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnlockEntry {
+    /// When it ended, in seconds since the Unix epoch.
+    pub at: u64,
+    /// The id of the paired device that asked.
+    pub device_id: String,
+    /// The name of that device as the person gave it, at that time.
+    pub device_name: String,
+    /// How it ended.
+    pub result: UnlockResult,
+}
+
+impl From<&baton_core::UnlockEntry> for UnlockEntry {
+    fn from(entry: &baton_core::UnlockEntry) -> Self {
+        Self {
+            at: entry.at,
+            device_id: entry.device.to_string(),
+            device_name: entry.name.clone(),
+            result: entry.finish.into(),
+        }
+    }
+}
+
+/// How an unlock that the person here asked for stands, as
+/// [`Event::WindowUnlock`](crate::Event::WindowUnlock) tells it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowUnlock {
+    /// The device that shares the screen sent its question, and the platform here is asking for
+    /// the face of the person.
+    Asking,
+    /// The face was recognised and the key went to the device that shares the screen, which types
+    /// the password now.
+    Typing,
+    /// It is over, and this is how.
+    Ended(UnlockResult),
+}
+
 /// What came of asking a paired device to start sharing its screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScreenStarted {
@@ -1059,6 +1297,7 @@ mod tests {
             private: false,
             sound: false,
             leave: false,
+            unlock: false,
             screen: Some(7),
         };
         for shown in [format!("{request:?}"), format!("{session:?}")] {
@@ -1350,5 +1589,73 @@ mod tests {
         assert!(!shown.contains("code"), "{shown}");
         // Only how long it was.
         assert!(shown.contains("text_bytes: Some(7)"), "{shown}");
+    }
+
+    #[test]
+    fn each_way_that_an_attempt_to_unlock_ends_has_a_result_of_its_own() {
+        use UnlockResult as R;
+        // What the device that is unlocked says, whichever end hears it.
+        for (outcome, result) in [
+            (UnlockOutcome::Unlocked, R::Unlocked),
+            (UnlockOutcome::NotSetUp, R::NotSetUp),
+            (UnlockOutcome::NotLocked, R::NotLocked),
+            (UnlockOutcome::NotPrivate, R::NotPrivate),
+            (UnlockOutcome::Busy, R::Busy),
+            (UnlockOutcome::Stale, R::Stale),
+            (UnlockOutcome::Rejected, R::Rejected),
+            (UnlockOutcome::TimedOut, R::TimedOut),
+            (UnlockOutcome::Failed, R::Failed),
+            (UnlockOutcome::Other, R::Other),
+        ] {
+            assert_eq!(R::from(outcome), result, "{outcome:?}");
+            assert_eq!(R::from(Settled::Said(outcome)), result, "{outcome:?}");
+            assert_eq!(R::from(UnlockFinish::Done(outcome)), result, "{outcome:?}");
+        }
+        // What the platform of the device that asks says.
+        assert_eq!(R::from(CancelReason::Declined), R::Declined);
+        assert_eq!(R::from(CancelReason::KeyLost), R::KeyLost);
+        assert_eq!(R::from(CancelReason::Failed), R::GaveUp);
+        assert_eq!(R::from(CancelReason::Other), R::GaveUp);
+        assert_eq!(
+            R::from(UnlockFinish::Cancelled(CancelReason::KeyLost)),
+            R::KeyLost
+        );
+        // What nobody said in time, and how the session ended.
+        assert_eq!(R::from(Settled::NoQuestion), R::NoQuestion);
+        assert_eq!(R::from(Settled::NoResult), R::NoResult);
+        assert_eq!(R::from(UnlockFinish::Ended), R::SessionEnded);
+        // A platform that said an outcome without keeping the new box did not do what it should.
+        for outcome in [UnlockOutcome::Unlocked, UnlockOutcome::Rejected] {
+            assert_eq!(R::from(UnlockFinish::Unkept(outcome)), R::Failed);
+        }
+    }
+
+    #[test]
+    fn the_person_at_the_device_that_was_unlocked_is_told_of_a_try_that_failed_not_of_a_refusal() {
+        use UnlockResult as R;
+        for result in [
+            R::Unlocked,
+            R::Stale,
+            R::Rejected,
+            R::TimedOut,
+            R::Failed,
+            R::Other,
+            R::KeyLost,
+            R::GaveUp,
+        ] {
+            assert!(result.notifies(), "{result:?}");
+        }
+        for result in [
+            R::NotSetUp,
+            R::NotLocked,
+            R::NotPrivate,
+            R::Busy,
+            R::Declined,
+            R::NoQuestion,
+            R::NoResult,
+            R::SessionEnded,
+        ] {
+            assert!(!result.notifies(), "{result:?}");
+        }
     }
 }

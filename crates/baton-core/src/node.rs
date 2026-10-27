@@ -76,7 +76,9 @@ use crate::{
     identity::Identity,
     link::{PathKind, is_dialable, is_local, selected_path},
     pairing::{self, Offers, PairApprover, PairOffer, PairServer},
-    session::{HandoffHandler, Intake, NoHandoff, Pool, SessionServer, call, worth_retrying},
+    session::{
+        HandoffHandler, Intake, NoHandoff, Pool, SessionServer, call, retry_on_new_connection,
+    },
     shared::Shared,
     slots::{MAX_PAIRING_CONNECTIONS, PairSlots},
     streaming::{
@@ -1204,12 +1206,7 @@ impl Node {
                 Ok(reply) => break (session, hold, id, unlock, reply),
                 // A connection that sat idle may have been closed. An offer that nobody answered
                 // is not repeated: the person there may be deciding.
-                Err(e)
-                    if reused
-                        && attempt == 1
-                        && worth_retrying(&e)
-                        && !matches!(e, Error::Timeout(_)) =>
-                {
+                Err(e) if retry_on_new_connection(reused, attempt, true, &e) => {
                     tracing::debug!(error = %e, "retrying on a new connection");
                     session
                         .connection
@@ -1338,7 +1335,7 @@ impl Node {
                 // A connection that sat idle may have been closed. The start is made again under
                 // the same id on a new connection, which the other device answers as it answered
                 // the first if that arrived, so there is nothing to take back.
-                Err(e) if reused && attempt == 1 && worth_retrying(&e) => {
+                Err(e) if retry_on_new_connection(reused, attempt, false, &e) => {
                     tracing::debug!(error = %e, "retrying on a new connection");
                     withdraw.disarm();
                     via.connection
@@ -1419,6 +1416,7 @@ impl Node {
                 &request,
                 Some(capability::UNLOCK_APPROVE),
                 self.shared.tuning.offer_reply_deadline(),
+                true,
             )
             .await?;
         KeyOutcome::of(exchange.response)
@@ -1464,17 +1462,25 @@ impl Node {
         request: &Request,
         capability: Option<&'static str>,
     ) -> Result<Exchange> {
-        self.exchange_within(peer, request, capability, self.shared.tuning.reply_deadline)
-            .await
+        self.exchange_within(
+            peer,
+            request,
+            capability,
+            self.shared.tuning.reply_deadline,
+            false,
+        )
+        .await
     }
 
-    /// The same, waiting as long as `deadline` for the answer: a person may be asked first.
+    /// The same, waiting as long as `deadline` for the answer. A request that `asks_person` may
+    /// wait for them, and is not made again when the answer does not come.
     async fn exchange_within(
         &self,
         peer: &DeviceId,
         request: &Request,
         capability: Option<&'static str>,
         deadline: Duration,
+        asks_person: bool,
     ) -> Result<Exchange> {
         let paired = self.shared.trust.get(peer).ok_or(Error::NotPaired(*peer))?;
         let mut attempt = 0;
@@ -1500,8 +1506,9 @@ impl Node {
                 }
                 // A connection that sat idle may have been closed by the other side
                 // or by the network; a fresh one is worth a try. A brand new
-                // connection that fails is a real failure.
-                Err(e) if reused && attempt == 1 && worth_retrying(&e) => {
+                // connection that fails is a real failure. A person who was asked and did not
+                // answer is not asked again.
+                Err(e) if retry_on_new_connection(reused, attempt, asks_person, &e) => {
                     tracing::debug!(error = %e, "retrying on a new connection");
                     session
                         .connection

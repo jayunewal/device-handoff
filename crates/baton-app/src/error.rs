@@ -257,6 +257,20 @@ impl Error {
         }
     }
 
+    /// A failure while asking the paired device called `device` for the key that an unlock is
+    /// sealed to.
+    pub(crate) fn keying(error: &Core, device: &str) -> Self {
+        match error {
+            Core::Unsupported(_) => Self::new(
+                ErrorKind::Declined,
+                format!(
+                    "{device} cannot unlock this device. It may need a newer version of Baton."
+                ),
+            ),
+            other => Self::reaching(other, device),
+        }
+    }
+
     /// The device `device` was asked to start sharing its screen and said that it would not, for
     /// this reason.
     pub(crate) fn not_started(device: &str, why: WhyNot) -> Self {

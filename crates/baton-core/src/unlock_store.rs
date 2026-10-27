@@ -198,8 +198,9 @@ impl UnlockStore for NodeUnlockStore {
         let restored = self.trust.amend(&self.viewer, |device, _| {
             device.unlock.as_mut()?.restore(sealed).then_some(())
         });
-        // The setup is back whether or not it could be written down: an end that was never
-        // written is forgotten too.
+        // A change that cannot be saved is not made, so an end that was written stays if the
+        // file cannot be written now: the setup is not tried again. An end that was never
+        // written is forgotten whatever the disk does.
         let _ = self.changed("an unlock that can be tried again", restored);
         self.unwritten.remove(self.viewer, sealed);
     }
@@ -762,6 +763,17 @@ mod tests {
 
         rig.store.restore(&sealed(1));
         assert_eq!(rig.store.record().unwrap().sealed, sealed(1));
+    }
+
+    #[test]
+    fn restoring_a_setup_whose_end_was_written_leaves_it_ended_when_the_disk_does_not_take_it() {
+        let rig = Rig::new();
+        rig.conclude(rejected(), Some(sealed(1)));
+        rig.disk_fails();
+
+        rig.store.restore(&sealed(1));
+        assert!(rig.store.record().is_none());
+        assert!(!rig.trust.get(&phone()).unwrap().can_unlock(&target()));
     }
 
     #[test]

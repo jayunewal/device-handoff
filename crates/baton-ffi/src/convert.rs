@@ -213,6 +213,9 @@ impl From<app::WindowAbilities> for WindowAbilities {
             can_share,
             can_control,
             can_give_screen,
+            // What a device can do about a locked screen is not carried over to Dart yet.
+            can_be_unlocked: _,
+            can_unlock: _,
         } = abilities;
         Self {
             can_show,
@@ -358,6 +361,8 @@ impl From<app::WindowSession> for WindowSession {
             sound,
             leave,
             screen,
+            // Nor whether the person here can unlock the screen.
+            unlock: _,
         } = session;
         Self {
             id: signed(id),
@@ -628,7 +633,12 @@ impl From<app::Event> for Event {
                 id: signed(id),
                 end: end.into(),
             },
-            app::Event::Resync => Self::Resync,
+            // Dart does not take what happens to a locked screen yet. A reread is what the
+            // missed events of those are made good by, as `app::Event::Resync` says.
+            app::Event::WindowLocked { .. }
+            | app::Event::WindowUnlock { .. }
+            | app::Event::UnlockAttempted(_)
+            | app::Event::Resync => Self::Resync,
         }
     }
 }
@@ -690,6 +700,7 @@ mod tests {
             sound: true,
             leave: true,
             screen: Some(7),
+            unlock: true,
         }
     }
 
@@ -822,6 +833,28 @@ mod tests {
     }
 
     #[test]
+    fn what_happens_to_a_locked_screen_is_told_to_dart_as_a_reason_to_read_again() {
+        for event in [
+            app::Event::WindowLocked {
+                id: 4,
+                locked: true,
+            },
+            app::Event::WindowUnlock {
+                id: 4,
+                step: app::WindowUnlock::Asking,
+            },
+            app::Event::UnlockAttempted(app::UnlockEntry {
+                at: 1_700_000_000,
+                device_id: "ab".repeat(32),
+                device_name: "Pocket Phone".to_owned(),
+                result: app::UnlockResult::Unlocked,
+            }),
+        ] {
+            assert_eq!(Event::from(event), Event::Resync);
+        }
+    }
+
+    #[test]
     fn what_came_of_offering_a_window_keeps_its_session_and_its_sentence() {
         assert_eq!(
             WindowShared::from(app::WindowShared::NothingChosen),
@@ -846,6 +879,8 @@ mod tests {
             can_share: false,
             can_control: true,
             can_give_screen: false,
+            can_be_unlocked: true,
+            can_unlock: false,
         });
         assert_eq!(
             (
@@ -861,6 +896,8 @@ mod tests {
             can_share: true,
             can_control: false,
             can_give_screen: true,
+            can_be_unlocked: false,
+            can_unlock: true,
         });
         assert_eq!(
             (
