@@ -309,7 +309,8 @@ func testAScreenThatNeverStartedIsNotUnlockedAndItsKeyIsWiped() {
   do {
     let given = try sharer.screen(privacy: .private)
     let attempt = makeAttempt()
-    check(given.window.unlock(attempt) == .notPrivate, "a screen with no privacy raised")
+    // No new box was kept yet, and only `failed` or `stale` may come before one is.
+    check(given.window.unlock(attempt) == .failed, "a screen with no privacy raised")
     check(attempt.boxKey.isWiped, "the key of the box was not wiped")
     given.window.released()
   } catch let refusal as ScreenRefusal {
