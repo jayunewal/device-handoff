@@ -1404,6 +1404,18 @@ impl Node {
     /// protocol; or if the key it gives is of a kind that this version does not know
     /// ([`Error::Unsupported`]) or is not a key of that kind ([`Error::Protocol`]).
     pub async fn unlock_key(&self, peer: &DeviceId, renew: bool) -> Result<KeyOutcome> {
+        self.unlock_key_within(peer, renew, self.shared.tuning.offer_reply_deadline())
+            .await
+    }
+
+    /// The same, waiting as long as `deadline` for the person. The question is not asked again
+    /// when the answer does not come, since the person may be deciding.
+    pub(crate) async fn unlock_key_within(
+        &self,
+        peer: &DeviceId,
+        renew: bool,
+        deadline: Duration,
+    ) -> Result<KeyOutcome> {
         if !self.shared.streaming.lets_unlock() {
             return Err(Error::Config(
                 "this device was not set up to be unlocked from others".to_owned(),
@@ -1415,7 +1427,7 @@ impl Node {
                 peer,
                 &request,
                 Some(capability::UNLOCK_APPROVE),
-                self.shared.tuning.offer_reply_deadline(),
+                deadline,
                 true,
             )
             .await?;

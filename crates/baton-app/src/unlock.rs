@@ -49,8 +49,8 @@ impl Password {
     /// bytes, and one of them says how long the password is.
     pub const MAX_BYTES: usize = 127;
 
-    pub(crate) fn new(text: String) -> Self {
-        Self(zeroize::Zeroizing::new(text))
+    pub(crate) fn new(text: zeroize::Zeroizing<String>) -> Self {
+        Self(text)
     }
 
     /// The password.
@@ -141,7 +141,8 @@ pub enum UnlockKeyError {
     /// recognises.
     Unsupported,
     /// The platform could not, for a reason of its own. The log of this device has the sentence,
-    /// and the device that asked is told only that it failed.
+    /// and the device that asked is told that this one cannot, as for
+    /// [`Unsupported`](Self::Unsupported): the protocol has no word for a failure.
     Failed(PlatformError),
 }
 
@@ -372,7 +373,7 @@ impl SetUp<'_> {
     /// Sets the unlock up with the password `text`, in the order that spares the person the most:
     /// the password is checked first, and the other device is asked for a key only for one that
     /// this device accepts, since a new key ends what was sealed to the old one.
-    pub(crate) async fn run(self, text: String) -> Result<UnlockSetUp> {
+    pub(crate) async fn run(self, text: zeroize::Zeroizing<String>) -> Result<UnlockSetUp> {
         let name = self.name;
         if text.is_empty() {
             return Ok(UnlockSetUp::NotDone(
@@ -416,6 +417,10 @@ impl SetUp<'_> {
             Err(error) => return Err(Error::keying(&error, name)),
         };
 
+        // The other device has made its new key, and what was sealed to the old one opens nothing.
+        // Unless the new box is kept, the unlock that was set up before is over, whatever stops the
+        // set-up from here on, and the person is told so.
+        let mut renewal = Renewal::new(self.trust, self.peer);
         let (target, viewer) = (self.me, self.peer);
         let sharer = Arc::clone(self.sharer);
         let made = tokio::task::spawn_blocking(move || {
@@ -428,16 +433,22 @@ impl SetUp<'_> {
         })
         .await
         .map_err(|_| platform_failed())?;
-        let new = match made {
-            Ok(new) => new,
-            Err(error) => return Ok(not_done(error)),
+        let not_kept = match made {
+            Ok(new) => self.keep(new).await?,
+            Err(error) => Some(why_not_made(error)),
         };
-
-        self.keep(new).await
+        match not_kept {
+            None => {
+                renewal.kept();
+                Ok(UnlockSetUp::Done)
+            }
+            Some(sentence) => Ok(UnlockSetUp::NotDone(renewal.over(name, &sentence).await)),
+        }
     }
 
-    /// Keeps the box that the platform made.
-    async fn keep(&self, new: NewUnlock) -> Result<UnlockSetUp> {
+    /// Keeps the box that the platform made. Gives nothing if it is kept, and otherwise why not,
+    /// in words for the person.
+    async fn keep(&self, new: NewUnlock) -> Result<Option<String>> {
         let (trust, viewer, target) = (self.trust.clone(), self.peer, self.me);
         let kept = tokio::task::spawn_blocking(move || {
             trust.set_up_unlock(&viewer, target, new, SystemClock.now_unix())
@@ -447,17 +458,75 @@ impl SetUp<'_> {
         match kept {
             Ok(true) => {
                 tracing::info!(peer = %viewer.short(), "an unlock was set up");
-                Ok(UnlockSetUp::Done)
+                Ok(None)
             }
             Ok(false) => Err(Error::not_paired()),
             // The platform made something that is beyond the limits of the record.
             Err(Core::BadItem(why)) => {
                 tracing::warn!(why, "the platform made a box that cannot be kept");
-                Ok(UnlockSetUp::NotDone(
+                Ok(Some(
                     "This device could not make the box for the unlock.".to_owned(),
                 ))
             }
             Err(error) => Err(Error::local(&error)),
+        }
+    }
+}
+
+/// The unlock that was set up for the other device before, from the moment that device made a new
+/// key for this one. What was sealed to the old key opens nothing from then on, so unless the new
+/// box is kept the record of the old unlock must not stand as set up: it would show `On` and fail
+/// at the first tap. The record is turned off when this is dropped without [`kept`](Self::kept)
+/// or [`over`](Self::over), so a set-up that fails on the way, and one that is given up (its
+/// future is dropped), leave none.
+struct Renewal<'a> {
+    trust: &'a TrustStore,
+    peer: DeviceId,
+    settled: bool,
+}
+
+impl<'a> Renewal<'a> {
+    fn new(trust: &'a TrustStore, peer: DeviceId) -> Self {
+        Self {
+            trust,
+            peer,
+            settled: false,
+        }
+    }
+
+    /// The new box is kept, in place of the old record.
+    fn kept(&mut self) {
+        self.settled = true;
+    }
+
+    /// The set-up stopped, and `sentence` says why. Turns the old record off, and gives the
+    /// sentence with what became of it added, naming the device that made the new key.
+    async fn over(&mut self, device: &str, sentence: &str) -> String {
+        self.settled = true;
+        let (trust, peer) = (self.trust.clone(), self.peer);
+        let off = tokio::task::spawn_blocking(move || trust.turn_off_unlock(&peer)).await;
+        match off {
+            // There was none to turn off, so there is nothing more to say.
+            Ok(Ok(false)) => sentence.to_owned(),
+            Ok(Ok(true)) => format!(
+                "{sentence} The unlock that was set up before is turned off, because {device} made \
+                 a new key for this device. Set it up again."
+            ),
+            _ => format!(
+                "{sentence} The unlock that was set up before does not work any more, because \
+                 {device} made a new key for this device, and it could not be turned off. Turn it \
+                 off and set it up again."
+            ),
+        }
+    }
+}
+
+impl Drop for Renewal<'_> {
+    fn drop(&mut self) {
+        if !self.settled
+            && let Err(error) = self.trust.turn_off_unlock(&self.peer)
+        {
+            tracing::warn!(%error, "the unlock that was set up before could not be turned off");
         }
     }
 }
@@ -475,16 +544,23 @@ fn platform_failed() -> Error {
 fn not_done(error: UnlockSetupError) -> UnlockSetUp {
     match error {
         UnlockSetupError::WrongPassword => UnlockSetUp::WrongPassword,
-        UnlockSetupError::Unsupported => UnlockSetUp::NotDone(
-            "This device cannot keep an unlock: it cannot check the password, or its lock does \
-             not take one."
-                .to_owned(),
-        ),
-        UnlockSetupError::Failed(error) => UnlockSetUp::NotDone(
-            Error::new(ErrorKind::Other, error.message())
-                .message()
-                .to_owned(),
-        ),
+        other => UnlockSetUp::NotDone(why_not_made(other)),
+    }
+}
+
+/// What the person is told when the platform did not make the box. A platform that does not accept
+/// the password here accepted it a moment ago, when it was checked, and the sentence says so.
+fn why_not_made(error: UnlockSetupError) -> String {
+    match error {
+        UnlockSetupError::WrongPassword => {
+            "This device accepted that password a moment ago and does not accept it now.".to_owned()
+        }
+        UnlockSetupError::Unsupported => "This device cannot keep an unlock: it cannot check the \
+             password, or its lock does not take one."
+            .to_owned(),
+        UnlockSetupError::Failed(error) => Error::new(ErrorKind::Other, error.message())
+            .message()
+            .to_owned(),
     }
 }
 
@@ -495,9 +571,10 @@ fn key_declined(device: &str, reason: DeclineReason) -> String {
         DeclineReason::Blocked => format!(
             "{device} does not let this device ask it for a key: its settings do not allow it."
         ),
-        DeclineReason::Unsupported => {
-            format!("{device} cannot unlock this device. It may need a newer version of Baton.")
-        }
+        DeclineReason::Unsupported => format!(
+            "{device} cannot unlock this device. It may have no face set up for it, or need a \
+             newer version of Baton."
+        ),
         DeclineReason::RateLimited => {
             format!("{device} is busy with another question about a key. Try again in a moment.")
         }
@@ -511,7 +588,7 @@ mod tests {
 
     #[test]
     fn the_password_is_not_printed() {
-        let password = Password::new("hunter2".to_owned());
+        let password = Password::new(zeroize::Zeroizing::new("hunter2".to_owned()));
         assert_eq!(format!("{password:?}"), "Password(..)");
         let setup = UnlockSetup {
             password,
@@ -528,7 +605,10 @@ mod tests {
     #[test]
     fn a_password_is_read_as_it_was_typed() {
         for text in ["  spaced  ", "caf\u{e9}", "p\u{1f510}ss"] {
-            assert_eq!(Password::new(text.to_owned()).expose(), text);
+            assert_eq!(
+                Password::new(zeroize::Zeroizing::new(text.to_owned())).expose(),
+                text
+            );
         }
     }
 
@@ -563,7 +643,8 @@ mod tests {
         );
         assert_eq!(
             said(DeclineReason::Unsupported),
-            "Anna's iPhone cannot unlock this device. It may need a newer version of Baton."
+            "Anna's iPhone cannot unlock this device. It may have no face set up for it, or need a \
+             newer version of Baton."
         );
         assert_eq!(
             said(DeclineReason::RateLimited),
@@ -582,6 +663,20 @@ mod tests {
                 "{reason:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_platform_that_stops_accepting_a_password_it_accepted_says_so() {
+        // Once the other device made its new key, the set-up is not one that the person can just
+        // type the password for again: the sentence says what happened.
+        assert_eq!(
+            why_not_made(UnlockSetupError::WrongPassword),
+            "This device accepted that password a moment ago and does not accept it now."
+        );
+        assert!(
+            why_not_made(UnlockSetupError::Unsupported)
+                .starts_with("This device cannot keep an unlock")
+        );
     }
 
     #[test]

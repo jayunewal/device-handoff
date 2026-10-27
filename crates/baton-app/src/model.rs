@@ -1074,7 +1074,9 @@ pub enum UnlockSetUp {
     /// not asked for anything.
     WrongPassword,
     /// It is not set up, and the sentence says why, in words that name the device. What was set up
-    /// before is as it was, unless the sentence says otherwise.
+    /// before is as it was, unless the sentence says otherwise: when the other device had made its
+    /// new key already, what was set up before opens nothing, and the sentence says that it is
+    /// turned off.
     NotDone(String),
 }
 
@@ -1107,8 +1109,7 @@ pub enum UnlockResult {
     Failed,
     /// An outcome that this version does not know.
     Other,
-    /// The person did not agree, their face was not recognised, or they cancelled. Only the
-    /// device that asked ends this way.
+    /// The person did not agree, their face was not recognised, or they cancelled.
     Declined,
     /// The device that asked no longer has the key that opens the sealed one: a face was added or
     /// removed, or the device was restored. The person at the device that is unlocked has to set

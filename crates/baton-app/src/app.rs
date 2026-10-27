@@ -828,7 +828,12 @@ impl App {
     ///
     /// The call can take as long as the person at the other device takes to answer, if the
     /// platform there asks them. Dropping the future gives the set-up up; what was set up before
-    /// is as it was, unless the other device made a new key already, which ends it.
+    /// is as it was, unless the other device made a new key already: then what was set up before
+    /// opens nothing, and it is turned off, as it is when the set-up stops for any other reason
+    /// after that ([`UnlockSetUp::NotDone`] says so). A call that fails with
+    /// [`ErrorKind::Unreachable`] after the other device may have made its key, such as one that
+    /// times out, does not know that it did, and leaves what was set up before: it ends at the
+    /// first tap that finds it stale.
     ///
     /// # Errors
     ///
@@ -837,6 +842,8 @@ impl App {
     /// could not be kept, and [`ErrorKind::Other`] if this device cannot be unlocked from another
     /// ([`WindowAbilities::can_be_unlocked`]).
     pub async fn set_up_unlock(&self, id: &str, password: String) -> Result<UnlockSetUp> {
+        // Wiped when it is dropped, on every way out.
+        let password = zeroize::Zeroizing::new(password);
         let node = self.running()?;
         let (peer, name) = self.paired(id)?;
         let Some(sharer) = self.inner.sessions.sharer_unlocks() else {

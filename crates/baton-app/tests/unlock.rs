@@ -1028,6 +1028,10 @@ async fn a_phone_that_will_not_give_a_key_leaves_the_box_unmade_and_says_why() {
             !why.contains("no enclave"),
             "the sentence of the platform is for the log"
         );
+        // A phone that cannot make a key is not only one that needs a newer version.
+        if said.ends_with("cannot unlock this device") {
+            assert!(why.contains("no face set up"), "{error:?}: {why}");
+        }
         assert_eq!(rig.status(), UnlockStatus::Off, "{error:?}");
     }
     // The box was never made.
@@ -1035,25 +1039,29 @@ async fn a_phone_that_will_not_give_a_key_leaves_the_box_unmade_and_says_why() {
     assert_eq!(rig.journal.count("setup"), 0);
 }
 
+/// What a set-up that stops after the phone made its new key says of the unlock that was set up
+/// before.
+const TURNED_OFF: &str = "The unlock that was set up before is turned off, because Pocket Phone \
+                          made a new key for this device. Set it up again.";
+
 #[tokio::test]
-async fn a_platform_that_cannot_make_the_box_leaves_the_unlock_as_it_was() {
+async fn a_platform_that_cannot_make_the_box_turns_off_the_unlock_that_the_new_key_ended() {
     let rig = Rig::new().await;
     let failure = PlatformError::new("The keychain is locked.\nTry again later.");
     *rig.mac_platform.setup_fails.lock().unwrap() = Some(UnlockSetupError::Failed(failure));
 
-    // Nothing was set up before, and nothing is now.
+    // Nothing was set up before, so there is nothing to turn off and nothing is said of it.
     let UnlockSetUp::NotDone(why) = rig.sets_up(PASSWORD).await else {
         panic!("the unlock was set up");
     };
     assert_eq!(why, "The keychain is locked. Try again later.");
     assert_eq!(rig.status(), UnlockStatus::Off);
 
-    // What was set up before is as it was.
+    // What was set up before opens nothing, since the phone made a new key: it is turned off, and
+    // the person is told.
     *rig.mac_platform.setup_fails.lock().unwrap() = None;
     rig.is_set_up().await;
-    let UnlockStatus::On { since } = rig.status() else {
-        panic!("the unlock is not set up");
-    };
+    assert!(matches!(rig.status(), UnlockStatus::On { .. }));
     *rig.mac_platform.setup_fails.lock().unwrap() = Some(UnlockSetupError::Unsupported);
     let UnlockSetUp::NotDone(why) = rig.sets_up(PASSWORD).await else {
         panic!("the unlock was set up");
@@ -1062,7 +1070,57 @@ async fn a_platform_that_cannot_make_the_box_leaves_the_unlock_as_it_was() {
         why.starts_with("This device cannot keep an unlock"),
         "{why}"
     );
-    assert_eq!(rig.status(), UnlockStatus::On { since });
+    assert!(why.ends_with(TURNED_OFF), "{why}");
+    assert_eq!(rig.status(), UnlockStatus::Off);
+}
+
+#[tokio::test]
+async fn a_password_that_the_system_stops_accepting_after_the_phone_made_its_key_is_not_a_wrong_one()
+ {
+    let rig = Rig::new().await;
+    rig.is_set_up().await;
+    // The system accepted the password when it was checked, and not when the box was made.
+    *rig.mac_platform.setup_fails.lock().unwrap() = Some(UnlockSetupError::WrongPassword);
+    let UnlockSetUp::NotDone(why) = rig.sets_up(PASSWORD).await else {
+        panic!("the unlock was set up, or the password was called wrong");
+    };
+    assert_eq!(
+        why,
+        format!(
+            "This device accepted that password a moment ago and does not accept it now. \
+             {TURNED_OFF}"
+        )
+    );
+    assert_eq!(rig.status(), UnlockStatus::Off);
+}
+
+#[tokio::test]
+async fn a_set_up_that_is_given_up_after_the_phone_made_its_key_turns_the_old_unlock_off() {
+    let rig = Rig::new().await;
+    rig.is_set_up().await;
+    assert!(matches!(rig.status(), UnlockStatus::On { .. }));
+
+    // The platform is making the box when the person gives the set-up up: the future is dropped.
+    let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    *rig.mac_platform.during_setup.lock().unwrap() = Some(Box::new(move || {
+        started_tx.send(()).unwrap();
+        let _ = release_rx.recv_timeout(std::time::Duration::from_secs(10));
+    }));
+    let (app, id) = (rig.mac.app.clone(), rig.phone.id());
+    let setting_up = tokio::spawn(async move { app.set_up_unlock(&id, PASSWORD.to_owned()).await });
+    tokio::task::spawn_blocking(move || {
+        started_rx.recv_timeout(std::time::Duration::from_secs(10))
+    })
+    .await
+    .unwrap()
+    .expect("the platform was not asked to make the box");
+    setting_up.abort();
+    assert!(setting_up.await.unwrap_err().is_cancelled());
+    release_tx.send(()).unwrap();
+
+    // The phone had made a new key, so what was there before opens nothing.
+    assert_eq!(rig.status(), UnlockStatus::Off);
 }
 
 #[tokio::test]
@@ -1712,12 +1770,10 @@ async fn a_device_that_is_unpaired_while_the_unlock_is_set_up_keeps_nothing() {
 }
 
 #[tokio::test]
-async fn a_box_that_no_record_can_keep_is_not_kept_and_the_unlock_stays_as_it_was() {
+async fn a_box_that_no_record_can_keep_is_not_kept_and_the_old_unlock_is_turned_off() {
     let rig = Rig::new().await;
     rig.is_set_up().await;
-    let UnlockStatus::On { since } = rig.status() else {
-        panic!("the unlock is not set up");
-    };
+    assert!(matches!(rig.status(), UnlockStatus::On { .. }));
 
     rig.mac_platform
         .makes_empty_box
@@ -1725,8 +1781,11 @@ async fn a_box_that_no_record_can_keep_is_not_kept_and_the_unlock_stays_as_it_wa
     let UnlockSetUp::NotDone(why) = rig.sets_up(PASSWORD).await else {
         panic!("the unlock was set up");
     };
-    assert_eq!(why, "This device could not make the box for the unlock.");
-    assert_eq!(rig.status(), UnlockStatus::On { since });
+    assert_eq!(
+        why,
+        format!("This device could not make the box for the unlock. {TURNED_OFF}")
+    );
+    assert_eq!(rig.status(), UnlockStatus::Off);
 }
 
 #[tokio::test]
@@ -1766,4 +1825,33 @@ async fn a_screen_that_the_mac_offers_and_the_phone_accepts_takes_an_unlock_too(
     let told = told_until_the_end(&mut phone_events, session.id).await;
     assert_eq!(steps(&told).last(), Some(&ended(UnlockResult::Unlocked)));
     assert_eq!(rig.mac_platform.typed(), [PASSWORD]);
+}
+
+#[tokio::test]
+async fn a_screen_that_the_mac_offers_and_the_phone_accepts_takes_no_unlock_that_was_not_set_up() {
+    // Nothing is set up for the phone, so the screen it accepts is private and takes no unlock.
+    let rig = Rig::new().await;
+    rig.mac_platform.picks_screen.store(true, Ordering::Relaxed);
+    let mut phone_events = rig.phone.app.events();
+
+    let (app, to) = (rig.mac.app.clone(), rig.phone.id());
+    let offer = tokio::spawn(async move { app.share_window(&to, true).await });
+    let request = next_matching(&mut phone_events, |event| match event {
+        Event::WindowRequested(request) => Some(request),
+        _ => None,
+    })
+    .await;
+    assert!(rig.phone.app.answer_window(request.id, true));
+    let WindowShared::Started(shared) = offer.await.unwrap().unwrap() else {
+        panic!("the screen was not shared");
+    };
+    let session = next_matching(&mut phone_events, |event| match event {
+        Event::WindowStarted(session) => Some(session),
+        _ => None,
+    })
+    .await;
+    assert!(session.private && !session.unlock, "{session:?}");
+    assert!(shared.private && !shared.unlock, "{shared:?}");
+    // A tap on an Unlock button that was not offered does nothing.
+    assert!(!rig.phone.app.unlock_window(session.id));
 }
