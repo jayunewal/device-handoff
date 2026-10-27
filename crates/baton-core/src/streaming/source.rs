@@ -2606,6 +2606,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_viewer_that_says_leave_and_then_stalls_in_a_message_has_the_platform_lock_the_screen()
+     {
+        // The person chose, and then the viewer began a message that never came: it may have
+        // crashed, or been cut off. A stall is not the end that was asked for.
+        let mut params = quick();
+        params.stall = Duration::from_millis(200);
+        let mut rig = Rig::with(
+            SourceSetup {
+                params,
+                ..leaving_setup()
+            },
+            1,
+        )
+        .await;
+        let mut control = rig.source_control().await;
+        read_source_message(&mut control).await;
+        let mut send = rig.open_viewer_control().await;
+        write_message(&mut send, &ViewerMessage::Leave)
+            .await
+            .unwrap();
+        // The length of a message of 20 bytes, and then nothing.
+        send.write_all(&[0, 0, 0, 20]).await.unwrap();
+        assert_eq!(rig.ended().await, End::Stalled);
+        assert_eq!(ends_heard(&rig.log), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn a_viewer_that_says_leave_and_finishes_in_the_middle_of_a_message_has_the_platform_lock_the_screen()
+     {
+        // A stream that ends between two messages was finished, and one that ends inside a message
+        // was cut off, which the viewer does not do when it has said what it had to say.
+        let mut rig = Rig::with(leaving_setup(), 1).await;
+        let mut control = rig.source_control().await;
+        read_source_message(&mut control).await;
+        let mut send = rig.open_viewer_control().await;
+        write_message(&mut send, &ViewerMessage::Leave)
+            .await
+            .unwrap();
+        // Two bytes of the length of a message, and then the end of the stream.
+        send.write_all(&[0, 0]).await.unwrap();
+        send.finish().unwrap();
+        assert_eq!(rig.ended().await, End::Peer);
+        assert_eq!(ends_heard(&rig.log), (1, 0));
+    }
+
+    #[tokio::test]
     async fn a_leave_for_a_session_whose_offer_did_not_say_leave_breaks_a_rule_and_locks() {
         let mut rig = Rig::with(private_setup(), 1).await;
         let mut control = rig.source_control().await;
