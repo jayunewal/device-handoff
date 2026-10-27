@@ -488,8 +488,11 @@ final class MacSharedWindow: SharedWindow {
   /// never unlocked: nothing keeps the people at this Mac from seeing and using it then.
   func unlock(_ attempt: UnlockAttempt) -> UnlockOutcome {
     guard let privateSession, let unlockSession, let unlockPosts else {
+      // The Rust side hands an attempt only to a window that is private, so this does not happen.
+      // If it did, no box was kept yet, and only `failed` or `stale` may come before one is: any
+      // other outcome ends the setup of the unlock (`runUnlock` says `notPrivate` after the keep).
       attempt.boxKey.wipe()
-      return .notPrivate
+      return .failed
     }
     let environment = MacUnlockEnvironment(
       session: unlockSession, privacy: privateSession, poster: MacEventPoster(ledger: unlockPosts))

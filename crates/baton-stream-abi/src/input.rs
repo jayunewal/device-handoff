@@ -764,9 +764,18 @@ impl Worker {
     /// called. The attempt is where the platform's calls find it while it runs; if the platform
     /// is not called it is let go of, which reports that it failed.
     ///
+    /// The platform is not called unless the privacy of the screen is in place as it last said,
+    /// which is read again here: the attempt waited for this thread, and the platform may have
+    /// lost the privacy, or the viewer lifted some of it, since the session looked. The header
+    /// promises `unlock` only while the last word said that it is in place. No box was kept yet,
+    /// so the unlock stays set up and the person can try again.
+    ///
     /// What the platform is given is a copy, and the secret in it is wiped when the call returns.
     /// The attempt itself is not borrowed from, since the platform's calls reach it too.
     fn carry_out(&mut self, attempt: UnlockAttempt) -> Option<u32> {
+        if !self.input.private_in_place() {
+            return None;
+        }
         let sealing = match attempt.sealing() {
             Sealing::EciesP256 => SEALING_ECIES_P256,
             Sealing::Other => return None,

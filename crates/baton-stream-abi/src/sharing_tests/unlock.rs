@@ -725,6 +725,54 @@ async fn what_the_other_device_lifts_of_the_privacy_ends_the_unlock_before_a_fac
 }
 
 #[tokio::test]
+async fn a_mac_that_loses_the_privacy_while_a_face_is_asked_for_is_not_called_to_unlock() {
+    let mut rig = Rig::unlockable().await;
+    let (mac, pad) = (id_of(&rig.sharing), id_of(&rig.viewing));
+    rig.sets_up().await;
+    let screen = rig.screen_shown().await;
+    rig.private_in_place(&screen);
+    rig.platform
+        .plan_unlock(unlocking(&rig.registry, Some(NEW), UNLOCK_UNLOCKED));
+    rig.locks(&screen).await;
+
+    // The privacy is in place when the Mac is asked, and the face takes its time. The platform of
+    // the Mac loses the privacy before the key arrives: the screen can be seen, and the platform is
+    // not called to type a password into it.
+    rig.taps_when_it_can(&screen).await;
+    let asked = rig.question(&screen, 1).await;
+    source_private(&rig.registry, screen.link, 0).unwrap();
+    rig.opened(&screen, &asked, &[9; 32]).unwrap();
+    let steps = rig.told(&screen).await;
+    assert_eq!(
+        steps.last(),
+        Some(&WindowUnlock::Ended(UnlockResult::Failed))
+    );
+    assert_eq!(unlocks_of(&rig, &screen), []);
+    // Nothing was typed or kept, so the unlock is set up still, and the person at the Mac is told.
+    assert_eq!(rig.attempt_told().await.result, UnlockResult::Failed);
+    assert!(matches!(
+        rig.sharing.app.unlock_status(&rig.viewing.id()).unwrap(),
+        UnlockStatus::On { .. }
+    ));
+    nothing_to_ask_or_keep(&rig, screen.link);
+
+    // Said again, the privacy is in place and the next try goes through with the box that the
+    // set-up kept: the try before kept no other.
+    rig.private_in_place(&screen);
+    let (asked, steps) = rig.attempt(&screen, 2, &[8; 32]).await;
+    assert_eq!(asked.sealed, b"a sealed key".to_vec());
+    assert_eq!(
+        steps.last(),
+        Some(&WindowUnlock::Ended(UnlockResult::Unlocked))
+    );
+    assert_eq!(
+        unlocks_of(&rig, &screen),
+        [unlock_call(8, b"a box", &mac, &pad)]
+    );
+    rig.ends(&screen).await;
+}
+
+#[tokio::test]
 async fn inside_unlock_the_platform_may_call_three_functions_of_the_library_and_no_others() {
     let mut rig = Rig::unlockable().await;
     rig.sets_up().await;
@@ -767,6 +815,63 @@ async fn inside_unlock_the_platform_may_call_three_functions_of_the_library_and_
     for (name, answer) in allowed {
         assert_eq!(*answer, Ok(()), "{name} inside unlock");
     }
+    rig.ends(&screen).await;
+}
+
+#[tokio::test]
+async fn a_platform_cannot_answer_a_question_from_inside_the_call_that_gave_it() {
+    let mut rig = Rig::unlockable().await;
+    rig.sets_up().await;
+    let screen = rig.screen_shown().await;
+    rig.private_in_place(&screen);
+    rig.platform
+        .plan_unlock(unlocking(&rig.registry, Some(NEW), UNLOCK_UNLOCKED));
+    let answers: Arc<Mutex<Vec<Answer>>> = Arc::default();
+    {
+        let (registry, answers) = (Arc::clone(&rig.viewing_registry), Arc::clone(&answers));
+        let link = screen.screen_link;
+        rig.viewer.on_call(move |call| {
+            if let Call::UnlockOpen { number, .. } = call {
+                // An answer that was let in would take the question before the call that gave it
+                // has returned.
+                let _watch = Watchdog::start("an answer from inside the call that asks");
+                answers.lock().unwrap().extend([
+                    ("opened", unlock_opened(&registry, link, *number, &[9; 32])),
+                    (
+                        "declined",
+                        unlock_declined(&registry, link, *number, FACE_DECLINED),
+                    ),
+                ]);
+            }
+        });
+    }
+    rig.locks(&screen).await;
+    rig.taps_when_it_can(&screen).await;
+    let asked = rig.question(&screen, 1).await;
+    until("the answers from inside the call", || {
+        answers.lock().unwrap().len() == 2
+    })
+    .await;
+    assert_eq!(
+        *answers.lock().unwrap(),
+        [
+            ("opened", Err(Error::Reentrant)),
+            ("declined", Err(Error::Reentrant)),
+        ]
+    );
+
+    // Neither took the question: the answer that comes from outside the call is taken, and the
+    // person was not told that the question was declined.
+    rig.opened(&screen, &asked, &[9; 32]).unwrap();
+    assert_eq!(
+        rig.told(&screen).await,
+        [
+            WindowUnlock::Asking,
+            WindowUnlock::Typing,
+            WindowUnlock::Ended(UnlockResult::Unlocked)
+        ]
+    );
+    assert_eq!(rig.cancels(&screen), 0);
     rig.ends(&screen).await;
 }
 
