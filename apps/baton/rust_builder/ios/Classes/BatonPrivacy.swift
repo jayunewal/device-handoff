@@ -79,6 +79,16 @@ protocol Curtain: MacLocking {
   /// cover is up, a session tells its guard that it is well only while this is true, so that a
   /// curtain that nobody looks after any more ends in the lock of the guard.
   var healthy: Bool { get }
+
+  /// Puts the cover on every screen that shows something once more, now, and says whether every
+  /// one is dark. The looks do it four times a second; an unlock that wakes a display asks for it
+  /// again and again, so that a display that wakes is covered at once and not at the next look.
+  /// false if nothing is raised or the screens are lifted, since nothing is private then.
+  func darken() -> Bool
+}
+
+extension Curtain {
+  func darken() -> Bool { healthy }
 }
 
 // MARK: - The rules
@@ -156,6 +166,7 @@ final class PrivateSession {
   private let sleep: (TimeInterval) -> Void
   private let now: () -> TimeInterval
   private let log: (String) -> Void
+  private let placed: (Bool) -> Void
 
   /// Held for the whole of `begin`, so that a finish that is asked for meanwhile (an alarm can come
   /// from the first moment of the hold) waits for the cover to be up.
@@ -176,13 +187,18 @@ final class PrivateSession {
 
   /// `guardian` is the guard, which is handed the Mac for as long as the cover is up. `end` ends
   /// the session at the other device with a sentence for the person there. `sleep` and `now` are
-  /// the clocks of the locking, which the tests replace.
+  /// the clocks of the locking, which the tests replace. `placed` is told whether the privacy is in
+  /// place (`inPlace`) each time that changes, which it does when the cover goes up, when the
+  /// person at the other device lifts something or puts it back, and when the session ends or
+  /// something ends it; it is told from the thread that made the change, and never with a lock of
+  /// this session held.
   init(
     curtain: Curtain, guardian: SessionGuard, timing: PrivacyTiming = PrivacyTiming(),
     end: @escaping (String) -> Void,
     sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
     now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
-    log: @escaping (String) -> Void = { _ in }
+    log: @escaping (String) -> Void = { _ in },
+    placed: @escaping (Bool) -> Void = { _ in }
   ) {
     self.curtain = curtain
     self.guardian = guardian
@@ -191,12 +207,20 @@ final class PrivateSession {
     self.sleep = sleep
     self.now = now
     self.log = log
+    self.placed = placed
   }
 
   /// Hands the Mac to the guard, puts the cover up and takes the keyboard and the pointer. Throws
   /// `SharerFailure` if the guard or the Mac cannot, and then nothing is left raised and the
   /// session cannot be raised again.
   func begin() throws {
+    // The word that the privacy is in place is given once the cover is up and nothing holds the
+    // session any more.
+    defer { reportPlace() }
+    try raiseTheCover()
+  }
+
+  private func raiseTheCover() throws {
     condition.lock()
     defer { condition.unlock() }
     guard state == .idle else {
@@ -238,6 +262,11 @@ final class PrivateSession {
   /// once the session is being finished: a Mac that is being locked has nothing lifted. A part that
   /// cannot be put back ends the session, and the Mac is locked.
   func lift(screen: Bool, input: Bool) {
+    liftNow(screen: screen, input: input)
+    reportPlace()
+  }
+
+  private func liftNow(screen: Bool, input: Bool) {
     condition.lock()
     defer { condition.unlock() }
     let wanted = Lifted(screen: screen, input: input)
@@ -282,6 +311,9 @@ final class PrivateSession {
     case .raised:
       state = .finishing
       condition.unlock()
+      // Nothing is private from here on: the Mac is being locked, and the cover stays only until
+      // it is.
+      reportPlace()
       launch(cause)
       if case .alarm = cause { return }
       condition.lock()
@@ -387,6 +419,44 @@ final class PrivateSession {
     state = .done
     condition.broadcast()
     condition.unlock()
+  }
+
+  // MARK: Whether the privacy is in place
+
+  /// Whether the cover of the screens, the hold of the keyboard and the pointer, and the guard are
+  /// all in place, and the person at the other device has lifted nothing. An unlock of the screen
+  /// from the other device is tried only while this is true (docs/adr/0013-unlock-from-a-phone.md).
+  /// The guard counts: a guard that went away ended the session, so a session that is raised has
+  /// it. The cover and the hold count only while the curtain is looked after (`Curtain.healthy`).
+  var inPlace: Bool {
+    condition.lock()
+    defer { condition.unlock() }
+    return state == .raised && lifted == Lifted() && curtain.healthy
+  }
+
+  /// Puts the cover on the screens once more and says whether they are dark: for an unlock that
+  /// wakes a display (`Curtain.darken`). false unless the session is raised.
+  func darken() -> Bool {
+    condition.lock()
+    let raised = state == .raised
+    condition.unlock()
+    return raised && curtain.darken()
+  }
+
+  private let reporting = NSLock()
+  private var reported = false
+
+  /// Tells `placed` whether the privacy is in place, if that is not what it was told last. One
+  /// word at a time, and each is read after the lock that orders them is held, so that the last
+  /// word that `placed` hears is always the state at the time it was read: a word that says yes
+  /// cannot overtake one that says no. Never called with `condition` held.
+  private func reportPlace() {
+    reporting.lock()
+    defer { reporting.unlock() }
+    let now = inPlace
+    if now == reported { return }
+    reported = now
+    placed(now)
   }
 
   // MARK: The beat

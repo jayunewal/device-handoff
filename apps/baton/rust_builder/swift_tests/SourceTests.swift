@@ -28,8 +28,19 @@ final class FakeSharedWindow: SharedWindow {
   var lifts: [PrivateSession.Lifted] = []
   /// Whether the person at the other device wanted to hear, each time they switched it.
   var hears: [Bool] = []
+  /// What the window was asked to unlock with, the key of the box as it was when it was asked, and
+  /// what the window says came of it.
+  var unlocks: [UnlockAttempt] = []
+  var unlockKeys: [[UInt8]?] = []
+  var unlockOutcome = UnlockOutcome.failed
 
   func surroundings() -> WindowSurroundings? { around }
+
+  func unlock(_ attempt: UnlockAttempt) -> UnlockOutcome {
+    unlocks.append(attempt)
+    unlockKeys.append(bytesOf(attempt.boxKey))
+    return unlockOutcome
+  }
 
   func hear(_ on: Bool) { hears.append(on) }
 
@@ -79,6 +90,16 @@ final class FakeSharerPlatform: SharerPlatform {
   var canGiveScreen = false
   var canSendSound = false
   var canLeave = false
+  var canUnlock = false
+  /// What `unlockCheck` and `unlockSetup` answer.
+  var passwordCheck = PasswordCheck.accepted
+  var unlockMade = UnlockMade.made(boxed: [1, 2, 3], sealed: [4, 5])
+  /// What they were given: the password as it was when they were asked, and the secret itself, to
+  /// see whether it was wiped afterwards.
+  var checkedPasswords: [[UInt8]?] = []
+  var checkedSecrets: [Secret] = []
+  var setups: [UnlockSetup] = []
+  var setupPasswords: [[UInt8]?] = []
   var picks: [UInt64] = []
   var cancelled: [UInt64] = []
   var pickFailure: Error?
@@ -96,6 +117,18 @@ final class FakeSharerPlatform: SharerPlatform {
   }
 
   func cancelPick(request: UInt64) { cancelled.append(request) }
+
+  func unlockCheck(_ password: Secret) -> PasswordCheck {
+    checkedPasswords.append(bytesOf(password))
+    checkedSecrets.append(password)
+    return passwordCheck
+  }
+
+  func unlockSetup(_ setup: UnlockSetup) -> UnlockMade {
+    setups.append(setup)
+    setupPasswords.append(bytesOf(setup.password))
+    return unlockMade
+  }
 
   func screen(privacy: ScreenPrivacy) throws -> (window: SharedWindow, info: PickedWindowInfo) {
     screens += 1

@@ -34,6 +34,8 @@ const _files = [
   'BatonSource.swift',
   'BatonSpeaker.swift',
   'BatonStreamPlugin.swift',
+  'BatonUnlock.swift',
+  'BatonUnlockMac.swift',
   'BatonViewer.swift',
   'baton_stream_abi.h',
 ];

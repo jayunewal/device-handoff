@@ -324,6 +324,10 @@ final class MacSharedWindow: SharedWindow {
   private let privacy: ScreenPrivacy
   /// The privacy of a session that is private, made by `start`.
   private var privateSession: PrivateSession?
+  /// What an unlock of the screen needs besides the privacy, made by `start` for a private
+  /// screen: the calls to the Rust library, and the record of the keys that this app posts.
+  private var unlockSession: LibraryUnlockSession?
+  private var unlockPosts: PostLedger?
   /// What sends the sound of a whole screen, made by `start`. A window has none.
   private var sound: SoundPump?
 
@@ -365,12 +369,17 @@ final class MacSharedWindow: SharedWindow {
     var ledger: PostLedger?
     if privacy == .private {
       let posts = PostLedger()
-      let started = makePrivateSession(ledger: posts) { sentence in
-        librarySession.end(sentence: sentence)
-      }
+      // The library is told each time that the privacy is in place or is not, since an unlock is
+      // asked for only while it is.
+      let unlocking = LibraryUnlockSession(link: link)
+      let started = makePrivateSession(
+        ledger: posts, end: { sentence in librarySession.end(sentence: sentence) },
+        placed: { unlocking.privacy(inPlace: $0) })
       try started.begin()
       ledger = posts
       privateSession = started
+      unlockSession = unlocking
+      unlockPosts = posts
     }
     // The sound of a whole screen goes with its pictures, when the person at the other device asks
     // for it (`hear`). A private screen keeps this Mac quiet from now until it is locked again,
@@ -472,6 +481,21 @@ final class MacSharedWindow: SharedWindow {
 
   func hear(_ on: Bool) {
     sound?.hear(on)
+  }
+
+  /// Unlocks the screen of this Mac for the person at the other device, in a session that is
+  /// private (BatonUnlock.swift has the steps and their order). A screen that is not private is
+  /// never unlocked: nothing keeps the people at this Mac from seeing and using it then.
+  func unlock(_ attempt: UnlockAttempt) -> UnlockOutcome {
+    guard let privateSession, let unlockSession, let unlockPosts else {
+      attempt.boxKey.wipe()
+      return .notPrivate
+    }
+    let environment = MacUnlockEnvironment(
+      session: unlockSession, privacy: privateSession, poster: MacEventPoster(ledger: unlockPosts))
+    let outcome = runUnlock(attempt, boxing: MacBoxing(), environment: environment)
+    noteUnlock(outcome)
+    return outcome
   }
 }
 
