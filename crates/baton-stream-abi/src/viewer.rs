@@ -570,8 +570,8 @@ impl From<BatonDecoderState> for DecoderState {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use baton_proto::{
-        id::SessionId,
-        unlock::{Challenge, SealedKey},
+        id::{DeviceId, SessionId},
+        unlock::{Challenge, SealedKey, Sealing, SealingKey},
     };
     use baton_stream::{
         control::{Config, Pause, Silent, SilentReason, Sound, SoundCodec},
@@ -583,11 +583,12 @@ mod tests {
     use super::*;
     use crate::{
         abi::{
-            BatonSound, CODEC_H264, FRAME_KEY, FRAME_REFERENCED, PLAY_FIRST, SILENT_FAILED,
-            SILENT_NO_PERMISSION, SILENT_OFF, SILENT_OTHER, SILENT_WINDOW, SOUND_CODEC_AAC,
-            SOURCE_CONFIG, SOURCE_NOTICE, SOURCE_PAUSE, SOURCE_RESUME,
+            BatonSound, CODEC_H264, FRAME_KEY, FRAME_REFERENCED, KEY_BLOCKED, KEY_REFUSED,
+            KEY_UNSUPPORTED, PLAY_FIRST, SEALING_ECIES_P256, SILENT_FAILED, SILENT_NO_PERMISSION,
+            SILENT_OFF, SILENT_OTHER, SILENT_WINDOW, SOUND_CODEC_AAC, SOURCE_CONFIG, SOURCE_NOTICE,
+            SOURCE_PAUSE, SOURCE_RESUME,
         },
-        fake::{Call, Fake, Played},
+        fake::{Call, Fake, KeyPlan, Played, a_public_key},
         fixture::{
             HEIGHT, IDR, PPS, SEI, SLICE, SPS, WIDTH, avcc_kinds, kind, pictures, sps, units,
             with_first, without,
@@ -1328,5 +1329,77 @@ mod tests {
             assert_eq!(fake.live_screens(), 0);
             assert!(fake.complaints().is_empty(), "{:?}", fake.complaints());
         }
+    }
+
+    /// A viewer on the fake platform, which makes the keys that unlocks are sealed to.
+    fn viewer_of(fake: &Arc<Fake>) -> AbiViewer {
+        AbiViewer {
+            calls: fake.platform(),
+            limits: ShowLimits {
+                max_width: WIDTH,
+                max_height: HEIGHT,
+                max_fps: 60,
+                codecs: vec![Codec::H264],
+            },
+            links: Arc::new(Links::default()),
+        }
+    }
+
+    #[tokio::test]
+    async fn what_the_platform_says_of_a_key_it_did_not_give_is_what_the_app_is_told() {
+        let fake = Fake::new();
+        let viewer = viewer_of(&fake);
+        let source = || UnlockSource {
+            id: DeviceId::from_bytes([7; 32]),
+            name: "Studio Mac".to_owned(),
+        };
+        let fails = |code: i32, text: &[u8], claimed_len: u32| KeyPlan::Fails {
+            code,
+            text: text.to_vec(),
+            claimed_len,
+        };
+        let failed = |sentence: &str| Err(UnlockKeyError::Failed(PlatformError::new(sentence)));
+
+        // The three numbers that say why have an error of their own, and the sentence that comes
+        // with them is not kept: the number says it.
+        for (code, expected) in [
+            (KEY_REFUSED, UnlockKeyError::Refused),
+            (KEY_BLOCKED, UnlockKeyError::Blocked),
+            (KEY_UNSUPPORTED, UnlockKeyError::Unsupported),
+        ] {
+            fake.plan_key(fails(code, b"Not shown.", 10));
+            assert_eq!(
+                viewer.unlock_key(source(), true).await,
+                Err(expected),
+                "{code}"
+            );
+        }
+        // Any other number is a failure with the sentence that the platform wrote, or else ours.
+        fake.plan_key(fails(-7, b"Face ID is off.", 15));
+        assert_eq!(
+            viewer.unlock_key(source(), true).await,
+            failed("Face ID is off.")
+        );
+        fake.plan_key(fails(4, b"", 0));
+        assert_eq!(viewer.unlock_key(source(), true).await, failed(NO_KEY));
+        // A key that is not whole has no sentence of the platform's either.
+        fake.plan_key(KeyPlan::Gives {
+            sealing: 0,
+            key: a_public_key(),
+        });
+        assert_eq!(viewer.unlock_key(source(), false).await, failed(NO_KEY));
+        // A whole one is the key.
+        fake.plan_key(KeyPlan::Gives {
+            sealing: SEALING_ECIES_P256,
+            key: a_public_key(),
+        });
+        assert_eq!(
+            viewer.unlock_key(source(), false).await,
+            Ok(UnlockKey {
+                sealing: Sealing::EciesP256,
+                public: SealingKey::new(a_public_key()),
+            })
+        );
+        assert!(fake.complaints().is_empty(), "{:?}", fake.complaints());
     }
 }

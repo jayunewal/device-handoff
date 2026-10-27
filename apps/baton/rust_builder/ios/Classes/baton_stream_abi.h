@@ -385,7 +385,8 @@ extern "C" {
  * BATON_KEY_BLOCKED: the settings of this device do not let that device ask. BATON_KEY_UNSUPPORTED:
  * this device cannot make such a key: it has no hardware to keep one in, or no face that it
  * recognises. Any other value is a failure; the Rust side tells the other device only that it
- * failed, and the log of this device has the kind and not a sentence.
+ * failed, and writes the sentence in message, if the platform wrote one, to the log of this
+ * device, so the sentence is to hold no key, and no name or id of a device.
  */
 #define BATON_KEY_REFUSED 1
 #define BATON_KEY_BLOCKED 2
