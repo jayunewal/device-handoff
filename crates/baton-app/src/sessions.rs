@@ -23,7 +23,7 @@ use baton_core::{
 };
 use baton_proto::{DeviceId, message::DeclineReason};
 use baton_stream::{
-    control::{SilentReason, Sound, SourceMessage},
+    control::{PauseReason, SilentReason, Sound, SourceMessage},
     gate::Notice,
     header::FrameHeader,
 };
@@ -33,9 +33,10 @@ use crate::{
     Error, ErrorKind, Event, Result,
     app::{Questions, locked},
     model::{
-        ScreenStarted, WindowAbilities, WindowEnd, WindowInput, WindowRequest, WindowRole,
-        WindowSession, WindowShared, WindowSound,
+        ScreenStarted, UnlockResult, WindowAbilities, WindowEnd, WindowInput, WindowRequest,
+        WindowRole, WindowSession, WindowShared, WindowSound, WindowUnlock,
     },
+    unlock::{Asked, UnlockSource},
     windows::{PickedWindow, ScreenLink, SharingFailure, WindowSharer, WindowViewer, noun},
 };
 
@@ -77,8 +78,9 @@ struct Prepared {
 }
 
 /// What the source of a window that is shown here says that the screens need: the size of its
-/// picture, kept until the screens know the window, the events of the person that it dropped, and
-/// how its sound stands.
+/// picture, kept until the screens know the window, the events of the person that it dropped, how
+/// its sound stands, whether its screen is locked, and how the unlock that the person asked for
+/// goes.
 ///
 /// The source says the size before its first picture, and the node tells the app that the
 /// session runs at about the same moment, on tasks of their own, so the size can come first. It
@@ -86,8 +88,10 @@ struct Prepared {
 /// always hears of a window before it hears of its picture. A notice answers what the person did
 /// on the window, which they can do only once they know it, so it is told when the window is
 /// known and dropped when it is not. The same goes for the sound, which the person asks for only
-/// once they know the window.
-struct Pictures {
+/// once they know the window, and for the steps of an unlock. Whether the screen is locked is kept
+/// until the screens know the window, as the size is: a screen that is locked when the window
+/// starts is told right after it.
+pub(crate) struct Pictures {
     events: broadcast::Sender<Event>,
     state: Mutex<PictureState>,
 }
@@ -98,10 +102,33 @@ struct PictureState {
     session: Option<u64>,
     /// The size that the source said last.
     size: Option<(u32, u32)>,
+    /// Whether the source paused because its screen is locked and has not resumed since.
+    locked: bool,
+    /// How the question of the source stands with the platform.
+    prompt: Prompt,
+    /// How many questions have come, which numbers them.
+    asked: u64,
+    /// Whether the end of the attempt that is settling was told already, by the platform that
+    /// declined its question, and the next end that the session settles is the same one.
+    told: bool,
+}
+
+/// How the question that the source sent to unlock its screen stands, as the platform and the
+/// session see it. Each question is answered once, and an answer to one that was taken back is
+/// dropped, so that no step follows the end of an attempt.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Prompt {
+    /// No question is with the platform.
+    #[default]
+    Shut,
+    /// The question with this number is with the platform, which asks for the face.
+    Open(u64),
+    /// The platform declined it, and the end was told.
+    Declined,
 }
 
 impl Pictures {
-    fn new(events: broadcast::Sender<Event>) -> Arc<Self> {
+    pub(crate) fn new(events: broadcast::Sender<Event>) -> Arc<Self> {
         Arc::new(Self {
             events,
             state: Mutex::new(PictureState::default()),
@@ -124,6 +151,9 @@ impl Pictures {
         state.session = Some(id);
         if let Some((width, height)) = state.size {
             self.tell(id, width, height);
+        }
+        if state.locked {
+            self.tell_locked(id, true);
         }
     }
 
@@ -163,6 +193,99 @@ impl Pictures {
             // Nobody listening is fine.
             let _ = self.events.send(Event::WindowSound { id, sound });
         }
+    }
+
+    /// The source stopped sending pictures. Only a pause because its screen is locked says that
+    /// it is.
+    fn paused(&self, reason: PauseReason) {
+        if reason == PauseReason::Locked {
+            self.lock_changed(true);
+        }
+    }
+
+    /// The source goes on sending pictures: its screen is not locked, if it was.
+    fn resumed(&self) {
+        self.lock_changed(false);
+    }
+
+    /// Takes note of whether the screen of the source is locked. Only a change is told.
+    fn lock_changed(&self, is_locked: bool) {
+        let mut state = locked(&self.state);
+        if state.locked == is_locked {
+            return;
+        }
+        state.locked = is_locked;
+        // Under the lock, so that it cannot overtake the window that `began` tells.
+        if let Some(id) = state.session {
+            tracing::debug!(is_locked, "the screen of the other device changed");
+            self.tell_locked(id, is_locked);
+        }
+    }
+
+    fn tell_locked(&self, id: u64, is_locked: bool) {
+        // Nobody listening is fine.
+        let _ = self.events.send(Event::WindowLocked {
+            id,
+            locked: is_locked,
+        });
+    }
+
+    /// Tells the screens how the unlock that the person asked for goes. Dropped while the window
+    /// is not known: the person asks only once they know it.
+    fn unlock_step(&self, state: &PictureState, step: WindowUnlock) {
+        if let Some(id) = state.session {
+            // Nobody listening is fine.
+            let _ = self.events.send(Event::WindowUnlock { id, step });
+        }
+    }
+
+    /// The source sent its question and the platform asks for the face. Returns the number that
+    /// the answer of the platform carries.
+    pub(crate) fn asking(&self) -> u64 {
+        let mut state = locked(&self.state);
+        state.asked += 1;
+        let number = state.asked;
+        state.prompt = Prompt::Open(number);
+        state.told = false;
+        self.unlock_step(&state, WindowUnlock::Asking);
+        number
+    }
+
+    /// The platform answers the question `number`, and the screens are told `step`: the key goes
+    /// to the source, or the platform gave up and that is the end of the attempt. Returns whether
+    /// the answer is taken, which it is not when the question was taken back first because the
+    /// attempt ended.
+    pub(crate) fn answered(&self, number: u64, step: WindowUnlock) -> bool {
+        let mut state = locked(&self.state);
+        if state.prompt != Prompt::Open(number) {
+            return false;
+        }
+        state.prompt = if matches!(step, WindowUnlock::Ended(_)) {
+            Prompt::Declined
+        } else {
+            Prompt::Shut
+        };
+        self.unlock_step(&state, step);
+        true
+    }
+
+    /// The attempt ended while the question was with the platform: an answer that comes later is
+    /// dropped. A question that the platform had declined told the end already, and the end that
+    /// the session settles right after is the same.
+    pub(crate) fn taken_back(&self) {
+        let mut state = locked(&self.state);
+        state.told = state.prompt == Prompt::Declined;
+        state.prompt = Prompt::Shut;
+    }
+
+    /// The attempt ended, and this is how.
+    pub(crate) fn settled(&self, result: UnlockResult) {
+        let mut state = locked(&self.state);
+        state.prompt = Prompt::Shut;
+        if std::mem::take(&mut state.told) {
+            return;
+        }
+        self.unlock_step(&state, WindowUnlock::Ended(result));
     }
 }
 
@@ -223,6 +346,8 @@ impl Decoder for Watching {
         match &message {
             SourceMessage::Config(config) => self.pictures.said(config.width, config.height),
             SourceMessage::Notice(notice) => self.pictures.noticed(*notice),
+            SourceMessage::Pause(pause) => self.pictures.paused(pause.reason),
+            SourceMessage::Resume => self.pictures.resumed(),
             _ => {}
         }
         self.decoder.source(message);
@@ -275,7 +400,23 @@ impl Sessions {
                 .sharer
                 .as_ref()
                 .is_some_and(|sharer| sharer.can_give_screen()),
+            can_be_unlocked: self.sharer_unlocks().is_some(),
+            can_unlock: self.viewer_unlocks().is_some(),
         }
+    }
+
+    /// The sharer, if it lets a paired device unlock this device's screen: the platform keeps the
+    /// password and types it, and the screens it gives can be controlled and lifted, since an
+    /// unlock goes with the privacy of such a screen (`docs/adr/0013-unlock-from-a-phone.md`).
+    pub(crate) fn sharer_unlocks(&self) -> Option<&Arc<dyn WindowSharer>> {
+        self.sharer
+            .as_ref()
+            .filter(|sharer| sharer.control() && sharer.can_lift() && sharer.can_be_unlocked())
+    }
+
+    /// The viewer, if it unlocks the screens of paired devices with the face of the person here.
+    pub(crate) fn viewer_unlocks(&self) -> Option<&Arc<dyn WindowViewer>> {
+        self.viewer.as_ref().filter(|viewer| viewer.can_unlock())
     }
 
     /// Checks what the viewer says it can show against what the protocol allows, so that a
@@ -372,6 +513,13 @@ impl Sessions {
         self.viewing(id).is_some_and(|handle| handle.end_leaving())
     }
 
+    /// Asks the device that shares the screen `id`, which is shown here, to unlock it. Returns
+    /// whether the request was made: a window that is not shown here, a session that takes no
+    /// unlock, one whose attempt is going and a session that is over take no request.
+    pub(crate) fn unlock(&self, id: u64) -> bool {
+        self.viewing(id).is_some_and(|handle| handle.unlock())
+    }
+
     fn emit(&self, event: Event) {
         // Nobody listening is fine.
         let _ = self.events.send(event);
@@ -445,7 +593,7 @@ impl Sessions {
             link,
             pictures,
             viewing,
-        } = match self.prepare(viewer, offer) {
+        } = match self.prepare(viewer, offer, UnlockSource::of(from)) {
             Ok(prepared) => prepared,
             Err(sentence) => return failed(&sentence),
         };
@@ -468,12 +616,14 @@ impl Sessions {
         WindowVerdict::Accept(viewing)
     }
 
-    /// The platform makes the screen for `offer`, and the node is told what this device takes and
-    /// shows the picture with. The sentence is what the person is told if that cannot be done.
+    /// The platform makes the screen for `offer`, which the device `source` shares, and the node is
+    /// told what this device takes and shows the picture with. The sentence is what the person is
+    /// told if that cannot be done.
     fn prepare(
         &self,
         viewer: &Arc<dyn WindowViewer>,
         offer: &WindowOffer,
+        source: UnlockSource,
     ) -> std::result::Result<Prepared, String> {
         let link = ScreenLink::default();
         let screen = viewer.open(offer, link.clone()).map_err(|error| {
@@ -502,6 +652,16 @@ impl Sessions {
             Some(speaker) => viewing.with_speaker(Listening {
                 speaker,
                 pictures: Arc::clone(&pictures),
+            }),
+            None => viewing,
+        };
+        // The same goes for what asks for the face: a session whose offer takes no unlock never
+        // calls it.
+        let viewing = match screen.unlocker {
+            Some(unlocker) => viewing.with_unlocker(Asked {
+                unlocker,
+                pictures: Arc::clone(&pictures),
+                source,
             }),
             None => viewing,
         };
@@ -547,6 +707,7 @@ impl Sessions {
             // Sound goes with a whole screen only.
             sound: display && handle.can_hear(),
             leave: handle.can_leave(),
+            unlock: handle.can_unlock(),
             screen: Some(accepted.screen),
         };
         self.begin_viewing(session, handle, &accepted.link, &accepted.pictures);
@@ -598,7 +759,14 @@ impl Sessions {
             pictures,
             viewing,
         } = self
-            .prepare(viewer, &WindowOffer::asked_screen(control))
+            .prepare(
+                viewer,
+                &WindowOffer::asked_screen(control),
+                UnlockSource {
+                    id: *peer,
+                    name: name.to_owned(),
+                },
+            )
             .map_err(|sentence| Error::new(ErrorKind::Other, sentence))?;
         match node.start(peer, Wanted::Screen, control, viewing).await {
             Ok(StartOutcome::Started(handle)) => {
@@ -616,6 +784,7 @@ impl Sessions {
                     private: handle.private(),
                     sound: handle.can_hear(),
                     leave: handle.can_leave(),
+                    unlock: handle.can_unlock(),
                     screen: Some(screen),
                 };
                 self.begin_viewing(session.clone(), handle, &link, &pictures);
@@ -695,6 +864,7 @@ impl Sessions {
                     private,
                     sound: false,
                     leave: false,
+                    unlock: false,
                     screen: None,
                 };
                 self.begin(
@@ -1069,6 +1239,7 @@ mod tests {
             private: false,
             sound: false,
             leave: false,
+            unlock: false,
             screen: Some(100),
         }
     }
@@ -1190,7 +1361,8 @@ mod tests {
     }
 
     #[test]
-    fn what_the_source_says_is_given_on_and_only_its_picture_is_told_to_the_screens() {
+    fn what_the_source_says_is_given_on_and_only_its_picture_and_its_lock_are_told_to_the_screens()
+    {
         let (mut decoder, written, mut heard) = watching();
         decoder.source(config(1000, 500));
         assert_eq!(heard.try_recv(), Ok(picture(5, 1000, 500)));
@@ -1222,6 +1394,281 @@ mod tests {
         let written = locked(&written);
         assert_eq!(written.len(), 1);
         assert!(written[0].starts_with("source Notice("), "{written:?}");
+    }
+
+    fn lock(id: u64, is_locked: bool) -> Event {
+        Event::WindowLocked {
+            id,
+            locked: is_locked,
+        }
+    }
+
+    fn step(id: u64, step: WindowUnlock) -> Event {
+        Event::WindowUnlock { id, step }
+    }
+
+    fn nothing_more(heard: &mut broadcast::Receiver<Event>) {
+        assert_eq!(heard.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    #[test]
+    fn a_screen_that_is_locked_when_the_window_starts_is_told_right_after_the_window() {
+        let (pictures, mut heard) = pictures();
+        pictures.paused(PauseReason::Locked);
+        // The screens do not know the window yet, so they hear nothing.
+        nothing_more(&mut heard);
+        pictures.began(5);
+        assert_eq!(heard.try_recv(), Ok(lock(5, true)));
+        nothing_more(&mut heard);
+    }
+
+    #[test]
+    fn a_screen_that_was_locked_and_unlocked_before_the_window_starts_is_told_nothing() {
+        let (pictures, mut heard) = pictures();
+        pictures.paused(PauseReason::Locked);
+        pictures.resumed();
+        pictures.began(5);
+        nothing_more(&mut heard);
+    }
+
+    #[test]
+    fn the_lock_comes_after_the_size_that_the_source_said_before_the_window_was_known() {
+        let (pictures, mut heard) = pictures();
+        pictures.said(1000, 500);
+        pictures.paused(PauseReason::Locked);
+        pictures.began(5);
+        assert_eq!(heard.try_recv(), Ok(picture(5, 1000, 500)));
+        assert_eq!(heard.try_recv(), Ok(lock(5, true)));
+        nothing_more(&mut heard);
+    }
+
+    #[test]
+    fn only_a_change_of_the_lock_is_told_and_only_a_pause_because_of_it_locks() {
+        let (pictures, mut heard) = pictures();
+        pictures.began(5);
+        // Not locked, so a resume changes nothing, and a window that is hidden is not a lock.
+        pictures.resumed();
+        pictures.paused(PauseReason::Hidden);
+        pictures.paused(PauseReason::Other);
+        nothing_more(&mut heard);
+
+        pictures.paused(PauseReason::Locked);
+        assert_eq!(heard.try_recv(), Ok(lock(5, true)));
+        // Another reason for a pause does not unlock a screen that stays locked, and the same news
+        // twice is told once.
+        pictures.paused(PauseReason::Locked);
+        pictures.paused(PauseReason::Hidden);
+        nothing_more(&mut heard);
+
+        pictures.resumed();
+        assert_eq!(heard.try_recv(), Ok(lock(5, false)));
+        pictures.resumed();
+        nothing_more(&mut heard);
+    }
+
+    #[test]
+    fn the_lock_of_the_source_is_told_to_the_screens_as_the_decoder_hears_it() {
+        let (mut decoder, written, mut heard) = watching();
+        decoder.source(SourceMessage::Pause(Pause {
+            reason: PauseReason::Locked,
+        }));
+        assert_eq!(heard.try_recv(), Ok(lock(5, true)));
+        decoder.source(SourceMessage::Resume);
+        assert_eq!(heard.try_recv(), Ok(lock(5, false)));
+        nothing_more(&mut heard);
+        // The decoder of the platform heard both, as it hears all.
+        assert_eq!(locked(&written).len(), 2);
+    }
+
+    #[test]
+    fn the_steps_of_an_unlock_are_told_in_their_order_and_the_attempt_ends_once() {
+        let (pictures, mut heard) = pictures();
+        pictures.began(5);
+        let number = pictures.asking();
+        assert_eq!(heard.try_recv(), Ok(step(5, WindowUnlock::Asking)));
+        assert!(pictures.answered(number, WindowUnlock::Typing));
+        assert_eq!(heard.try_recv(), Ok(step(5, WindowUnlock::Typing)));
+        pictures.settled(UnlockResult::Unlocked);
+        assert_eq!(
+            heard.try_recv(),
+            Ok(step(5, WindowUnlock::Ended(UnlockResult::Unlocked)))
+        );
+        nothing_more(&mut heard);
+    }
+
+    #[test]
+    fn a_question_is_answered_once() {
+        let (pictures, mut heard) = pictures();
+        pictures.began(5);
+        let number = pictures.asking();
+        assert!(pictures.answered(number, WindowUnlock::Typing));
+        assert!(!pictures.answered(number, WindowUnlock::Typing));
+        assert!(!pictures.answered(number, WindowUnlock::Ended(UnlockResult::Declined)));
+        assert_eq!(heard.try_recv(), Ok(step(5, WindowUnlock::Asking)));
+        assert_eq!(heard.try_recv(), Ok(step(5, WindowUnlock::Typing)));
+        nothing_more(&mut heard);
+    }
+
+    #[test]
+    fn an_answer_to_a_question_that_was_taken_back_is_dropped_and_no_step_follows_the_end() {
+        let (pictures, mut heard) = pictures();
+        pictures.began(5);
+        let number = pictures.asking();
+        // The source gave up on the question: the session takes it back and settles the attempt.
+        pictures.taken_back();
+        pictures.settled(UnlockResult::NotLocked);
+        // The face is recognised a moment later.
+        assert!(!pictures.answered(number, WindowUnlock::Typing));
+        assert!(!pictures.answered(number, WindowUnlock::Ended(UnlockResult::Declined)));
+        assert_eq!(heard.try_recv(), Ok(step(5, WindowUnlock::Asking)));
+        assert_eq!(
+            heard.try_recv(),
+            Ok(step(5, WindowUnlock::Ended(UnlockResult::NotLocked)))
+        );
+        nothing_more(&mut heard);
+    }
+
+    #[test]
+    fn an_answer_to_an_older_question_is_not_taken_for_the_newer_one() {
+        let (pictures, mut heard) = pictures();
+        pictures.began(5);
+        let old = pictures.asking();
+        pictures.taken_back();
+        pictures.settled(UnlockResult::NotLocked);
+        let new = pictures.asking();
+        assert_ne!(old, new);
+        assert!(!pictures.answered(old, WindowUnlock::Typing));
+        assert!(pictures.answered(new, WindowUnlock::Typing));
+        let steps: Vec<_> = std::iter::from_fn(|| heard.try_recv().ok()).collect();
+        assert_eq!(
+            steps,
+            [
+                step(5, WindowUnlock::Asking),
+                step(5, WindowUnlock::Ended(UnlockResult::NotLocked)),
+                step(5, WindowUnlock::Asking),
+                step(5, WindowUnlock::Typing),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_attempt_that_the_platform_declined_ends_once_even_if_the_source_gave_up_at_the_same_time()
+    {
+        let (pictures, mut heard) = pictures();
+        pictures.began(5);
+        let number = pictures.asking();
+        let declined = WindowUnlock::Ended(UnlockResult::Declined);
+        assert!(pictures.answered(number, declined));
+        // The session read the end of the source before it read the answer of the platform: it
+        // takes the question back and settles the attempt, and the person was told already.
+        pictures.taken_back();
+        pictures.settled(UnlockResult::NotLocked);
+        assert_eq!(heard.try_recv(), Ok(step(5, WindowUnlock::Asking)));
+        assert_eq!(heard.try_recv(), Ok(step(5, declined)));
+        nothing_more(&mut heard);
+
+        // An attempt that gets no question comes next, and asks for nothing: it is told as well.
+        pictures.settled(UnlockResult::NoQuestion);
+        assert_eq!(
+            heard.try_recv(),
+            Ok(step(5, WindowUnlock::Ended(UnlockResult::NoQuestion)))
+        );
+        nothing_more(&mut heard);
+
+        // The next attempt is told in full.
+        let next = pictures.asking();
+        assert_eq!(heard.try_recv(), Ok(step(5, WindowUnlock::Asking)));
+        assert!(pictures.answered(next, WindowUnlock::Typing));
+        pictures.settled(UnlockResult::Unlocked);
+        assert_eq!(heard.try_recv(), Ok(step(5, WindowUnlock::Typing)));
+        assert_eq!(
+            heard.try_recv(),
+            Ok(step(5, WindowUnlock::Ended(UnlockResult::Unlocked)))
+        );
+        nothing_more(&mut heard);
+    }
+
+    #[test]
+    fn an_attempt_that_the_platform_declined_and_nothing_settled_leaves_the_next_one_to_be_told() {
+        let (pictures, mut heard) = pictures();
+        pictures.began(5);
+        let number = pictures.asking();
+        let declined = WindowUnlock::Ended(UnlockResult::KeyLost);
+        assert!(pictures.answered(number, declined));
+        // The session took the decline and went idle: it calls nothing. The next attempt gets no
+        // question at all, because the source says that the screen is not locked.
+        pictures.settled(UnlockResult::NotLocked);
+        assert_eq!(heard.try_recv(), Ok(step(5, WindowUnlock::Asking)));
+        assert_eq!(heard.try_recv(), Ok(step(5, declined)));
+        assert_eq!(
+            heard.try_recv(),
+            Ok(step(5, WindowUnlock::Ended(UnlockResult::NotLocked)))
+        );
+        nothing_more(&mut heard);
+    }
+
+    #[test]
+    fn an_end_that_the_platform_told_and_nothing_settled_does_not_swallow_the_next_one() {
+        let (pictures, mut heard) = pictures();
+        pictures.began(5);
+        let number = pictures.asking();
+        let declined = WindowUnlock::Ended(UnlockResult::Declined);
+        assert!(pictures.answered(number, declined));
+        // The session took the question back, and never settled the attempt.
+        pictures.taken_back();
+
+        let next = pictures.asking();
+        assert!(pictures.answered(next, WindowUnlock::Typing));
+        pictures.settled(UnlockResult::Unlocked);
+        let steps: Vec<_> = std::iter::from_fn(|| heard.try_recv().ok()).collect();
+        assert_eq!(
+            steps,
+            [
+                step(5, WindowUnlock::Asking),
+                step(5, declined),
+                step(5, WindowUnlock::Asking),
+                step(5, WindowUnlock::Typing),
+                step(5, WindowUnlock::Ended(UnlockResult::Unlocked)),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_answer_after_the_attempt_was_settled_is_dropped_whether_or_not_it_was_taken_back() {
+        let (pictures, mut heard) = pictures();
+        pictures.began(5);
+        let number = pictures.asking();
+        pictures.settled(UnlockResult::NotLocked);
+        assert!(!pictures.answered(number, WindowUnlock::Typing));
+        assert!(!pictures.answered(number, WindowUnlock::Ended(UnlockResult::Declined)));
+        assert_eq!(heard.try_recv(), Ok(step(5, WindowUnlock::Asking)));
+        assert_eq!(
+            heard.try_recv(),
+            Ok(step(5, WindowUnlock::Ended(UnlockResult::NotLocked)))
+        );
+        nothing_more(&mut heard);
+    }
+
+    #[test]
+    fn an_attempt_that_gets_no_question_ends_with_what_settled_it() {
+        let (pictures, mut heard) = pictures();
+        pictures.began(5);
+        pictures.settled(UnlockResult::NoQuestion);
+        assert_eq!(
+            heard.try_recv(),
+            Ok(step(5, WindowUnlock::Ended(UnlockResult::NoQuestion)))
+        );
+        nothing_more(&mut heard);
+    }
+
+    #[test]
+    fn the_steps_of_an_unlock_are_dropped_while_the_window_is_not_known() {
+        let (pictures, mut heard) = pictures();
+        let number = pictures.asking();
+        assert!(pictures.answered(number, WindowUnlock::Typing));
+        pictures.settled(UnlockResult::Unlocked);
+        pictures.began(5);
+        nothing_more(&mut heard);
     }
 
     #[test]

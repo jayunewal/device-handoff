@@ -14,8 +14,8 @@ use std::{
 };
 
 use baton_core::{
-    Config, DataDir, DirLock, Identity, Inbox, InboxEntry, InboxHandler, Node, PairApprovalRequest,
-    PairedDevice, TrustStore,
+    Config, DataDir, DirLock, Identity, Inbox, InboxEntry, InboxHandler, Node, NodeBuilder,
+    PairApprovalRequest, PairedDevice, TrustStore,
     error::{Error as Core, OfferEnd},
     transfer::{
         destination::Destination,
@@ -37,11 +37,12 @@ use crate::{
     files::Files,
     model::{
         Device, Me, Network, Offer, OfferOutcome, PairingRequest, Reach, Received, Receiving,
-        ScreenStarted, StartAccess, TransferRequest, WindowAbilities, WindowInput, WindowRequest,
-        WindowShared,
+        ScreenStarted, StartAccess, TransferRequest, UnlockEntry, UnlockSetUp, UnlockStatus,
+        WindowAbilities, WindowInput, WindowRequest, WindowShared,
     },
     sessions::{Handler, Sessions},
     starts::Starts,
+    unlock::{Approver, Attempts, SetUp},
     windows::Windows,
 };
 
@@ -176,6 +177,9 @@ struct Inner {
     /// Held while an offer is made, so that offers reach the node in the order they were
     /// asked for.
     offer_turn: tokio::sync::Mutex<()>,
+    /// Held while the unlock is set up for a device: a key that the other device made for a set-up
+    /// that another one replaced would leave a box that nothing opens.
+    unlock_turn: tokio::sync::Mutex<()>,
     /// The offer that is showing.
     offer: Mutex<Option<Open>>,
     /// The pairing that is being joined, while the other device has not answered.
@@ -233,32 +237,10 @@ impl App {
 
         // What the last run left at other devices is given up as soon as they can be reached: a
         // device that was sent files when Baton was closed would otherwise hold them for an hour.
-        let mut builder = Node::builder(&identity, trust.clone(), config.clone())
+        let builder = Node::builder(&identity, trust.clone(), config.clone())
             .handoff_handler(InboxHandler::new(inbox.clone()))
             .holds(Holds::open(dir.holds_file()));
-        if sessions.abilities().can_show {
-            builder = builder.window_handler(Handler(Arc::clone(&sessions)));
-            if sessions.plays_sound() {
-                builder = builder.play_sound();
-            }
-        }
-        if let Some(sharer) = sessions.sharer() {
-            builder = builder.share_windows(sharer.control());
-            // A device that takes input, and whose platform can lift the privacy of a screen that
-            // it gave as private, lets the device that controls the screen do so, and says so.
-            if sharer.control() && sharer.can_lift() {
-                builder = builder.private_sessions();
-                // One that can also end that privacy without locking the device lets the person at
-                // the device that controls the screen choose so when they end the session, and
-                // says so in the offer.
-                if sharer.can_leave() {
-                    builder = builder.allow_leave();
-                }
-            }
-            if sharer.sends_sound() {
-                builder = builder.share_sound();
-            }
-        }
+        let mut builder = with_windows(builder, &sessions);
         // A device that can give its screen without the person picking it lets the devices it is
         // paired with ask for it, if the person allowed them to; a device that cannot says nothing
         // of the kind.
@@ -296,6 +278,8 @@ impl App {
         tokio::spawn(forward_arrivals(arrivals, events.clone(), stopped.clone()));
         tokio::spawn(forward_trust_events(
             trust_events,
+            trust.clone(),
+            Attempts::new(&trust),
             events.clone(),
             stopped.clone(),
         ));
@@ -315,6 +299,7 @@ impl App {
                 receiving,
                 sessions,
                 offer_turn: tokio::sync::Mutex::new(()),
+                unlock_turn: tokio::sync::Mutex::new(()),
                 offer: Mutex::new(None),
                 join: Mutex::new(None),
                 next_generation: AtomicU64::new(1),
@@ -795,6 +780,111 @@ impl App {
         self.inner.sessions.hear(session, on)
     }
 
+    /// Asks the device that shares the screen `session`, which is shown here, to unlock it. It is
+    /// for a screen that is locked ([`Event::WindowLocked`]), in a session whose
+    /// `WindowSession::unlock` is set: the person at that device set the unlock up for this one,
+    /// and the screen is kept private (`docs/adr/0013-unlock-from-a-phone.md`).
+    ///
+    /// The device answers with a question, the platform here asks for the face of the person, and
+    /// the device types the password if the face is recognised. [`Event::WindowUnlock`] tells how
+    /// it goes and how it ends, and [`Event::WindowLocked`] tells that the screen is not locked any
+    /// more.
+    ///
+    /// Returns whether the request was made. It is not for a window that is not shown here, a
+    /// session that takes no unlock, one whose attempt is going, and a session that is over. The
+    /// device unlocks only a screen that is locked, and says so if it is not.
+    ///
+    /// A platform that declined the question of an attempt told the person at once, and the
+    /// library takes its answer a moment later: a tap in that moment answers false, and the next
+    /// one is taken.
+    pub fn unlock_window(&self, session: u64) -> bool {
+        self.inner.sessions.unlock(session)
+    }
+
+    /// How the unlock of the paired device `id` stands at this device: whether the person set it up
+    /// so that the device can unlock this one while it is locked, and whether it ended since.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::NotPaired`] if `id` is not a paired device.
+    pub fn unlock_status(&self, id: &str) -> Result<UnlockStatus> {
+        let (peer, _) = self.paired(id)?;
+        let device = self.inner.trust.get(&peer).ok_or_else(Error::not_paired)?;
+        Ok(UnlockStatus::of(&device, &self.inner.id))
+    }
+
+    /// Sets up the unlock of this device for the paired device `id`, so that it can unlock this
+    /// one while it is locked, with the face of the person there (`docs/adr/0013`). What was set
+    /// up for it before is replaced, and so is the key it made for this device: the unlock of this
+    /// device that was sealed to the old key opens nothing from then on.
+    ///
+    /// `password` is the password of the person who uses this device. The platform checks it
+    /// against the account first, and nothing is asked of the other device if it is not accepted
+    /// ([`UnlockSetUp::WrongPassword`]). It is kept in a box that only the other device opens,
+    /// after the face of its person is recognised, and it is wiped from the memory of the app as
+    /// soon as the box is made. Only the person at this device can do this: nothing a paired device
+    /// sends changes it.
+    ///
+    /// The call can take as long as the person at the other device takes to answer, if the
+    /// platform there asks them. Dropping the future gives the set-up up; what was set up before
+    /// is as it was, unless the other device made a new key already, which ends it.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::NotPaired`], [`ErrorKind::Unreachable`] if the device cannot be reached,
+    /// [`ErrorKind::Declined`] if it cannot approve an unlock, [`ErrorKind::Storage`] if the setup
+    /// could not be kept, and [`ErrorKind::Other`] if this device cannot be unlocked from another
+    /// ([`WindowAbilities::can_be_unlocked`]).
+    pub async fn set_up_unlock(&self, id: &str, password: String) -> Result<UnlockSetUp> {
+        let node = self.running()?;
+        let (peer, name) = self.paired(id)?;
+        let Some(sharer) = self.inner.sessions.sharer_unlocks() else {
+            return Err(Error::new(
+                ErrorKind::Other,
+                "This device cannot be unlocked from another device.",
+            ));
+        };
+        let _turn = self.inner.unlock_turn.lock().await;
+        SetUp {
+            node,
+            trust: &self.inner.trust,
+            sharer,
+            me: self.inner.id,
+            peer,
+            name: &name,
+        }
+        .run(password)
+        .await
+    }
+
+    /// Turns the unlock of the paired device `id` off: the box, the sealed key and the public key
+    /// are deleted, and the device cannot unlock this one until the person sets it up again.
+    /// Returns whether there was one to turn off. Unpairing a device turns its unlock off as well.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::NotPaired`] if `id` is not a paired device, and [`ErrorKind::Storage`] if the
+    /// change could not be kept.
+    pub fn turn_off_unlock(&self, id: &str) -> Result<bool> {
+        let (peer, _) = self.paired(id)?;
+        self.inner
+            .trust
+            .turn_off_unlock(&peer)
+            .map_err(|e| Error::local(&e))
+    }
+
+    /// The last attempts to unlock this device, the latest first, up to a hundred: who tried, when
+    /// and how it ended. Each one is told as it ends with [`Event::UnlockAttempted`]. It says
+    /// nothing of the password or of the keys.
+    pub fn unlock_history(&self) -> Vec<UnlockEntry> {
+        self.inner
+            .trust
+            .unlock_history()
+            .iter()
+            .map(UnlockEntry::from)
+            .collect()
+    }
+
     /// Sends a web link to a paired device.
     ///
     /// # Errors
@@ -1162,6 +1252,46 @@ fn outcome_of(result: baton_core::Result<PairedDevice>) -> OfferOutcome {
     }
 }
 
+/// What the node says it does with windows: shows them, shares them, lets the device that controls
+/// a private screen lift its privacy, ends it without locking, sends and plays sound, and unlocks
+/// or is unlocked, each as far as the platform that the app was given can.
+fn with_windows(mut builder: NodeBuilder, sessions: &Arc<Sessions>) -> NodeBuilder {
+    if sessions.abilities().can_show {
+        builder = builder.window_handler(Handler(Arc::clone(sessions)));
+        if sessions.plays_sound() {
+            builder = builder.play_sound();
+        }
+        // A device that unlocks the screens of the devices it is paired with with the face of its
+        // person gives the key that an unlock is sealed to, and says so.
+        if let Some(viewer) = sessions.viewer_unlocks() {
+            builder = builder.approve_unlocks(Approver(Arc::clone(viewer)));
+        }
+    }
+    if let Some(sharer) = sessions.sharer() {
+        builder = builder.share_windows(sharer.control());
+        // A device that takes input, and whose platform can lift the privacy of a screen that it
+        // gave as private, lets the device that controls the screen do so, and says so.
+        if sharer.control() && sharer.can_lift() {
+            builder = builder.private_sessions();
+            // One that can also end that privacy without locking the device lets the person at the
+            // device that controls the screen choose so when they end the session, and says so in
+            // the offer.
+            if sharer.can_leave() {
+                builder = builder.allow_leave();
+            }
+        }
+        if sharer.sends_sound() {
+            builder = builder.share_sound();
+        }
+    }
+    // A device that keeps the password of its person and types it into the lock screen lets a
+    // paired device unlock its private screens, once the person set that up for it.
+    if sessions.sharer_unlocks().is_some() {
+        builder = builder.allow_unlock();
+    }
+    builder
+}
+
 /// Turns each item that arrives into an event.
 async fn forward_arrivals(
     mut arrivals: broadcast::Receiver<Arc<InboxEntry>>,
@@ -1181,9 +1311,12 @@ async fn forward_arrivals(
     }
 }
 
-/// Turns each change to the list of paired devices into an event.
+/// Turns each change to the list of paired devices into an event, and each attempt to unlock this
+/// device that a change wrote to the history into another.
 async fn forward_trust_events(
     mut changes: broadcast::Receiver<TrustEvent>,
+    trust: TrustStore,
+    mut attempts: Attempts,
     events: broadcast::Sender<Event>,
     stopped: CancellationToken,
 ) {
@@ -1193,6 +1326,7 @@ async fn forward_trust_events(
             change = changes.recv() => match change {
                 Ok(_) | Err(RecvError::Lagged(_)) => {
                     let _ = events.send(Event::DevicesChanged);
+                    attempts.announce(&trust, &events);
                 }
                 Err(RecvError::Closed) => return,
             },

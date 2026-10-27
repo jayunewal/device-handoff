@@ -852,6 +852,8 @@ async fn what_a_device_can_do_with_windows_depends_on_the_platform_it_was_given(
         can_share,
         can_control,
         can_give_screen,
+        can_be_unlocked: false,
+        can_unlock: false,
     };
     assert_eq!(abilities(&plain), can(false, false, false, false));
     assert_eq!(abilities(&shows), can(true, false, false, false));

@@ -6,8 +6,8 @@ use tokio::sync::broadcast::{self, error::RecvError};
 use tokio_util::sync::CancellationToken;
 
 use crate::model::{
-    OfferOutcome, PairingRequest, Received, TransferEnd, TransferRequest, WindowEnd,
-    WindowNoticeReason, WindowRequest, WindowSession, WindowSound,
+    OfferOutcome, PairingRequest, Received, TransferEnd, TransferRequest, UnlockEntry, WindowEnd,
+    WindowNoticeReason, WindowRequest, WindowSession, WindowSound, WindowUnlock,
 };
 
 /// Something a screen may want to react to.
@@ -115,6 +115,43 @@ pub enum Event {
         /// How the sound stands now.
         sound: WindowSound,
     },
+    /// The screen that is shown here is locked at the device that shares it, or is no longer. The
+    /// source says so when it pauses the picture because it locked or its display went off, and
+    /// when the pictures go on. A person who can unlock the screen
+    /// ([`WindowSession::unlock`]) taps Unlock only while it is locked.
+    ///
+    /// It always comes after the [`Event::WindowStarted`] of the same window, and is not sent for
+    /// a window that is shared from this device. A screen that is locked when the window starts is
+    /// told right after it. Only a change is told.
+    WindowLocked {
+        /// The [`WindowSession::id`] whose screen this is.
+        id: u64,
+        /// Whether it is locked now.
+        locked: bool,
+    },
+    /// An unlock that the person here asked for with
+    /// [`App::unlock_window`](crate::App::unlock_window) moved on: the platform asks for their
+    /// face, the key went to the device that shares the screen, or it is over and this is how. An
+    /// attempt ends with [`WindowUnlock::Ended`], unless the window ends first, which
+    /// [`Event::WindowEnded`] tells: a screen that shows that it waits stops waiting at either.
+    ///
+    /// It comes only for a session whose [`WindowSession::unlock`] is set, and after the person
+    /// asked, so it always comes after the [`Event::WindowStarted`] of the same window. The screen
+    /// is unlocked when the pictures go on ([`Event::WindowLocked`]); an `Ended` that says
+    /// [`UnlockResult::Unlocked`](crate::model::UnlockResult::Unlocked) and one that says
+    /// [`UnlockResult::NoResult`](crate::model::UnlockResult::NoResult) are what the device there
+    /// said and did not say.
+    WindowUnlock {
+        /// The [`WindowSession::id`] whose screen this is.
+        id: u64,
+        /// How the attempt stands now.
+        step: WindowUnlock,
+    },
+    /// Someone tried to unlock this device, or the person at a paired device did, and the attempt
+    /// ended: it is in the history now ([`App::unlock_history`](crate::App::unlock_history)). Tell
+    /// the person here, when they are next at this device, if
+    /// [`UnlockResult::notifies`](crate::model::UnlockResult::notifies) says so.
+    UnlockAttempted(UnlockEntry),
     /// A window that was shown or shared is over.
     WindowEnded {
         /// The [`WindowSession::id`] that ended.
@@ -134,7 +171,10 @@ pub enum Event {
     /// picture in the shape of the window that was offered until the next one comes, and a
     /// missed `WindowNotice` leaves the person without the reason, which the next one gives. A
     /// missed `WindowSound` leaves the sound as the screen last showed it; turning it off and on
-    /// again asks again, and the answer tells how it stands.
+    /// again asks again, and the answer tells how it stands. A missed `WindowLocked` leaves the
+    /// screen as it last showed it until the next one comes, and a missed `WindowUnlock` leaves a
+    /// screen that waits for an unlock waiting: it stops when the window ends or the person asks
+    /// again. A missed `UnlockAttempted` is in the history all the same, which is read again.
     Resync,
 }
 

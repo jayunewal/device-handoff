@@ -58,6 +58,7 @@ pub mod model;
 mod sessions;
 pub mod settings;
 mod starts;
+pub mod unlock;
 pub mod windows;
 
 pub use app::{App, Options};
@@ -67,9 +68,10 @@ pub use files::FileSend;
 pub use model::{
     Device, FileProgress, FilesSent, Me, Network, Offer, OfferOutcome, PairingRequest, Platform,
     PreviewName, Reach, Received, ReceivedItem, Receiving, Route, ScreenStarted, SendStage,
-    StartAccess, TransferEnd, TransferRequest, TransferResult, WindowAbilities, WindowButton,
-    WindowEnd, WindowInput, WindowModifiers, WindowNoticeReason, WindowPointer, WindowRequest,
-    WindowRole, WindowSession, WindowShared, WindowSound, web_address,
+    StartAccess, TransferEnd, TransferRequest, TransferResult, UnlockEntry, UnlockResult,
+    UnlockSetUp, UnlockStatus, WindowAbilities, WindowButton, WindowEnd, WindowInput,
+    WindowModifiers, WindowNoticeReason, WindowPointer, WindowRequest, WindowRole, WindowSession,
+    WindowShared, WindowSound, WindowUnlock, web_address,
 };
 pub use windows::Windows;
 

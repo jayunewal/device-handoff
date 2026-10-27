@@ -29,19 +29,23 @@ use std::{
 };
 
 use baton_core::{
+    NewUnlock,
     streaming::{
         DecodeError, Decoder, DecoderState, SourceEvents, SourceHandle, Speaker, Takes, ViewHandle,
         Viewing, WindowOffer,
     },
     util::BoxFuture,
 };
-use baton_proto::stream::Codec;
+use baton_proto::{stream::Codec, unlock::UnlockKey};
 use baton_stream::{
     control::{Config as Format, SourceMessage, Thermal},
     header::FrameHeader,
 };
 
-use crate::app::locked;
+use crate::{
+    app::locked,
+    unlock::{FaceUnlocker, Password, UnlockKeyError, UnlockSetup, UnlockSetupError, UnlockSource},
+};
 
 /// What went wrong in the platform, in a sentence that the person can be shown.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,8 +136,8 @@ impl Decoder for Unused {
     fn ended(&mut self) {}
 }
 
-/// The decoder and the screen of a window that is shown, and what plays its sound if the platform
-/// plays sound.
+/// The decoder and the screen of a window that is shown, and what plays its sound and asks for the
+/// face of the person if the platform does either.
 pub struct Screen {
     /// Takes the pictures in the order in which they are to be decoded, and shows them on the
     /// screen. It is given what the source says too, and is told when the session is over.
@@ -143,16 +147,20 @@ pub struct Screen {
     pub id: i64,
     /// Plays the sound of the screen, for a platform that plays sound.
     pub(crate) speaker: Option<Box<dyn Speaker>>,
+    /// Asks for the face of the person when the device that shares the screen asks a question to
+    /// unlock it, for a platform that unlocks screens.
+    pub(crate) unlocker: Option<Box<dyn FaceUnlocker>>,
 }
 
 impl Screen {
-    /// A screen that plays no sound.
+    /// A screen that plays no sound and unlocks nothing.
     #[must_use]
     pub fn new(decoder: Box<dyn Decoder>, id: i64) -> Self {
         Self {
             decoder,
             id,
             speaker: None,
+            unlocker: None,
         }
     }
 
@@ -165,6 +173,16 @@ impl Screen {
         self.speaker = Some(Box::new(speaker));
         self
     }
+
+    /// The same, with what asks for the face of the person when the device that shares the screen
+    /// asks a question to unlock it ([`App::unlock_window`](crate::App::unlock_window)). A platform
+    /// that gives one says so with [`WindowViewer::can_unlock`], so that the device tells the
+    /// others that it can approve an unlock and a person at one of them can set it up.
+    #[must_use]
+    pub fn with_unlocker(mut self, unlocker: impl FaceUnlocker) -> Self {
+        self.unlocker = Some(Box::new(unlocker));
+        self
+    }
 }
 
 impl fmt::Debug for Screen {
@@ -172,6 +190,7 @@ impl fmt::Debug for Screen {
         f.debug_struct("Screen")
             .field("id", &self.id)
             .field("speaker", &self.speaker.is_some())
+            .field("unlocker", &self.unlocker.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -255,6 +274,39 @@ pub trait WindowViewer: Send + Sync + 'static {
     /// they do not says nothing of the kind. The same each time.
     fn plays_sound(&self) -> bool {
         false
+    }
+
+    /// Whether the platform can unlock the screens of the devices it is paired with, with the face
+    /// of the person here: it makes a key for each, which only their face opens
+    /// ([`unlock_key`](Self::unlock_key)), and the screens that [`open`](Self::open) makes ask for
+    /// the face ([`Screen::with_unlocker`]). A device where it can tells the devices it is paired
+    /// with so, and lets the person at one of them set the unlock up
+    /// (`docs/adr/0013-unlock-from-a-phone.md`). A device where it cannot says nothing of the
+    /// kind. The same each time.
+    fn can_unlock(&self) -> bool {
+        false
+    }
+
+    /// The public key of the pair that this device made for `source`, and a new pair if it has
+    /// none. With `renew` it replaces the pair first, and what was sealed to the old key opens
+    /// nothing from then on: the person at `source` set the unlock up again. Only called if
+    /// [`can_unlock`](Self::can_unlock) says yes.
+    ///
+    /// The private half of the pair stays in hardware that opens it only for the face of the person
+    /// here, and a face that is added or removed ends it. The key is a point of P-256 in the
+    /// uncompressed form of ANSI X9.63, 65 bytes, with
+    /// [`Sealing::EciesP256`](baton_proto::unlock::Sealing::EciesP256).
+    ///
+    /// The platform may ask the person here first, for as long as a person takes to decide, and
+    /// says [`Refused`](UnlockKeyError::Refused) if they say no. The future is dropped when the
+    /// time for the answer is up.
+    fn unlock_key(
+        &self,
+        source: UnlockSource,
+        renew: bool,
+    ) -> BoxFuture<'static, Result<UnlockKey, UnlockKeyError>> {
+        let _ = (source, renew);
+        Box::pin(std::future::ready(Err(UnlockKeyError::Unsupported)))
     }
 }
 
@@ -389,6 +441,53 @@ pub trait WindowSharer: Send + Sync + 'static {
     /// each time.
     fn can_leave(&self) -> bool {
         false
+    }
+
+    /// Whether the platform can let a paired device unlock the screen of this device while it is
+    /// locked: it keeps the password of the person in a box that only that device opens, with the
+    /// face of its person, and types it into the lock screen
+    /// ([`SourceEvents::unlock`]). A device where it can says so to the devices it is paired with,
+    /// offers its private screens with the unlock to those that the person here set it up for
+    /// ([`App::set_up_unlock`](crate::App::set_up_unlock)), and keeps the record of each attempt
+    /// (`docs/adr/0013-unlock-from-a-phone.md`). Only asked of a platform that
+    /// [`can_lift`](Self::can_lift) and takes [`control`](Self::control), since an unlock goes with
+    /// the privacy of such a screen. The same each time.
+    fn can_be_unlocked(&self) -> bool {
+        false
+    }
+
+    /// Checks `password` against the account of the person who uses this device, in the way that
+    /// the lock screen does, and without changing anything: not the keychain, not the sign-in. It
+    /// is called when the person sets the unlock up, before the other device is asked for a key,
+    /// and from a thread that may wait. Only called if [`can_be_unlocked`](Self::can_be_unlocked)
+    /// says yes.
+    ///
+    /// # Errors
+    ///
+    /// [`UnlockSetupError::WrongPassword`] if the system does not accept it, and
+    /// [`UnlockSetupError::Unsupported`] or [`UnlockSetupError::Failed`] if it cannot say.
+    fn check_password(&self, password: &Password) -> Result<(), UnlockSetupError> {
+        let _ = password;
+        Err(UnlockSetupError::Unsupported)
+    }
+
+    /// Puts the password of `setup` in a box that only the device `setup.viewer` opens, and gives
+    /// the box and the sealed key of the box back. Called from a thread that may wait, after
+    /// [`check_password`](Self::check_password) accepted the password and the other device gave the
+    /// key. Only called if [`can_be_unlocked`](Self::can_be_unlocked) says yes.
+    ///
+    /// The platform pads the password to 128 bytes, encrypts it with AES-256-GCM under a random key
+    /// of 32 bytes, binds the box to a context string and the two ids, and seals that key to
+    /// `setup.key` the way it says. It wipes the password and the key before it returns, whatever
+    /// it returns.
+    ///
+    /// # Errors
+    ///
+    /// [`UnlockSetupError::WrongPassword`] if it checks the password again and the system no longer
+    /// accepts it, [`UnlockSetupError::Unsupported`] or [`UnlockSetupError::Failed`].
+    fn unlock_setup(&self, setup: UnlockSetup) -> Result<NewUnlock, UnlockSetupError> {
+        let _ = setup;
+        Err(UnlockSetupError::Unsupported)
     }
 }
 
