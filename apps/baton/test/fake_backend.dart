@@ -416,6 +416,18 @@ class FakeSession implements Session {
     return windowRuns;
   }
 
+  /// The sessions that `endWindowLeaving` was asked to end, in order.
+  final List<int> windowsLeft = [];
+
+  /// What `endWindowLeaving` says: whether the choice was made.
+  bool windowLeaveTaken = true;
+
+  @override
+  bool endWindowLeaving(int session) {
+    windowsLeft.add(session);
+    return windowLeaveTaken;
+  }
+
   /// What `windowInput` was given, in order.
   final List<({int session, WindowInput input})> windowInputs = [];
 
@@ -702,6 +714,7 @@ WindowSession sampleWindowSession({
   bool control = false,
   bool private = false,
   bool sound = false,
+  bool leave = false,
   bool display = false,
   int? screen,
 }) => WindowSession(
@@ -717,6 +730,7 @@ WindowSession sampleWindowSession({
   control: control,
   private: private,
   sound: sound,
+  leave: leave,
   screen: screen ?? (role == WindowRole.viewing ? 7 : null),
 );
 

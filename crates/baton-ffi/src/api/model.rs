@@ -408,7 +408,7 @@ pub enum WindowRole {
 }
 
 /// A window, or a whole display, that is shown on this device or shared from it.
-// Four facts about a session, each of its own: see `baton_app::WindowSession`.
+// Five facts about a session, each of its own: see `baton_app::WindowSession`.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct WindowSession {
@@ -447,6 +447,12 @@ pub struct WindowSession {
     /// the screen sends it. That device may still have none to send, which `Event.windowSound`
     /// says. Sound is off when the session starts. `false` for a window that this device shares.
     pub sound: bool,
+    /// Whether the person here can have the device that shares the screen left as it is when they
+    /// end the session, and not locked, with `Baton.endWindowLeaving`: the screen is kept private
+    /// there, and the device said that it can end that without locking itself. The person is
+    /// asked every time they end such a session, and the device is locked unless they say
+    /// otherwise. `false` for a window that this device shares.
+    pub leave: bool,
     /// What to draw the picture with when the window is shown on this device: the number of
     /// the screen, which on Flutter is the id of a `Texture`. `null` when the window is shared
     /// from this device.
@@ -465,6 +471,7 @@ impl std::fmt::Debug for WindowSession {
             .field("control", &self.control)
             .field("private", &self.private)
             .field("sound", &self.sound)
+            .field("leave", &self.leave)
             .field("screen", &self.screen)
             .finish_non_exhaustive()
     }

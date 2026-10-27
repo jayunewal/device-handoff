@@ -623,8 +623,8 @@ pub enum WindowRole {
 }
 
 /// A window, or a whole display, that is shown on this device or shared from it.
-// Four facts about a session (a whole display, control, private, sound), each of its own: a state
-// that combined them would only hide which one a screen means.
+// Five facts about a session (a whole display, control, private, sound, leave), each of its own: a
+// state that combined them would only hide which one a screen means.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct WindowSession {
@@ -663,6 +663,14 @@ pub struct WindowSession {
     /// have none to send, which [`Event::WindowSound`](crate::Event::WindowSound) says. Sound is
     /// off when the session starts. `false` for a window that this device shares.
     pub sound: bool,
+    /// Whether the person here can have the device that shares the screen left as it is when they
+    /// end the session, and not locked, with
+    /// [`App::end_window_leaving`](crate::App::end_window_leaving): the screen is kept private
+    /// there, and the device said that it can end that without locking itself
+    /// (`docs/adr/0014-lock-the-mac-or-leave-it.md`). The person is asked every time they end
+    /// such a session, and the device is locked unless they say otherwise. `false` for a window
+    /// that this device shares.
+    pub leave: bool,
     /// What to draw the picture with, when the window is shown on this device: the number that the
     /// platform gave the screen. `None` when the window is shared from this device.
     pub screen: Option<i64>,
@@ -680,6 +688,7 @@ impl fmt::Debug for WindowSession {
             .field("control", &self.control)
             .field("private", &self.private)
             .field("sound", &self.sound)
+            .field("leave", &self.leave)
             .field("screen", &self.screen)
             .finish_non_exhaustive()
     }
@@ -1042,6 +1051,7 @@ mod tests {
             control: false,
             private: false,
             sound: false,
+            leave: false,
             screen: Some(7),
         };
         for shown in [format!("{request:?}"), format!("{session:?}")] {
