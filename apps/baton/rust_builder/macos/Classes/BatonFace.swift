@@ -169,9 +169,9 @@ struct FacePublicKey: Equatable {
 }
 
 /// Why a key could not be given, as the number that `unlock_key` returns and a sentence. The Rust
-/// side tells the other device only that it failed, and the log of this device has the number and
-/// not the sentence. The sentence is written for a person all the same, in case a later version of
-/// the interface shows it.
+/// side tells the other device only that it failed, and writes the sentence to the log of this
+/// device, so the sentence holds no key and no name or id of a device. It is written for a person
+/// all the same, in case a later version of the interface shows it.
 enum FaceKeyFailure: Error, Equatable {
   /// The person at this device said no (BATON_KEY_REFUSED). Nothing asks them yet, so no key
   /// ends here; the number is kept for the day something does.
