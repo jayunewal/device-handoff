@@ -1347,6 +1347,110 @@ void main() {
       },
     );
 
+    test('is told when this device could not play it, and asks again when the person does', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(display: true, sound: true);
+      await _begin(session, window);
+      controller.hear(window, listen: true);
+      await hearOf(session, 1, WindowSound.playing);
+
+      // Baton has told the other device to stop by itself, so nothing is asked here.
+      await hearOf(session, 1, WindowSound.cannotPlay);
+      expect(controller.soundOf(window), (
+        stage: SoundStage.silent,
+        why: WindowSound.cannotPlay,
+      ));
+      expect(session.windowHears, [(session: 1, listen: true)]);
+
+      expect(controller.hear(window, listen: true), isTrue);
+      expect(controller.soundOf(window), asking);
+      await hearOf(session, 1, WindowSound.playing);
+      expect(controller.soundOf(window), playing);
+      expect(session.windowHears, [
+        (session: 1, listen: true),
+        (session: 1, listen: true),
+      ]);
+    });
+
+    test('keeps the line about the silence away once the person put it away, until the sound stands differently', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(display: true, sound: true);
+      await _begin(session, window);
+      controller.hear(window, listen: true);
+      await hearOf(session, 1, WindowSound.noPermission);
+      var told = 0;
+      controller.addListener(() => told++);
+      expect(controller.silenceClosedOf(window), isFalse);
+
+      controller.closeSilence(window);
+      controller.closeSilence(window);
+
+      expect(controller.silenceClosedOf(window), isTrue);
+      expect(told, 1, reason: 'the second close changes nothing');
+      // Only the line goes: the sound stays as it was, and the other device is asked nothing.
+      expect(controller.soundOf(window), (
+        stage: SoundStage.silent,
+        why: WindowSound.noPermission,
+      ));
+      expect(session.windowHears, [(session: 1, listen: true)]);
+
+      // The same news again is not news, but another reason is.
+      await hearOf(session, 1, WindowSound.noPermission);
+      expect(controller.silenceClosedOf(window), isTrue);
+      await hearOf(session, 1, WindowSound.cannotPlay);
+      expect(controller.silenceClosedOf(window), isFalse);
+
+      // Asking again, and turning the sound off, start the line afresh.
+      controller.closeSilence(window);
+      expect(controller.silenceClosedOf(window), isTrue);
+      controller.hear(window, listen: true);
+      expect(controller.silenceClosedOf(window), isFalse);
+      await hearOf(session, 1, WindowSound.failed);
+      controller.closeSilence(window);
+      controller.hear(window, listen: false);
+      expect(controller.silenceClosedOf(window), isFalse);
+    });
+
+    test('has no line to put away unless the sound is silent', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = sampleWindowSession(display: true, sound: true);
+      await _begin(session, window);
+      var told = 0;
+      controller.addListener(() => told++);
+
+      controller.closeSilence(window);
+      controller.hear(window, listen: true);
+      controller.closeSilence(window);
+      await hearOf(session, 1, WindowSound.playing);
+      controller.closeSilence(window);
+
+      expect(controller.silenceClosedOf(window), isFalse);
+      expect(told, 2, reason: 'asking and playing, each once');
+    });
+
+    test(
+      'forgets the line that was put away when the screen is over',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        final window = sampleWindowSession(display: true, sound: true);
+        await _begin(session, window);
+        controller.hear(window, listen: true);
+        await hearOf(session, 1, WindowSound.noPermission);
+        controller.closeSilence(window);
+
+        session.emit(
+          Event.windowEnded(id: 1, end: const WindowEnd.otherDevice()),
+        );
+        await pumpEventQueue();
+
+        expect(controller.silenceClosedOf(window), isFalse);
+      },
+    );
+
     test('is told to the screens once for each change, not for the same state again', () async {
       final session = _session();
       final controller = await _controller(session);

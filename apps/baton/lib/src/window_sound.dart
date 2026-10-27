@@ -14,7 +14,8 @@ enum SoundStage {
   /// The other device sends its sound, and it plays here.
   playing,
 
-  /// The person asked, and the other device says that it sends none: [ScreenSound.why] says why.
+  /// The person asked, and the sound cannot be had: the other device says that it sends none, or
+  /// this device cannot play it. [ScreenSound.why] says which, and why.
   silent,
 }
 
@@ -25,9 +26,9 @@ typedef ScreenSound = ({SoundStage stage, WindowSound? why});
 /// The sound of a screen the person has not asked for.
 const ScreenSound soundOff = (stage: SoundStage.off, why: null);
 
-/// Why the other device sends no sound of its screen, in a sentence for the person, or `null` for
-/// a state in which there is nothing to explain. [device] is the name of the other device, which
-/// came from it.
+/// Why there is no sound of the screen of the other device, in a sentence for the person, or `null`
+/// for a state in which there is nothing to explain: the other device sends none, or this device
+/// cannot play it. [device] is the name of the other device, which came from it.
 String? describeSilence(WindowSound sound, String device) {
   final name = visibleText(device);
   return switch (sound) {
@@ -42,5 +43,8 @@ String? describeSilence(WindowSound sound, String device) {
       '$name could not record its sound. Tap the speaker to try again.',
     WindowSound.other =>
       '$name cannot send its sound now. Tap the speaker to try again.',
+    WindowSound.cannotPlay =>
+      'This device could not play the sound of $name. Tap the speaker to try '
+          'again.',
   };
 }

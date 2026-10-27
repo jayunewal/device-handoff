@@ -210,9 +210,13 @@ class _WindowScreenState extends State<WindowScreen> {
       listenable: widget.controller,
       builder: (context, _) {
         final running = _running;
-        // Why the other device sends no sound, while the person wants it and it says so.
+        // Why there is no sound, while the person wants it and the other device says it sends none
+        // or this device cannot play it, unless the person put the line away.
         final sound = widget.controller.soundOf(session);
-        final silence = running && sound.stage == SoundStage.silent
+        final silence =
+            running &&
+                sound.stage == SoundStage.silent &&
+                !widget.controller.silenceClosedOf(session)
             ? describeSilence(
                 sound.why ?? WindowSound.other,
                 session.deviceName,
@@ -340,11 +344,22 @@ class _WindowScreenState extends State<WindowScreen> {
                                         if (silence != null)
                                           _Notice(
                                             text: silence,
-                                            action: (
-                                              label: 'Turn off the sound',
-                                              onPressed: () => widget.controller
-                                                  .hear(session, listen: false),
-                                            ),
+                                            actions: [
+                                              (
+                                                label: 'Turn off the sound',
+                                                onPressed: () =>
+                                                    widget.controller.hear(
+                                                      session,
+                                                      listen: false,
+                                                    ),
+                                              ),
+                                              (
+                                                label: 'Close',
+                                                onPressed: () => widget
+                                                    .controller
+                                                    .closeSilence(session),
+                                              ),
+                                            ],
                                           ),
                                       ],
                                     ),
@@ -617,20 +632,20 @@ class _Picture extends StatelessWidget {
 }
 
 /// A line over the top of the picture: what the other device did not do of what the person did,
-/// which lets the touches through to the picture, or why it sends no sound, which has a button.
+/// which lets the touches through to the picture, or why there is no sound, which has buttons.
 class _Notice extends StatelessWidget {
-  const _Notice({required this.text, this.action});
+  const _Notice({required this.text, this.actions = const []});
 
   final String text;
 
-  /// What the line offers the person, with the words for it. A line that offers something takes
-  /// the touches that land on it; one that does not lets them through to the picture.
-  final ({String label, VoidCallback onPressed})? action;
+  /// What the line offers the person, with the words for each, side by side. A line that offers
+  /// something takes the touches that land on it; one that does not lets them through to the
+  /// picture.
+  final List<({String label, VoidCallback onPressed})> actions;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final action = this.action;
     final words = Text(
       text,
       textAlign: TextAlign.center,
@@ -643,18 +658,25 @@ class _Notice extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          child: action == null
+          child: actions.isEmpty
               ? words
               : Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     words,
-                    TextButton(
-                      onPressed: action.onPressed,
-                      style: TextButton.styleFrom(
-                        foregroundColor: scheme.inversePrimary,
-                      ),
-                      child: Text(action.label),
+                    Wrap(
+                      alignment: WrapAlignment.center,
+                      spacing: 8,
+                      children: [
+                        for (final action in actions)
+                          TextButton(
+                            onPressed: action.onPressed,
+                            style: TextButton.styleFrom(
+                              foregroundColor: scheme.inversePrimary,
+                            ),
+                            child: Text(action.label),
+                          ),
+                      ],
                     ),
                   ],
                 ),
@@ -663,7 +685,7 @@ class _Notice extends StatelessWidget {
     );
     // The material of a line takes the touches that land on it, so a line that offers something
     // keeps them from the window below; one that offers nothing lets them through.
-    return action == null ? IgnorePointer(child: line) : line;
+    return actions.isEmpty ? IgnorePointer(child: line) : line;
   }
 }
 

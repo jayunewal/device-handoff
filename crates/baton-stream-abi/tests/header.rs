@@ -41,13 +41,13 @@ use baton_stream_abi::{
         SurroundingsFn,
     },
     exports::{
-        baton_stream_abi_version, baton_stream_link_decode_failed, baton_stream_pick_done,
-        baton_stream_register_sharer, baton_stream_register_viewer, baton_stream_source_begin,
-        baton_stream_source_cancel, baton_stream_source_changed, baton_stream_source_clock,
-        baton_stream_source_end, baton_stream_source_new_epoch, baton_stream_source_pause,
-        baton_stream_source_recovery_pending, baton_stream_source_resume, baton_stream_source_sent,
-        baton_stream_source_sound, baton_stream_source_sound_begin,
-        baton_stream_source_sound_silent,
+        baton_stream_abi_version, baton_stream_link_decode_failed, baton_stream_link_sound_failed,
+        baton_stream_pick_done, baton_stream_register_sharer, baton_stream_register_viewer,
+        baton_stream_source_begin, baton_stream_source_cancel, baton_stream_source_changed,
+        baton_stream_source_clock, baton_stream_source_end, baton_stream_source_new_epoch,
+        baton_stream_source_pause, baton_stream_source_recovery_pending,
+        baton_stream_source_resume, baton_stream_source_sent, baton_stream_source_sound,
+        baton_stream_source_sound_begin, baton_stream_source_sound_silent,
     },
 };
 
@@ -799,6 +799,7 @@ fn rust_exports() -> Vec<CFunction> {
             &["const BatonViewerVTable *"],
         ),
         function("baton_stream_link_decode_failed", "int32_t", &["uint64_t"]),
+        function("baton_stream_link_sound_failed", "int32_t", &["uint64_t"]),
         function(
             "baton_stream_register_sharer",
             "int32_t",
@@ -885,6 +886,7 @@ fn exports_by_name() {
     let _: extern "C" fn() -> u32 = baton_stream_abi_version;
     let _: unsafe extern "C" fn(*const BatonViewerVTable) -> i32 = baton_stream_register_viewer;
     let _: extern "C" fn(u64) -> i32 = baton_stream_link_decode_failed;
+    let _: extern "C" fn(u64) -> i32 = baton_stream_link_sound_failed;
     let _: unsafe extern "C" fn(*const BatonSharerVTable) -> i32 = baton_stream_register_sharer;
     let _: unsafe extern "C" fn(u64, *const BatonPicked, *const BatonBytes) -> i32 =
         baton_stream_pick_done;
@@ -1332,6 +1334,7 @@ static int32_t register_viewer(void) {
     table.play = play;
     table.stopped = stopped;
     (void)baton_stream_link_decode_failed(1);
+    (void)baton_stream_link_sound_failed(1);
     return baton_stream_register_viewer(&table);
 }
 

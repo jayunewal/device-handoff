@@ -74,6 +74,7 @@ pub(super) enum Spoken {
     Sound(Sound),
     Play(Play, Vec<u8>),
     Stopped(Option<SilentReason>),
+    CouldNotPlay,
     Ended,
 }
 
@@ -114,6 +115,10 @@ impl Speaker for Speaking {
 
     fn stopped(&mut self, why: Option<SilentReason>) {
         lock(&(self.0).0).push(Spoken::Stopped(why));
+    }
+
+    fn could_not_play(&mut self) {
+        lock(&(self.0).0).push(Spoken::CouldNotPlay);
     }
 
     fn ended(&mut self) {

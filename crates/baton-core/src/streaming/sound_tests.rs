@@ -1107,6 +1107,90 @@ async fn a_form_that_cannot_be_played_turns_sound_off_and_the_source_is_told() {
 }
 
 #[tokio::test]
+async fn a_platform_that_cannot_play_the_run_turns_sound_off_and_the_source_is_told() {
+    let mut rig = ViewRig::new().await;
+    let (mut source_control, mut viewer_control) = rig.running().await;
+    rig.packet(0, true, b"zero").await;
+    rig.until("the packet to be played", |rig| {
+        rig.speech.played().len() == 1
+    })
+    .await;
+
+    // The platform says so from a thread of its own, after it took the run. The speaker is told
+    // that it was the device that could not play, and the source is told to stop.
+    rig.handle.sound_failed();
+    assert_eq!(rig.speech.all().last(), Some(&Spoken::CouldNotPlay));
+    assert_eq!(heard(&mut viewer_control).await, Hear { on: false });
+    // A packet that was on its way is stopped, and no one is at fault.
+    let late = rig.partial(1, PacketFlags::NONE, b"one").await;
+    assert_eq!(stopped_with(&late).await, 499);
+    assert!(
+        tokio::time::timeout(QUIET, rig.handle.ended())
+            .await
+            .is_err(),
+        "the session ended"
+    );
+
+    // Sound is off by now: saying so again, or the person turning it off, tells the speaker and
+    // the source nothing more, and what the source reads next is the `on` that follows.
+    rig.handle.sound_failed();
+    assert!(rig.handle.hear(false));
+    assert_eq!(
+        rig.speech
+            .all()
+            .iter()
+            .filter(|spoken| **spoken == Spoken::CouldNotPlay)
+            .count(),
+        1
+    );
+    assert_eq!(rig.speech.all().last(), Some(&Spoken::CouldNotPlay));
+
+    // The person asks again, and the source begins a new run, which the platform is given to try.
+    assert!(rig.handle.hear(true));
+    assert_eq!(heard(&mut viewer_control).await, Hear { on: true });
+    write_message(&mut source_control, &SourceMessage::Sound(aac()))
+        .await
+        .unwrap();
+    rig.packet(5, true, b"five").await;
+    rig.until("the packet of the new run to be played", |rig| {
+        rig.speech.played().len() == 2
+    })
+    .await;
+    assert_eq!(rig.speech.played()[1], (5, true, 0, b"five".to_vec()));
+    assert_eq!(rig.speech.all()[3], Spoken::Sound(aac()));
+}
+
+#[tokio::test]
+async fn a_report_that_the_platform_cannot_play_is_about_a_run_that_is_over_unless_sound_is_on() {
+    // Sound that nobody asked for: there is no run, and nothing is told to anyone.
+    let mut rig = ViewRig::new().await;
+    rig.handle.sound_failed();
+    assert_eq!(rig.speech.all(), []);
+    // The person asks, and the first thing the source reads is that. The report said nothing.
+    assert!(rig.handle.hear(true));
+    let _source_control = rig.open_source_control().await;
+    let mut viewer_control = rig.viewer_control().await;
+    assert_eq!(heard(&mut viewer_control).await, Hear { on: true });
+
+    // The person turned sound off, and then the report of the run they turned off comes.
+    assert!(rig.handle.hear(false));
+    assert_eq!(heard(&mut viewer_control).await, Hear { on: false });
+    rig.handle.sound_failed();
+    assert_eq!(rig.speech.all(), [Spoken::Stopped(None)]);
+    assert!(rig.handle.hear(true));
+    assert_eq!(heard(&mut viewer_control).await, Hear { on: true });
+
+    // A session without a speaker has no sound to fail, and one that is over takes no report.
+    let none = ViewRig::with(quick(), true, false).await;
+    none.handle.sound_failed();
+    assert!(!none.handle.hear(true));
+    rig.handle.end();
+    rig.ended().await;
+    rig.handle.sound_failed();
+    assert_eq!(rig.speech.all(), [Spoken::Stopped(None), Spoken::Ended,]);
+}
+
+#[tokio::test]
 async fn a_packet_that_breaks_a_rule_ends_the_session() {
     // The last byte of a header holds the flags, and bit 1 is not defined.
     let reserved = {

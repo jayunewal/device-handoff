@@ -4418,7 +4418,8 @@ class BatonImpl extends RustOpaque implements Baton {
   /// not so for a window that is not shown here, for a window and not a whole screen, when this
   /// device plays no sound or the other sends none, and for a session that is over. How it came
   /// out comes as `Event.windowSound`. A request to hear that is made again asks the other
-  /// device to try again, which a person does after it said that it could not.
+  /// device to try again, which a person does after it said that it could not, and gives this
+  /// device a new run to try after it could not play.
   bool hearWindow({required PlatformInt64 session, required bool listen}) =>
       RustLib.instance.api.crateApiBatonBatonHearWindow(
         that: this,

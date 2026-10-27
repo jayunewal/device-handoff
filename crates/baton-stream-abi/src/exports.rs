@@ -73,6 +73,12 @@ pub extern "C" fn baton_stream_link_decode_failed(link: u64) -> i32 {
     answer(|| global().link_decode_failed(link))
 }
 
+/// The speaker of the screen that `link` was given for could not play the sound. See the header.
+#[unsafe(no_mangle)]
+pub extern "C" fn baton_stream_link_sound_failed(link: u64) -> i32 {
+    answer(|| global().link_sound_failed(link))
+}
+
 /// Registers the platform's sharer, once, before the app starts. See the header.
 ///
 /// # Safety
@@ -800,10 +806,11 @@ mod tests {
                 let _watch = Watchdog::start("a call into the interface from inside a call");
                 // SAFETY: as above.
                 let registering = unsafe { baton_stream_register_viewer(&raw const nested) };
-                heard
-                    .lock()
-                    .unwrap()
-                    .push((registering, baton_stream_link_decode_failed(1)));
+                heard.lock().unwrap().push((
+                    registering,
+                    baton_stream_link_decode_failed(1),
+                    baton_stream_link_sound_failed(1),
+                ));
             }
         });
         let vtable = fake.vtable();
@@ -812,7 +819,10 @@ mod tests {
             unsafe { baton_stream_register_viewer(&raw const vtable) },
             OK
         );
-        assert_eq!(*inside.lock().unwrap(), [(E_REENTRANT, E_REENTRANT)]);
+        assert_eq!(
+            *inside.lock().unwrap(),
+            [(E_REENTRANT, E_REENTRANT, E_REENTRANT)]
+        );
         assert!(global().viewer().is_some());
         assert!(format!("{:?}", registered_windows()).contains("shows: true"));
 
@@ -830,10 +840,14 @@ mod tests {
         // released, and a number that is not open is told so.
         assert_eq!(baton_stream_link_decode_failed(0), E_UNKNOWN_LINK);
         assert_eq!(baton_stream_link_decode_failed(u64::MAX), E_UNKNOWN_LINK);
+        assert_eq!(baton_stream_link_sound_failed(0), E_UNKNOWN_LINK);
+        assert_eq!(baton_stream_link_sound_failed(u64::MAX), E_UNKNOWN_LINK);
         let link = global().links.add(ScreenLink::default());
         assert_eq!(baton_stream_link_decode_failed(link), OK);
+        assert_eq!(baton_stream_link_sound_failed(link), OK);
         global().links.remove(link);
         assert_eq!(baton_stream_link_decode_failed(link), E_UNKNOWN_LINK);
+        assert_eq!(baton_stream_link_sound_failed(link), E_UNKNOWN_LINK);
         assert!(fake.complaints().is_empty(), "{:?}", fake.complaints());
     }
 
