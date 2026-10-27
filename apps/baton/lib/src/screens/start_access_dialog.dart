@@ -6,8 +6,8 @@ import '../backend.dart';
 import '../format.dart';
 
 /// What the person chose for a paired device: what it may do about the screen, and whether it may
-/// hear the sound of it. [hear] is `null` when the person leaves it to the device to hear if it
-/// may control the screen, and not otherwise.
+/// hear the sound of it. [hear] is `null` when the person leaves it to the session: the device
+/// hears in one that lets it control the screen, and not in one that lets it only look.
 typedef StartChoice = ({StartAccess access, bool? hear});
 
 /// Asks the person at this device what [device] may do without anyone here saying yes: ask this
@@ -36,7 +36,7 @@ class StartAccessDialog extends StatefulWidget {
   final StartAccess current;
 
   /// What was kept of the device hearing the sound: `true`, `false`, or `null` when nobody said,
-  /// and then it may if it may control the screen.
+  /// and then it may in a session that lets it control the screen.
   final bool? hear;
 
   /// Whether this device can let another control its screen. The choice is left out when it
@@ -52,18 +52,32 @@ class _StartAccessDialogState extends State<StartAccessDialog> {
   late bool? _hear = widget.hear;
 
   /// Whether the person has moved the switch. Until they have, it shows what the device gets
-  /// without being told: the sound where the screen can be controlled.
+  /// without being told in a session that it asks for: the sound where the screen can be
+  /// controlled.
   bool _touched = false;
 
   bool get _hearsByDefault => _chosen == StartAccess.control;
 
-  /// What to keep, or `null` when it is what was kept. Saying what the device gets anyway is
-  /// saying nothing, so that a device that is moved to another choice later follows it.
+  /// What the sound would be kept as: `null` when it is left to the session. Saying what the
+  /// device gets anyway is saying nothing, so that a device that is moved to another choice later
+  /// follows it.
+  bool? get _saved => _touched && _hear == _hearsByDefault ? null : _hear;
+
+  /// What to keep, or `null` when it is what was kept.
   StartChoice? get _choice {
-    final hear = _touched && _hear == _hearsByDefault ? null : _hear;
+    final hear = _saved;
     if (_chosen == widget.current && hear == widget.hear) return null;
     return (access: _chosen, hear: hear);
   }
+
+  /// What the person is told of the sound, by what would be kept of it.
+  String _soundNote(String name, String computer) => switch (_saved) {
+    null =>
+      'Left as it is, $name hears when it controls $computer. When it only '
+          'looks, it gets the screen with no sound, and $computer plays on.',
+    true => '$name hears in every session, also when it only looks.',
+    false => '$name gets the screen with no sound, and $computer plays on.',
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -120,8 +134,8 @@ class _StartAccessDialogState extends State<StartAccessDialog> {
             }),
             title: Text('Let $name hear the sound'),
             subtitle: Text(
-              '$computer is quiet while $name listens. Without this, $name '
-              'shows the screen with no sound, and $computer plays on.',
+              '$computer is quiet while $name listens. '
+              '${_soundNote(name, computer)}',
             ),
           ),
           const SizedBox(height: 12),

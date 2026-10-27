@@ -1223,13 +1223,17 @@ impl Node {
         }
         // Whether the device may hear is asked each time it asks to, from what the person here has
         // said by then: they may say it while the session runs, and the device is to try again.
+        // When they have said nothing it goes by this session: a device that the offer lets control
+        // the screen may hear, and one that it lets only look may not, whoever started the session
+        // and whatever the device may ask for in general.
         let may_hear = {
             let trust = self.shared.trust.clone();
             let peer = paired.id;
+            let controls = window.control();
             MayHear::new(move || {
                 trust
                     .get(&peer)
-                    .is_some_and(|device| device.policy.may_hear())
+                    .is_some_and(|device| device.policy.may_hear(controls))
             })
         };
         let offered = Offered {

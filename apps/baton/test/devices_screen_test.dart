@@ -985,6 +985,55 @@ void main() {
       },
     );
 
+    testWidgets('says that the sound goes by the session until something is '
+        'said of it', (tester) async {
+      await show(tester);
+      session.startAccesses[phone.id] = StartAccess.look;
+      await open(tester);
+
+      // Nothing was said: the device hears where it controls, not where it only looks.
+      final byTheSession = find.textContaining(
+        'Left as it is, Phone hears when it controls this',
+      );
+      expect(byTheSession, findsOneWidget);
+      expect(find.textContaining('every session'), findsNothing);
+
+      // A yes is for every session, and moving the switch back leaves it to the session.
+      await flip(tester);
+      expect(
+        find.textContaining('Phone hears in every session, also when it only '),
+        findsOneWidget,
+      );
+      expect(byTheSession, findsNothing);
+      await flip(tester);
+      expect(byTheSession, findsOneWidget);
+    });
+
+    testWidgets('says what was said of the sound, a yes and a no', (
+      tester,
+    ) async {
+      await show(tester);
+      session.startAccesses[phone.id] = StartAccess.control;
+      session.hearSettings[phone.id] = true;
+      await open(tester);
+      expect(
+        find.textContaining('Phone hears in every session, also when it only '),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Left as it is'), findsNothing);
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+
+      session.hearSettings[phone.id] = false;
+      await open(tester);
+      expect(
+        find.textContaining('Phone gets the screen with no sound, and this'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('every session'), findsNothing);
+      expect(find.textContaining('Left as it is'), findsNothing);
+    });
+
     testWidgets('follows the choice of the screen until the person moves the '
         'switch', (tester) async {
       await show(tester);

@@ -1467,6 +1467,17 @@ impl NodeRig {
     /// The same, with a source that was set up to send sound only if `sends`, and a viewer that
     /// was set up to play it only if `plays`.
     async fn of(sends: bool, plays: bool) -> Self {
+        Self::with_control(sends, plays, false).await
+    }
+
+    /// The same as [`new`](Self::new), with a source that can also take input, so that it can
+    /// share a screen with control.
+    async fn controlling() -> Self {
+        Self::with_control(true, true, true).await
+    }
+
+    /// The same as [`of`](Self::of), with a source that can take input only if `control`.
+    async fn with_control(sends: bool, plays: bool, control: bool) -> Self {
         let app = App::new(Plan::Accept);
         let viewer = TestNode::with(|builder| {
             let builder = builder.window_handler(Arc::clone(&app));
@@ -1474,7 +1485,7 @@ impl NodeRig {
         })
         .await;
         let source = TestNode::with(|builder| {
-            let builder = builder.share_windows(false);
+            let builder = builder.share_windows(control);
             if sends {
                 builder.share_sound()
             } else {
@@ -1668,10 +1679,12 @@ async fn sound_goes_from_the_platform_of_the_source_to_the_speaker_of_the_viewer
 #[tokio::test]
 async fn what_the_person_at_the_source_says_of_the_viewer_counts_at_its_next_request_to_hear() {
     let rig = NodeRig::new().await;
-    // A device that was just paired has been given nothing, so it may not hear.
+    // A device that was just paired has been given nothing, so in a session in which it can only
+    // look it may not hear.
     rig.say(|policy| *policy = DevicePolicy::default());
     let (handle, heard) = rig.share(display()).await;
     let viewing = rig.app.handle(0);
+    assert!(!viewing.control());
     assert!(viewing.hear(true));
     until("the speaker to be told why", || {
         rig.app.speech.all() == [Spoken::Stopped(Some(SilentReason::NotAllowed))]
@@ -1679,9 +1692,20 @@ async fn what_the_person_at_the_source_says_of_the_viewer_counts_at_its_next_req
     .await;
     assert_eq!(heard.count("hear"), 0);
 
-    // The person lets it control the screen, which lets it hear when they have not said. It
-    // asks again, in the session that runs, and the platform is asked for the sound.
+    // What it may ask for in general is not what lets it hear in this session, where it can only
+    // look: it is told the same again.
     rig.say(|policy| policy.start = StartPolicy::Control);
+    assert!(viewing.hear(true));
+    until("the speaker to be told why again", || {
+        let told = || Spoken::Stopped(Some(SilentReason::NotAllowed));
+        rig.app.speech.all() == [told(), told()]
+    })
+    .await;
+    assert_eq!(heard.count("hear"), 0);
+
+    // The person says yes. It asks again, in the session that runs, and the platform is asked for
+    // the sound.
+    rig.say(|policy| policy.hear = Some(true));
     assert!(viewing.hear(true));
     until("the platform to be asked for sound", || {
         heard.count("hear") == 1
@@ -1693,8 +1717,8 @@ async fn what_the_person_at_the_source_says_of_the_viewer_counts_at_its_next_req
     })
     .await;
 
-    // What they said of this device itself beats that. The next request ends the run, and the
-    // platform is told, so that the device that shares plays its own sound again.
+    // They take the yes back. The next request ends the run, and the platform is told, so that
+    // the device that shares plays its own sound again.
     rig.say(|policy| policy.hear = Some(false));
     assert!(viewing.hear(true));
     until("the platform to be told to let the sound play", || {
@@ -1706,6 +1730,70 @@ async fn what_the_person_at_the_source_says_of_the_viewer_counts_at_its_next_req
     })
     .await;
     assert_eq!(handle.sound(packet(1, 0)).unwrap(), None);
+}
+
+#[tokio::test]
+async fn a_device_hears_in_a_session_that_lets_it_control_the_screen_when_nothing_is_said_whatever_it_may_ask_for()
+ {
+    let rig = NodeRig::controlling().await;
+    // A device that was just paired may ask for nothing, and nothing is said of its hearing. The
+    // person here shares the whole screen with control, and the device did not ask for it.
+    rig.say(|policy| *policy = DevicePolicy::default());
+    let (handle, heard) = rig.share(display().with_control()).await;
+    let viewing = rig.app.handle(0);
+    assert!(viewing.control());
+    assert!(viewing.hear(true));
+    until("the platform to be asked for sound", || {
+        heard.count("hear") == 1
+    })
+    .await;
+    handle.begin_sound(aac()).unwrap();
+    until("the speaker to be told the form", || {
+        rig.app.speech.all().last() == Some(&Spoken::Sound(aac()))
+    })
+    .await;
+    assert!(
+        !rig.app
+            .speech
+            .all()
+            .iter()
+            .any(|spoken| matches!(spoken, Spoken::Stopped(Some(SilentReason::NotAllowed))))
+    );
+
+    // What the person said of the device counts all the same: the next request ends the run.
+    rig.say(|policy| policy.hear = Some(false));
+    assert!(viewing.hear(true));
+    until("the platform to be told to let the sound play", || {
+        heard.count("hush") == 1
+    })
+    .await;
+    until("the speaker to be told why", || {
+        rig.app.speech.all().last() == Some(&Spoken::Stopped(Some(SilentReason::NotAllowed)))
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_device_that_may_ask_for_control_does_not_hear_in_a_session_that_lets_it_only_look() {
+    let rig = NodeRig::controlling().await;
+    // The device may ask to control the screen, and nothing is said of its hearing. The person
+    // here shares the screen for looking only.
+    rig.say(|policy| {
+        *policy = DevicePolicy {
+            start: StartPolicy::Control,
+            ..DevicePolicy::default()
+        };
+    });
+    let (_handle, heard) = rig.share(display()).await;
+    let viewing = rig.app.handle(0);
+    assert!(!viewing.control());
+    assert!(viewing.hear(true));
+    until("the speaker to be told why", || {
+        rig.app.speech.all() == [Spoken::Stopped(Some(SilentReason::NotAllowed))]
+    })
+    .await;
+    tokio::time::sleep(QUIET).await;
+    assert_eq!(heard.count("hear"), 0);
 }
 
 #[tokio::test]

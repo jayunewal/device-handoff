@@ -600,9 +600,10 @@ impl App {
 
     /// What the person at this device said of the paired device `id` hearing the sound of this
     /// device's screen (`docs/adr/0012-sound.md`): `Some(true)` that it may, `Some(false)` that it
-    /// may not, and `None` when they have not said, which means that it may if it may control the
-    /// screen ([`StartAccess::Control`]) and may not if it can only look. A device that may hear
-    /// makes this device quiet while it listens.
+    /// may not, and `None` when they have not said, which means that it may in a session that lets
+    /// it control the screen and may not in one that lets it only look, whoever started the
+    /// session and whatever it may ask for ([`StartAccess`]). A device that may hear makes this
+    /// device quiet while it listens.
     ///
     /// # Errors
     ///

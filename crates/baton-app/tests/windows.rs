@@ -391,6 +391,15 @@ impl Sharer {
         Self::building(false, Some(next), can)
     }
 
+    /// A platform that can send the sound of a whole display, and post input.
+    fn with_sound_and_control(next: Chosen) -> Arc<Self> {
+        let can = Can {
+            sound: true,
+            ..Can::default()
+        };
+        Self::building(true, Some(next), can)
+    }
+
     /// A platform that can give its screen without the person picking it, and send its sound.
     fn with_screen_and_sound(control: bool) -> Arc<Self> {
         let can = Can {
@@ -3992,24 +4001,85 @@ async fn a_device_that_the_person_at_the_mac_does_not_let_hear_is_told_so_until_
 }
 
 #[tokio::test]
-async fn a_device_that_may_control_hears_unless_the_person_said_no_and_one_that_may_only_look_does_not_unless_they_said_yes()
+async fn a_screen_that_the_person_at_the_mac_shares_is_heard_by_a_device_it_lets_control_unless_they_said_no_whatever_the_device_may_ask_for()
  {
-    for (access, said, heard) in [
-        (StartAccess::Look, None, false),
-        (StartAccess::Look, Some(true), true),
-        (StartAccess::Look, Some(false), false),
-        (StartAccess::Control, None, true),
-        (StartAccess::Control, Some(true), true),
-        (StartAccess::Control, Some(false), false),
+    for (access, control, said, heard) in [
+        // Shared with control to a device that may ask for nothing: it hears, since it controls.
+        (StartAccess::Off, true, None, true),
+        (StartAccess::Off, true, Some(true), true),
+        (StartAccess::Off, true, Some(false), false),
+        // Shared for looking, also to a device that may ask for control: only a yes lets it hear.
+        (StartAccess::Off, false, None, false),
+        (StartAccess::Control, false, None, false),
+        (StartAccess::Off, false, Some(true), true),
+        (StartAccess::Control, false, Some(false), false),
     ] {
-        let what = format!("{access:?}, said {said:?}");
+        let what = format!("may ask for {access:?}, shared with control {control}, said {said:?}");
+        let pair = Pair::with_platforms(
+            Sharer::with_sound_and_control(whole_display()),
+            Viewer::playing(),
+        )
+        .await;
+        pair.sharing
+            .app
+            .set_start_access(&pair.viewing.id(), access)
+            .unwrap();
+        pair.sharing
+            .app
+            .set_hear_setting(&pair.viewing.id(), said)
+            .unwrap();
+        let mut viewing_events = pair.viewing.app.events();
+        let WindowShared::Started(_) = pair.offered_and_answered(true, control).await else {
+            panic!("the screen was not shared: {what}");
+        };
+        let shown = shown_window(&mut viewing_events).await;
+        assert_eq!(shown.control, control, "{what}");
+        assert!(pair.viewing.app.hear_window(shown.id, true), "{what}");
+        if heard {
+            until("the platform of the Mac to be asked for the sound", || {
+                pair.sharer.heard.has("hear 1")
+            })
+            .await;
+        } else {
+            assert_eq!(
+                next_sound(&mut viewing_events, shown.id).await,
+                WindowSound::NotAllowed,
+                "{what}"
+            );
+            assert_eq!(pair.sharer.heard.count("hear"), 0, "{what}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_device_hears_unless_the_person_said_no_when_its_session_lets_it_control_and_otherwise_only_if_they_said_yes()
+ {
+    for (access, wished, said, heard) in [
+        // The session lets the device only look, whatever it may ask for: only a yes lets it hear.
+        (StartAccess::Look, false, None, false),
+        (StartAccess::Look, true, None, false),
+        (StartAccess::Control, false, None, false),
+        (StartAccess::Look, false, Some(true), true),
+        (StartAccess::Control, false, Some(true), true),
+        (StartAccess::Look, false, Some(false), false),
+        // The session lets it control: it hears unless the person said no.
+        (StartAccess::Control, true, None, true),
+        (StartAccess::Control, true, Some(true), true),
+        (StartAccess::Control, true, Some(false), false),
+    ] {
+        let what = format!("{access:?}, wished control {wished}, said {said:?}");
         let asking =
             Asking::with_platforms(Sharer::with_screen_and_sound(true), Viewer::playing()).await;
         asking.allow(access);
         asking.allow_hear(said);
         let mut events = asking.phone.app.events();
-        // What the device may do decides, and not what it wished for in this session.
-        let session = asking.started(false).await;
+        // What the session lets the device do decides, and not what it may ask for in general.
+        let session = asking.started(wished).await;
+        assert_eq!(
+            session.control,
+            wished && access == StartAccess::Control,
+            "{what}"
+        );
         assert!(asking.phone.app.hear_window(session.id, true), "{what}");
         if heard {
             until("the platform of the Mac to be asked", || {
