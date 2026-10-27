@@ -26,9 +26,19 @@
 //! that turns sound on and off faster than the platform answers is told the last of it only, which
 //! the platform takes as it takes each: `hear(true)` is always a fresh start.
 //!
-//! The same thread runs `start`, `lift`, `hear`, `ended` (or `leave`, when the person at the other
-//! device chose that the device stay as it is) and `release` of the window, which is the one thread
-//! that the header promises for all the calls of a window. It holds the window from the
+//! An attempt to unlock the screen (`SourceEvents::unlock`) goes to the same thread. It takes as
+//! long as the system takes, so the events that the person sends meanwhile wait in the queue, and
+//! they are not put to the window when the unlock returns: they were meant for a locked screen,
+//! and the screen is not locked any more. The viewer is told that each was dropped because the Mac
+//! was locked. While the attempt runs it stays where the platform's calls find it, so the
+//! platform can ask whether it goes on and can keep the new box (`SourceLink::unlock_live` and
+//! `SourceLink::unlock_keep`); the platform also says, as it goes, whether the privacy of the
+//! screen is in place (`SourceLink::set_private`), and the session asks for that word when the
+//! person at the other device asks to unlock.
+//!
+//! The same thread runs `start`, `lift`, `hear`, `unlock`, `ended` (or `leave`, when the person at
+//! the other device chose that the device stay as it is) and `release` of the window, which is the
+//! one thread that the header promises for all the calls of a window. It holds the window from the
 //! start and lets go of it when the session is over, so a platform that is in the middle of a post
 //! when the session ends is waited for, and the release of a press that was posted is not lost.
 //!
@@ -59,24 +69,31 @@ use std::{
     mem,
     sync::{
         Arc, Condvar, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc::SyncSender,
     },
     time::{Duration, Instant},
 };
 
-use baton_core::streaming::SourceEvents;
+use baton_core::streaming::{KeepError, SourceEvents, UnlockAttempt};
+use baton_proto::unlock::{SealedKey, Sealing};
 use baton_stream::{
     control::{InputBatch, Lift, Report, Want},
     gate::{Context, Decision, Gate, Keyboard, Post, Reason, Rect},
     input::{Event, PointerAction},
     sender::LtrToken,
+    unlock::Outcome as UnlockOutcome,
 };
+use zeroize::Zeroizing;
 
 use crate::{
-    abi::{LIFT_INPUT, LIFT_SCREEN},
+    Error,
+    abi::{
+        LIFT_INPUT, LIFT_SCREEN, SEALING_ECIES_P256, UNLOCK_NOT_LOCKED, UNLOCK_NOT_PRIVATE,
+        UNLOCK_REJECTED, UNLOCK_STALE, UNLOCK_UNLOCKED,
+    },
     journal::{Journal, Named},
-    platform::{Failure, PickedHandle, Surroundings},
+    platform::{Attempt, Failure, PickedHandle, Surroundings},
     registry::{Links, lock},
 };
 
@@ -147,6 +164,12 @@ struct Waiting {
     /// given: `true` if it is wanted. A word that the platform was not given when the next one
     /// came is replaced by it.
     hear: Option<bool>,
+    /// The attempt to unlock the screen that the session handed over and the thread has not taken
+    /// yet. There is one at a time.
+    unlock: Option<UnlockAttempt>,
+    /// Whether the thread took an attempt and has not finished with it: no other is taken until it
+    /// has, and the events that arrive meanwhile are dropped when it has.
+    unlocking: bool,
     phase: Phase,
     /// The session ended with the choice of the person at the other device to leave the device as
     /// it is, which the window is told in place of an ordinary end.
@@ -160,6 +183,8 @@ enum Step {
     Lift(u32),
     /// Tell the window whether the sound of the screen is wanted.
     Hear(bool),
+    /// Have the window unlock the screen with the attempt that waits.
+    Unlock,
     /// Put these events to the window.
     Batch(InputBatch, Duration, Instant),
     /// This many events were lost.
@@ -175,12 +200,17 @@ enum Step {
 impl Waiting {
     fn step(&mut self) -> Option<Step> {
         match self.phase {
-            Phase::Closed => return Some(Step::Close),
+            Phase::Closed => {
+                // An attempt that never ran reports that it failed, as one that is dropped does.
+                self.unlock = None;
+                return Some(Step::Close);
+            }
             Phase::Over | Phase::OverTold => {
                 self.queue.clear();
                 self.nudged = false;
                 self.lift = None;
                 self.hear = None;
+                self.unlock = None;
                 let told = mem::replace(&mut self.phase, Phase::OverTold) == Phase::OverTold;
                 return (!told).then_some(Step::Over);
             }
@@ -195,6 +225,11 @@ impl Waiting {
         // is not kept so while the batches ahead of the word are put to the window.
         if let Some(on) = self.hear.take() {
             return Some(Step::Hear(on));
+        }
+        // After what the viewer lifted, so that the platform checks the privacy of the screen as
+        // the viewer left it, and ahead of the events, which were meant for a locked screen.
+        if self.unlock.is_some() {
+            return Some(Step::Unlock);
         }
         match self.queue.pop_front() {
             Some(Queued::Batch(batch, arrived, queued)) => {
@@ -217,6 +252,15 @@ pub(crate) struct Input {
     /// When the viewer last reported, in microseconds since `began`.
     heard: AtomicU64,
     timing: Timing,
+    /// The last word of the platform about the privacy of the screen: whether the cover, the hold
+    /// of the keys and the pointer, and the guard are all in place. A session starts with no, so a
+    /// platform that never says is never unlocked.
+    in_place: AtomicBool,
+    /// What the viewer has lifted of the privacy, as `LIFT_` bits, as it last said.
+    lifted: AtomicU32,
+    /// The attempt to unlock the screen that the platform is carrying out, where its calls find it.
+    /// Nothing else holds this lock for long, except `keep`, which waits for the disk.
+    running: Mutex<Option<UnlockAttempt>>,
 }
 
 impl Input {
@@ -229,6 +273,9 @@ impl Input {
             began: Instant::now(),
             heard: AtomicU64::new(0),
             timing,
+            in_place: AtomicBool::new(false),
+            lifted: AtomicU32::new(0),
+            running: Mutex::new(None),
         })
     }
 
@@ -296,6 +343,10 @@ impl Input {
     /// The viewer lifts some of the privacy of the screen, or puts it back: `lifted` is all that
     /// is lifted now. What the thread was not told yet of an earlier word is forgotten.
     fn lift(&self, lifted: u32) {
+        // At once and not when the thread gets to it: the session asks whether the privacy is in
+        // place with its lock held, and what the viewer lifted is not in place, whether or not the
+        // platform was told yet.
+        self.lifted.store(lifted, Ordering::SeqCst);
         let mut waiting = lock(&self.waiting);
         if waiting.phase != Phase::Running {
             return;
@@ -303,6 +354,98 @@ impl Input {
         waiting.lift = Some(lifted);
         drop(waiting);
         self.wake.notify_one();
+    }
+
+    /// The platform says whether the cover of the screens, the hold of the keys and the pointer,
+    /// and the guard that locks the device if the app dies are all in place.
+    pub(crate) fn set_in_place(&self, in_place: bool) {
+        self.in_place.store(in_place, Ordering::SeqCst);
+    }
+
+    /// Whether the privacy of the screen is in place, as the platform last said, and the viewer
+    /// has lifted none of it.
+    fn private_in_place(&self) -> bool {
+        self.in_place.load(Ordering::SeqCst) && self.lifted.load(Ordering::SeqCst) == 0
+    }
+
+    /// The session hands over an attempt to unlock the screen. The thread carries it out. An
+    /// attempt that finds the session over, or another attempt that is not over, is let go of,
+    /// which reports that it failed.
+    fn unlock(&self, attempt: UnlockAttempt) {
+        let mut waiting = lock(&self.waiting);
+        if waiting.phase != Phase::Running || waiting.unlock.is_some() || waiting.unlocking {
+            drop(waiting);
+            drop(attempt);
+            return;
+        }
+        waiting.unlock = Some(attempt);
+        drop(waiting);
+        self.wake.notify_one();
+    }
+
+    /// The thread takes the attempt that waits, if the session still runs. From here on no other
+    /// attempt is taken until [`end_unlock`](Self::end_unlock).
+    fn take_unlock(&self) -> Option<UnlockAttempt> {
+        let mut waiting = lock(&self.waiting);
+        if waiting.phase != Phase::Running {
+            return None;
+        }
+        let attempt = waiting.unlock.take()?;
+        waiting.unlocking = true;
+        Some(attempt)
+    }
+
+    /// Puts the attempt where the platform's calls find it, for as long as the platform carries
+    /// it out.
+    fn start_running(&self, attempt: UnlockAttempt) {
+        *lock(&self.running) = Some(attempt);
+    }
+
+    /// Takes the attempt back from where the platform's calls found it.
+    fn stop_running(&self) -> Option<UnlockAttempt> {
+        lock(&self.running).take()
+    }
+
+    /// The attempt is over for the thread. Another may be taken, and the events that waited for it
+    /// are given up: they were meant for a screen that was locked, and the Mac may not be locked
+    /// any more. Gives the number of them.
+    fn end_unlock(&self) -> usize {
+        let mut waiting = lock(&self.waiting);
+        waiting.unlocking = false;
+        waiting.queue.drain(..).fold(0, |sum, queued| {
+            sum.saturating_add(match queued {
+                Queued::Batch(batch, ..) => batch.events.len(),
+                Queued::Lost(lost) => lost,
+            })
+        })
+    }
+
+    /// Whether the attempt that the platform carries out goes on.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownLink`] if no attempt is carried out.
+    pub(crate) fn unlock_live(&self) -> Result<bool, Error> {
+        lock(&self.running)
+            .as_ref()
+            .map(UnlockAttempt::is_live)
+            .ok_or(Error::UnknownLink)
+    }
+
+    /// Keeps the new box in the place of the one the attempt was given. It waits for the disk.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownLink`] if no attempt is carried out. What came of keeping is the `Ok`.
+    pub(crate) fn unlock_keep(
+        &self,
+        boxed: Vec<u8>,
+        sealed: SealedKey,
+    ) -> Result<Result<(), KeepError>, Error> {
+        lock(&self.running)
+            .as_mut()
+            .map(|attempt| attempt.keep(boxed, sealed))
+            .ok_or(Error::UnknownLink)
     }
 
     /// The session says whether the sound of the screen is wanted. The thread gives the platform
@@ -387,11 +530,24 @@ impl Input {
 /// and the picture it makes is not told what the viewer wants.
 pub(crate) struct Forward {
     input: Arc<Input>,
+    /// Whether the window is a private screen of a platform that lets another device unlock it.
+    /// Of any other window the session is told that its privacy is not in place, and an attempt
+    /// is not carried out.
+    unlocking: bool,
 }
 
 impl Forward {
     pub(crate) fn new(input: Arc<Input>) -> Self {
-        Self { input }
+        Self {
+            input,
+            unlocking: false,
+        }
+    }
+
+    /// The window is a private screen of a platform that lets another device unlock it.
+    pub(crate) fn unlocking(mut self, unlocking: bool) -> Self {
+        self.unlocking = unlocking;
+        self
     }
 }
 
@@ -418,6 +574,19 @@ impl SourceEvents for Forward {
 
     fn hear(&mut self, on: bool) {
         self.input.hear(on);
+    }
+
+    /// What the platform last said, unless the viewer lifted any of it: the answer is read from
+    /// memory, since the session's lock is held.
+    fn private_in_place(&mut self) -> bool {
+        self.unlocking && self.input.private_in_place()
+    }
+
+    fn unlock(&mut self, attempt: UnlockAttempt) {
+        if self.unlocking {
+            self.input.unlock(attempt);
+        }
+        // Otherwise the attempt is let go of, which reports that it failed.
     }
 
     fn ended(&mut self) {
@@ -453,6 +622,19 @@ impl Drop for Closing {
     fn drop(&mut self) {
         self.links.remove(self.number);
         self.input.close();
+    }
+}
+
+/// What the platform returned from `unlock` as the outcome that the session is told. A number that
+/// this version does not know, and a platform that could not be called, are a failure.
+fn outcome_of(code: Option<u32>) -> UnlockOutcome {
+    match code {
+        Some(UNLOCK_UNLOCKED) => UnlockOutcome::Unlocked,
+        Some(UNLOCK_REJECTED) => UnlockOutcome::Rejected,
+        Some(UNLOCK_STALE) => UnlockOutcome::Stale,
+        Some(UNLOCK_NOT_LOCKED) => UnlockOutcome::NotLocked,
+        Some(UNLOCK_NOT_PRIVATE) => UnlockOutcome::NotPrivate,
+        _ => UnlockOutcome::Failed,
     }
 }
 
@@ -533,6 +715,7 @@ impl Worker {
                     }
                 }
                 Step::Hear(on) => self.window.hear(on),
+                Step::Unlock => self.unlock(),
                 Step::Batch(batch, arrived, queued) => self.batch(&batch, arrived, queued),
                 Step::Lost(lost) => self.lost(lost),
                 Step::Over => {
@@ -555,6 +738,53 @@ impl Worker {
                 }
             }
         }
+    }
+
+    /// Has the window unlock the screen with the attempt that waits, and tells the session what
+    /// came of it. The call takes as long as the system takes, and nothing else is put to the
+    /// window meanwhile: what the viewer lifts is told when it returns, and the events that wait
+    /// are dropped, since they were meant for a locked screen. The thread is free for the next
+    /// attempt before the session is told, which is what lets the viewer try again at once.
+    fn unlock(&mut self) {
+        let Some(attempt) = self.input.take_unlock() else {
+            return;
+        };
+        let code = self.carry_out(attempt);
+        let attempt = self.input.stop_running();
+        let waited = self.input.end_unlock();
+        if let Some(attempt) = attempt {
+            attempt.done(outcome_of(code));
+        }
+        for _ in 0..waited.min(MOST_LOST_TOLD) {
+            (self.dropped)(Reason::Locked);
+        }
+    }
+
+    /// Gives the attempt to the platform and gives the number it returns, `None` if it was not
+    /// called. The attempt is where the platform's calls find it while it runs; if the platform
+    /// is not called it is let go of, which reports that it failed.
+    ///
+    /// What the platform is given is a copy, and the secret in it is wiped when the call returns.
+    /// The attempt itself is not borrowed from, since the platform's calls reach it too.
+    fn carry_out(&mut self, attempt: UnlockAttempt) -> Option<u32> {
+        let sealing = match attempt.sealing() {
+            Sealing::EciesP256 => SEALING_ECIES_P256,
+            Sealing::Other => return None,
+        };
+        let box_key = Zeroizing::new(*attempt.key().expose());
+        let boxed = attempt.boxed().to_vec();
+        let viewer_key = attempt.public().as_bytes().to_vec();
+        let target = *attempt.target().as_bytes();
+        let viewer = *attempt.viewer().as_bytes();
+        self.input.start_running(attempt);
+        self.window.unlock(&Attempt {
+            sealing,
+            box_key: &box_key[..],
+            boxed: &boxed,
+            viewer_key: &viewer_key,
+            target: &target,
+            viewer: &viewer,
+        })
     }
 
     /// Puts the events of a batch to the window, as far as the rules allow.
@@ -811,8 +1041,20 @@ mod tests {
 
     impl Input {
         /// How many places in the queue are taken.
-        fn queued(&self) -> usize {
+        pub(crate) fn queued(&self) -> usize {
             lock(&self.waiting).queue.len()
+        }
+
+        /// How many events wait in the queue, counting those that were lost to a full queue.
+        pub(crate) fn queued_events(&self) -> usize {
+            lock(&self.waiting)
+                .queue
+                .iter()
+                .map(|queued| match queued {
+                    Queued::Batch(batch, ..) => batch.events.len(),
+                    Queued::Lost(lost) => *lost,
+                })
+                .sum()
         }
     }
 
@@ -2997,6 +3239,34 @@ mod tests {
         // The platform's `lift` is for a display that it gave as private. The session hands no word
         // over for any other, and the thread does not pass one on if it is handed.
         assert_eq!(served.lifts(), Vec::<u32>::new());
+        served.platform.assert_no_complaints();
+    }
+
+    #[test]
+    fn the_privacy_is_in_place_as_the_platform_last_said_and_only_while_the_viewer_lifts_none() {
+        let mut served = Served::private(TIMING);
+        let mut forward = Forward::new(Arc::clone(&served.input)).unlocking(true);
+        // A platform that has said nothing is not believed.
+        assert!(!forward.private_in_place());
+        served.input.set_in_place(true);
+        assert!(forward.private_in_place());
+        // Whatever the platform said, what the viewer lifted is not in place, until it is put back.
+        for (screen, input) in [(true, false), (false, true), (true, true)] {
+            served.lifts_up(screen, input);
+            assert!(
+                !forward.private_in_place(),
+                "lifted: screen {screen}, input {input}"
+            );
+            served.lifts_up(false, false);
+            assert!(forward.private_in_place());
+        }
+        // The latest word of the platform counts.
+        served.input.set_in_place(false);
+        assert!(!forward.private_in_place());
+        // A window that does not let another device unlock it is never in place.
+        served.input.set_in_place(true);
+        assert!(!Forward::new(Arc::clone(&served.input)).private_in_place());
+        served.close();
         served.platform.assert_no_complaints();
     }
 }

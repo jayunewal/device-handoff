@@ -821,6 +821,29 @@ async fn a_person_at_the_ipad_who_does_not_answer_in_time_has_refused() {
     assert_eq!(rig.keys.taken_back(), 1);
 }
 
+#[tokio::test]
+async fn a_person_at_the_ipad_who_has_not_answered_when_the_mac_stops_waiting_is_not_asked_again() {
+    let rig = Rig::new().await;
+    // An answer first, so that the connection is there from an earlier call and is reused.
+    rig.mac.node.unlock_key(&rig.ipad.id, false).await.unwrap();
+    assert_eq!(rig.keys.asked(), [(rig.mac.id, false)]);
+
+    // The person is still deciding when the Mac stops waiting. A second question on a new
+    // connection would ask them again and double the wait, so the Mac gives up instead.
+    rig.keys.answer(None);
+    let asked = rig
+        .mac
+        .node
+        .unlock_key_within(&rig.ipad.id, true, Duration::from_millis(300))
+        .await;
+    assert!(matches!(asked, Err(Error::Timeout(_))), "{asked:?}");
+    assert_eq!(
+        rig.keys.asked(),
+        [(rig.mac.id, false), (rig.mac.id, true)],
+        "the person was asked again"
+    );
+}
+
 // What an offer says.
 
 /// The sessions of a Mac that can be unlocked, over the list `trust` of its paired devices.

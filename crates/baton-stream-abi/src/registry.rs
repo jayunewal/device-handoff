@@ -24,7 +24,7 @@ use crate::{
     input::Timing,
     platform::{Calls, SharerCalls, inside_call},
     sharer::{AbiSharer, Picks, SourceLink},
-    viewer::AbiViewer,
+    viewer::{AbiViewer, Asking},
 };
 
 /// Why a call of the interface failed. The code is what the platform is given.
@@ -82,8 +82,12 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// What a link stands for.
 enum Linked {
-    /// The screen of a window that is shown here: a decoder says that it failed with it.
-    Screen(ScreenLink),
+    /// The screen of a window that is shown here: a decoder says that it failed with it, a speaker
+    /// that it cannot play, and the question that asks for a face is answered with it.
+    Screen {
+        link: ScreenLink,
+        asking: Arc<Asking>,
+    },
     /// The session of a window that is shared from here: the platform's capture uses it.
     Source(Arc<SourceLink>),
 }
@@ -108,8 +112,15 @@ struct LinkTable {
 
 impl Links {
     /// Opens a link for a screen and gives its number, which is not 0.
+    #[cfg(test)]
     pub(crate) fn add(&self, link: ScreenLink) -> u64 {
-        self.insert(Linked::Screen(link))
+        self.add_asking(link, Arc::default())
+    }
+
+    /// Opens a link for a screen whose questions to unlock wait in `asking`, and gives its
+    /// number, which is not 0.
+    pub(crate) fn add_asking(&self, link: ScreenLink, asking: Arc<Asking>) -> u64 {
+        self.insert(Linked::Screen { link, asking })
     }
 
     /// Opens a link for a window that is shared and gives its number, which is not 0.
@@ -133,7 +144,15 @@ impl Links {
     /// The screen's link that is open under `number`.
     fn screen(&self, number: u64) -> Option<ScreenLink> {
         match lock(&self.table).open.get(&number) {
-            Some(Linked::Screen(link)) => Some(link.clone()),
+            Some(Linked::Screen { link, .. }) => Some(link.clone()),
+            _ => None,
+        }
+    }
+
+    /// The question that waits for an answer on the screen's link that is open under `number`.
+    fn asking(&self, number: u64) -> Option<Arc<Asking>> {
+        match lock(&self.table).open.get(&number) {
+            Some(Linked::Screen { asking, .. }) => Some(Arc::clone(asking)),
             _ => None,
         }
     }
@@ -283,6 +302,32 @@ impl Registry {
             return Err(Error::Reentrant);
         }
         self.links.source(link).ok_or(Error::UnknownLink)
+    }
+
+    /// The session of the window that `link` was given for, for the three functions that the
+    /// platform may also call from inside a call of the vtable: the word that the privacy of the
+    /// screen is in place, and the two that an unlock uses. They are called from the thread that
+    /// serves the window, which holds no lock of the session, and they take none.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownLink`] if no session is open under that number.
+    pub(crate) fn source_exempt(&self, link: u64) -> Result<Arc<SourceLink>, Error> {
+        self.links.source(link).ok_or(Error::UnknownLink)
+    }
+
+    /// The question that waits for an answer on the screen that `link` was given for, for the
+    /// functions that answer it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Reentrant`] if this thread is inside a call of the platform, and
+    /// [`Error::UnknownLink`] if no screen is open under that number.
+    pub(crate) fn screen_asking(&self, link: u64) -> Result<Arc<Asking>, Error> {
+        if inside_call() {
+            return Err(Error::Reentrant);
+        }
+        self.links.asking(link).ok_or(Error::UnknownLink)
     }
 
     /// How many links are open: the screens and the windows that were given to the platform and

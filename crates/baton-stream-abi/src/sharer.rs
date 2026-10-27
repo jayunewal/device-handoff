@@ -34,16 +34,19 @@ use std::{
     time::Duration,
 };
 
-use baton_app::windows::{
-    PickedWindow, PlatformError, Privacy, ScreenError, SharingFailure, WindowSharer,
+use baton_app::{
+    unlock::{Password, UnlockSetup, UnlockSetupError},
+    windows::{PickedWindow, PlatformError, Privacy, ScreenError, SharingFailure, WindowSharer},
 };
 use baton_core::{
-    streaming::{NotSent, Picture, SoundPacket, SourceEvents, SourceHandle, Takes},
+    NewUnlock,
+    streaming::{KeepError, NotSent, Picture, SoundPacket, SourceEvents, SourceHandle, Takes},
     util::BoxFuture,
 };
 use baton_proto::{
     limits::{MAX_FRAME_RATE, MAX_PICTURE_EDGE},
     stream::Codec,
+    unlock::SealedKey,
 };
 use baton_stream::{
     control::{Config as Format, PauseReason, SilentReason, Sound},
@@ -61,7 +64,10 @@ use crate::{
         SILENT_NO_PERMISSION, SILENT_OTHER, SOUND_DROPPED, SOUND_OVER, SOUND_SENT, SOUND_TOO_LARGE,
     },
     input::{Closing, Dropped, Forward, Input, Timing, Worker},
-    platform::{Chosen, Failure, PickedHandle, ScreenFailure, SharerCalls, Takes as WhatItTakes},
+    platform::{
+        Chosen, Failure, PickedHandle, ScreenFailure, Setup, SetupFailure, SharerCalls,
+        Takes as WhatItTakes,
+    },
     registry::{Links, lock},
 };
 
@@ -79,6 +85,9 @@ const NOT_STARTED: &str = "This device could not start sharing the window.";
 
 /// What is said when the platform could not give its screen and gave no reason.
 const NO_SCREEN: &str = "This device could not give its screen.";
+
+/// What the person is told when the platform could not set the unlock up and gave no reason.
+const NO_UNLOCK_SETUP: &str = "This device could not set the unlock up.";
 
 /// What the platform shares with the windows that it picks.
 pub(crate) struct Shared {
@@ -249,6 +258,37 @@ impl WindowSharer for AbiSharer {
         self.shared.calls.can_screen()
     }
 
+    /// A platform that gave all of the functions of an unlock can be unlocked by another device.
+    fn can_be_unlocked(&self) -> bool {
+        self.shared.calls.can_unlock()
+    }
+
+    fn check_password(&self, password: &Password) -> Result<(), UnlockSetupError> {
+        self.shared
+            .calls
+            .unlock_check(password.expose())
+            .map_err(setup_error)
+    }
+
+    fn unlock_setup(&self, setup: UnlockSetup) -> Result<NewUnlock, UnlockSetupError> {
+        let UnlockSetup {
+            password,
+            target,
+            viewer,
+            key,
+        } = setup;
+        // The password lives as long as this function, and is wiped when it is dropped.
+        self.shared
+            .calls
+            .unlock_setup(&Setup {
+                password: password.expose(),
+                target: target.as_bytes(),
+                viewer: viewer.as_bytes(),
+                key: &key,
+            })
+            .map_err(setup_error)
+    }
+
     fn can_lift(&self) -> bool {
         self.shared.calls.can_lift()
     }
@@ -284,6 +324,17 @@ impl WindowSharer for AbiSharer {
                 Err(_) => Err(ScreenError::Failed(PlatformError::new(NO_SCREEN))),
             }
         })
+    }
+}
+
+/// Why the platform did not accept a password or did not make the box, as the app is told.
+fn setup_error(failure: SetupFailure) -> UnlockSetupError {
+    match failure {
+        SetupFailure::WrongPassword => UnlockSetupError::WrongPassword,
+        SetupFailure::Unsupported => UnlockSetupError::Unsupported,
+        SetupFailure::Failed(Failure(sentence)) => UnlockSetupError::Failed(PlatformError::new(
+            sentence.unwrap_or_else(|| NO_UNLOCK_SETUP.to_owned()),
+        )),
     }
 }
 
@@ -375,8 +426,13 @@ impl PickedWindow for AbiPicked {
         (self.width, self.height)
     }
 
+    /// Only a private screen of a platform that can unlock is told to unlock, and asked whether
+    /// its privacy is in place.
     fn events(&mut self) -> Box<dyn SourceEvents> {
-        Box::new(Forward::new(Arc::clone(&self.input)))
+        Box::new(
+            Forward::new(Arc::clone(&self.input))
+                .unlocking(self.private && self.shared.calls.can_unlock()),
+        )
     }
 
     fn prepare(&mut self, takes: &Takes) -> Option<Format> {
@@ -825,6 +881,35 @@ impl SourceLink {
             // has. The packet is lost, which a packet of sound may be without anything being wrong.
             Ok(None) | Err(_) => SoundOutcome::Dropped,
         }
+    }
+
+    /// The platform says whether the cover of the screens, the hold of the keys and the pointer,
+    /// and the guard that locks the device if the app dies are all in place.
+    pub(crate) fn set_private(&self, in_place: bool) {
+        self.input.set_in_place(in_place);
+    }
+
+    /// Whether the attempt to unlock the screen that the platform carries out goes on.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownLink`] if the platform carries out no attempt.
+    pub(crate) fn unlock_live(&self) -> Result<bool, Error> {
+        self.input.unlock_live()
+    }
+
+    /// Keeps the new box of the attempt that the platform carries out. It waits for the disk.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnknownLink`] if the platform carries out no attempt; what came of keeping the
+    /// box is the `Ok`.
+    pub(crate) fn unlock_keep(
+        &self,
+        boxed: Vec<u8>,
+        sealed: SealedKey,
+    ) -> Result<Result<(), KeepError>, Error> {
+        self.input.unlock_keep(boxed, sealed)
     }
 
     /// Ends the session. With a sentence, something went wrong and the person is told what; with

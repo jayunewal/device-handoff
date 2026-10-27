@@ -27,27 +27,32 @@ use std::{
 
 use baton_proto::limits::{
     MAX_CODECS, MAX_FRAME_RATE, MAX_NAME_BYTES, MAX_PICTURE_BYTES, MAX_PICTURE_EDGE,
-    MAX_SOUND_CHANNELS, MAX_SOUND_PACKET_BYTES, MAX_SOUND_PACKET_SAMPLES, MAX_SOUND_RATE,
-    MAX_STREAM_TITLE_BYTES, MAX_WINDOW_EDGE, MIN_SOUND_PACKET_SAMPLES, MIN_SOUND_RATE,
+    MAX_SEALED_KEY_BYTES, MAX_SEALING_KEY_BYTES, MAX_SOUND_CHANNELS, MAX_SOUND_PACKET_BYTES,
+    MAX_SOUND_PACKET_SAMPLES, MAX_SOUND_RATE, MAX_STREAM_TITLE_BYTES, MAX_WINDOW_EDGE,
+    MIN_SOUND_PACKET_SAMPLES, MIN_SOUND_RATE,
 };
 use baton_stream_abi::{
     abi::{
         self, BatonBytes, BatonDecoderState, BatonFormat, BatonFrame, BatonFront, BatonGeometry,
         BatonLimits, BatonMessage, BatonPicked, BatonPicture, BatonPlay, BatonPost, BatonRect,
         BatonScreen, BatonSharerVTable, BatonSound, BatonSoundPacket, BatonSourceMessage,
-        BatonSurroundings, BatonTakes, BatonViewerVTable, BatonWindow, CancelPickFn, ControlFn,
-        DecodeFn, EndedFn, HearFn, LeaveFn, LiftFn, LimitsFn, OpenFn, PickFn, PlayFn, PostFn,
-        PrepareFn, ReleaseFn, ScreenFn, ShowFn, SoundFn, SourceFn, StartFn, StateFn, StoppedFn,
-        SurroundingsFn,
+        BatonSurroundings, BatonTakes, BatonUnlock, BatonUnlockBox, BatonUnlockKey,
+        BatonUnlockMade, BatonUnlockQuestion, BatonUnlockSetup, BatonUnlockSource,
+        BatonViewerVTable, BatonWindow, CancelPickFn, ControlFn, DecodeFn, EndedFn, HearFn,
+        LeaveFn, LiftFn, LimitsFn, OpenFn, PickFn, PlayFn, PostFn, PrepareFn, ReleaseFn, ScreenFn,
+        ShowFn, SoundFn, SourceFn, StartFn, StateFn, StoppedFn, SurroundingsFn, UnlockCancelFn,
+        UnlockCheckFn, UnlockFn, UnlockKeyFn, UnlockOpenFn, UnlockSetupFn,
     },
     exports::{
         baton_stream_abi_version, baton_stream_link_decode_failed, baton_stream_link_sound_failed,
         baton_stream_pick_done, baton_stream_register_sharer, baton_stream_register_viewer,
         baton_stream_source_begin, baton_stream_source_cancel, baton_stream_source_changed,
         baton_stream_source_clock, baton_stream_source_end, baton_stream_source_new_epoch,
-        baton_stream_source_pause, baton_stream_source_recovery_pending,
-        baton_stream_source_resume, baton_stream_source_sent, baton_stream_source_sound,
-        baton_stream_source_sound_begin, baton_stream_source_sound_silent,
+        baton_stream_source_pause, baton_stream_source_private,
+        baton_stream_source_recovery_pending, baton_stream_source_resume, baton_stream_source_sent,
+        baton_stream_source_sound, baton_stream_source_sound_begin,
+        baton_stream_source_sound_silent, baton_stream_unlock_declined, baton_stream_unlock_keep,
+        baton_stream_unlock_live, baton_stream_unlock_opened,
     },
 };
 
@@ -479,6 +484,7 @@ fn rust_structs() -> Vec<RustStruct> {
     let mut all = structs_for_showing();
     all.extend(structs_for_sharing());
     all.extend(structs_for_sound());
+    all.extend(structs_for_unlocking());
     all.extend(tables_of_functions());
     all
 }
@@ -666,6 +672,64 @@ fn structs_for_sound() -> Vec<RustStruct> {
     ]
 }
 
+/// The structs for unlocking a locked screen from the device that shows it, on both sides.
+fn structs_for_unlocking() -> Vec<RustStruct> {
+    vec![
+        rust_struct!(BatonUnlockSetup {
+            size: u32 = "uint32_t",
+            sealing: u32 = "uint32_t",
+            password: BatonBytes = "BatonBytes",
+            target: BatonBytes = "BatonBytes",
+            viewer: BatonBytes = "BatonBytes",
+            viewer_key: BatonBytes = "BatonBytes",
+        }),
+        rust_struct!(BatonUnlockMade {
+            size: u32 = "uint32_t",
+            box_len: u32 = "uint32_t",
+            sealed_len: u32 = "uint32_t",
+            reserved: u32 = "uint32_t",
+            boxed: *mut u8 = "uint8_t *",
+            sealed: *mut u8 = "uint8_t *",
+        }),
+        rust_struct!(BatonUnlock {
+            size: u32 = "uint32_t",
+            sealing: u32 = "uint32_t",
+            box_key: BatonBytes = "BatonBytes",
+            boxed: BatonBytes = "BatonBytes",
+            viewer_key: BatonBytes = "BatonBytes",
+            target: BatonBytes = "BatonBytes",
+            viewer: BatonBytes = "BatonBytes",
+        }),
+        rust_struct!(BatonUnlockBox {
+            size: u32 = "uint32_t",
+            reserved: u32 = "uint32_t",
+            boxed: BatonBytes = "BatonBytes",
+            sealed: BatonBytes = "BatonBytes",
+        }),
+        rust_struct!(BatonUnlockSource {
+            size: u32 = "uint32_t",
+            renew: u32 = "uint32_t",
+            id: BatonBytes = "BatonBytes",
+            name: BatonBytes = "BatonBytes",
+        }),
+        rust_struct!(BatonUnlockKey {
+            size: u32 = "uint32_t",
+            sealing: u32 = "uint32_t",
+            len: u32 = "uint32_t",
+            reserved: u32 = "uint32_t",
+            key: *mut u8 = "uint8_t *",
+        }),
+        rust_struct!(BatonUnlockQuestion {
+            size: u32 = "uint32_t",
+            reserved: u32 = "uint32_t",
+            number: u64 = "uint64_t",
+            sealed: BatonBytes = "BatonBytes",
+            id: BatonBytes = "BatonBytes",
+            name: BatonBytes = "BatonBytes",
+        }),
+    ]
+}
+
 /// The tables of functions that the platform registers.
 fn tables_of_functions() -> Vec<RustStruct> {
     vec![
@@ -684,6 +748,9 @@ fn tables_of_functions() -> Vec<RustStruct> {
             sound: Option<SoundFn> = "BatonSoundFn",
             play: Option<PlayFn> = "BatonPlayFn",
             stopped: Option<StoppedFn> = "BatonStoppedFn",
+            unlock_key: Option<UnlockKeyFn> = "BatonUnlockKeyFn",
+            unlock_open: Option<UnlockOpenFn> = "BatonUnlockOpenFn",
+            unlock_cancel: Option<UnlockCancelFn> = "BatonUnlockCancelFn",
         }),
         rust_struct!(BatonSharerVTable {
             version: u32 = "uint32_t",
@@ -702,6 +769,9 @@ fn tables_of_functions() -> Vec<RustStruct> {
             lift: Option<LiftFn> = "BatonLiftFn",
             hear: Option<HearFn> = "BatonHearFn",
             leave: Option<LeaveFn> = "BatonLeaveFn",
+            unlock_check: Option<UnlockCheckFn> = "BatonUnlockCheckFn",
+            unlock_setup: Option<UnlockSetupFn> = "BatonUnlockSetupFn",
+            unlock: Option<UnlockFn> = "BatonUnlockFn",
         }),
     ]
 }
@@ -762,6 +832,19 @@ fn rust_fn_types() -> Vec<CFunction> {
             is unsafe extern "C" fn(*mut c_void, *const BatonPlay)),
         rust_fn_type!(StoppedFn as "BatonStoppedFn": "void" ["void *", "uint32_t"]
             is unsafe extern "C" fn(*mut c_void, u32)),
+        rust_fn_type!(UnlockKeyFn as "BatonUnlockKeyFn": "int32_t"
+            ["void *", "const BatonUnlockSource *", "BatonUnlockKey *", "BatonMessage *"]
+            is unsafe extern "C" fn(
+                *mut c_void,
+                *const BatonUnlockSource,
+                *mut BatonUnlockKey,
+                *mut BatonMessage,
+            ) -> i32),
+        rust_fn_type!(UnlockOpenFn as "BatonUnlockOpenFn": "int32_t"
+            ["void *", "const BatonUnlockQuestion *"]
+            is unsafe extern "C" fn(*mut c_void, *const BatonUnlockQuestion) -> i32),
+        rust_fn_type!(UnlockCancelFn as "BatonUnlockCancelFn": "void" ["void *"]
+            is unsafe extern "C" fn(*mut c_void)),
         rust_fn_type!(ControlFn as "BatonControlFn": "uint32_t" ["void *"]
             is unsafe extern "C" fn(*mut c_void) -> u32),
         rust_fn_type!(PickFn as "BatonPickFn": "int32_t" ["void *", "uint64_t", "BatonMessage *"]
@@ -788,10 +871,27 @@ fn rust_fn_types() -> Vec<CFunction> {
             is unsafe extern "C" fn(*mut c_void, u32)),
         rust_fn_type!(LeaveFn as "BatonLeaveFn": "void" ["void *"]
             is unsafe extern "C" fn(*mut c_void)),
+        rust_fn_type!(UnlockCheckFn as "BatonUnlockCheckFn": "int32_t"
+            ["void *", "const BatonBytes *", "BatonMessage *"]
+            is unsafe extern "C" fn(*mut c_void, *const BatonBytes, *mut BatonMessage) -> i32),
+        rust_fn_type!(UnlockSetupFn as "BatonUnlockSetupFn": "int32_t"
+            ["void *", "const BatonUnlockSetup *", "BatonUnlockMade *", "BatonMessage *"]
+            is unsafe extern "C" fn(
+                *mut c_void,
+                *const BatonUnlockSetup,
+                *mut BatonUnlockMade,
+                *mut BatonMessage,
+            ) -> i32),
+        rust_fn_type!(UnlockFn as "BatonUnlockFn": "uint32_t" ["void *", "const BatonUnlock *"]
+            is unsafe extern "C" fn(*mut c_void, *const BatonUnlock) -> u32),
     ]
 }
 
 /// The functions that the library exports, as the header declares them.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one line for each function of the interface"
+)]
 fn rust_exports() -> Vec<CFunction> {
     exports_by_name();
     vec![
@@ -803,6 +903,16 @@ fn rust_exports() -> Vec<CFunction> {
         ),
         function("baton_stream_link_decode_failed", "int32_t", &["uint64_t"]),
         function("baton_stream_link_sound_failed", "int32_t", &["uint64_t"]),
+        function(
+            "baton_stream_unlock_opened",
+            "int32_t",
+            &["uint64_t", "uint64_t", "const BatonBytes *"],
+        ),
+        function(
+            "baton_stream_unlock_declined",
+            "int32_t",
+            &["uint64_t", "uint64_t", "uint32_t"],
+        ),
         function(
             "baton_stream_register_sharer",
             "int32_t",
@@ -880,6 +990,21 @@ fn rust_exports() -> Vec<CFunction> {
             "int32_t",
             &["uint64_t", "const BatonBytes *"],
         ),
+        function(
+            "baton_stream_source_private",
+            "int32_t",
+            &["uint64_t", "uint32_t"],
+        ),
+        function(
+            "baton_stream_unlock_live",
+            "int32_t",
+            &["uint64_t", "uint32_t *"],
+        ),
+        function(
+            "baton_stream_unlock_keep",
+            "int32_t",
+            &["uint64_t", "const BatonUnlockBox *", "uint32_t *"],
+        ),
     ]
 }
 
@@ -890,6 +1015,8 @@ fn exports_by_name() {
     let _: unsafe extern "C" fn(*const BatonViewerVTable) -> i32 = baton_stream_register_viewer;
     let _: extern "C" fn(u64) -> i32 = baton_stream_link_decode_failed;
     let _: extern "C" fn(u64) -> i32 = baton_stream_link_sound_failed;
+    let _: unsafe extern "C" fn(u64, u64, *const BatonBytes) -> i32 = baton_stream_unlock_opened;
+    let _: extern "C" fn(u64, u64, u32) -> i32 = baton_stream_unlock_declined;
     let _: unsafe extern "C" fn(*const BatonSharerVTable) -> i32 = baton_stream_register_sharer;
     let _: unsafe extern "C" fn(u64, *const BatonPicked, *const BatonBytes) -> i32 =
         baton_stream_pick_done;
@@ -908,6 +1035,10 @@ fn exports_by_name() {
     let _: unsafe extern "C" fn(u64, *const BatonSoundPacket, *mut u32, *mut u64) -> i32 =
         baton_stream_source_sound;
     let _: unsafe extern "C" fn(u64, *const BatonBytes) -> i32 = baton_stream_source_end;
+    let _: extern "C" fn(u64, u32) -> i32 = baton_stream_source_private;
+    let _: unsafe extern "C" fn(u64, *mut u32) -> i32 = baton_stream_unlock_live;
+    let _: unsafe extern "C" fn(u64, *const BatonUnlockBox, *mut u32) -> i32 =
+        baton_stream_unlock_keep;
 }
 
 /// The numbers of `abi` by the name that the header gives them. `ABI_VERSION` is the one whose
@@ -921,6 +1052,10 @@ macro_rules! numbers {
     };
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one line for each number of the interface"
+)]
 fn rust_numbers() -> Vec<(String, i64)> {
     numbers![
         OK,
@@ -1012,6 +1147,34 @@ fn rust_numbers() -> Vec<(String, i64)> {
         MOD_OPTION,
         MOD_COMMAND,
         MOD_CAPS_LOCK,
+        SEALING_ECIES_P256,
+        PASSWORD_WRONG,
+        PASSWORD_UNSUPPORTED,
+        UNLOCK_UNLOCKED,
+        UNLOCK_REJECTED,
+        UNLOCK_STALE,
+        UNLOCK_FAILED,
+        UNLOCK_NOT_LOCKED,
+        UNLOCK_NOT_PRIVATE,
+        KEEP_KEPT,
+        KEEP_OVER,
+        KEEP_TWICE,
+        KEEP_INVALID,
+        KEEP_CHANGED,
+        KEEP_UNWRITABLE,
+        KEEP_OTHER,
+        UNLOCK_BOX_MAX,
+        UNLOCK_SEALED_MAX,
+        UNLOCK_KEY_MAX,
+        UNLOCK_PASSWORD_MAX,
+        DEVICE_ID_BYTES,
+        BOX_KEY_BYTES,
+        KEY_REFUSED,
+        KEY_BLOCKED,
+        KEY_UNSUPPORTED,
+        FACE_DECLINED,
+        FACE_KEY_LOST,
+        FACE_FAILED,
     ]
 }
 
@@ -1204,6 +1367,10 @@ fn the_header_says_what_the_protocol_allows() {
         2,
         "the header's largest packet of sound is not the protocol's"
     );
+    // What an unlock holds is held to the same limits on the two sides: the keys that the protocol
+    // carries are the ones that the platform makes room for.
+    assert_eq!(abi::UNLOCK_SEALED_MAX as usize, MAX_SEALED_KEY_BYTES);
+    assert_eq!(abi::UNLOCK_KEY_MAX as usize, MAX_SEALING_KEY_BYTES);
     // The sentences that the person is shown are cut to the length of every message.
     assert_eq!(
         text.matches(&format!(
@@ -1320,6 +1487,46 @@ static void stopped(void *screen, uint32_t why) {
            why == BATON_SILENT_OTHER);
 }
 
+static uint64_t asked_number = 0;
+
+static int32_t unlock_key(void *context, const BatonUnlockSource *source, BatonUnlockKey *key,
+                          BatonMessage *message) {
+    (void)context;
+    if (source->id.len != BATON_DEVICE_ID_BYTES || source->name.len == 0 || message->cap == 0) {
+        return BATON_E_ARGUMENT;
+    }
+    if (source->renew == 1 && source->id.ptr[0] == 0) {
+        return BATON_KEY_REFUSED;
+    }
+    if (source->id.ptr[0] == 1) {
+        return BATON_KEY_BLOCKED;
+    }
+    if (source->id.ptr[0] == 2) {
+        return BATON_KEY_UNSUPPORTED;
+    }
+    key->sealing = BATON_SEALING_ECIES_P256;
+    key->len = 65;
+    key->reserved = 0;
+    key->key[0] = 4;
+    return BATON_OK;
+}
+
+static int32_t unlock_open(void *screen, const BatonUnlockQuestion *question) {
+    (void)screen;
+    if (question->number == 0 || question->sealed.len == 0 ||
+        question->id.len != BATON_DEVICE_ID_BYTES) {
+        return BATON_E_ARGUMENT;
+    }
+    asked_number = question->number;
+    (void)question->name.len;
+    return BATON_OK;
+}
+
+static void unlock_cancel(void *screen) {
+    (void)screen;
+    asked_number = 0;
+}
+
 static int32_t register_viewer(void) {
     BatonViewerVTable table;
     table.version = BATON_STREAM_ABI_VERSION;
@@ -1336,6 +1543,9 @@ static int32_t register_viewer(void) {
     table.sound = sound;
     table.play = play;
     table.stopped = stopped;
+    table.unlock_key = unlock_key;
+    table.unlock_open = unlock_open;
+    table.unlock_cancel = unlock_cancel;
     (void)baton_stream_link_decode_failed(1);
     (void)baton_stream_link_sound_failed(1);
     return baton_stream_register_viewer(&table);
@@ -1374,9 +1584,12 @@ static int32_t prepare(void *picked, const BatonTakes *takes, BatonFormat *forma
     return BATON_OK;
 }
 
+static uint64_t window_link = 0;
+
 static int32_t start(void *picked, uint64_t link, BatonMessage *message) {
     (void)picked;
     (void)message;
+    window_link = link;
     return link == 0 ? BATON_E_PLATFORM : BATON_OK;
 }
 
@@ -1465,6 +1678,75 @@ static void hear(void *picked, uint32_t on) {
     listening = on;
 }
 
+static int32_t unlock_check(void *context, const BatonBytes *password, BatonMessage *message) {
+    (void)context;
+    if (password->len == 0 || password->len > BATON_UNLOCK_PASSWORD_MAX || message->cap == 0) {
+        return BATON_E_ARGUMENT;
+    }
+    if (password->ptr[0] == 'x') {
+        return BATON_PASSWORD_WRONG;
+    }
+    return password->ptr[0] == 'y' ? BATON_PASSWORD_UNSUPPORTED : BATON_OK;
+}
+
+static int32_t unlock_setup(void *context, const BatonUnlockSetup *setup, BatonUnlockMade *made,
+                            BatonMessage *message) {
+    (void)context;
+    (void)message;
+    if (setup->sealing != BATON_SEALING_ECIES_P256) {
+        return BATON_PASSWORD_UNSUPPORTED;
+    }
+    if (setup->target.len != BATON_DEVICE_ID_BYTES || setup->viewer.len != BATON_DEVICE_ID_BYTES ||
+        setup->viewer_key.len != 65 || setup->password.len > BATON_UNLOCK_PASSWORD_MAX) {
+        return BATON_E_ARGUMENT;
+    }
+    if (made->boxed == NULL || made->sealed == NULL) {
+        return BATON_E_ARGUMENT;
+    }
+    made->boxed[0] = 1;
+    made->box_len = 1;
+    made->sealed[0] = 1;
+    made->sealed_len = 1;
+    made->reserved = 0;
+    return BATON_OK;
+}
+
+static uint32_t screen_locked = 1;
+static uint32_t cover_up = 1;
+
+static uint32_t unlock_screen(void *picked, const BatonUnlock *attempt) {
+    static const uint8_t new_box[] = {1, 2, 3};
+    static const uint8_t new_sealed[] = {4, 5, 6};
+    BatonUnlockBox next;
+    uint32_t live = 0;
+    uint32_t kept = BATON_KEEP_OTHER;
+    (void)picked;
+    if (baton_stream_unlock_live(window_link, &live) != BATON_OK || live == 0) {
+        return BATON_UNLOCK_FAILED;
+    }
+    if (attempt->sealing != BATON_SEALING_ECIES_P256 ||
+        attempt->box_key.len != BATON_BOX_KEY_BYTES || attempt->boxed.len == 0) {
+        return BATON_UNLOCK_STALE;
+    }
+    next.size = (uint32_t)sizeof next;
+    next.reserved = 0;
+    next.boxed.ptr = new_box;
+    next.boxed.len = sizeof new_box;
+    next.sealed.ptr = new_sealed;
+    next.sealed.len = sizeof new_sealed;
+    if (baton_stream_unlock_keep(window_link, &next, &kept) != BATON_OK ||
+        kept != BATON_KEEP_KEPT) {
+        return BATON_UNLOCK_FAILED;
+    }
+    if (screen_locked == 0) {
+        return BATON_UNLOCK_NOT_LOCKED;
+    }
+    if (cover_up == 0) {
+        return BATON_UNLOCK_NOT_PRIVATE;
+    }
+    return screen_locked == 2 ? BATON_UNLOCK_REJECTED : BATON_UNLOCK_UNLOCKED;
+}
+
 static int32_t register_sharer(void) {
     BatonSharerVTable table;
     table.version = BATON_STREAM_ABI_VERSION;
@@ -1483,6 +1765,9 @@ static int32_t register_sharer(void) {
     table.lift = lift;
     table.hear = hear;
     table.leave = window_left;
+    table.unlock_check = unlock_check;
+    table.unlock_setup = unlock_setup;
+    table.unlock = unlock_screen;
     return baton_stream_register_sharer(&table);
 }
 
@@ -1493,6 +1778,30 @@ int32_t register_platform(void) {
     }
     status = register_viewer();
     return status == BATON_OK ? register_sharer() : status;
+}
+
+/* What the platform says as it goes about the privacy of the screen it gave. */
+int32_t say_private(uint64_t link, uint32_t in_place) {
+    return baton_stream_source_private(link, in_place == 1 ? 1u : 0u);
+}
+
+/* What the platform does when the face of the person was looked at: it opened the key, or not. */
+int32_t answer_face(uint64_t link, uint32_t how) {
+    static const uint8_t key[BATON_BOX_KEY_BYTES] = {0};
+    BatonBytes opened;
+    if (asked_number == 0) {
+        return BATON_E_UNKNOWN_LINK;
+    }
+    if (how == 0) {
+        opened.ptr = key;
+        opened.len = sizeof key;
+        return baton_stream_unlock_opened(link, asked_number, &opened);
+    }
+    if (how == 1) {
+        return baton_stream_unlock_declined(link, asked_number, BATON_FACE_DECLINED);
+    }
+    return baton_stream_unlock_declined(
+        link, asked_number, how == 2 ? BATON_FACE_KEY_LOST : BATON_FACE_FAILED);
 }
 
 /* What the picker of the system does when the person has chosen, given up, or it failed. */
@@ -1786,6 +2095,10 @@ fn the_platform_sample_uses_every_function_of_the_header() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one row for each kind of number that a compiler is shown wrong"
+)]
 fn a_compiler_refuses_a_header_whose_numbers_are_wrong() {
     // The test above is only worth something if a compiler does look at the numbers.
     let Some(found) = compilers("CC", &["cc", "gcc", "clang"]) else {
@@ -1837,16 +2150,32 @@ fn a_compiler_refuses_a_header_whose_numbers_are_wrong() {
             "offsetof(BatonSharerVTable, leave) == 104",
         ),
         (
-            "sizeof(BatonSharerVTable) == 120",
-            "sizeof(BatonSharerVTable) == 112",
+            "sizeof(BatonSharerVTable) == 144",
+            "sizeof(BatonSharerVTable) == 136",
+        ),
+        (
+            "offsetof(BatonSharerVTable, unlock) == 136",
+            "offsetof(BatonSharerVTable, unlock) == 128",
+        ),
+        (
+            "sizeof(BatonUnlockSetup) == 72",
+            "sizeof(BatonUnlockSetup) == 64",
+        ),
+        (
+            "offsetof(BatonUnlockQuestion, sealed) == 16",
+            "offsetof(BatonUnlockQuestion, sealed) == 12",
+        ),
+        (
+            "offsetof(BatonViewerVTable, unlock_open) == 112",
+            "offsetof(BatonViewerVTable, unlock_open) == 104",
         ),
         (
             "offsetof(BatonViewerVTable, play) == 88",
             "offsetof(BatonViewerVTable, play) == 80",
         ),
         (
+            "sizeof(BatonViewerVTable) == 128",
             "sizeof(BatonViewerVTable) == 104",
-            "sizeof(BatonViewerVTable) == 80",
         ),
         ("sizeof(BatonSound) == 24", "sizeof(BatonSound) == 20"),
         (

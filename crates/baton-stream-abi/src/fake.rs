@@ -7,6 +7,12 @@
 //! `release`, that `release` comes once) and writes down a complaint for each promise that is
 //! broken. A test holds the Rust side to the header with [`Fake::complaints`], and makes the
 //! platform fail, lie or call back into the library with the settings.
+//!
+//! A platform that unlocks the screens of other devices with a face also gets `unlock_key`, which
+//! gives the key that the test chose ([`KeyPlan`]), and `unlock_open` and `unlock_cancel`, which
+//! are logged ([`Call::UnlockOpen`], [`Call::UnlockCancel`]). The answer of the person, which a
+//! real platform gives from its own thread when the face is recognised or not, is
+//! [`unlock_opened`] and [`unlock_declined`].
 
 #![allow(unsafe_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -27,8 +33,10 @@ use crate::{
     Error, Registry,
     abi::{
         ABI_VERSION, BatonBytes, BatonDecoderState, BatonFrame, BatonLimits, BatonMessage,
-        BatonPlay, BatonScreen, BatonSound, BatonSourceMessage, BatonViewerVTable, BatonWindow,
-        CODEC_H264, MESSAGE_MAX, OK, PLAY_FIRST, size_of_u32,
+        BatonPlay, BatonScreen, BatonSound, BatonSourceMessage, BatonUnlockKey,
+        BatonUnlockQuestion, BatonUnlockSource, BatonViewerVTable, BatonWindow, CODEC_H264,
+        DEVICE_ID_BYTES, MESSAGE_MAX, OK, PLAY_FIRST, SEALING_ECIES_P256, UNLOCK_KEY_MAX,
+        UNLOCK_SEALED_MAX, size_of_u32,
     },
     platform::Calls,
 };
@@ -81,6 +89,21 @@ pub(crate) enum Call {
     Play(Played),
     /// The run of sound is over, for this `SILENT_` reason.
     Stopped(u32),
+    /// The platform was asked for the key that an unlock of this device is sealed to.
+    UnlockKey {
+        id: Vec<u8>,
+        name: String,
+        renew: bool,
+    },
+    /// The platform was given a question to answer with the face of the person.
+    UnlockOpen {
+        number: u64,
+        sealed: Vec<u8>,
+        id: Vec<u8>,
+        name: String,
+    },
+    /// The platform was told that the question it holds is not open any more.
+    UnlockCancel,
 }
 
 /// What `open` does.
@@ -93,6 +116,31 @@ pub(crate) enum OpenPlan {
     Fail { text: Vec<u8>, claimed_len: u32 },
     /// Says that it worked and gives no pointer for the screen.
     NoPointer,
+}
+
+/// What `unlock_key` does.
+#[derive(Debug, Clone)]
+pub(crate) enum KeyPlan {
+    /// Gives this key, of a `SEALING_` number.
+    Gives { sealing: u32, key: Vec<u8> },
+    /// Returns this code (a `KEY_` number, or another) and gives no key. It writes `text` (as far
+    /// as there is room) and says that it wrote `claimed_len` bytes, as `OpenPlan::Fail` does.
+    Fails {
+        code: i32,
+        text: Vec<u8>,
+        claimed_len: u32,
+    },
+    /// Returns `OK` and says that the key is `len` bytes of this `SEALING_` number, whatever the
+    /// room holds, which a platform that is wrong about the header may do: also beyond the room.
+    Claims { sealing: u32, len: u32 },
+}
+
+/// A public key of P-256 in the form that the library takes: `0x04` and the two coordinates, here
+/// counted from 1.
+pub(crate) fn a_public_key() -> Vec<u8> {
+    let mut key = vec![0x04];
+    key.extend(1..=64_u8);
+    key
 }
 
 /// Called inside a call of the platform, with the call, to make the platform call the library.
@@ -130,6 +178,11 @@ struct State {
     thermal: u32,
     /// Whether the platform registers as one that plays sound.
     sound: bool,
+    /// Whether the platform registers as one that unlocks with a face.
+    face: bool,
+    key: KeyPlan,
+    /// What `unlock_open` returns: `OK` when the platform took the question.
+    open_code: i32,
     hook: Option<Hook>,
 }
 
@@ -188,6 +241,12 @@ impl Fake {
                 decode_us: 1000,
                 thermal: 0,
                 sound: true,
+                face: true,
+                key: KeyPlan::Gives {
+                    sealing: SEALING_ECIES_P256,
+                    key: a_public_key(),
+                },
+                open_code: OK,
                 hook: None,
             }),
             cells: Mutex::new(Vec::new()),
@@ -211,18 +270,24 @@ impl Fake {
 
     /// The calls that registration makes of this platform.
     pub(crate) fn platform(self: &Arc<Self>) -> Calls {
-        read_table(&self.vtable()).expect("the vtable of the fake is whole")
+        read_table(&self.registered_table()).expect("the vtable of the fake is whole")
     }
 
-    /// Registers this platform in `registry`: as one that plays sound, unless a test said that it
-    /// does not ([`Self::plays_no_sound`]).
+    /// Registers this platform in `registry`: with the whole table, or with the one of an older
+    /// platform if a test said that this one is ([`Self::plays_no_sound`], [`Self::has_no_face`]).
     pub(crate) fn register_in(self: &Arc<Self>, registry: &Registry) -> Result<(), Error> {
-        let table = if self.state().sound {
-            self.vtable()
-        } else {
+        register_table(registry, &self.registered_table())
+    }
+
+    /// The table that registers this platform: the whole one, or the one of an older platform.
+    fn registered_table(self: &Arc<Self>) -> BatonViewerVTable {
+        if !self.state().sound {
             self.vtable_without_sound()
-        };
-        register_table(registry, &table)
+        } else if !self.state().face {
+            self.vtable_without_face()
+        } else {
+            self.vtable()
+        }
     }
 
     /// The vtable that registers this platform.
@@ -242,6 +307,9 @@ impl Fake {
             sound: Some(sound),
             play: Some(play),
             stopped: Some(stopped),
+            unlock_key: Some(unlock_key),
+            unlock_open: Some(unlock_open),
+            unlock_cancel: Some(unlock_cancel),
         }
     }
 
@@ -253,6 +321,30 @@ impl Fake {
             sound: None,
             play: None,
             stopped: None,
+            unlock_key: None,
+            unlock_open: None,
+            unlock_cancel: None,
+            ..self.vtable()
+        }
+    }
+
+    /// The vtable of a platform that was written before a face could unlock: it ends at
+    /// `stopped`, and the library reads the three functions that it lacks as missing.
+    pub(crate) fn vtable_without_face(self: &Arc<Self>) -> BatonViewerVTable {
+        BatonViewerVTable {
+            size: u32::try_from(offset_of!(BatonViewerVTable, unlock_key)).unwrap(),
+            unlock_key: None,
+            unlock_open: None,
+            unlock_cancel: None,
+            ..self.vtable()
+        }
+    }
+
+    /// The vtable of a platform that gives some of the three functions of the face and not all:
+    /// it keeps its size, and the library reads all three as missing.
+    pub(crate) fn vtable_with_some_face(self: &Arc<Self>) -> BatonViewerVTable {
+        BatonViewerVTable {
+            unlock_cancel: None,
             ..self.vtable()
         }
     }
@@ -298,6 +390,21 @@ impl Fake {
     /// The platform registers as one that was written before sound was carried.
     pub(crate) fn plays_no_sound(&self) {
         self.state().sound = false;
+    }
+
+    /// The platform registers as one that was written before a face could unlock.
+    pub(crate) fn has_no_face(&self) {
+        self.state().face = false;
+    }
+
+    /// What `unlock_key` does from now on.
+    pub(crate) fn plan_key(&self, plan: KeyPlan) {
+        self.state().key = plan;
+    }
+
+    /// What `unlock_open` returns from now on: `OK` when the platform takes the question.
+    pub(crate) fn plan_open_question(&self, code: i32) {
+        self.state().open_code = code;
     }
 
     pub(crate) fn plan_open(&self, plan: OpenPlan) {
@@ -681,4 +788,208 @@ unsafe extern "C" fn stopped(screen: *mut c_void, why: u32) {
     // SAFETY: `screen` is a pointer that `open` gave.
     let (cell, fake) = unsafe { screen_of(screen) };
     about_screen(cell, &fake, &Call::Stopped(why));
+}
+
+/// Checks the room for a sentence, as the header describes it.
+fn check_message(fake: &Fake, what: &str, message: BatonMessage) {
+    if message.size != size_of_u32::<BatonMessage>()
+        || message.cap != MESSAGE_MAX
+        || message.len != 0
+        || message.reserved != 0
+        || message.text.is_null()
+    {
+        fake.complain(format!("{what}: the message is not empty: {message:?}"));
+    }
+}
+
+/// A sentence of a failure, written the way a platform does: as far as there is room, with a
+/// length that may claim more.
+///
+/// # Safety
+///
+/// `message` points to a struct of the interface that is the platform's to write, with room for
+/// `cap` bytes at `text`.
+unsafe fn write_failure(message: *mut BatonMessage, text: &[u8], claimed_len: u32) {
+    // SAFETY: as promised above.
+    unsafe {
+        let cap = (&raw const (*message).cap).read() as usize;
+        let written = text.len().min(cap);
+        (&raw const (*message).text)
+            .read()
+            .copy_from_nonoverlapping(text.as_ptr(), written);
+        (&raw mut (*message).len).write(claimed_len);
+    }
+}
+
+unsafe extern "C" fn unlock_key(
+    context: *mut c_void,
+    source: *const BatonUnlockSource,
+    key: *mut BatonUnlockKey,
+    message: *mut BatonMessage,
+) -> i32 {
+    // SAFETY: the context is the one `vtable` gave.
+    let fake = unsafe { fake_of(context) };
+    if source.is_null() || key.is_null() || message.is_null() {
+        fake.complain("unlock_key: a null pointer");
+        return -1;
+    }
+    // SAFETY: not null, and the Rust side gives structs of the interface.
+    let (source, room, empty) = unsafe { (*source, *key, *message) };
+    check_message(fake, "unlock_key", empty);
+    if source.size != size_of_u32::<BatonUnlockSource>() || source.renew > 1 {
+        fake.complain(format!(
+            "unlock_key: the source is not as agreed: {source:?}"
+        ));
+    }
+    if (room.size, room.sealing, room.len, room.reserved)
+        != (size_of_u32::<BatonUnlockKey>(), 0, 0, 0)
+        || room.key.is_null()
+    {
+        fake.complain(format!("unlock_key: the room is not empty: {room:?}"));
+    }
+    let id = bytes(&source.id);
+    if id.len() != DEVICE_ID_BYTES as usize {
+        fake.complain(format!("unlock_key: an id of {} bytes", id.len()));
+    }
+    let name = String::from_utf8(bytes(&source.name)).unwrap_or_else(|_| {
+        fake.complain("unlock_key: a name that is not UTF-8");
+        String::new()
+    });
+    fake.heard(
+        0,
+        &Call::UnlockKey {
+            id,
+            name,
+            renew: source.renew == 1,
+        },
+    );
+    let plan = fake.state().key.clone();
+    match plan {
+        KeyPlan::Gives {
+            sealing,
+            key: given,
+        } => {
+            assert!(
+                given.len() <= UNLOCK_KEY_MAX as usize,
+                "the plan gives more than the header has room for"
+            );
+            // SAFETY: the room is `UNLOCK_KEY_MAX` bytes long, as the header says, and the
+            // platform's to write; the struct is the platform's to write.
+            unsafe {
+                room.key
+                    .copy_from_nonoverlapping(given.as_ptr(), given.len());
+                (&raw mut (*key).sealing).write(sealing);
+                (&raw mut (*key).len).write(u32::try_from(given.len()).unwrap());
+            }
+            OK
+        }
+        KeyPlan::Fails {
+            code,
+            text,
+            claimed_len,
+        } => {
+            // SAFETY: `message` is not null and its struct is the platform's to write.
+            unsafe { write_failure(message, &text, claimed_len) };
+            code
+        }
+        KeyPlan::Claims { sealing, len } => {
+            // SAFETY: the struct is the platform's to write.
+            unsafe {
+                (&raw mut (*key).sealing).write(sealing);
+                (&raw mut (*key).len).write(len);
+            }
+            OK
+        }
+    }
+}
+
+unsafe extern "C" fn unlock_open(screen: *mut c_void, question: *const BatonUnlockQuestion) -> i32 {
+    // SAFETY: `screen` is a pointer that `open` gave.
+    let (cell, fake) = unsafe { screen_of(screen) };
+    if question.is_null() {
+        fake.complain("unlock_open: a null question");
+        return -1;
+    }
+    // SAFETY: not null, and the Rust side gives a struct of the interface.
+    let question = unsafe { *question };
+    if question.size != size_of_u32::<BatonUnlockQuestion>()
+        || question.reserved != 0
+        || question.number == 0
+    {
+        fake.complain(format!(
+            "unlock_open: the question is not as agreed: {question:?}"
+        ));
+    }
+    let (sealed, id) = (bytes(&question.sealed), bytes(&question.id));
+    if sealed.is_empty() || sealed.len() > UNLOCK_SEALED_MAX as usize {
+        fake.complain(format!(
+            "unlock_open: a sealed key of {} bytes",
+            sealed.len()
+        ));
+    }
+    if id.len() != DEVICE_ID_BYTES as usize {
+        fake.complain(format!("unlock_open: an id of {} bytes", id.len()));
+    }
+    let name = String::from_utf8(bytes(&question.name)).unwrap_or_else(|_| {
+        fake.complain("unlock_open: a name that is not UTF-8");
+        String::new()
+    });
+    about_screen(
+        cell,
+        &fake,
+        &Call::UnlockOpen {
+            number: question.number,
+            sealed,
+            id,
+            name,
+        },
+    );
+    fake.state().open_code
+}
+
+unsafe extern "C" fn unlock_cancel(screen: *mut c_void) {
+    // SAFETY: `screen` is a pointer that `open` gave.
+    let (cell, fake) = unsafe { screen_of(screen) };
+    about_screen(cell, &fake, &Call::UnlockCancel);
+}
+
+// The calls of the platform into the library.
+
+/// The person's face opened the key of the box: the answer to the question with this number.
+pub(crate) fn unlock_opened(
+    registry: &Registry,
+    link: u64,
+    number: u64,
+    key: &[u8],
+) -> Result<(), Error> {
+    let key = BatonBytes::of(key);
+    // SAFETY: a `BatonBytes` with bytes that outlive the call.
+    unsafe { registry.unlock_opened(link, number, &raw const key) }
+}
+
+/// The answer to a question as the struct stands, which may be wrong: `None` is a null pointer.
+///
+/// # Safety
+///
+/// The bytes that `key` describes can be read during the call if the library is to read them: the
+/// library reads no more of them than the header allows.
+pub(crate) unsafe fn unlock_opened_raw(
+    registry: &Registry,
+    link: u64,
+    number: u64,
+    key: Option<&BatonBytes>,
+) -> Result<(), Error> {
+    let key = key.map_or(std::ptr::null(), std::ptr::from_ref);
+    // SAFETY: null, or a `BatonBytes` that lives through the call, with the bytes as promised.
+    unsafe { registry.unlock_opened(link, number, key) }
+}
+
+/// The question with this number was not opened, for a `FACE_` reason.
+pub(crate) fn unlock_declined(
+    registry: &Registry,
+    link: u64,
+    number: u64,
+    reason: u32,
+) -> Result<(), Error> {
+    registry.unlock_declined(link, number, reason)
 }

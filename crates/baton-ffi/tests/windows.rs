@@ -133,10 +133,13 @@ async fn the_app_is_started_with_the_viewer_and_the_sharer_that_the_platform_reg
         state: Some(state),
         ended: Some(ended),
         release: Some(release),
-        // This platform plays no sound.
+        // This platform plays no sound and cannot ask for a face to unlock a screen.
         sound: None,
         play: None,
         stopped: None,
+        unlock_key: None,
+        unlock_open: None,
+        unlock_cancel: None,
     };
     // SAFETY: a vtable that is whole, with functions that keep to the header.
     assert_eq!(
@@ -166,11 +169,14 @@ async fn the_app_is_started_with_the_viewer_and_the_sharer_that_the_platform_reg
         surroundings: Some(surroundings),
         post: Some(post),
         // This platform cannot give its screen without a picker, so it cannot keep one private or
-        // end one without locking the device, and it sends no sound.
+        // end one without locking the device, it sends no sound, and nothing unlocks it.
         screen: None,
         lift: None,
         hear: None,
         leave: None,
+        unlock_check: None,
+        unlock_setup: None,
+        unlock: None,
     };
     // SAFETY: a vtable that is whole, with functions that keep to the header.
     assert_eq!(

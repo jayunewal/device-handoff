@@ -27,6 +27,13 @@
 //! [`SharerCall::Leave`] and counts as the end of the window: nothing may come after it, and
 //! neither `ended` nor a second `leave` may follow.
 //!
+//! A platform that can be unlocked also gets `unlock_check`, `unlock_setup` and, for a window that
+//! was given as private, `unlock`. The first two check the structs against the header and answer
+//! as the test planned ([`CheckPlan`], [`SetupPlan`]); `unlock` records what it was given
+//! ([`SharerCall::Unlock`]) and runs the test's script ([`FakeSharer::plan_unlock`]), which calls
+//! the library the way the platform does, with [`source_private`], [`unlock_live`] and
+//! [`unlock_keep`], and returns what the platform returns.
+//!
 //! The other half of a platform, the capture thread that asks `begin` and hands over what the
 //! encoder made, is a set of functions that call the library the way Swift would, with the same
 //! structs and pointers: [`begin`], [`sent`] and the others.
@@ -52,12 +59,15 @@ use baton_stream::{
 use crate::{
     Error, Registry,
     abi::{
-        ABI_VERSION, BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT, BatonBytes, BatonFormat, BatonFront,
-        BatonGeometry, BatonMessage, BatonPicked, BatonPicture, BatonPost, BatonRect,
-        BatonSharerVTable, BatonSound, BatonSoundPacket, BatonSurroundings, BatonTakes, CODEC_H264,
-        FRONTS_MAX, KEYBOARD_SHARED, KEYBOARD_UNKNOWN, LIFT_INPUT, LIFT_SCREEN, MESSAGE_MAX, OK,
-        PICKED_DISPLAY, PICKED_WINDOW, POINTER_DOWN, POINTER_MOVE, POINTER_SCROLL, POINTER_UP,
-        POST_KEY, POST_POINTER, SCREEN_PRIVATE, SOUND_CODEC_AAC, size_of_u32,
+        ABI_VERSION, BOX_KEY_BYTES, BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT, BatonBytes,
+        BatonFormat, BatonFront, BatonGeometry, BatonMessage, BatonPicked, BatonPicture, BatonPost,
+        BatonRect, BatonSharerVTable, BatonSound, BatonSoundPacket, BatonSurroundings, BatonTakes,
+        BatonUnlock, BatonUnlockBox, BatonUnlockMade, BatonUnlockSetup, CODEC_H264,
+        DEVICE_ID_BYTES, FRONTS_MAX, KEYBOARD_SHARED, KEYBOARD_UNKNOWN, LIFT_INPUT, LIFT_SCREEN,
+        MESSAGE_MAX, OK, PICKED_DISPLAY, PICKED_WINDOW, POINTER_DOWN, POINTER_MOVE, POINTER_SCROLL,
+        POINTER_UP, POST_KEY, POST_POINTER, SCREEN_PRIVATE, SEALING_ECIES_P256, SOUND_CODEC_AAC,
+        UNLOCK_BOX_MAX, UNLOCK_FAILED, UNLOCK_KEY_MAX, UNLOCK_PASSWORD_MAX, UNLOCK_SEALED_MAX,
+        size_of_u32,
     },
     platform::SharerCalls,
 };
@@ -101,6 +111,27 @@ pub(crate) enum SharerCall {
     /// chose that the Mac stay as it is: the end of the window, in place of [`Self::Ended`].
     Leave,
     Release,
+    /// The platform was asked to check a password against the account.
+    UnlockCheck {
+        password: Vec<u8>,
+    },
+    /// The platform was asked to put a password in a box.
+    UnlockSetup {
+        password: Vec<u8>,
+        sealing: u32,
+        target: Vec<u8>,
+        viewer: Vec<u8>,
+        viewer_key: Vec<u8>,
+    },
+    /// The platform was told to unlock the screen of the window.
+    Unlock {
+        sealing: u32,
+        box_key: Vec<u8>,
+        boxed: Vec<u8>,
+        viewer_key: Vec<u8>,
+        target: Vec<u8>,
+        viewer: Vec<u8>,
+    },
 }
 
 /// The platform was told that the other device wants to hear the sound.
@@ -236,6 +267,39 @@ pub(crate) fn key_post(code: u16, down: bool, text: Option<&str>) -> Post {
     }
 }
 
+/// What `unlock_check` does.
+#[derive(Debug, Clone)]
+pub(crate) enum CheckPlan {
+    /// Accepts the password.
+    Accepts,
+    /// Returns `code`, writing `text` as `PickPlan::Fail` does.
+    Fails {
+        code: i32,
+        text: Vec<u8>,
+        claimed_len: u32,
+    },
+}
+
+/// What `unlock_setup` does.
+#[derive(Debug, Clone)]
+pub(crate) enum SetupPlan {
+    /// Makes this box and this sealed key.
+    Makes { boxed: Vec<u8>, sealed: Vec<u8> },
+    /// Returns `code`, writing `text` as `PickPlan::Fail` does, and makes nothing.
+    Fails {
+        code: i32,
+        text: Vec<u8>,
+        claimed_len: u32,
+    },
+    /// Returns `OK` and says it made a box and a sealed key of these lengths, which a platform that
+    /// is wrong about the header may do: whatever the bytes are, and beyond the room.
+    Claims { box_len: u32, sealed_len: u32 },
+}
+
+/// What the script of `unlock` is: it is given the link of the window and the call, and returns
+/// what the platform returns, a `UNLOCK_` number.
+pub(crate) type UnlockScript = Arc<dyn Fn(u64, &SharerCall) -> u32 + Send + Sync>;
+
 /// What `surroundings` does.
 #[derive(Debug, Clone)]
 pub(crate) enum AroundPlan {
@@ -279,8 +343,13 @@ struct State {
     cannot_lift: bool,
     /// The platform registers a table that ends before `leave`.
     cannot_leave: bool,
+    /// The platform registers a table that ends before `unlock_check`.
+    cannot_unlock: bool,
     /// Whether the platform registers as one that sends sound.
     sound: bool,
+    check: CheckPlan,
+    setup: SetupPlan,
+    unlock: UnlockScript,
     hook: Option<Hook>,
     /// The requests of picks that wait for an answer.
     waiting: BTreeSet<u64>,
@@ -363,7 +432,14 @@ impl FakeSharer {
                 post: OK,
                 cannot_lift: false,
                 cannot_leave: false,
+                cannot_unlock: false,
                 sound: true,
+                check: CheckPlan::Accepts,
+                setup: SetupPlan::Makes {
+                    boxed: b"a box".to_vec(),
+                    sealed: b"a sealed key".to_vec(),
+                },
+                unlock: Arc::new(|_, _| UNLOCK_FAILED),
                 hook: None,
                 waiting: BTreeSet::new(),
             }),
@@ -392,6 +468,9 @@ impl FakeSharer {
             lift: Some(lift),
             hear: Some(hear),
             leave: Some(leave),
+            unlock_check: Some(unlock_check),
+            unlock_setup: Some(unlock_setup),
+            unlock: Some(unlock),
         }
     }
 
@@ -406,6 +485,9 @@ impl FakeSharer {
             lift: None,
             hear: None,
             leave: None,
+            unlock_check: None,
+            unlock_setup: None,
+            unlock: None,
             ..self.vtable()
         }
     }
@@ -419,6 +501,9 @@ impl FakeSharer {
             lift: None,
             hear: None,
             leave: None,
+            unlock_check: None,
+            unlock_setup: None,
+            unlock: None,
             ..self.vtable()
         }
     }
@@ -432,6 +517,9 @@ impl FakeSharer {
             lift: None,
             hear: None,
             leave: None,
+            unlock_check: None,
+            unlock_setup: None,
+            unlock: None,
             ..self.vtable()
         }
     }
@@ -443,6 +531,9 @@ impl FakeSharer {
             size: u32::try_from(offset_of!(BatonSharerVTable, hear)).unwrap(),
             hear: None,
             leave: None,
+            unlock_check: None,
+            unlock_setup: None,
+            unlock: None,
             ..self.vtable()
         }
     }
@@ -454,6 +545,30 @@ impl FakeSharer {
         BatonSharerVTable {
             size: u32::try_from(offset_of!(BatonSharerVTable, leave)).unwrap(),
             leave: None,
+            unlock_check: None,
+            unlock_setup: None,
+            unlock: None,
+            ..self.vtable()
+        }
+    }
+
+    /// The vtable of a platform that was written before another device could unlock its screen:
+    /// it ends at `leave`, and the library reads the three functions that it lacks as missing.
+    pub(crate) fn vtable_without_unlock(self: &Arc<Self>) -> BatonSharerVTable {
+        BatonSharerVTable {
+            size: u32::try_from(offset_of!(BatonSharerVTable, unlock_check)).unwrap(),
+            unlock_check: None,
+            unlock_setup: None,
+            unlock: None,
+            ..self.vtable()
+        }
+    }
+
+    /// The vtable of a platform that gives some of the three functions of the unlock and not
+    /// all: it keeps its size, and the library reads all three as missing.
+    pub(crate) fn vtable_with_some_unlock(self: &Arc<Self>) -> BatonSharerVTable {
+        BatonSharerVTable {
+            unlock: None,
             ..self.vtable()
         }
     }
@@ -470,7 +585,8 @@ impl FakeSharer {
     /// before `lift` if the test said that the platform cannot lift, or the one that ends before
     /// `hear` if it said that the platform sends no sound ([`Self::sends_no_sound`]), or the one
     /// that ends before `leave` if it said that the platform cannot leave the Mac as it is
-    /// ([`Self::set_cannot_leave`]).
+    /// ([`Self::set_cannot_leave`]), or the one that ends before `unlock_check` if it said that
+    /// the platform cannot be unlocked ([`Self::set_cannot_unlock`]).
     pub(crate) fn register_in(self: &Arc<Self>, registry: &Registry) -> Result<(), Error> {
         register_table(registry, &self.registered_table())
     }
@@ -490,6 +606,8 @@ impl FakeSharer {
             self.vtable_without_hear()
         } else if self.state().cannot_leave {
             self.vtable_without_leave()
+        } else if self.state().cannot_unlock {
+            self.vtable_without_unlock()
         } else {
             self.vtable()
         }
@@ -580,6 +698,31 @@ impl FakeSharer {
     /// session could end without the lock does.
     pub(crate) fn set_cannot_leave(&self) {
         self.state().cannot_leave = true;
+    }
+
+    /// The platform registers a table that ends at `leave`, as one written before another device
+    /// could unlock its screen does.
+    pub(crate) fn set_cannot_unlock(&self) {
+        self.state().cannot_unlock = true;
+    }
+
+    /// What `unlock_check` does from now on.
+    pub(crate) fn plan_check(&self, plan: CheckPlan) {
+        self.state().check = plan;
+    }
+
+    /// What `unlock_setup` does from now on.
+    pub(crate) fn plan_setup(&self, plan: SetupPlan) {
+        self.state().setup = plan;
+    }
+
+    /// What `unlock` does from now on: the script is given the link of the window and the call,
+    /// runs on the thread of the call, and returns what `unlock` returns.
+    pub(crate) fn plan_unlock(
+        &self,
+        script: impl Fn(u64, &SharerCall) -> u32 + Send + Sync + 'static,
+    ) {
+        self.state().unlock = Arc::new(script);
     }
 
     pub(crate) fn on_call(&self, hook: impl Fn(u64, &SharerCall) + Send + Sync + 'static) {
@@ -1447,6 +1590,205 @@ unsafe extern "C" fn leave(picked: *mut c_void) {
     progress.ended = true;
 }
 
+/// The bytes of a `BatonBytes` that the library gave, if they keep the promise of the header: from
+/// `least` to `most` bytes, behind a pointer that is not null. If they do not, the promise that is
+/// broken is written down and nothing is read.
+fn bytes_given(
+    fake: &FakeSharer,
+    what: &str,
+    bytes: &BatonBytes,
+    (least, most): (usize, usize),
+) -> Vec<u8> {
+    if bytes.ptr.is_null() || bytes.len < least || bytes.len > most {
+        fake.complain(format!("{what}: {} bytes at {:?}", bytes.len, bytes.ptr));
+        return Vec::new();
+    }
+    // SAFETY: the library gives `len` bytes that live through the call.
+    unsafe { slice::from_raw_parts(bytes.ptr, bytes.len) }.to_vec()
+}
+
+/// The length of the id of a device.
+const ID: (usize, usize) = (DEVICE_ID_BYTES as usize, DEVICE_ID_BYTES as usize);
+
+unsafe extern "C" fn unlock_check(
+    context: *mut c_void,
+    password: *const BatonBytes,
+    message: *mut BatonMessage,
+) -> i32 {
+    // SAFETY: the context is the one `vtable` gave.
+    let fake = unsafe { fake_of(context) };
+    if password.is_null() || message.is_null() {
+        fake.complain("unlock_check: a null pointer");
+        return -1;
+    }
+    // SAFETY: not null, and the Rust side gives structs of the interface.
+    let (password, room) = unsafe { (*password, *message) };
+    check_message(fake, "unlock_check", room);
+    let password = bytes_given(
+        fake,
+        "unlock_check: the password",
+        &password,
+        (1, UNLOCK_PASSWORD_MAX as usize),
+    );
+    fake.heard(0, &SharerCall::UnlockCheck { password });
+    let plan = fake.state().check.clone();
+    match plan {
+        CheckPlan::Accepts => OK,
+        CheckPlan::Fails {
+            code,
+            text,
+            claimed_len,
+        } => {
+            // SAFETY: `message` is not null and its struct is the platform's to write.
+            unsafe { write_failure(message, &text, claimed_len) };
+            code
+        }
+    }
+}
+
+unsafe extern "C" fn unlock_setup(
+    context: *mut c_void,
+    setup: *const BatonUnlockSetup,
+    made: *mut BatonUnlockMade,
+    message: *mut BatonMessage,
+) -> i32 {
+    // SAFETY: the context is the one `vtable` gave.
+    let fake = unsafe { fake_of(context) };
+    if setup.is_null() || made.is_null() || message.is_null() {
+        fake.complain("unlock_setup: a null pointer");
+        return -1;
+    }
+    // SAFETY: not null, and the Rust side gives structs of the interface.
+    let (given, room, empty) = unsafe { (*setup, *made, *message) };
+    check_message(fake, "unlock_setup", empty);
+    if given.size != size_of_u32::<BatonUnlockSetup>() || given.sealing != SEALING_ECIES_P256 {
+        fake.complain(format!(
+            "unlock_setup: the setup is not as agreed: {given:?}"
+        ));
+    }
+    if (room.size, room.box_len, room.sealed_len, room.reserved)
+        != (size_of_u32::<BatonUnlockMade>(), 0, 0, 0)
+        || room.boxed.is_null()
+        || room.sealed.is_null()
+    {
+        fake.complain(format!("unlock_setup: the room is not empty: {room:?}"));
+    }
+    let call = SharerCall::UnlockSetup {
+        password: bytes_given(
+            fake,
+            "unlock_setup: the password",
+            &given.password,
+            (1, UNLOCK_PASSWORD_MAX as usize),
+        ),
+        sealing: given.sealing,
+        target: bytes_given(fake, "unlock_setup: the target", &given.target, ID),
+        viewer: bytes_given(fake, "unlock_setup: the viewer", &given.viewer, ID),
+        viewer_key: bytes_given(
+            fake,
+            "unlock_setup: the key of the other device",
+            &given.viewer_key,
+            (1, UNLOCK_KEY_MAX as usize),
+        ),
+    };
+    fake.heard(0, &call);
+    let plan = fake.state().setup.clone();
+    match plan {
+        SetupPlan::Makes { boxed, sealed } => {
+            assert!(
+                boxed.len() <= UNLOCK_BOX_MAX as usize
+                    && sealed.len() <= UNLOCK_SEALED_MAX as usize,
+                "the plan makes more than the header has room for"
+            );
+            // SAFETY: the rooms are `UNLOCK_BOX_MAX` and `UNLOCK_SEALED_MAX` bytes long, as the
+            // header says, and the platform's to write; the struct is the platform's to write.
+            unsafe {
+                room.boxed
+                    .copy_from_nonoverlapping(boxed.as_ptr(), boxed.len());
+                room.sealed
+                    .copy_from_nonoverlapping(sealed.as_ptr(), sealed.len());
+                (&raw mut (*made).box_len).write(u32::try_from(boxed.len()).unwrap());
+                (&raw mut (*made).sealed_len).write(u32::try_from(sealed.len()).unwrap());
+            }
+            OK
+        }
+        SetupPlan::Fails {
+            code,
+            text,
+            claimed_len,
+        } => {
+            // SAFETY: `message` is not null and its struct is the platform's to write.
+            unsafe { write_failure(message, &text, claimed_len) };
+            code
+        }
+        SetupPlan::Claims {
+            box_len,
+            sealed_len,
+        } => {
+            // SAFETY: the struct is the platform's to write.
+            unsafe {
+                (&raw mut (*made).box_len).write(box_len);
+                (&raw mut (*made).sealed_len).write(sealed_len);
+            }
+            OK
+        }
+    }
+}
+
+unsafe extern "C" fn unlock(picked: *mut c_void, unlock: *const BatonUnlock) -> u32 {
+    // SAFETY: `picked` is a pointer that an answer gave.
+    let (cell, fake) = unsafe { window_of(picked) };
+    if unlock.is_null() {
+        fake.complain("unlock: a null struct");
+        return UNLOCK_FAILED;
+    }
+    // SAFETY: not null, and the Rust side gives a struct of the interface.
+    let given = unsafe { *unlock };
+    if given.size != size_of_u32::<BatonUnlock>() || given.sealing != SEALING_ECIES_P256 {
+        fake.complain(format!("unlock: the struct is not as agreed: {given:?}"));
+    }
+    let attempt = SharerCall::Unlock {
+        sealing: given.sealing,
+        box_key: bytes_given(
+            &fake,
+            "unlock: the key of the box",
+            &given.box_key,
+            (BOX_KEY_BYTES as usize, BOX_KEY_BYTES as usize),
+        ),
+        boxed: bytes_given(
+            &fake,
+            "unlock: the box",
+            &given.boxed,
+            (1, UNLOCK_BOX_MAX as usize),
+        ),
+        viewer_key: bytes_given(
+            &fake,
+            "unlock: the key of the other device",
+            &given.viewer_key,
+            (1, UNLOCK_KEY_MAX as usize),
+        ),
+        target: bytes_given(&fake, "unlock: the target", &given.target, ID),
+        viewer: bytes_given(&fake, "unlock: the viewer", &given.viewer, ID),
+    };
+    let busy = about_window(cell, &fake, &attempt);
+    input_is_due(cell, &fake, "unlock");
+    let (private, link) = {
+        let progress = locked(&cell.progress);
+        (progress.private, progress.link)
+    };
+    if !private {
+        fake.complain(format!(
+            "unlock on window {}, which was not given as private",
+            cell.number
+        ));
+    }
+    let script = Arc::clone(&fake.state().unlock);
+    // The call is under way while the script runs: what it calls in the library is what the
+    // platform calls from inside `unlock`, and a call about the window meanwhile is a complaint.
+    let code = script(link, &attempt);
+    drop(busy);
+    code
+}
+
 unsafe extern "C" fn release(picked: *mut c_void) {
     // SAFETY: `picked` is a pointer that an answer gave.
     let (cell, fake) = unsafe { window_of(picked) };
@@ -1742,4 +2084,74 @@ pub(crate) fn end(registry: &Registry, link: u64, sentence: Option<&[u8]>) -> Re
     let pointer = bytes.as_ref().map_or(ptr::null(), ptr::from_ref);
     // SAFETY: null, or a `BatonBytes` with bytes that outlive the call.
     unsafe { registry.source_end(link, pointer) }
+}
+
+/// Says whether the privacy of the screen is in place, as a platform does.
+pub(crate) fn source_private(registry: &Registry, link: u64, in_place: u32) -> Result<(), Error> {
+    registry.source_private(link, in_place)
+}
+
+/// Asks whether the attempt to unlock goes on, with a null pointer for the answer when `there` is
+/// false.
+pub(crate) fn unlock_live_to(registry: &Registry, link: u64, there: bool) -> Result<(), Error> {
+    let mut live = u32::MAX;
+    let pointer = if there {
+        &raw mut live
+    } else {
+        ptr::null_mut()
+    };
+    // SAFETY: null, or a pointer to a `u32` that lives through the call.
+    unsafe { registry.unlock_live(link, pointer) }
+}
+
+/// Asks whether the attempt to unlock goes on.
+pub(crate) fn unlock_live(registry: &Registry, link: u64) -> Result<bool, Error> {
+    let mut live = u32::MAX;
+    // SAFETY: a pointer to a `u32` that lives through the call.
+    unsafe { registry.unlock_live(link, &raw mut live) }?;
+    assert!(
+        live <= 1,
+        "the library answered {live}, and the header says 0 or 1"
+    );
+    Ok(live == 1)
+}
+
+/// Keeps a new box and the sealed key of its key, and gives what became of it: a `KEEP_` number.
+pub(crate) fn unlock_keep(
+    registry: &Registry,
+    link: u64,
+    boxed: &[u8],
+    sealed: &[u8],
+) -> Result<u32, Error> {
+    let keep = BatonUnlockBox {
+        size: size_of_u32::<BatonUnlockBox>(),
+        reserved: 0,
+        boxed: BatonBytes::of(boxed),
+        sealed: BatonBytes::of(sealed),
+    };
+    let mut result = u32::MAX;
+    // SAFETY: a struct of the interface that is whole, with bytes that outlive the call, and a
+    // pointer to a `u32` that lives through it.
+    unsafe { registry.unlock_keep(link, &raw const keep, &raw mut result) }?;
+    Ok(result)
+}
+
+/// Keeps a new box as the struct stands, which may be wrong, with the pointer for what became of
+/// it if there is one (`None` is a null pointer).
+///
+/// # Safety
+///
+/// The memory that `keep` describes can be read during the call if the library is to read it: the
+/// library reads no more of it than the header allows.
+pub(crate) unsafe fn unlock_keep_raw(
+    registry: &Registry,
+    link: u64,
+    keep: Option<&BatonUnlockBox>,
+    result: Option<&mut u32>,
+) -> Result<(), Error> {
+    let keep = keep.map_or(ptr::null(), ptr::from_ref);
+    let result = result.map_or(ptr::null_mut(), ptr::from_mut);
+    // SAFETY: the caller's promise about the struct is this function's own, and the other is null
+    // or points to a value that lives through the call.
+    unsafe { registry.unlock_keep(link, keep, result) }
 }

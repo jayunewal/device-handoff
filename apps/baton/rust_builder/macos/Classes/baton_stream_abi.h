@@ -34,16 +34,24 @@
  *     while the person picks a window or a display to share: baton_stream_pick_done;
  *     while a window is shared: the baton_stream_source_ functions, those of the sound among
  *       them (baton_stream_source_sound_begin, baton_stream_source_sound_silent and
- *       baton_stream_source_sound).
+ *       baton_stream_source_sound), and, for a platform that lets another device unlock the
+ *       screen, baton_stream_source_private and, while unlock runs, baton_stream_unlock_live
+ *       and baton_stream_unlock_keep;
+ *     while a screen asks the person for their face: baton_stream_unlock_opened and
+ *       baton_stream_unlock_declined.
  *   The Rust side calls the functions of the vtables that the platform registered:
  *     viewer: limits and open (about the device), and decode, show, source, state, ended and
  *       release (about one screen, with the pointer that open gave), and, for a platform that
- *       plays sound, sound, play and stopped (about the same screen);
+ *       plays sound, sound, play and stopped (about the same screen), and, for a platform that
+ *       unlocks the screens of other devices with the face of its person, unlock_key (about the
+ *       device) and unlock_open and unlock_cancel (about the same screen);
  *     sharer: control, pick, cancel_pick and screen (about the device), and prepare, start,
  *       surroundings, post, ended and release (about one window, with the pointer that
  *       baton_stream_pick_done or screen gave), and, for a platform that keeps a screen
  *       private, lift, for one that sends sound, hear, and for one that can end a private
- *       session without locking the device, leave (about the same window).
+ *       session without locking the device, leave (about the same window), and, for one that
+ *       lets another device unlock it, unlock_check and unlock_setup (about the device) and
+ *       unlock (about the same window).
  *
  * Rules that hold for every call.
  *
@@ -68,7 +76,12 @@
  *     moment.
  *   - A function of this interface that is called from inside a call of a vtable, on the same
  *     thread, is refused with BATON_E_REENTRANT. From another thread it is allowed, but the call
- *     of the vtable must not wait for that thread.
+ *     of the vtable must not wait for that thread. Three functions are the exception, because
+ *     they take or give a word and wait for nothing that a call of the vtable holds:
+ *     baton_stream_source_private, and baton_stream_unlock_live and baton_stream_unlock_keep,
+ *     which are for the call of unlock and answer BATON_E_UNKNOWN_LINK outside it, and once the
+ *     session is over. They may be called from inside any call of a vtable, on the same thread or
+ *     another.
  *   - An out argument of a function of this interface, a pointer that the Rust side writes
  *     through, is written only when the function returns BATON_OK. It is never read, so it need
  *     not be set.
@@ -80,8 +93,12 @@
  *     calls may come on two threads, so a screen keeps nothing in thread-local storage. The
  *     calls of two screens may overlap. The same holds for the sharer: control, pick and
  *     cancel_pick are called on a thread of the app's runtime and may overlap each other; the
- *     calls of one window (prepare, start, surroundings, post, lift, hear, ended or leave,
- *     release) never overlap, and release is the last; the calls of two windows may overlap.
+ *     calls of one window (prepare, start, surroundings, post, lift, hear, unlock, ended or
+ *     leave, release) never overlap, and release is the last; the calls of two windows may
+ *     overlap. unlock_key, unlock_check and unlock_setup are called on a thread of the app's
+ *     runtime that may wait, with no lock of the session held, and may overlap each other and
+ *     every other call that is about the device. unlock_open and unlock_cancel are calls of a
+ *     screen like decode, and never overlap those.
  *   - Nothing in the platform may unwind into the Rust side: a Swift error or an exception
  *     is caught before it leaves the call.
  */
@@ -267,6 +284,124 @@ extern "C" {
 #define BATON_MOD_OPTION 4u
 #define BATON_MOD_COMMAND 8u
 #define BATON_MOD_CAPS_LOCK 16u
+
+/*
+ * Unlocking a locked screen from the device that shows it (docs/adr/0013-unlock-from-a-phone.md).
+ * The device that is unlocked (a Mac) keeps the password of its person in a box that only the
+ * other device (a phone or a tablet) opens, with the face of its person. Section 9 of
+ * docs/protocol.md has the exchange, and the functions below have the part that the platform plays.
+ */
+
+/*
+ * How a secret is sealed to a public key, as BatonUnlockSetup.sealing, BatonUnlock.sealing and
+ * BatonUnlockKey.sealing say. BATON_SEALING_ECIES_P256: the key is a point of P-256 in the
+ * uncompressed form of ANSI X9.63 (65 bytes, the first of them 0x04), and a secret is sealed to it
+ * with ECIES: an ephemeral key, the X9.63 key derivation with SHA-256 and AES-GCM with a
+ * variable-size IV, which is the algorithm eciesEncryptionStandardVariableIVX963SHA256AESGCM of
+ * Security.framework. The sealed form is the 65 bytes of the ephemeral public key, the encrypted
+ * secret and the tag of 16 bytes. A value that is not listed is a way of sealing that this version
+ * does not know.
+ */
+#define BATON_SEALING_ECIES_P256 1u
+
+/*
+ * What unlock_check and unlock_setup return besides BATON_OK. BATON_PASSWORD_WRONG: the system
+ * does not accept the password as the one of the account of the person. BATON_PASSWORD_UNSUPPORTED:
+ * this device cannot keep an unlock after all: it cannot check a password against the account, its
+ * lock screen takes none, or it does not know the way of sealing that it was asked to use. Any
+ * other value is a failure, with the sentence in message if the platform wrote one.
+ */
+#define BATON_PASSWORD_WRONG 1
+#define BATON_PASSWORD_UNSUPPORTED 2
+
+/*
+ * What unlock returns: what came of the attempt. Any other value counts as BATON_UNLOCK_FAILED.
+ *
+ *   BATON_UNLOCK_UNLOCKED:    the password was typed, and the system says that the screen is
+ *                             unlocked.
+ *   BATON_UNLOCK_REJECTED:    the password was typed, and the screen stayed locked: the system did
+ *                             not accept it, or the lock screen is not a plain password field.
+ *   BATON_UNLOCK_STALE:       the key did not open the box. Nothing was kept and nothing was typed.
+ *   BATON_UNLOCK_FAILED:      anything else that is this device's own: the new box could not be
+ *                             kept, the attempt was over before the password was typed (see
+ *                             baton_stream_unlock_live), a key could not be posted, the display
+ *                             did not wake. Nothing was typed after the reason came up.
+ *   BATON_UNLOCK_NOT_LOCKED:  the screen is not locked. Nothing was typed.
+ *   BATON_UNLOCK_NOT_PRIVATE: the cover of the screens, the hold of the keyboard and the pointer,
+ *                             or the guard that locks the device if the app dies, is not in place.
+ *                             Nothing was typed.
+ *
+ * Every outcome but BATON_UNLOCK_STALE and BATON_UNLOCK_FAILED comes after the new box was kept
+ * with baton_stream_unlock_keep, which the platform does before it looks at anything else (see
+ * unlock below). A platform that says one of them without having kept a box breaks that order, and
+ * the Rust side ends the unlock that was set up for the other device, whatever the platform said.
+ */
+#define BATON_UNLOCK_UNLOCKED 0u
+#define BATON_UNLOCK_REJECTED 1u
+#define BATON_UNLOCK_STALE 2u
+#define BATON_UNLOCK_FAILED 3u
+#define BATON_UNLOCK_NOT_LOCKED 4u
+#define BATON_UNLOCK_NOT_PRIVATE 5u
+
+/*
+ * What baton_stream_unlock_keep says came of it, in *result. BATON_KEEP_KEPT: the new box and the
+ * new sealed key are what the Rust side holds now. Any other value means that the Rust side holds
+ * the box it had, and that the platform types nothing: BATON_KEEP_OVER, the attempt is over (the
+ * other device gave up, the session ended, or the time for the platform ran out);
+ * BATON_KEEP_TWICE, the platform kept one already; BATON_KEEP_INVALID, a box or a sealed key is
+ * empty or larger than BATON_UNLOCK_BOX_MAX or BATON_UNLOCK_SEALED_MAX; BATON_KEEP_CHANGED, the
+ * unlock was set up again, turned off or ended since the question was asked, so the box that was
+ * open is not the one that is kept; BATON_KEEP_UNWRITABLE, the disk did not take the new box; and
+ * BATON_KEEP_OTHER, a reason that this version does not know. A call that does not return BATON_OK
+ * kept nothing either, such as one that comes after the session ended and closed its link
+ * (BATON_E_UNKNOWN_LINK): the platform takes it as BATON_KEEP_OVER.
+ */
+#define BATON_KEEP_KEPT 0u
+#define BATON_KEEP_OVER 1u
+#define BATON_KEEP_TWICE 2u
+#define BATON_KEEP_INVALID 3u
+#define BATON_KEEP_CHANGED 4u
+#define BATON_KEEP_UNWRITABLE 5u
+#define BATON_KEEP_OTHER 6u
+
+/*
+ * How much room the Rust side gives for what a platform makes, and how long what it gives is.
+ * BATON_UNLOCK_BOX_MAX: the bytes of the box. BATON_UNLOCK_SEALED_MAX: the bytes of a sealed key.
+ * BATON_UNLOCK_KEY_MAX: the bytes of a public key. BATON_UNLOCK_PASSWORD_MAX: the most bytes of a
+ * password, which the box pads to 128 (it is 127 because one of them says how long it is).
+ * BATON_DEVICE_ID_BYTES: the bytes of the id of a device. BATON_BOX_KEY_BYTES: the bytes of the key
+ * of a box.
+ */
+#define BATON_UNLOCK_BOX_MAX 1024u
+#define BATON_UNLOCK_SEALED_MAX 1024u
+#define BATON_UNLOCK_KEY_MAX 256u
+#define BATON_UNLOCK_PASSWORD_MAX 127u
+#define BATON_DEVICE_ID_BYTES 32u
+#define BATON_BOX_KEY_BYTES 32u
+
+/*
+ * What unlock_key returns besides BATON_OK. BATON_KEY_REFUSED: the person at this device said no
+ * when the platform asked whether the other device may unlock this one with their face.
+ * BATON_KEY_BLOCKED: the settings of this device do not let that device ask. BATON_KEY_UNSUPPORTED:
+ * this device cannot make such a key: it has no hardware to keep one in, or no face that it
+ * recognises. Any other value is a failure; the Rust side tells the other device only that it
+ * failed, and the log of this device has the kind and not a sentence.
+ */
+#define BATON_KEY_REFUSED 1
+#define BATON_KEY_BLOCKED 2
+#define BATON_KEY_UNSUPPORTED 3
+
+/*
+ * The reason that baton_stream_unlock_declined gives for a question that was not opened.
+ * BATON_FACE_DECLINED: the person did not agree, their face was not recognised, or they
+ * cancelled. BATON_FACE_KEY_LOST: this device no longer has the key that opens the sealed key (a
+ * face was added or removed, the key was deleted, the device was restored): only the person at the
+ * other device can set the unlock up again. BATON_FACE_FAILED: anything else that went wrong
+ * here. Any other value counts as BATON_FACE_FAILED.
+ */
+#define BATON_FACE_DECLINED 0u
+#define BATON_FACE_KEY_LOST 1u
+#define BATON_FACE_FAILED 2u
 
 /*
  * Bytes in memory that the other side owns: text (UTF-8, no terminator) or a picture. When len is
@@ -645,7 +780,114 @@ typedef struct BatonSoundPacket {
 } BatonSoundPacket;
 
 /*
- * The functions of the platform. All of them are mandatory but the last three. A function that
+ * What unlock_setup is given to put the password in a box that only the other device opens: the
+ * password, the two devices, and the key of the other device that the key of the box is sealed to.
+ * password is UTF-8, from 1 to BATON_UNLOCK_PASSWORD_MAX bytes, and the platform accepted it with
+ * unlock_check. target is the id of this device and viewer the id of the other, each
+ * BATON_DEVICE_ID_BYTES bytes: the box is bound to the two, so that a box taken from one record
+ * opens nothing in another. viewer_key is the public key of the other device, in the form that
+ * sealing names (BATON_SEALING_ECIES_P256: 65 bytes). Not for a log: the password is a secret.
+ */
+typedef struct BatonUnlockSetup {
+    uint32_t size;
+    uint32_t sealing;
+    BatonBytes password;
+    BatonBytes target;
+    BatonBytes viewer;
+    BatonBytes viewer_key;
+} BatonUnlockSetup;
+
+/*
+ * Room for what unlock_setup makes. The platform writes at most BATON_UNLOCK_BOX_MAX bytes to
+ * boxed and at most BATON_UNLOCK_SEALED_MAX to sealed, and sets box_len and sealed_len; both are at
+ * least 1 when it returns BATON_OK. boxed is the password in a box and sealed is the key of the
+ * box, sealed to viewer_key the way sealing says. The Rust side reads them when the call returns
+ * and keeps nothing of the platform's memory.
+ */
+typedef struct BatonUnlockMade {
+    uint32_t size;
+    uint32_t box_len;
+    uint32_t sealed_len;
+    uint32_t reserved;
+    uint8_t *boxed;
+    uint8_t *sealed;
+} BatonUnlockMade;
+
+/*
+ * The attempt to unlock that unlock is given. box_key is the key of the box that the other device
+ * opened with the face of its person, BATON_BOX_KEY_BYTES bytes: a secret that the platform wipes
+ * as soon as it has used it. boxed is the box that unlock_setup made, the password in it. sealing
+ * and viewer_key are as in BatonUnlockSetup: the new key of the new box is sealed to viewer_key.
+ * target and viewer are the ids that the box is bound to. Nothing here is for a log.
+ */
+typedef struct BatonUnlock {
+    uint32_t size;
+    uint32_t sealing;
+    BatonBytes box_key;
+    BatonBytes boxed;
+    BatonBytes viewer_key;
+    BatonBytes target;
+    BatonBytes viewer;
+} BatonUnlock;
+
+/*
+ * What baton_stream_unlock_keep is given: the password in a new box, under a new key, and that
+ * key sealed to viewer_key. Both are from 1 byte to the most that BATON_UNLOCK_BOX_MAX and
+ * BATON_UNLOCK_SEALED_MAX say.
+ */
+typedef struct BatonUnlockBox {
+    uint32_t size;
+    uint32_t reserved;
+    BatonBytes boxed;
+    BatonBytes sealed;
+} BatonUnlockBox;
+
+/*
+ * The device that unlock_key makes a key for: the one whose person sets the unlock up, and which
+ * the key is for and for no other. id is its id, BATON_DEVICE_ID_BYTES bytes, and name the name
+ * to show for it in a prompt (UTF-8); the name is not for a log. renew is 1 when the platform
+ * replaces the pair of keys it made for that device with a new one first, so that what was sealed
+ * to the old key opens nothing from then on, and 0 when it gives the key it made before, and makes
+ * one if it has none.
+ */
+typedef struct BatonUnlockSource {
+    uint32_t size;
+    uint32_t renew;
+    BatonBytes id;
+    BatonBytes name;
+} BatonUnlockSource;
+
+/*
+ * Room for the public key that unlock_key gives. The platform writes at most BATON_UNLOCK_KEY_MAX
+ * bytes to key, sets len (at least 1 when it returns BATON_OK) and sealing (a BATON_SEALING_
+ * number). The Rust side reads them when the call returns.
+ */
+typedef struct BatonUnlockKey {
+    uint32_t size;
+    uint32_t sealing;
+    uint32_t len;
+    uint32_t reserved;
+    uint8_t *key;
+} BatonUnlockKey;
+
+/*
+ * The question that the other device asks, which the person answers with their face. number
+ * names the question for the answer: baton_stream_unlock_opened and baton_stream_unlock_declined
+ * are given it, and refuse an answer to a question that is not the one that is open. sealed is the
+ * key of the box, sealed to the key that unlock_key made for the device id; id is that device and
+ * name its name, for the prompt that asks for the face (UTF-8; not for a log).
+ */
+typedef struct BatonUnlockQuestion {
+    uint32_t size;
+    uint32_t reserved;
+    uint64_t number;
+    BatonBytes sealed;
+    BatonBytes id;
+    BatonBytes name;
+} BatonUnlockQuestion;
+
+/*
+ * The functions of the platform. All of them are mandatory but the last six. A function that
  * returns int32_t returns BATON_OK, or something else for a failure.
  *
  *   limits:  fills in what the device can show. Called once, at registration.
@@ -664,8 +906,8 @@ typedef struct BatonSoundPacket {
  *   release: the screen is not needed any more, whether or not ended came first. Let go of all of
  *            it. Called exactly once, and nothing follows. The link is not valid after it.
  *
- * The last three are about the sound of a screen, and a platform that plays no sound leaves all
- * three NULL: a table that ends at release is accepted, and so is one that gives some of the
+ * The three after those are about the sound of a screen, and a platform that plays no sound leaves
+ * all three NULL: a table that ends at release is accepted, and so is one that gives some of the
  * three and not all, which reads as none. They are called after the person at this device turned
  * the sound on with the app, one after the other, as the calls above are. Only a screen that
  * shows a whole display gets sound and play: the app does not offer the sound of a window, so
@@ -692,6 +934,49 @@ typedef struct BatonSoundPacket {
  *            playing; what is queued need not be played out. It can come when no sound did, and
  *            then there is nothing to let go of. A run that is going when the session ends is
  *            not stopped: ended ends it.
+ *
+ * The last three are about unlocking the screens of other devices with the face of the person at
+ * this device, and a platform that cannot leaves all three NULL: a table that ends at stopped is
+ * accepted, and so is one that gives some of the three and not all, which reads as none. The
+ * device then does not tell the devices it is paired with that it can approve an unlock. The
+ * first is about the device and takes the context of the table; the other two are about a screen
+ * and take its pointer, as the calls above do.
+ *
+ *   unlock_key:    the person at another device is setting an unlock up for it, and that device
+ *                  asks for the key that the unlock is sealed to (BatonUnlockSource). Gives the
+ *                  public half of the pair of keys that this device keeps for that device, and
+ *                  makes the pair if there is none; with source->renew it replaces the pair first.
+ *                  The private half stays in hardware (the Secure Enclave) and opens a sealed key
+ *                  only after the face of the person here is recognised, with no way round it such
+ *                  as the passcode, and a face that is added or removed ends it. Fills in key
+ *                  (BatonUnlockKey). The call is made from a thread of the Rust side that may
+ *                  wait, and the platform may ask the person here first: it may take as long as a
+ *                  person takes to decide, and gives up itself, with BATON_KEY_REFUSED, after a
+ *                  minute at most (the Rust side stops waiting for it sooner, and what comes
+ *                  later is dropped). Returns BATON_OK, BATON_KEY_REFUSED, BATON_KEY_BLOCKED,
+ *                  BATON_KEY_UNSUPPORTED, or another value for a failure, with the sentence in
+ *                  message if the platform can write one.
+ *   unlock_open:   the device that shares the screen asked to unlock it, and the person here
+ *                  tapped Unlock: ask for their face. question (BatonUnlockQuestion) has the key
+ *                  of the box, sealed to the key that unlock_key made for the device
+ *                  question->id, and number, which the answer repeats. Open the sealed key with
+ *                  the private half of that key and no other: a sealed key does not say which key
+ *                  it was sealed to, and a platform that tried its keys in turn would open one
+ *                  that was copied from another device. The system asks for the face with a
+ *                  prompt that names the device (question->name). The call does not wait for the
+ *                  person: it is made with the lock of the session held, so the platform hands
+ *                  the question to a thread of its own and returns, and answers from that thread,
+ *                  never from inside this call: with baton_stream_unlock_opened and the key of the
+ *                  box, once the face is recognised and the sealed key is open, or with
+ *                  baton_stream_unlock_declined and the reason. At most one question is open for a
+ *                  screen. Returns BATON_OK if it took the question, or another value if it
+ *                  cannot ask for the face: the Rust side then declines the question as
+ *                  BATON_FACE_FAILED, and the platform answers nothing.
+ *   unlock_cancel: the question is not open any more: the other device took the attempt back, or
+ *                  the session is ending. Takes the prompt down and wipes what is held for the
+ *                  question. An answer that comes later is refused with BATON_E_UNKNOWN_LINK, and
+ *                  nothing is answered for a question that was cancelled. The end of the session
+ *                  (ended) closes an open question the same way, with no unlock_cancel before it.
  */
 typedef int32_t (*BatonLimitsFn)(void *context, BatonLimits *limits);
 typedef int32_t (*BatonOpenFn)(void *context, const BatonWindow *window, uint64_t link,
@@ -705,13 +990,19 @@ typedef void (*BatonReleaseFn)(void *screen);
 typedef void (*BatonSoundFn)(void *screen, const BatonSound *sound);
 typedef void (*BatonPlayFn)(void *screen, const BatonPlay *play);
 typedef void (*BatonStoppedFn)(void *screen, uint32_t why);
+typedef int32_t (*BatonUnlockKeyFn)(void *context, const BatonUnlockSource *source,
+                                    BatonUnlockKey *key, BatonMessage *message);
+typedef int32_t (*BatonUnlockOpenFn)(void *screen, const BatonUnlockQuestion *question);
+typedef void (*BatonUnlockCancelFn)(void *screen);
 
 /*
  * What the platform registers: the version of the interface it was written for, the size of this
- * struct as the platform knows it, the pointer that limits and open get as their first argument,
- * and the functions. A struct that is larger than the Rust side knows is accepted, and the end of
- * it is ignored. A table of the size it had before sound was carried (80 bytes, ending at
- * release) is accepted: the three functions it lacks read as NULL.
+ * struct as the platform knows it, the pointer that limits, open and unlock_key get as their first
+ * argument, and the functions. A struct that is larger than the Rust side knows is accepted, and
+ * the end of it is ignored. A table of the size it had before sound was carried (80 bytes, ending
+ * at release) is accepted: the six functions it lacks read as NULL. So is one of the size it had
+ * before a face could unlock (104 bytes, ending at stopped): the three functions it lacks read as
+ * NULL.
  */
 typedef struct BatonViewerVTable {
     uint32_t version;
@@ -728,11 +1019,14 @@ typedef struct BatonViewerVTable {
     BatonSoundFn sound;
     BatonPlayFn play;
     BatonStoppedFn stopped;
+    BatonUnlockKeyFn unlock_key;
+    BatonUnlockOpenFn unlock_open;
+    BatonUnlockCancelFn unlock_cancel;
 } BatonViewerVTable;
 
 /*
  * The functions of the platform that shares windows. All of them are mandatory but the last
- * six. The first three are about the device and take the context of the table; the others are
+ * nine. The first three are about the device and take the context of the table; the others are
  * about one window, and take the pointer that baton_stream_pick_done gave. BatonEndedFn and
  * BatonReleaseFn are the types of ended and release above, with the pointer of the window in
  * place of the one of the screen.
@@ -915,6 +1209,89 @@ typedef struct BatonViewerVTable {
  *                the end went wrong. The Rust side tells the platform to leave only when the
  *                person chose it and the end that followed was the one they chose; every other
  *                end, whatever the cause, is ended, and the device is locked.
+ *
+ * The last three are about letting another device unlock the screen of this one when it is
+ * locked: the person here sets it up for a paired device, and that device can then unlock this one
+ * with the face of its person, in a session that is private (ADR 0013). A platform that cannot
+ * leaves all three NULL (a table that ends at leave is accepted, and so is one that gives some of
+ * the three and not all, which reads as none), and the device does not tell the devices it is
+ * paired with that it can be unlocked. Only a platform that also gives lift and says 1 for
+ * control is asked, since an unlock goes with the privacy of such a screen. The first two are about
+ * the device and take the context of the table; the last takes the pointer of the window.
+ *
+ *   unlock_check: the person typed the password of their account to set the unlock up. Checks
+ *                password (BatonBytes: UTF-8, from 1 to BATON_UNLOCK_PASSWORD_MAX bytes) against
+ *                the account of the person who uses this device, the way the lock screen does,
+ *                and changes nothing: not the keychain, not the sign-in. Keeps nothing of the
+ *                password: copies as little of it as it can and wipes what it copied. The call is
+ *                made from a thread of the Rust side that may wait, before the other device is
+ *                asked for its key. Returns BATON_OK if the system accepts the password,
+ *                BATON_PASSWORD_WRONG if it does not, BATON_PASSWORD_UNSUPPORTED if this device
+ *                cannot check a password or its lock screen takes none, or another value for a
+ *                failure, with the sentence in message if the platform can write one. The
+ *                sentence is shown to the person.
+ *   unlock_setup: the password was accepted and the other device gave the key that the unlock is
+ *                sealed to. Puts the password in a box that only the other device opens, and fills
+ *                in made (BatonUnlockMade). In this order: checks the password again, since the
+ *                other device took its time (BATON_PASSWORD_WRONG if the system no longer accepts
+ *                it); makes a random key of BATON_BOX_KEY_BYTES bytes, the key of the box; pads
+ *                the password to 128 bytes, one of them saying how long it is, and encrypts it
+ *                with AES-256-GCM under that key, authenticating a context string and the ids
+ *                setup->target and setup->viewer with it, so that a box taken from one record
+ *                opens nothing in another: that is the box; seals the key of the box to
+ *                setup->viewer_key the way setup->sealing says: that is the sealed key; and wipes
+ *                the password, the padded copy and the key before it returns, whatever it
+ *                returns. A way of sealing that it does not know is BATON_PASSWORD_UNSUPPORTED.
+ *                Called from a thread of the Rust side that may wait, after unlock_check accepted
+ *                the password. The format of the box is the platform's own: the Rust side keeps
+ *                it as it is, and gives it back to unlock.
+ *   unlock:      the face of the person at the other device was recognised and it sent the key of
+ *                the box (BatonUnlock): unlocks the screen, on this thread, and returns what came
+ *                of it. It is called after a start that returned BATON_OK and not after ended,
+ *                from the one thread that also calls start, ended, release, surroundings, post,
+ *                lift and hear, in turn with them, for a window that was given with
+ *                BATON_SCREEN_PRIVATE, only while the session is paused with BATON_PAUSE_LOCKED
+ *                and the last baton_stream_source_private said 1, and for one attempt at a time.
+ *                It takes as long as the system takes, ten seconds and more: what waits for the
+ *                thread waits behind it, a lift and the word about the sound included, so that a
+ *                switch that the person at the other device turns on meanwhile takes effect when
+ *                unlock returns; and what that person sent as events meanwhile is not put to the
+ *                window. The session goes on, as it does when the person at this device unlocks
+ *                the screen, when the platform says that the screen is unlocked
+ *                (baton_stream_source_resume).
+ *
+ *                The platform does this, in this order, and types the password at most once:
+ *                  1. Asks baton_stream_unlock_live. If the attempt is over, or the call does not
+ *                     return BATON_OK with *live 1, it returns BATON_UNLOCK_FAILED.
+ *                  2. Opens the box with box_key. If the key does not open it, it returns
+ *                     BATON_UNLOCK_STALE: nothing was kept or typed.
+ *                  3. Puts the password in a new box under a new random key, seals that key to
+ *                     viewer_key the way sealing says, and keeps both with
+ *                     baton_stream_unlock_keep, so that the key that was just used opens nothing
+ *                     that the Rust side holds afterwards. It wipes box_key and the new key as
+ *                     soon as both are kept. If keep does not return BATON_OK with BATON_KEEP_KEPT
+ *                     it types nothing and returns BATON_UNLOCK_FAILED.
+ *                  4. Checks that the screen is locked (BATON_UNLOCK_NOT_LOCKED if it is not) and
+ *                     that the cover of the screens, the hold of the keyboard and the pointer, and
+ *                     the guard that locks the device if the app dies are all in place, with
+ *                     nothing lifted (BATON_UNLOCK_NOT_PRIVATE if not). Nothing is typed then.
+ *                  5. Wakes the display if it is off, keeping the cover up through the wake, and
+ *                     types the password and Return into the lock screen, one key at a time. Each
+ *                     key goes into the record of what the app has posted, as the keys of the
+ *                     other device do, so that whatever ends a session at a key that the app did
+ *                     not post stays quiet through the password. Before each key it asks
+ *                     baton_stream_unlock_live (a call that does not return BATON_OK with *live 1
+ *                     says no) and the system whether the screen is still locked, and stops at the
+ *                     first key that is not for a locked screen (BATON_UNLOCK_FAILED), so that a
+ *                     password is never typed into a window. It wipes the password as soon as the
+ *                     last key is posted.
+ *                  6. Waits for the system to say that the screen is unlocked, ten seconds at
+ *                     most, and returns BATON_UNLOCK_UNLOCKED, or BATON_UNLOCK_REJECTED if the
+ *                     screen is still locked.
+ *
+ *                The other device is told what unlock returns. A platform that breaks the order
+ *                above can leave a key good for more than one unlock, and the Rust side ends the
+ *                setup of the other device if it can tell (see BATON_UNLOCK_UNLOCKED).
  */
 typedef uint32_t (*BatonControlFn)(void *context);
 typedef int32_t (*BatonPickFn)(void *context, uint64_t request, BatonMessage *message);
@@ -928,17 +1305,24 @@ typedef int32_t (*BatonScreenFn)(void *context, uint32_t flags, BatonPicked *pic
 typedef void (*BatonLiftFn)(void *picked, uint32_t lifted);
 typedef void (*BatonHearFn)(void *picked, uint32_t on);
 typedef void (*BatonLeaveFn)(void *picked);
+typedef int32_t (*BatonUnlockCheckFn)(void *context, const BatonBytes *password,
+                                      BatonMessage *message);
+typedef int32_t (*BatonUnlockSetupFn)(void *context, const BatonUnlockSetup *setup,
+                                      BatonUnlockMade *made, BatonMessage *message);
+typedef uint32_t (*BatonUnlockFn)(void *picked, const BatonUnlock *unlock);
 
 /*
  * What the platform registers to share windows, as the table above does to show them. A table of
- * the size it had before input was carried (72 bytes, ending at release) is accepted: the six
+ * the size it had before input was carried (72 bytes, ending at release) is accepted: the nine
  * functions it lacks read as NULL. So is one of the size it had before the screen could be given
- * without a picker (88 bytes, ending at post): the four functions it lacks read as NULL. So is
+ * without a picker (88 bytes, ending at post): the seven functions it lacks read as NULL. So is
  * one of the size it had before the privacy of a screen could be lifted (96 bytes, ending at
- * screen): the three functions it lacks read as NULL. So is one of the size it had before sound
- * was carried (104 bytes, ending at lift): the two functions it lacks read as NULL. And so is one
- * of the size it had before a private session could end without the lock (112 bytes, ending at
- * hear): the function it lacks reads as NULL.
+ * screen): the six functions it lacks read as NULL. So is one of the size it had before sound
+ * was carried (104 bytes, ending at lift): the five functions it lacks read as NULL. So is one of
+ * the size it had before a private session could end without the lock (112 bytes, ending at
+ * hear): the four functions it lacks read as NULL. And so is one of the size it had before
+ * another device could unlock the screen (120 bytes, ending at leave): the three functions it
+ * lacks read as NULL.
  */
 typedef struct BatonSharerVTable {
     uint32_t version;
@@ -957,6 +1341,9 @@ typedef struct BatonSharerVTable {
     BatonLiftFn lift;
     BatonHearFn hear;
     BatonLeaveFn leave;
+    BatonUnlockCheckFn unlock_check;
+    BatonUnlockSetupFn unlock_setup;
+    BatonUnlockFn unlock;
 } BatonSharerVTable;
 
 /* The version of the interface that the library was built with, for the platform to compare. */
@@ -996,6 +1383,31 @@ int32_t baton_stream_link_decode_failed(uint64_t link);
  * then), or BATON_E_UNKNOWN_LINK, BATON_E_REENTRANT or BATON_E_PANIC.
  */
 int32_t baton_stream_link_sound_failed(uint64_t link);
+
+/*
+ * The face of the person at this device was recognised and the sealed key of a question is open:
+ * sends the key of the box to the device that asked, which types the password. link is the one
+ * that open gave for the screen, number the one that the question had (BatonUnlockQuestion), and
+ * key the BATON_BOX_KEY_BYTES bytes of the key of the box; the platform wipes its own copy as soon
+ * as the call returns. Called from a thread of the platform's own, never from inside a call of the
+ * vtable: a question is answered after unlock_open has returned.
+ *
+ * Returns BATON_OK if the key was taken and sent. BATON_E_UNKNOWN_LINK: no question with this
+ * number is open for the screen, because it was answered, taken back with unlock_cancel, closed
+ * by ended, or never asked; nothing is sent. BATON_E_ARGUMENT: a pointer or a length is wrong; the
+ * question is declined as BATON_FACE_FAILED, since the person is waiting for an answer.
+ * BATON_E_REENTRANT or BATON_E_PANIC.
+ */
+int32_t baton_stream_unlock_opened(uint64_t link, uint64_t number, const BatonBytes *key);
+
+/*
+ * The question was not opened: the person did not agree, their face was not recognised, they
+ * cancelled, the key is gone, or something else went wrong. reason is a BATON_FACE_ number. The
+ * device that asked is told, and nothing is typed. The rules for link, number, the thread and the
+ * results are those of baton_stream_unlock_opened, except that there is no key to be wrong: any
+ * reason that is not listed is taken as BATON_FACE_FAILED.
+ */
+int32_t baton_stream_unlock_declined(uint64_t link, uint64_t number, uint32_t reason);
 
 /*
  * Registers the platform's sharer. Call it once, at launch, before the app starts. A platform
@@ -1182,6 +1594,52 @@ int32_t baton_stream_source_sound(uint64_t link, const BatonSoundPacket *packet,
 int32_t baton_stream_source_end(uint64_t link, const BatonBytes *sentence);
 
 /*
+ * Unlocking. A platform that has unlock says, as it goes, whether the privacy of its screen is in
+ * place (baton_stream_source_private), and in unlock it asks whether the attempt goes on
+ * (baton_stream_unlock_live) and keeps the new box (baton_stream_unlock_keep). The three are the
+ * only functions of this interface that may be called from inside a call of the vtable.
+ */
+
+/*
+ * Says whether the cover of the screens, the hold of the keyboard and the pointer, and the guard
+ * that locks the device if the app dies are all in place now: in_place is 1 if they are, and 0 if
+ * not. The Rust side asks nobody when another device asks to unlock: it goes by the last word that
+ * it was given, and refuses the unlock (BATON_UNLOCK_NOT_PRIVATE) unless that word is 1 and the
+ * person at the other device has lifted nothing. A session starts with 0, so a platform that never
+ * says it is never unlocked. Say 1 when start has put everything in place, also from inside
+ * start, and 0 as soon as any part is not, and 1 again when all are, from wherever the platform
+ * learns of it, also from inside lift. The platform checks for itself again inside unlock, where
+ * it counts. Returns BATON_OK, also when the session is over (nothing happens then), or
+ * BATON_E_UNKNOWN_LINK or BATON_E_PANIC.
+ */
+int32_t baton_stream_source_private(uint64_t link, uint32_t in_place);
+
+/*
+ * Asks, while unlock runs, whether the attempt goes on: *live is 1 while it does, and 0 once it is
+ * over, because the other device gave up, the session ended, the time that the Rust side allows
+ * the platform ran out, or unlock returned. Ask before each key. An attempt that is over is not
+ * carried on: the platform types nothing more, wipes what it holds and returns. Called from any
+ * thread, also from inside unlock. Returns BATON_OK, BATON_E_UNKNOWN_LINK when no unlock is
+ * running for the link, or when the session ended and closed its link, which it does while unlock
+ * still runs (the attempt is over: the platform takes it as *live 0), BATON_E_ARGUMENT (a null
+ * pointer) or BATON_E_PANIC.
+ */
+int32_t baton_stream_unlock_live(uint64_t link, uint32_t *live);
+
+/*
+ * Keeps the password in a new box, under a new key that was sealed to the key of the other device,
+ * in the place of the box and the sealed key that unlock was given: one step that either happens
+ * whole or not at all (BatonUnlockBox). Called once in each unlock, from inside it, before
+ * anything is typed. It waits for the disk, so it is called from the thread of unlock, which may
+ * wait. Returns BATON_OK, and *result says what came of it (a BATON_KEEP_ number: anything but
+ * BATON_KEEP_KEPT means that nothing is kept, and the platform types nothing and returns
+ * BATON_UNLOCK_FAILED). Returns BATON_E_UNKNOWN_LINK when no unlock is running for the link, or
+ * when the session ended and closed its link (nothing is kept then either), BATON_E_ARGUMENT (a
+ * pointer, a size or a length is wrong; nothing is kept) or BATON_E_PANIC.
+ */
+int32_t baton_stream_unlock_keep(uint64_t link, const BatonUnlockBox *box, uint32_t *result);
+
+/*
  * The layout. These lines make a compiler that disagrees with the numbers refuse to build, and
  * the tests of the crate hold the numbers to the Rust structs.
  */
@@ -1362,7 +1820,59 @@ BATON_STATIC_ASSERT(offsetof(BatonSoundPacket, capture_time) == 8,
                     "BatonSoundPacket.capture_time");
 BATON_STATIC_ASSERT(offsetof(BatonSoundPacket, bytes) == 16, "BatonSoundPacket.bytes");
 
-BATON_STATIC_ASSERT(sizeof(BatonViewerVTable) == 104, "BatonViewerVTable");
+BATON_STATIC_ASSERT(sizeof(BatonUnlockSetup) == 72, "BatonUnlockSetup");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockSetup, size) == 0, "BatonUnlockSetup.size");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockSetup, sealing) == 4, "BatonUnlockSetup.sealing");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockSetup, password) == 8, "BatonUnlockSetup.password");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockSetup, target) == 24, "BatonUnlockSetup.target");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockSetup, viewer) == 40, "BatonUnlockSetup.viewer");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockSetup, viewer_key) == 56, "BatonUnlockSetup.viewer_key");
+
+BATON_STATIC_ASSERT(sizeof(BatonUnlockMade) == 32, "BatonUnlockMade");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockMade, size) == 0, "BatonUnlockMade.size");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockMade, box_len) == 4, "BatonUnlockMade.box_len");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockMade, sealed_len) == 8, "BatonUnlockMade.sealed_len");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockMade, reserved) == 12, "BatonUnlockMade.reserved");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockMade, boxed) == 16, "BatonUnlockMade.boxed");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockMade, sealed) == 24, "BatonUnlockMade.sealed");
+
+BATON_STATIC_ASSERT(sizeof(BatonUnlock) == 88, "BatonUnlock");
+BATON_STATIC_ASSERT(offsetof(BatonUnlock, size) == 0, "BatonUnlock.size");
+BATON_STATIC_ASSERT(offsetof(BatonUnlock, sealing) == 4, "BatonUnlock.sealing");
+BATON_STATIC_ASSERT(offsetof(BatonUnlock, box_key) == 8, "BatonUnlock.box_key");
+BATON_STATIC_ASSERT(offsetof(BatonUnlock, boxed) == 24, "BatonUnlock.boxed");
+BATON_STATIC_ASSERT(offsetof(BatonUnlock, viewer_key) == 40, "BatonUnlock.viewer_key");
+BATON_STATIC_ASSERT(offsetof(BatonUnlock, target) == 56, "BatonUnlock.target");
+BATON_STATIC_ASSERT(offsetof(BatonUnlock, viewer) == 72, "BatonUnlock.viewer");
+
+BATON_STATIC_ASSERT(sizeof(BatonUnlockBox) == 40, "BatonUnlockBox");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockBox, size) == 0, "BatonUnlockBox.size");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockBox, reserved) == 4, "BatonUnlockBox.reserved");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockBox, boxed) == 8, "BatonUnlockBox.boxed");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockBox, sealed) == 24, "BatonUnlockBox.sealed");
+
+BATON_STATIC_ASSERT(sizeof(BatonUnlockSource) == 40, "BatonUnlockSource");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockSource, size) == 0, "BatonUnlockSource.size");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockSource, renew) == 4, "BatonUnlockSource.renew");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockSource, id) == 8, "BatonUnlockSource.id");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockSource, name) == 24, "BatonUnlockSource.name");
+
+BATON_STATIC_ASSERT(sizeof(BatonUnlockKey) == 24, "BatonUnlockKey");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockKey, size) == 0, "BatonUnlockKey.size");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockKey, sealing) == 4, "BatonUnlockKey.sealing");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockKey, len) == 8, "BatonUnlockKey.len");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockKey, reserved) == 12, "BatonUnlockKey.reserved");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockKey, key) == 16, "BatonUnlockKey.key");
+
+BATON_STATIC_ASSERT(sizeof(BatonUnlockQuestion) == 64, "BatonUnlockQuestion");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockQuestion, size) == 0, "BatonUnlockQuestion.size");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockQuestion, reserved) == 4, "BatonUnlockQuestion.reserved");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockQuestion, number) == 8, "BatonUnlockQuestion.number");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockQuestion, sealed) == 16, "BatonUnlockQuestion.sealed");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockQuestion, id) == 32, "BatonUnlockQuestion.id");
+BATON_STATIC_ASSERT(offsetof(BatonUnlockQuestion, name) == 48, "BatonUnlockQuestion.name");
+
+BATON_STATIC_ASSERT(sizeof(BatonViewerVTable) == 128, "BatonViewerVTable");
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, version) == 0, "BatonViewerVTable.version");
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, size) == 4, "BatonViewerVTable.size");
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, context) == 8, "BatonViewerVTable.context");
@@ -1377,8 +1887,14 @@ BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, release) == 72, "BatonViewerVTab
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, sound) == 80, "BatonViewerVTable.sound");
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, play) == 88, "BatonViewerVTable.play");
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, stopped) == 96, "BatonViewerVTable.stopped");
+BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, unlock_key) == 104,
+                    "BatonViewerVTable.unlock_key");
+BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, unlock_open) == 112,
+                    "BatonViewerVTable.unlock_open");
+BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, unlock_cancel) == 120,
+                    "BatonViewerVTable.unlock_cancel");
 
-BATON_STATIC_ASSERT(sizeof(BatonSharerVTable) == 120, "BatonSharerVTable");
+BATON_STATIC_ASSERT(sizeof(BatonSharerVTable) == 144, "BatonSharerVTable");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, version) == 0, "BatonSharerVTable.version");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, size) == 4, "BatonSharerVTable.size");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, context) == 8, "BatonSharerVTable.context");
@@ -1397,6 +1913,11 @@ BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, screen) == 88, "BatonSharerVTabl
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, lift) == 96, "BatonSharerVTable.lift");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, hear) == 104, "BatonSharerVTable.hear");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, leave) == 112, "BatonSharerVTable.leave");
+BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, unlock_check) == 120,
+                    "BatonSharerVTable.unlock_check");
+BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, unlock_setup) == 128,
+                    "BatonSharerVTable.unlock_setup");
+BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, unlock) == 136, "BatonSharerVTable.unlock");
 
 #ifdef __cplusplus
 }

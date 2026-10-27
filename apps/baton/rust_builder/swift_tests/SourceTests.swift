@@ -381,13 +381,16 @@ func testTheTableHasALiftOnlyWhenThePlatformCanGiveTheScreenAndTheTableIsWhole()
   with.canGiveScreen = true
   guard let table = registeredSharing(with) else { return check(false) }
   check(table.lift != nil, "a platform that can give the screen")
-  // The lift is 96 bytes in, the entry for the sound follows it, then the entry to leave, and the
-  // table is 120 bytes long.
-  check(MemoryLayout<BatonSharerVTable>.size == 120, "size \(MemoryLayout<BatonSharerVTable>.size)")
-  check(table.size == 120, "size \(table.size)")
+  // The lift is 96 bytes in, the entry for the sound follows it, then the entry to leave, then the
+  // three entries to unlock, and the table is 144 bytes long.
+  check(MemoryLayout<BatonSharerVTable>.size == 144, "size \(MemoryLayout<BatonSharerVTable>.size)")
+  check(table.size == 144, "size \(table.size)")
   check(MemoryLayout<BatonSharerVTable>.offset(of: \.lift) == 96)
   check(MemoryLayout<BatonSharerVTable>.offset(of: \.hear) == 104)
   check(MemoryLayout<BatonSharerVTable>.offset(of: \.leave) == 112)
+  check(MemoryLayout<BatonSharerVTable>.offset(of: \.unlock_check) == 120)
+  check(MemoryLayout<BatonSharerVTable>.offset(of: \.unlock_setup) == 128)
+  check(MemoryLayout<BatonSharerVTable>.offset(of: \.unlock) == 136)
   // A platform that sends no sound leaves the entry out, and the devices it is paired with are not
   // told that it can.
   check(table.hear == nil, "an entry for the sound of a platform that sends none")

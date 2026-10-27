@@ -15,12 +15,25 @@
 //! of the sound, the packets and the end of a run to the platform, in the order that the session
 //! gives them. It stands for the same screen as the decoder, so the two share it: whichever of them
 //! is dropped last releases the screen, after the link is closed.
+//!
+//! The face is the third, for a platform that unlocks the screens of other devices: when the device
+//! that shares the screen asks a question, the face passes it to the platform, which asks for the
+//! face of the person and answers from a thread of its own with the link of the screen
+//! ([`exports::baton_stream_unlock_opened`](crate::exports::baton_stream_unlock_opened)). The
+//! question waits in the [`Asking`] of the screen, which the link leads to, until it is answered
+//! or taken back, so an answer to a question that is not the open one is refused.
 
 use std::sync::{Arc, Mutex};
 
-use baton_app::windows::{PlatformError, Screen, ScreenLink, ShowLimits, WindowViewer};
-use baton_core::streaming::{DecodeError, Decoder, DecoderState, Play, Speaker, WindowOffer};
-use baton_proto::stream::Codec;
+use baton_app::{
+    unlock::{FaceUnlocker, UnlockKeyError, UnlockQuestion, UnlockSource},
+    windows::{PlatformError, Screen, ScreenLink, ShowLimits, WindowViewer},
+};
+use baton_core::{
+    streaming::{DecodeError, Decoder, DecoderState, Play, Speaker, WindowOffer},
+    util::BoxFuture,
+};
+use baton_proto::{stream::Codec, unlock::UnlockKey};
 use baton_stream::{
     control::{PauseReason, SilentReason, Sound, SourceMessage, Thermal},
     gate::Reason,
@@ -40,12 +53,15 @@ use crate::{
         PAUSE_LOCKED, PAUSE_OTHER, SOURCE_CONFIG, SOURCE_NOTICE, SOURCE_PAUSE, SOURCE_RESUME,
         THERMAL_CRITICAL, THERMAL_FAIR, THERMAL_NOMINAL, THERMAL_SERIOUS, size_of_u32,
     },
-    platform::{Calls, Frame, ScreenHandle, Window},
+    platform::{Ask, Calls, Failure, Frame, KeyFailure, KeyFor, ScreenHandle, Window},
     registry::{Links, lock},
 };
 
 /// What the person is told when the platform made no screen and gave no reason.
 const NO_SCREEN: &str = "This device could not show the window.";
+
+/// What the log says when the platform could not make a key for an unlock and gave no reason.
+const NO_KEY: &str = "This device could not make a key for an unlock.";
 
 /// The viewer of the platform.
 pub(crate) struct AbiViewer {
@@ -98,7 +114,8 @@ impl WindowViewer for AbiViewer {
     }
 
     fn open(&self, window: &WindowOffer, link: ScreenLink) -> Result<Screen, PlatformError> {
-        let number = self.links.add(link);
+        let asking = Arc::new(Asking::default());
+        let number = self.links.add_asking(link, Arc::clone(&asking));
         let opened = self.calls.open(
             &Window {
                 title: window.title.as_deref().unwrap_or_default(),
@@ -123,12 +140,17 @@ impl WindowViewer for AbiViewer {
                     links: Arc::clone(&self.links),
                     sample: Vec::new(),
                 };
-                let screen = Screen::new(Box::new(decoder), opened.id);
-                Ok(if self.calls.can_play() {
-                    screen.with_speaker(AbiSpeaker { held })
-                } else {
-                    screen
-                })
+                let mut screen = Screen::new(Box::new(decoder), opened.id);
+                if self.calls.can_unlock() {
+                    screen = screen.with_unlocker(AbiFace {
+                        held: Arc::clone(&held),
+                        asking,
+                    });
+                }
+                if self.calls.can_play() {
+                    screen = screen.with_speaker(AbiSpeaker { held });
+                }
+                Ok(screen)
             }
             Err(failure) => {
                 self.links.remove(number);
@@ -141,6 +163,41 @@ impl WindowViewer for AbiViewer {
 
     fn plays_sound(&self) -> bool {
         self.calls.can_play()
+    }
+
+    fn can_unlock(&self) -> bool {
+        self.calls.can_unlock()
+    }
+
+    /// The call may wait for as long as the person takes to decide, so a thread that the runtime
+    /// keeps for such calls makes it. A future that is dropped before the platform answers leaves
+    /// the call to finish there, and its answer is dropped.
+    fn unlock_key(
+        &self,
+        source: UnlockSource,
+        renew: bool,
+    ) -> BoxFuture<'static, Result<UnlockKey, UnlockKeyError>> {
+        let calls = self.calls;
+        Box::pin(async move {
+            let made = tokio::task::spawn_blocking(move || {
+                calls.unlock_key(&KeyFor {
+                    id: source.id.as_bytes(),
+                    name: &source.name,
+                    renew,
+                })
+            })
+            .await;
+            match made {
+                Ok(Ok(key)) => Ok(key),
+                Ok(Err(KeyFailure::Refused)) => Err(UnlockKeyError::Refused),
+                Ok(Err(KeyFailure::Blocked)) => Err(UnlockKeyError::Blocked),
+                Ok(Err(KeyFailure::Unsupported)) => Err(UnlockKeyError::Unsupported),
+                Ok(Err(KeyFailure::Failed(Failure(sentence)))) => Err(UnlockKeyError::Failed(
+                    PlatformError::new(sentence.unwrap_or_else(|| NO_KEY.to_owned())),
+                )),
+                Err(_) => Err(UnlockKeyError::Failed(PlatformError::new(NO_KEY))),
+            }
+        })
     }
 }
 
@@ -292,6 +349,109 @@ impl Speaker for AbiSpeaker {
     /// hears it first tells the platform, and the other finds it told.
     fn ended(&mut self) {
         lock(&self.held).end();
+    }
+}
+
+/// The question that the platform of a screen was given and has not answered, if there is one.
+///
+/// The link of the screen leads here, so that an answer from a thread of the platform finds the
+/// question it is for: the question is taken out to be answered, and only the one with the number
+/// that the platform was given is taken, so an answer is taken once and an old one is refused.
+#[derive(Default)]
+pub(crate) struct Asking {
+    slot: Mutex<Slot>,
+}
+
+#[derive(Default)]
+struct Slot {
+    /// The number of the question that was asked last; the next one is one more.
+    last: u64,
+    /// The question that waits for an answer, and its number.
+    open: Option<(u64, UnlockQuestion)>,
+}
+
+impl Asking {
+    /// Takes the question as the one that waits and gives its number, which is not 0. A question
+    /// that waited is given back: it is not open any more, and dropping it declines it.
+    fn put(&self, question: UnlockQuestion) -> (u64, Option<UnlockQuestion>) {
+        let mut slot = lock(&self.slot);
+        slot.last = slot.last.saturating_add(1);
+        let number = slot.last;
+        let replaced = slot.open.replace((number, question));
+        (number, replaced.map(|(_, question)| question))
+    }
+
+    /// Takes the question that waits, if its number is `number`.
+    pub(crate) fn take(&self, number: u64) -> Option<UnlockQuestion> {
+        let mut slot = lock(&self.slot);
+        match slot.open.take() {
+            Some((open, question)) if open == number => Some(question),
+            other => {
+                slot.open = other;
+                None
+            }
+        }
+    }
+
+    /// Takes the question that waits, whichever it is.
+    fn take_open(&self) -> Option<UnlockQuestion> {
+        lock(&self.slot).open.take().map(|(_, question)| question)
+    }
+}
+
+/// What asks for the face of the person at one screen, for a platform that unlocks the screens of
+/// other devices. The session calls it with its lock held, so the platform is given the question
+/// and returns at once; the answer comes later with the link of the screen.
+struct AbiFace {
+    held: Arc<Mutex<Held>>,
+    asking: Arc<Asking>,
+}
+
+impl FaceUnlocker for AbiFace {
+    /// The question is kept before the platform is given it, so an answer from another thread
+    /// finds it however soon it comes. A platform that does not take it declines it: the question
+    /// is let go of, which declines it.
+    fn open(&mut self, question: UnlockQuestion) {
+        let sealed = question.sealed().as_bytes().to_vec();
+        let id = *question.source().id.as_bytes();
+        let name = question.source().name.clone();
+        let (number, replaced) = self.asking.put(question);
+        drop(replaced);
+        let taken = {
+            let mut held = lock(&self.held);
+            !held.over
+                && held.screen.unlock_open(&Ask {
+                    number,
+                    sealed: &sealed,
+                    id: &id,
+                    name: &name,
+                })
+        };
+        if !taken {
+            drop(self.asking.take(number));
+        }
+    }
+
+    /// The question is not open any more: an answer that comes later is refused, and the platform
+    /// stops asking, if it was asked.
+    fn cancel(&mut self) {
+        let Some(question) = self.asking.take_open() else {
+            return;
+        };
+        {
+            let mut held = lock(&self.held);
+            if !held.over {
+                held.screen.unlock_cancel();
+            }
+        }
+        // The attempt is over, so declining it changes nothing.
+        drop(question);
+    }
+
+    /// The platform is told that the session is over by the screen, which closes an open question
+    /// the same way; here the question is only taken out, so that an answer is refused.
+    fn ended(&mut self) {
+        drop(self.asking.take_open());
     }
 }
 

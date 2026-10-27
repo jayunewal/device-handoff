@@ -314,7 +314,9 @@ jobs:
             baton_stream_source_recovery_pending baton_stream_source_sent \
             baton_stream_source_new_epoch baton_stream_source_changed \
             baton_stream_source_pause baton_stream_source_resume \
-            baton_stream_source_end; do
+            baton_stream_source_end baton_stream_source_private \
+            baton_stream_unlock_opened baton_stream_unlock_declined \
+            baton_stream_unlock_live baton_stream_unlock_keep; do
             nm -gU "$lib" | grep -q " _$symbol\$" || { echo "$symbol is missing from $lib" >&2; exit 1; }
           done
       - name: Check that the app is sandboxed, and may use the network both ways, the camera and Downloads
@@ -429,7 +431,9 @@ jobs:
             baton_stream_source_recovery_pending baton_stream_source_sent \
             baton_stream_source_new_epoch baton_stream_source_changed \
             baton_stream_source_pause baton_stream_source_resume \
-            baton_stream_source_end; do
+            baton_stream_source_end baton_stream_source_private \
+            baton_stream_unlock_opened baton_stream_unlock_declined \
+            baton_stream_unlock_live baton_stream_unlock_keep; do
             nm -gU "$lib" | grep -q " _$symbol\$" || { echo "$symbol is missing from $lib" >&2; exit 1; }
           done
       - name: Start an iPhone simulator
