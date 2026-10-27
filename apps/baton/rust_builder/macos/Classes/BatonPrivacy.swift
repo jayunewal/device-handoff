@@ -3,14 +3,16 @@
 // The rules of the privacy mode (docs/adr/0011-privacy-mode.md): a person who uses their Mac from a
 // phone or a tablet while other people are at home. While the session lasts the screens of the Mac
 // show nothing, nobody at the Mac can use its keyboard or its pointer, and when the session ends,
-// whatever the reason, the Mac is locked again and only then does it show anything.
+// whatever the reason, the Mac is locked again and only then does it show anything. The one end
+// that does not lock it is the person's own at the other device: asked when they end the session,
+// they may choose to leave the Mac as it is (docs/adr/0014-lock-the-mac-or-leave-it.md).
 //
 // This file holds what does not depend on the frameworks of a Mac: when the cover goes up and comes
-// down, what ends a session, how the Mac is locked until the system says that it is, and what the
-// guard (BatonGuard.swift) is told. The Mac itself (the cover, the tap that holds the input, the
-// calls that lock) is given to it as a protocol, and is in BatonPrivacyMac.swift. So that this file
-// can be built and tested anywhere (apps/baton/rust_builder/swift_tests), nothing here may import
-// more than Foundation.
+// down, what ends a session, how the Mac is locked until the system says that it is, how it is left
+// as it is when the person chose that, and what the guard (BatonGuard.swift) is told. The Mac itself
+// (the cover, the tap that holds the input, the calls that lock) is given to it as a protocol, and
+// is in BatonPrivacyMac.swift. So that this file can be built and tested anywhere
+// (apps/baton/rust_builder/swift_tests), nothing here may import more than Foundation.
 
 import Foundation
 
@@ -103,7 +105,8 @@ struct PrivacyTiming {
 }
 
 /// The privacy of one session that another device controls: the cover goes up when the session
-/// starts and comes down only when the Mac is locked.
+/// starts and comes down only when the Mac is locked, or when the person at the other device chose,
+/// at the end, to leave the Mac as it is.
 ///
 /// A Mac that cannot be locked keeps its cover and goes on trying. That is the way of failing that
 /// shows nothing to the people who are at home, and the person at the Mac has the power button.
@@ -121,10 +124,17 @@ final class PrivateSession {
   enum Cause: Equatable {
     /// The session is over, whoever ended it.
     case sessionOver
+    /// The session is over, and the person at the other device chose, when they ended it, that the
+    /// Mac stay as it is: what they lifted is put back, the cover comes down, and the Mac is not
+    /// locked (docs/adr/0014-lock-the-mac-or-leave-it.md). A Mac that is locked stays locked.
+    case left
     /// The window is let go of: it never ran, or it did not start.
     case released
     /// Something at the Mac ended it.
     case alarm(PrivacyAlarm)
+
+    /// Whether this is the end of the session, which waits for the end that began before it.
+    var endsTheSession: Bool { self == .sessionOver || self == .left }
   }
 
   /// The two parts of the privacy that the person at the other device can lift, each by itself.
@@ -247,6 +257,11 @@ final class PrivateSession {
   /// locked, and then the cover comes down. Returns when that is done, or after the patience of the
   /// timing, in which case the Mac goes on being locked on a thread of its own.
   ///
+  /// The one cause that does not lock the Mac is `left`, the choice of the person at the other
+  /// device: what they lifted is put back and the cover comes down, with nothing locked. It is the
+  /// session's first end or it is nothing: a session that began to end some other way ends with the
+  /// lock, and `left` only waits for it.
+  ///
   /// Every cause finishes the session once. A second call returns at once, unless it is the end of
   /// the session and the first call was not: that one waits for the first, so that nothing that
   /// follows the end of a session happens while the Mac is not yet locked. An alarm never waits,
@@ -271,7 +286,7 @@ final class PrivateSession {
       if case .alarm = cause { return }
       condition.lock()
     case .finishing:
-      guard cause == .sessionOver else {
+      guard cause.endsTheSession else {
         condition.unlock()
         return
       }
@@ -292,9 +307,10 @@ final class PrivateSession {
   }
 
   /// Starts the two things that finishing is: telling the other device, if something at the Mac
-  /// ended the session, and locking the Mac. Neither waits for the other. The other device is told
-  /// through the library, which may be waiting for the thread that stops the capture, and that
-  /// thread waits for the lock.
+  /// ended the session, and locking the Mac, or leaving it as it is if the person at the other
+  /// device chose that. Neither waits for the other. The other device is told through the library,
+  /// which may be waiting for the thread that stops the capture, and that thread waits for the
+  /// lock.
   private func launch(_ cause: Cause) {
     if case .alarm(let alarm) = cause {
       log("the session is ended: \(alarm)")
@@ -302,27 +318,57 @@ final class PrivateSession {
       teller.name = "Baton privacy end"
       teller.start()
     }
-    let worker = Thread { [self] in lockTheMac() }
-    worker.name = "Baton privacy lock"
+    let leaving = cause == .left
+    let worker = Thread { [self] in
+      if leaving { leaveTheMac() } else { lockTheMac() }
+    }
+    worker.name = leaving ? "Baton privacy leave" : "Baton privacy lock"
     worker.start()
   }
 
   /// Puts back whatever the person at the other device lifted, before the Mac is locked: nobody at
   /// the Mac can get in the way of the lock, and the lock screen is drawn behind the cover and not
   /// in front of a screen that shows what was on it. A part that cannot be put back does not stop
-  /// the lock.
-  private func putBack() {
+  /// the lock. Returns whether everything was put back.
+  @discardableResult
+  private func putBack() -> Bool {
     condition.lock()
     let was = lifted
     condition.unlock()
-    guard was != Lifted() else { return }
+    guard was != Lifted() else { return true }
+    var done = true
     do {
       try curtain.lift(screen: false, input: false)
     } catch {
       log("what was lifted could not be put back before the Mac was locked")
+      done = false
     }
     condition.lock()
     lifted = Lifted()
+    condition.unlock()
+    return done
+  }
+
+  /// The person at the other device chose that the Mac stay as it is: what they lifted is put back,
+  /// as before a lock, and the cover comes down. Nothing is locked, woken or unlocked, so a Mac
+  /// that is locked stays locked, and the cover stays for a moment on one that is, so that its lock
+  /// screen is drawn before the cover goes. A part that cannot be put back is not a reason to leave
+  /// the Mac open: it is locked as it is at every other end.
+  private func leaveTheMac() {
+    guard putBack() else {
+      log("what was lifted could not be put back, so the Mac is locked and not left")
+      lockTheMac()
+      return
+    }
+    if curtain.locked { sleep(timing.afterLock) }
+    curtain.lower()
+    // The cover is down and nothing is covered, so the guard has nothing left to guard.
+    stopBeating()
+    guardian.disarm()
+    log("the Mac is left as it is and the cover is down")
+    condition.lock()
+    state = .done
+    condition.broadcast()
     condition.unlock()
   }
 

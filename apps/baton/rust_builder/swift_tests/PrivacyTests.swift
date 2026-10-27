@@ -612,6 +612,183 @@ func testAFinishThatComesWhileSomethingIsBeingLiftedWaitsForTheLiftAndThenPutsIt
     "\(curtain.log)")
 }
 
+// MARK: - When the person at the other device chose to leave the Mac as it is
+
+func testALeaveLowersTheCoverAndLocksNothingAndDoesNotWaitForALockScreen() {
+  let journal = Journal()
+  // A Mac that would be locked at once, if anything asked it to be.
+  let curtain = FakeCurtain(locksAtAttempt: 0, journal: journal)
+  let guardian = FakeGuard(journal: journal)
+  let clock = FakeClock()
+  let privacy = session(curtain, guardian: guardian, clock: clock)
+  try? privacy.begin()
+  privacy.finish(.left)
+  check(journal.all == ["arm", "raise", "lower", "disarm"], "\(journal.all)")
+  check(!curtain.locked, "the Mac was locked")
+  // The cover has no lock screen to wait for.
+  check(clock.sleeps.isEmpty, "slept \(clock.sleeps)")
+  check(guardian.armed == 1 && guardian.disarmed == 1)
+  // Finishing again, in any way, changes nothing.
+  privacy.finish(.left)
+  privacy.finish(.sessionOver)
+  privacy.finish(.released)
+  privacy.finish(.alarm(.escape))
+  Thread.sleep(forTimeInterval: 0.05)
+  check(journal.all == ["arm", "raise", "lower", "disarm"], "\(journal.all)")
+  check(guardian.disarmed == 1)
+}
+
+func testALeaveOfAMacThatIsLockedKeepsItLockedAndKeepsTheCoverUntilTheLockScreenIsDrawn() {
+  let curtain = FakeCurtain(locksAtAttempt: nil)
+  curtain.lockNow()
+  let clock = FakeClock()
+  let privacy = session(curtain, clock: clock)
+  try? privacy.begin()
+  privacy.finish(.left)
+  // Nothing is locked again, woken or unlocked.
+  check(curtain.log == ["raise", "lower"], "\(curtain.log)")
+  check(curtain.locked, "the Mac is not locked any more")
+  check(clock.sleeps.contains { $0 >= PrivacyTiming().afterLock }, "slept \(clock.sleeps)")
+}
+
+func testASessionThatEndsByLeavingWithSomethingLiftedPutsItBackAndLowersTheCoverWithoutALock() {
+  for (screen, input) in [(true, false), (false, true), (true, true)] {
+    let curtain = FakeCurtain(locksAtAttempt: 0)
+    let privacy = session(curtain)
+    try? privacy.begin()
+    privacy.lift(screen: screen, input: input)
+    privacy.finish(.left)
+    check(
+      curtain.log == ["raise", "lift \(screen) \(input)", "lift false false", "lower"],
+      "\(screen) \(input): \(curtain.log)")
+    check(!curtain.locked, "\(screen) \(input): the Mac was locked")
+  }
+}
+
+func testAPartThatCannotBePutBackBeforeALeaveLocksTheMacAfterAll() {
+  let curtain = FakeCurtain(locksAtAttempt: 0)
+  curtain.putBackFailure = .coverLost
+  let told = Told()
+  let privacy = session(curtain, told: told)
+  try? privacy.begin()
+  privacy.lift(screen: true, input: false)
+  privacy.finish(.left)
+  // The Mac is not left open because something in the end went wrong, and what was lifted is not
+  // put back twice.
+  check(
+    curtain.log == ["raise", "lift true false", "lift false false", "lock 0", "lower"],
+    "\(curtain.log)")
+  check(curtain.locked, "the Mac was left open")
+  // The person ended the session, so nobody has to be told that it ended.
+  Thread.sleep(forTimeInterval: 0.05)
+  check(told.all.isEmpty, "\(told.all)")
+}
+
+func testALeaveThatComesAfterSomethingAtTheMacBeganToLockWaitsForTheLockAndLeavesNothing() {
+  let curtain = FakeCurtain(locksAtAttempt: nil)
+  let privacy = session(curtain, patience: 5)
+  try? privacy.begin()
+  // Something at the Mac ended it first, and the Mac is not locked yet.
+  curtain.ring(.coverLost)
+  check(eventually { curtain.log.contains("lock 0") }, "\(curtain.log)")
+
+  let ended = DispatchSemaphore(value: 0)
+  let end = Thread {
+    privacy.finish(.left)
+    ended.signal()
+  }
+  end.start()
+  check(ended.wait(timeout: .now() + 0.3) == .timedOut, "the leave did not wait for the lock")
+  check(curtain.lowered == 0)
+
+  curtain.lockNow()
+  check(ended.wait(timeout: .now() + 5) == .success, "the leave never returned")
+  // The session ended the way it began to, and the cover came down once, on a Mac that is locked.
+  check(curtain.lowered == 1, "\(curtain.log)")
+  check(curtain.locked)
+}
+
+func testSomethingAtTheMacWhileItIsBeingLeftDoesNotLockIt() {
+  // The put-back is where the Mac is being left: the person's choice came first.
+  let curtain = FakeCurtain(locksAtAttempt: 0)
+  curtain.whileLifting = { [weak curtain] screen, input in
+    if !screen && !input { curtain?.ring(.escape) }
+  }
+  let told = Told()
+  let privacy = session(curtain, told: told)
+  try? privacy.begin()
+  privacy.lift(screen: true, input: false)
+  privacy.finish(.left)
+  Thread.sleep(forTimeInterval: 0.1)
+  check(
+    curtain.log == ["raise", "lift true false", "lift false false", "lower"], "\(curtain.log)")
+  check(!curtain.locked, "the Mac was locked")
+  check(told.all.isEmpty, "\(told.all)")
+}
+
+func testTheEndOfASessionThatComesWhileTheMacIsBeingLeftWaitsForTheLeaveAndLocksNothing() {
+  // A quit of the app is such an end: it waits for the cover to come down, and goes on.
+  let curtain = FakeCurtain(locksAtAttempt: 0)
+  let inside = DispatchSemaphore(value: 0)
+  let go = DispatchSemaphore(value: 0)
+  curtain.whileLifting = { screen, input in
+    guard !screen && !input else { return }
+    inside.signal()
+    _ = go.wait(timeout: .now() + 5)
+  }
+  let privacy = session(curtain, patience: 5)
+  try? privacy.begin()
+  privacy.lift(screen: true, input: false)
+  let leaving = Thread { privacy.finish(.left) }
+  leaving.start()
+  check(inside.wait(timeout: .now() + 5) == .success, "the put-back never began")
+
+  let quit = DispatchSemaphore(value: 0)
+  let quitting = Thread {
+    privacy.finish(.sessionOver)
+    quit.signal()
+  }
+  quitting.start()
+  check(quit.wait(timeout: .now() + 0.3) == .timedOut, "the end of the session did not wait")
+  go.signal()
+  check(quit.wait(timeout: .now() + 5) == .success, "the end of the session never returned")
+  check(
+    curtain.log == ["raise", "lift true false", "lift false false", "lower"], "\(curtain.log)")
+  check(!curtain.locked, "the Mac was locked")
+}
+
+func testALeaveEndsTheSessionAndThenTheGuardIsLetGoOfAndNotToldAgain() {
+  let curtain = FakeCurtain(locksAtAttempt: 0)
+  let guardian = FakeGuard()
+  let privacy = session(curtain, guardian: guardian)
+  try? privacy.begin()
+  check(eventually { guardian.beats >= 3 }, "the guard was not told: \(guardian.beats)")
+  let began = Date()
+  privacy.finish(.left)
+  // The session is over when the leave has been done, and does not wait for its patience.
+  check(Date().timeIntervalSince(began) < 2, "the leave waited for its patience")
+  check(guardian.disarmed == 1, "the guard was not let go of")
+  Thread.sleep(forTimeInterval: 0.05)
+  let ended = guardian.beats
+  Thread.sleep(forTimeInterval: 0.15)
+  check(guardian.beats == ended, "the guard was told after the Mac was left")
+}
+
+func testAWindowThatWasNeverRaisedIsNotLeftEither() {
+  let curtain = FakeCurtain(locksAtAttempt: 0)
+  let privacy = session(curtain)
+  privacy.finish(.left)
+  Thread.sleep(forTimeInterval: 0.1)
+  check(curtain.log.isEmpty, "\(curtain.log)")
+  do {
+    try privacy.begin()
+    check(false, "a window that was left was raised afterwards")
+  } catch is SharerFailure {
+  } catch {
+    check(false, "another kind of error: \(error)")
+  }
+}
+
 // MARK: - The guard
 
 func testTheGuardIsHandedTheMacBeforeTheCoverGoesUpAndLetGoOfAfterItComesDown() {

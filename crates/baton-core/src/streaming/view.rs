@@ -2407,6 +2407,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_choice_that_comes_at_once_after_another_end_is_too_late_and_says_nothing() {
+        // The writer of the control stream has not finished the stream yet when the choice comes,
+        // since nothing is waited for between the two calls. The session ended with an end that was
+        // not the person's choice, and the stream must not say that it was.
+        let mut rig = Rig::leaving(quick()).await;
+        let _source_control = rig.open_source_control().await;
+        let mut viewer_control = rig.viewer_control().await;
+        rig.handle.end();
+        assert!(!rig.handle.end_leaving());
+        assert_eq!(rig.ended().await, End::Local);
+        let (said, end) = written_until_the_end(&mut viewer_control).await;
+        assert_eq!(end, Ok(()));
+        assert!(!said.contains(&ViewerMessage::Leave), "{said:?}");
+    }
+
+    #[tokio::test]
     async fn a_session_that_the_source_ended_first_has_no_choice_left_to_make() {
         let mut rig = Rig::leaving(quick()).await;
         let mut source_control = rig.open_source_control().await;

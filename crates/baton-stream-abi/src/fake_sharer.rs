@@ -22,6 +22,11 @@
 //! test plays the encoder of the sound with [`sound_begin`], [`sound`] and [`sound_silent`], the
 //! way the capture thread of a Mac would.
 //!
+//! A window that was given as private also gets `leave`, which is `ended` for a session that the
+//! person at the other device ended by choosing that the Mac stay as it is. It is logged as
+//! [`SharerCall::Leave`] and counts as the end of the window: nothing may come after it, and
+//! neither `ended` nor a second `leave` may follow.
+//!
 //! The other half of a platform, the capture thread that asks `begin` and hands over what the
 //! encoder made, is a set of functions that call the library the way Swift would, with the same
 //! structs and pointers: [`begin`], [`sent`] and the others.
@@ -92,6 +97,9 @@ pub(crate) enum SharerCall {
         on: bool,
     },
     Ended,
+    /// The platform was told that the session is over and that the person at the other device
+    /// chose that the Mac stay as it is: the end of the window, in place of [`Self::Ended`].
+    Leave,
     Release,
 }
 
@@ -253,6 +261,7 @@ pub(crate) enum AroundPlan {
 /// (0 for the calls about the device), to make the platform call the library.
 pub(crate) type Hook = Arc<dyn Fn(u64, &SharerCall) + Send + Sync>;
 
+#[allow(clippy::struct_excessive_bools)] // the switches of one platform, each of its own
 struct State {
     log: Vec<(u64, SharerCall)>,
     complaints: Vec<String>,
@@ -268,6 +277,8 @@ struct State {
     post: i32,
     /// The platform registers a table that ends before `lift`.
     cannot_lift: bool,
+    /// The platform registers a table that ends before `leave`.
+    cannot_leave: bool,
     /// Whether the platform registers as one that sends sound.
     sound: bool,
     hook: Option<Hook>,
@@ -351,6 +362,7 @@ impl FakeSharer {
                 around: AroundPlan::Says(Around::default()),
                 post: OK,
                 cannot_lift: false,
+                cannot_leave: false,
                 sound: true,
                 hook: None,
                 waiting: BTreeSet::new(),
@@ -379,6 +391,7 @@ impl FakeSharer {
             screen: Some(screen),
             lift: Some(lift),
             hear: Some(hear),
+            leave: Some(leave),
         }
     }
 
@@ -392,6 +405,7 @@ impl FakeSharer {
             screen: None,
             lift: None,
             hear: None,
+            leave: None,
             ..self.vtable()
         }
     }
@@ -404,6 +418,7 @@ impl FakeSharer {
             screen: None,
             lift: None,
             hear: None,
+            leave: None,
             ..self.vtable()
         }
     }
@@ -416,16 +431,29 @@ impl FakeSharer {
             size: u32::try_from(offset_of!(BatonSharerVTable, lift)).unwrap(),
             lift: None,
             hear: None,
+            leave: None,
             ..self.vtable()
         }
     }
 
     /// The vtable of a platform that was written before it could send sound: it ends at `lift`,
-    /// and the library reads the function that it lacks as missing.
+    /// and the library reads the two functions that it lacks as missing.
     pub(crate) fn vtable_without_hear(self: &Arc<Self>) -> BatonSharerVTable {
         BatonSharerVTable {
             size: u32::try_from(offset_of!(BatonSharerVTable, hear)).unwrap(),
             hear: None,
+            leave: None,
+            ..self.vtable()
+        }
+    }
+
+    /// The vtable of a platform that was written before it could leave the Mac as it is at the
+    /// end of a private session: it ends at `hear`, and the library reads the function that it
+    /// lacks as missing.
+    pub(crate) fn vtable_without_leave(self: &Arc<Self>) -> BatonSharerVTable {
+        BatonSharerVTable {
+            size: u32::try_from(offset_of!(BatonSharerVTable, leave)).unwrap(),
+            leave: None,
             ..self.vtable()
         }
     }
@@ -440,21 +468,31 @@ impl FakeSharer {
 
     /// Registers this platform in `registry`: with the whole table, or with the one that ends
     /// before `lift` if the test said that the platform cannot lift, or the one that ends before
-    /// `hear` if it said that the platform sends no sound ([`Self::sends_no_sound`]).
+    /// `hear` if it said that the platform sends no sound ([`Self::sends_no_sound`]), or the one
+    /// that ends before `leave` if it said that the platform cannot leave the Mac as it is
+    /// ([`Self::set_cannot_leave`]).
     pub(crate) fn register_in(self: &Arc<Self>, registry: &Registry) -> Result<(), Error> {
-        let table = if self.state().cannot_lift {
-            self.vtable_without_lift()
-        } else if self.state().sound {
-            self.vtable()
-        } else {
-            self.vtable_without_hear()
-        };
-        register_table(registry, &table)
+        register_table(registry, &self.registered_table())
     }
 
-    /// The calls that registration makes of this platform.
+    /// The calls that registration makes of this platform, with the table that
+    /// [`register_in`](Self::register_in) registers.
     pub(crate) fn platform(self: &Arc<Self>) -> SharerCalls {
-        read_table(&self.vtable()).expect("the vtable of the fake is whole")
+        read_table(&self.registered_table()).expect("the vtable of the fake is whole")
+    }
+
+    /// The table that registers this platform: the whole one, or the one of an older platform if
+    /// the test said that this one is.
+    fn registered_table(self: &Arc<Self>) -> BatonSharerVTable {
+        if self.state().cannot_lift {
+            self.vtable_without_lift()
+        } else if !self.state().sound {
+            self.vtable_without_hear()
+        } else if self.state().cannot_leave {
+            self.vtable_without_leave()
+        } else {
+            self.vtable()
+        }
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -536,6 +574,12 @@ impl FakeSharer {
     /// of a screen could be lifted does.
     pub(crate) fn set_cannot_lift(&self) {
         self.state().cannot_lift = true;
+    }
+
+    /// The platform registers a table that ends at `hear`, as one written before a private
+    /// session could end without the lock does.
+    pub(crate) fn set_cannot_leave(&self) {
+        self.state().cannot_leave = true;
     }
 
     pub(crate) fn on_call(&self, hook: impl Fn(u64, &SharerCall) + Send + Sync + 'static) {
@@ -1371,6 +1415,29 @@ unsafe extern "C" fn ended(picked: *mut c_void) {
     if !progress.started {
         fake.complain(format!(
             "ended on window {}, whose start did not work",
+            cell.number
+        ));
+    }
+    if progress.ended {
+        fake.complain(format!("ended twice, on window {}", cell.number));
+    }
+    progress.ended = true;
+}
+
+unsafe extern "C" fn leave(picked: *mut c_void) {
+    // SAFETY: `picked` is a pointer that an answer gave.
+    let (cell, fake) = unsafe { window_of(picked) };
+    let _busy = about_window(cell, &fake, &SharerCall::Leave);
+    let mut progress = locked(&cell.progress);
+    if !progress.started {
+        fake.complain(format!(
+            "leave on window {}, whose start did not work",
+            cell.number
+        ));
+    }
+    if !progress.private {
+        fake.complain(format!(
+            "leave on window {}, which was not given as private",
             cell.number
         ));
     }

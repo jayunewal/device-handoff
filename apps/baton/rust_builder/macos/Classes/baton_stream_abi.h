@@ -41,8 +41,9 @@
  *       plays sound, sound, play and stopped (about the same screen);
  *     sharer: control, pick, cancel_pick and screen (about the device), and prepare, start,
  *       surroundings, post, ended and release (about one window, with the pointer that
- *       baton_stream_pick_done or screen gave), and, for a platform that sends sound, hear
- *       (about the same window).
+ *       baton_stream_pick_done or screen gave), and, for a platform that keeps a screen
+ *       private, lift, for one that sends sound, hear, and for one that can end a private
+ *       session without locking the device, leave (about the same window).
  *
  * Rules that hold for every call.
  *
@@ -79,8 +80,8 @@
  *     calls may come on two threads, so a screen keeps nothing in thread-local storage. The
  *     calls of two screens may overlap. The same holds for the sharer: control, pick and
  *     cancel_pick are called on a thread of the app's runtime and may overlap each other; the
- *     calls of one window (prepare, start, surroundings, post, hear, ended, release) never
- *     overlap, and release is the last; the calls of two windows may overlap.
+ *     calls of one window (prepare, start, surroundings, post, lift, hear, ended or leave,
+ *     release) never overlap, and release is the last; the calls of two windows may overlap.
  *   - Nothing in the platform may unwind into the Rust side: a Swift error or an exception
  *     is caught before it leaves the call.
  */
@@ -730,7 +731,7 @@ typedef struct BatonViewerVTable {
 
 /*
  * The functions of the platform that shares windows. All of them are mandatory but the last
- * five. The first three are about the device and take the context of the table; the others are
+ * six. The first three are about the device and take the context of the table; the others are
  * about one window, and take the pointer that baton_stream_pick_done gave. BatonEndedFn and
  * BatonReleaseFn are the types of ended and release above, with the pointer of the window in
  * place of the one of the screen.
@@ -766,7 +767,9 @@ typedef struct BatonViewerVTable {
  *                BATON_E_UNKNOWN_LINK. Stop capturing and encoding, the sound included, and let
  *                go of what the capture holds. Called only after a start that returned BATON_OK,
  *                once, and also when the runtime of the app is shut down before the session is
- *                over: the link is closed before ended then too. No call follows but release.
+ *                over: the link is closed before ended then too. No call follows but release. A
+ *                private session that the person at the other device ended by choosing that
+ *                this device stay as it is ends with leave, below, in place of ended.
  *   release:     the window is not needed any more, whether or not ended came first, and
  *                whether or not it was ever started. Let go of all of it, the picker's
  *                result included. Called exactly once, and nothing follows.
@@ -822,7 +825,9 @@ typedef struct BatonViewerVTable {
  *                failure. It never gives the display open in its place. The promise holds from
  *                start until the session is over: the screen of the device stays dark, its
  *                keyboard and its pointer stay out of anyone's hands but the session's, and when
- *                the session is over, whatever the cause, the device is locked again. A display
+ *                the session is over, whatever the cause, the device is locked again, except at
+ *                the end that the person at the other device chose to leave the device as it is
+ *                (leave, below). A display
  *                that is released without start changes nothing at the device. A flag that the
  *                platform does not know makes the call fail.
  *
@@ -849,11 +854,12 @@ typedef struct BatonViewerVTable {
  *                the platform does not take what is typed or moved at this device for a reason
  *                to end the session, since the person at the other device let it be used. A
  *                session that ends, whatever the cause and whatever is lifted, puts everything
- *                back and then locks the device. A lift that cannot be put back is not reported
- *                here: the platform ends the session with baton_stream_source_end, from a thread
- *                of its own, and the device is locked.
+ *                back and then locks the device, except at the end that the person chose to
+ *                leave the device as it is (leave, below). A lift that cannot be put back is not
+ *                reported here: the platform ends the session with baton_stream_source_end, from
+ *                a thread of its own, and the device is locked.
  *
- * The very last is about the sound of a display, and takes the pointer of the window like the
+ * The next one is about the sound of a display, and takes the pointer of the window like the
  * ones about one window do. A platform that cannot send sound leaves it NULL (a table that ends at
  * lift is accepted), and the device does not tell the devices it is paired with that it sends
  * sound. It is called after a start that returned BATON_OK and not after ended, from the one
@@ -883,6 +889,31 @@ typedef struct BatonViewerVTable {
  *                The Rust side tells the latest word and not the ones between: a person who turns
  *                the sound on, off and on again faster than hear answers is told a 1, and one who
  *                turns it on and off, a 0.
+ *
+ * The very last is about the end of a screen that was given with BATON_SCREEN_PRIVATE, and takes
+ * the pointer of the window. A platform that cannot end the privacy of a screen without locking
+ * the device leaves it NULL (a table that ends at hear is accepted), and the device does not tell
+ * the devices it is paired with that they can ask it to stay as it is: every end locks the device.
+ *
+ *   leave:       the session is over, and the person at the device that controlled the screen
+ *                chose, when they ended it, that this device stay as it is. It is ended with one
+ *                difference: the device is not locked. Called in place of ended and never as
+ *                well as it, for a window that was given with BATON_SCREEN_PRIVATE and for no
+ *                other, after a start that returned BATON_OK, once, and nothing follows but
+ *                release. The thread and the rules of ended hold: no lock is held, the link is
+ *                closed already, a call of the platform that is on its way is answered with
+ *                BATON_E_UNKNOWN_LINK, and the capture threads of the platform may be waited for.
+ *
+ *                Put everything back that the promise of screen took, as ended does before it
+ *                locks: what was lifted is put back, the screens light, the keyboard and the
+ *                pointer of the device are given back, the capture of the sound is let go of, and
+ *                whatever else the privacy changed is as it was. Then do not lock the device. Do
+ *                not wake it or unlock it either: a device that is locked when the session ends
+ *                stays as it is. A thing that cannot be put back is a reason to lock after all,
+ *                as it is at every end, since the device is not left open because something in
+ *                the end went wrong. The Rust side tells the platform to leave only when the
+ *                person chose it and the end that followed was the one they chose; every other
+ *                end, whatever the cause, is ended, and the device is locked.
  */
 typedef uint32_t (*BatonControlFn)(void *context);
 typedef int32_t (*BatonPickFn)(void *context, uint64_t request, BatonMessage *message);
@@ -895,15 +926,18 @@ typedef int32_t (*BatonScreenFn)(void *context, uint32_t flags, BatonPicked *pic
                                  BatonMessage *message);
 typedef void (*BatonLiftFn)(void *picked, uint32_t lifted);
 typedef void (*BatonHearFn)(void *picked, uint32_t on);
+typedef void (*BatonLeaveFn)(void *picked);
 
 /*
  * What the platform registers to share windows, as the table above does to show them. A table of
- * the size it had before input was carried (72 bytes, ending at release) is accepted: the five
+ * the size it had before input was carried (72 bytes, ending at release) is accepted: the six
  * functions it lacks read as NULL. So is one of the size it had before the screen could be given
- * without a picker (88 bytes, ending at post): the three functions it lacks read as NULL. So is
+ * without a picker (88 bytes, ending at post): the four functions it lacks read as NULL. So is
  * one of the size it had before the privacy of a screen could be lifted (96 bytes, ending at
- * screen): the two functions it lacks read as NULL. And so is one of the size it had before sound
- * was carried (104 bytes, ending at lift): the function it lacks reads as NULL.
+ * screen): the three functions it lacks read as NULL. So is one of the size it had before sound
+ * was carried (104 bytes, ending at lift): the two functions it lacks read as NULL. And so is one
+ * of the size it had before a private session could end without the lock (112 bytes, ending at
+ * hear): the function it lacks reads as NULL.
  */
 typedef struct BatonSharerVTable {
     uint32_t version;
@@ -921,6 +955,7 @@ typedef struct BatonSharerVTable {
     BatonScreenFn screen;
     BatonLiftFn lift;
     BatonHearFn hear;
+    BatonLeaveFn leave;
 } BatonSharerVTable;
 
 /* The version of the interface that the library was built with, for the platform to compare. */
@@ -1342,7 +1377,7 @@ BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, sound) == 80, "BatonViewerVTable
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, play) == 88, "BatonViewerVTable.play");
 BATON_STATIC_ASSERT(offsetof(BatonViewerVTable, stopped) == 96, "BatonViewerVTable.stopped");
 
-BATON_STATIC_ASSERT(sizeof(BatonSharerVTable) == 112, "BatonSharerVTable");
+BATON_STATIC_ASSERT(sizeof(BatonSharerVTable) == 120, "BatonSharerVTable");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, version) == 0, "BatonSharerVTable.version");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, size) == 4, "BatonSharerVTable.size");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, context) == 8, "BatonSharerVTable.context");
@@ -1360,6 +1395,7 @@ BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, post) == 80, "BatonSharerVTable.
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, screen) == 88, "BatonSharerVTable.screen");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, lift) == 96, "BatonSharerVTable.lift");
 BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, hear) == 104, "BatonSharerVTable.hear");
+BATON_STATIC_ASSERT(offsetof(BatonSharerVTable, leave) == 112, "BatonSharerVTable.leave");
 
 #ifdef __cplusplus
 }

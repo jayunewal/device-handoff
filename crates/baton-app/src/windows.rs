@@ -379,6 +379,17 @@ pub trait WindowSharer: Send + Sync + 'static {
     fn can_lift(&self) -> bool {
         false
     }
+
+    /// Whether the platform can end the privacy of a screen that it gave as [`Privacy::Private`]
+    /// without locking the device, when the person at the other device chose that, and says so
+    /// with [`SourceEvents::ended_leaving`]. A device where it can offers the screen with that
+    /// choice to the devices it is paired with, which ask the person when they end the session
+    /// (`docs/adr/0014-lock-the-mac-or-leave-it.md`); one where it cannot locks the device at
+    /// every end, as it did. Only asked of a platform that [`can_lift`](Self::can_lift). The same
+    /// each time.
+    fn can_leave(&self) -> bool {
+        false
+    }
 }
 
 /// A window that the person picked, and everything that the platform keeps for it. Dropping it

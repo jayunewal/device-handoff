@@ -713,6 +713,41 @@ mod tests {
     }
 
     #[test]
+    fn the_app_is_told_whether_the_platform_can_leave_the_device_as_it_is() {
+        let registry = Registry::new();
+        let platform = FakeSharer::new();
+        platform.register_in(&registry).unwrap();
+        assert!(registry.sharer().unwrap().can_leave());
+
+        // A platform from before a private session could end without the lock cannot, and is
+        // registered all the same, with all that it could do.
+        let registry = Registry::new();
+        let platform = FakeSharer::new();
+        platform.set_cannot_leave();
+        platform.register_in(&registry).unwrap();
+        let sharer = registry.sharer().unwrap();
+        assert!(!sharer.can_leave());
+        assert!(sharer.can_lift());
+        assert!(sharer.sends_sound());
+
+        // A table that ends at `hear` is such a platform, and so is one whose size cuts `leave`
+        // in two; a table that is longer than this version knows is read as far as it goes.
+        let table = platform.vtable();
+        let before = u32::try_from(offset_of!(BatonSharerVTable, leave)).unwrap();
+        for (what, size, can) in [
+            ("a table that ends at hear", before, false),
+            ("a size that cuts leave", before + 4, false),
+            ("the whole table", table.size, true),
+            ("a longer table", table.size + 16, true),
+        ] {
+            let registry = Registry::new();
+            fake_sharer::register_table(&registry, &BatonSharerVTable { size, ..table }).unwrap();
+            assert_eq!(registry.sharer().unwrap().can_leave(), can, "{what}");
+        }
+        platform.assert_no_complaints();
+    }
+
+    #[test]
     fn a_table_of_the_sound_that_is_not_whole_is_taken_without_it() {
         // The part that every version has ends at `release`: a viewer table that ends there is
         // taken, and one byte short of it is not.

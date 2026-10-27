@@ -19,7 +19,9 @@
 // (BatonInput.swift, and BatonControl.swift for the calls of the system). A screen that a paired
 // device steers, after it started the session, is private (BatonPrivacy.swift and
 // BatonPrivacyMac.swift): it is dark for the people at this Mac, and they cannot use its keys or its
-// pointer, until the session is over and the Mac is locked again.
+// pointer, until the session is over and the Mac is locked again, or left as it is, if the person at
+// the other device chose that when they ended the session
+// (docs/adr/0014-lock-the-mac-or-leave-it.md).
 //
 // An iPhone or an iPad cannot share a window, so there is nothing here for them.
 
@@ -92,6 +94,10 @@ final class MacSharer: NSObject, SharerPlatform, SCContentSharingPickerObserver 
     if #available(macOS 14.2, *) { return true }
     return false
   }
+
+  /// A private session can end with the Mac left as it is and not locked, for the person at the
+  /// other device who chose so (`PrivateSession.Cause.left`).
+  var canLeave: Bool { true }
 
   private let lock = NSLock()
   /// The request that the picker is up for.
@@ -416,13 +422,23 @@ final class MacSharedWindow: SharedWindow {
   }
 
   func ended() {
+    over(.sessionOver)
+  }
+
+  func endedLeaving() {
+    over(.left)
+  }
+
+  /// The session is over. The capture stops, and the privacy ends as `cause` says: with the Mac
+  /// locked, or, when the person at the other device chose to leave it, as it is.
+  private func over(_ cause: PrivateSession.Cause) {
     capture?.stop()
     encoder?.invalidate()
     // The Mac is locked before this returns, if it can be, and the screens and the keys come back
-    // only then.
-    privateSession?.finish(.sessionOver)
+    // only then. A Mac that is left comes back at once, with nothing locked.
+    privateSession?.finish(cause)
     // The Mac plays again: at once for a screen that is not private, and for a private one only now
-    // that it is locked.
+    // that it is locked, or left.
     sound?.close()
   }
 
