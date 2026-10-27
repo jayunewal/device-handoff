@@ -248,6 +248,12 @@ impl App {
             // it gave as private, lets the device that controls the screen do so, and says so.
             if sharer.control() && sharer.can_lift() {
                 builder = builder.private_sessions();
+                // One that can also end that privacy without locking the device lets the person at
+                // the device that controls the screen choose so when they end the session, and
+                // says so in the offer.
+                if sharer.can_leave() {
+                    builder = builder.allow_leave();
+                }
             }
             if sharer.sends_sound() {
                 builder = builder.share_sound();

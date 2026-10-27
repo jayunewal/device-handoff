@@ -78,8 +78,9 @@ enum ScreenPrivacy: Equatable {
   /// The other device also controls the screen, and nobody at this device may see what happens on
   /// it or use the device meanwhile. From the start of the session until it is over the screen
   /// stays dark and the keyboard and the pointer stay out of anyone's hands, and when the session
-  /// is over, whatever the cause, the device is locked again. A device that cannot promise that
-  /// refuses the screen, and never gives it open in its place.
+  /// is over, whatever the cause, the device is locked again, except at the end that the person at
+  /// the other device chose to leave the device as it is (`SharedWindow.endedLeaving`). A device
+  /// that cannot promise that refuses the screen, and never gives it open in its place.
   case `private`
 }
 
@@ -97,6 +98,14 @@ protocol SharerPlatform: AnyObject {
   /// the platform is registered: a device that can tells the devices it is paired with that they can
   /// hear its screen, and one that cannot says nothing of it.
   var canSendSound: Bool { get }
+
+  /// Whether a private screen can be left as it is when the session ends, and not locked, for the
+  /// person at the other device who chose so (`SharedWindow.endedLeaving`,
+  /// docs/adr/0014-lock-the-mac-or-leave-it.md). It is asked once, when the platform is
+  /// registered, and counts only for a platform that can give its screen: a device that can tells
+  /// the devices it is paired with that they may ask the person, and one that cannot is locked at
+  /// every end.
+  var canLeave: Bool { get }
 
   /// Shows the picker of the system. It does not wait for the person: the answer is given to
   /// `answerPick`, once for each request, from any thread but not from inside this call. Throws
@@ -121,6 +130,7 @@ protocol SharerPlatform: AnyObject {
 extension SharerPlatform {
   var canGiveScreen: Bool { false }
   var canSendSound: Bool { false }
+  var canLeave: Bool { false }
 
   func screen(privacy: ScreenPrivacy) throws -> (window: SharedWindow, info: PickedWindowInfo) {
     throw SharerFailure(sentence: "This device cannot give its screen without asking.")
@@ -143,8 +153,20 @@ protocol SharedWindow: AnyObject {
   /// The session is over, whoever ended it. Stops capturing and encoding and lets go of what the
   /// capture holds. The link is closed before this is called, and a call into the library that is
   /// on its way is answered with the news that it is over, so this may wait for the threads of the
-  /// capture to leave. Called only after a `start` that worked, once.
+  /// capture to leave. Called only after a `start` that worked, once. A private screen locks the
+  /// device before this returns, if it can.
   func ended()
+
+  /// The session is over, and the person at the other device chose, when they ended it, that this
+  /// device stay as it is (docs/adr/0014-lock-the-mac-or-leave-it.md): `ended`, except that the
+  /// device is not locked. What the privacy took is given back all the same, the part that the
+  /// other device lifted first: the screens show what is on them, the keyboard and the pointer
+  /// are free, and the sound of the device is back. A device that is locked stays locked, and
+  /// nothing is woken or unlocked. A part that cannot be put back is a reason to lock after all,
+  /// as at every end. Called in place of `ended` and never as well, for a screen that was given as
+  /// `ScreenPrivacy.private`, after a `start` that worked, once; nothing follows but `released`.
+  /// A window that cannot leave a device as it is is told `ended`, which locks it.
+  func endedLeaving()
 
   /// The window is not needed any more, whether or not `ended` came first, and whether or not it
   /// was ever started. Lets go of all of it, the result of the picker included. Called once.
@@ -181,6 +203,7 @@ extension SharedWindow {
   func post(_ post: InputPost) -> Bool { false }
   func lift(screen: Bool, input: Bool) {}
   func hear(_ on: Bool) {}
+  func endedLeaving() { ended() }
 }
 
 // MARK: - The answer to a pick
@@ -375,6 +398,11 @@ private func sharerEnded(_ picked: UnsafeMutableRawPointer?) {
   windowOf(picked)?.ended()
 }
 
+/// The session is over, and the person at the other device chose that this device stay as it is.
+private func sharerLeave(_ picked: UnsafeMutableRawPointer?) {
+  windowOf(picked)?.endedLeaving()
+}
+
 private func sharerRelease(_ picked: UnsafeMutableRawPointer?) {
   guard let picked else { return }
   let box = Unmanaged<WindowBox>.fromOpaque(picked)
@@ -510,13 +538,17 @@ func registerSharer(_ platform: SharerPlatform) -> Int32 {
     post: sharerPost,
     screen: nil,
     lift: nil,
-    hear: nil)
+    hear: nil,
+    leave: nil)
   // A device that cannot give its screen leaves the entries out, and its paired devices are not
   // told that they can ask for it. The screen is the one thing that is given private, so what
-  // lifts the privacy goes with it.
+  // lifts the privacy goes with it, and so does what ends it without the lock.
   if platform.canGiveScreen {
     table.screen = sharerScreen
     table.lift = sharerLift
+    if platform.canLeave {
+      table.leave = sharerLeave
+    }
   }
   // A device that cannot send sound leaves the entry out, and the devices it is paired with are not
   // told that it can.

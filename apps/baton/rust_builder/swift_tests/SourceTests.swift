@@ -16,6 +16,8 @@ final class FakeSharedWindow: SharedWindow {
   var started: [UInt64] = []
   var startFailure: Error?
   var endedCalls = 0
+  /// How often the person at the other device chose to leave the device as it is at the end.
+  var leftCalls = 0
   var releasedCalls = 0
   var onDeinit: (() -> Void)?
   /// What the window says of its surroundings, and what is put to it.
@@ -53,14 +55,30 @@ final class FakeSharedWindow: SharedWindow {
   }
 
   func ended() { endedCalls += 1 }
+  func endedLeaving() { leftCalls += 1 }
   func released() { releasedCalls += 1 }
   deinit { onDeinit?() }
+}
+
+/// A window from before leaving: it has no `endedLeaving` of its own, so for it the end that the
+/// person chose to leave is the ordinary end.
+final class WindowThatOnlyEnds: SharedWindow {
+  var endedCalls = 0
+
+  func prepare(takes: ViewerTakes) throws -> PictureFormat {
+    PictureFormat(width: 1280, height: 800, fps: 30)
+  }
+
+  func start(link: UInt64) throws {}
+  func ended() { endedCalls += 1 }
+  func released() {}
 }
 
 final class FakeSharerPlatform: SharerPlatform {
   var canControl = false
   var canGiveScreen = false
   var canSendSound = false
+  var canLeave = false
   var picks: [UInt64] = []
   var cancelled: [UInt64] = []
   var pickFailure: Error?
@@ -118,7 +136,7 @@ func withMessage(room: Int = 256, size: Int? = nil, _ body: (UnsafeMutablePointe
 }
 
 /// The window that the person picked, the way the Rust side holds it after an answer.
-func chosen(_ window: FakeSharedWindow) -> UnsafeMutableRawPointer? {
+func chosen(_ window: SharedWindow) -> UnsafeMutableRawPointer? {
   resetSourceStubs()
   let info = PickedWindowInfo(width: 1440, height: 900, title: "Report.pdf", app: "Preview")
   check(answerPick(request: 9, .chose(window, info)) == 0)
@@ -363,14 +381,79 @@ func testTheTableHasALiftOnlyWhenThePlatformCanGiveTheScreenAndTheTableIsWhole()
   with.canGiveScreen = true
   guard let table = registeredSharing(with) else { return check(false) }
   check(table.lift != nil, "a platform that can give the screen")
-  // The lift is 96 bytes in, the entry for the sound follows it, and the table is 112 bytes long.
-  check(MemoryLayout<BatonSharerVTable>.size == 112, "size \(MemoryLayout<BatonSharerVTable>.size)")
-  check(table.size == 112, "size \(table.size)")
+  // The lift is 96 bytes in, the entry for the sound follows it, then the entry to leave, and the
+  // table is 120 bytes long.
+  check(MemoryLayout<BatonSharerVTable>.size == 120, "size \(MemoryLayout<BatonSharerVTable>.size)")
+  check(table.size == 120, "size \(table.size)")
   check(MemoryLayout<BatonSharerVTable>.offset(of: \.lift) == 96)
   check(MemoryLayout<BatonSharerVTable>.offset(of: \.hear) == 104)
+  check(MemoryLayout<BatonSharerVTable>.offset(of: \.leave) == 112)
   // A platform that sends no sound leaves the entry out, and the devices it is paired with are not
   // told that it can.
   check(table.hear == nil, "an entry for the sound of a platform that sends none")
+  // The same for a platform that locks at every end.
+  check(table.leave == nil, "an entry to leave for a platform that cannot")
+}
+
+func testTheTableHasAnEntryToLeaveOnlyWhenThePlatformCanGiveTheScreenAndSaysItCanLeave() {
+  // Leaving is for a private screen, and the screen that is private is the one that the platform
+  // gives without a picker.
+  let neither = FakeSharerPlatform()
+  check(registeredSharing(neither)?.leave == nil, "an entry to leave for a platform that has none")
+
+  let onlyLeaves = FakeSharerPlatform()
+  onlyLeaves.canLeave = true
+  check(
+    registeredSharing(onlyLeaves)?.leave == nil,
+    "an entry to leave for a platform with no screen to give")
+
+  let onlyGives = FakeSharerPlatform()
+  onlyGives.canGiveScreen = true
+  check(
+    registeredSharing(onlyGives)?.leave == nil,
+    "an entry to leave for a platform that always locks")
+
+  let both = FakeSharerPlatform()
+  both.canGiveScreen = true
+  both.canLeave = true
+  guard let table = registeredSharing(both) else { return check(false) }
+  check(table.leave != nil, "no entry to leave for a platform that can")
+  check(table.size == UInt32(MemoryLayout<BatonSharerVTable>.size), "size \(table.size)")
+}
+
+func testTheEndThatThePersonChoseToLeaveReachesTheWindowAsItsOwnCallAndNotAsTheEnd() {
+  let platform = FakeSharerPlatform()
+  platform.canGiveScreen = true
+  platform.canLeave = true
+  guard let table = registeredSharing(platform), let leave = table.leave,
+    let release = table.release
+  else { return check(false) }
+  let window = FakeSharedWindow()
+  guard let picked = chosen(window) else { return check(false) }
+  leave(picked)
+  check(
+    window.leftCalls == 1 && window.endedCalls == 0,
+    "left \(window.leftCalls), ended \(window.endedCalls)")
+  // A call about a window that is not there is nothing.
+  leave(nil)
+  check(window.leftCalls == 1 && window.endedCalls == 0)
+  release(picked)
+  check(window.releasedCalls == 1)
+}
+
+func testAWindowThatCannotLeaveIsToldThatTheSessionEndedWhenThePersonChoseToLeave() {
+  let platform = FakeSharerPlatform()
+  platform.canGiveScreen = true
+  platform.canLeave = true
+  guard let table = registeredSharing(platform), let leave = table.leave,
+    let release = table.release
+  else { return check(false) }
+  let window = WindowThatOnlyEnds()
+  guard let picked = chosen(window) else { return check(false) }
+  leave(picked)
+  // For it the end is the ordinary one, which locks the device.
+  check(window.endedCalls == 1, "ended \(window.endedCalls) times")
+  release(picked)
 }
 
 /// A platform from before the screen could be given: it says nothing of it.

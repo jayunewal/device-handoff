@@ -202,8 +202,8 @@ pub trait SourceEvents: Send + 'static {
     /// The session is over, and the person at the viewer chose, when they ended it, that the
     /// screen be left as it is. The platform lets go of everything it holds for the session, as it
     /// does for [`ended`](Self::ended), and does not lock the screen. A screen that is locked
-    /// stays locked, and nothing is unlocked. This is called instead of `ended`, and the platform
-    /// is called no more.
+    /// stays locked, and nothing is unlocked. This is called instead of `ended`, at the same
+    /// point, and the platform is called no more.
     ///
     /// It is called only for a session whose offer said `leave`, which is a private session of a
     /// node that was set up to leave its screen ([`NodeBuilder::allow_leave`](crate::NodeBuilder::allow_leave)),
@@ -218,7 +218,8 @@ pub trait SourceEvents: Send + 'static {
     }
 
     /// The session is over. The platform lets go of everything it holds for it, and is called no
-    /// more.
+    /// more. It is called before anything that waits for the end of the session, such as
+    /// [`SourceHandle::ended`], is woken.
     fn ended(&mut self);
 }
 
@@ -976,6 +977,20 @@ impl Source {
         if self.end.set(how).is_err() {
             return;
         }
+        // The platform is told before the end is announced to what waits for it. The platform of
+        // an app closes the link of the session when it hears the announcement, and a choice to
+        // leave the screen as it is that it is told after that is not taken: the screen is locked.
+        let job = {
+            let mut core = lock(&self.core);
+            if leave {
+                core.events.ended_leaving();
+            } else {
+                core.events.ended();
+            }
+            let now = self.now();
+            core.unlocking()
+                .and_then(|unlocking| unlocking.ended(now).job)
+        };
         // The frame streams are reset by their tasks, which watch their tokens.
         self.ended.cancel();
         if let Some(registry) = self.registry.upgrade() {
@@ -996,17 +1011,6 @@ impl Source {
                 );
             }
         }
-        let job = {
-            let mut core = lock(&self.core);
-            if leave {
-                core.events.ended_leaving();
-            } else {
-                core.events.ended();
-            }
-            let now = self.now();
-            core.unlocking()
-                .and_then(|unlocking| unlocking.ended(now).job)
-        };
         if let Some(job) = job {
             self.run(job);
         }
@@ -1488,9 +1492,19 @@ mod tests {
         heard: Arc<Mutex<Vec<Heard>>>,
         /// When each batch of input arrived, by the clock of the session.
         arrivals: Arc<Mutex<Vec<Duration>>>,
+        /// The end of the session, which the platform looks at when it is told of the end. The
+        /// rig puts it here once the session is made.
+        end: Arc<OnceLock<CancellationToken>>,
+        /// For each time that the platform was told of the end: whether the end had been
+        /// announced to what waits for it by then.
+        announced: Arc<Mutex<Vec<bool>>>,
     }
 
     impl Log {
+        fn announced(&self) -> Vec<bool> {
+            lock(&self.announced).clone()
+        }
+
         fn all(&self) -> Vec<Heard> {
             lock(&self.heard).clone()
         }
@@ -1513,6 +1527,17 @@ mod tests {
     impl Recording {
         fn note(&self, heard: Heard) {
             lock(&self.0.heard).push(heard);
+        }
+
+        /// Looks at whether the end of the session has been announced, as the platform of an app
+        /// can when it is told of the end.
+        fn look_at_the_end(&self) {
+            let announced = self
+                .0
+                .end
+                .get()
+                .is_some_and(CancellationToken::is_cancelled);
+            lock(&self.0.announced).push(announced);
         }
     }
 
@@ -1543,10 +1568,12 @@ mod tests {
         }
 
         fn ended_leaving(&mut self) {
+            self.look_at_the_end();
             self.note(Heard::Left);
         }
 
         fn ended(&mut self) {
+            self.look_at_the_end();
             self.note(Heard::Ended);
         }
     }
@@ -1684,6 +1711,7 @@ mod tests {
                 setup,
                 Recording(log.clone()),
             )?;
+            let _ = log.end.set(handle.source.ended.clone());
             Ok(Self {
                 source,
                 dialed,
@@ -2590,6 +2618,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_platform_is_told_of_the_end_before_the_end_is_announced_to_what_waits_for_it() {
+        // The platform of an app closes the link of the session when the announcement wakes it,
+        // which a runtime with more than one thread does at once, and a choice to leave the
+        // screen as it is that the platform is told after that is not taken. So it is told first,
+        // whichever way the session ends.
+        for (what, leaving) in [
+            ("the platform ends it", false),
+            ("the viewer chooses to leave", true),
+        ] {
+            let mut rig = Rig::with(leaving_setup(), 1).await;
+            let mut control = rig.source_control().await;
+            read_source_message(&mut control).await;
+            if leaving {
+                let mut send = rig.open_viewer_control().await;
+                write_message(&mut send, &ViewerMessage::Leave)
+                    .await
+                    .unwrap();
+                send.finish().unwrap();
+            } else {
+                rig.handle.end();
+            }
+            rig.ended().await;
+            assert_eq!(rig.log.announced(), [false], "{what}");
+        }
+    }
+
+    #[tokio::test]
     async fn a_viewer_that_says_leave_and_then_resets_its_stream_has_the_platform_lock_the_screen()
     {
         // The person chose, and the end that followed was not the viewer finishing its stream: it
@@ -2623,6 +2678,52 @@ mod tests {
         rig.ended().await;
         assert_eq!(ends_heard(&rig.log), (1, 0));
         drop(send);
+    }
+
+    #[tokio::test]
+    async fn a_viewer_that_says_leave_and_then_stalls_in_a_message_has_the_platform_lock_the_screen()
+     {
+        // The person chose, and then the viewer began a message that never came: it may have
+        // crashed, or been cut off. A stall is not the end that was asked for.
+        let mut params = quick();
+        params.stall = Duration::from_millis(200);
+        let mut rig = Rig::with(
+            SourceSetup {
+                params,
+                ..leaving_setup()
+            },
+            1,
+        )
+        .await;
+        let mut control = rig.source_control().await;
+        read_source_message(&mut control).await;
+        let mut send = rig.open_viewer_control().await;
+        write_message(&mut send, &ViewerMessage::Leave)
+            .await
+            .unwrap();
+        // The length of a message of 20 bytes, and then nothing.
+        send.write_all(&[0, 0, 0, 20]).await.unwrap();
+        assert_eq!(rig.ended().await, End::Stalled);
+        assert_eq!(ends_heard(&rig.log), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn a_viewer_that_says_leave_and_finishes_in_the_middle_of_a_message_has_the_platform_lock_the_screen()
+     {
+        // A stream that ends between two messages was finished, and one that ends inside a message
+        // was cut off, which the viewer does not do when it has said what it had to say.
+        let mut rig = Rig::with(leaving_setup(), 1).await;
+        let mut control = rig.source_control().await;
+        read_source_message(&mut control).await;
+        let mut send = rig.open_viewer_control().await;
+        write_message(&mut send, &ViewerMessage::Leave)
+            .await
+            .unwrap();
+        // Two bytes of the length of a message, and then the end of the stream.
+        send.write_all(&[0, 0]).await.unwrap();
+        send.finish().unwrap();
+        assert_eq!(rig.ended().await, End::Peer);
+        assert_eq!(ends_heard(&rig.log), (1, 0));
     }
 
     #[tokio::test]

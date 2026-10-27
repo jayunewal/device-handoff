@@ -4571,6 +4571,99 @@ async fn a_platform_that_cannot_lift_gives_a_private_screen_that_the_phone_canno
     rig.platform.assert_no_complaints();
 }
 
+/// Hands over the first picture of the first window to the phone, so that both control streams of
+/// the session are up: a phone that ends the session before that is noticed by the Mac only when
+/// it gives up waiting.
+async fn until_the_phone_has_a_picture(rig: &Rig, phone: &Phone) {
+    let link = rig.platform.link(1);
+    assert_eq!(rig.send(link, 0).await, (BEGIN_KEY, SENT, 0));
+    until("the phone to be given the picture", || {
+        phone.decoded.load(Ordering::Relaxed) == 1
+    })
+    .await;
+}
+
+/// What the platform was told when the first window was over, and then that it was let go of.
+fn told_at_the_end(platform: &FakeSharer) -> Vec<SharerCall> {
+    platform
+        .calls(1)
+        .into_iter()
+        .filter(|call| {
+            matches!(
+                call,
+                SharerCall::Ended | SharerCall::Leave | SharerCall::Release
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn the_person_who_chose_to_leave_the_mac_as_it_is_has_the_platform_told_leave_and_not_ended()
+{
+    let rig = Rig::with(|platform, _| platform.set_control(true)).await;
+    let (phone, handle) = controlling_phone(&rig).await;
+    // The Mac offered the choice with the screen, which it does for a private screen only.
+    assert!(handle.private());
+    assert!(handle.can_leave());
+    until_the_phone_has_a_picture(&rig, &phone).await;
+
+    // The phone asks, and ends the session. Nothing answers.
+    assert!(handle.end_leaving());
+    rig.nothing_is_left().await;
+    assert_eq!(
+        told_at_the_end(&rig.platform),
+        [SharerCall::Leave, SharerCall::Release]
+    );
+    rig.platform.assert_no_complaints();
+}
+
+#[tokio::test]
+async fn every_end_of_a_private_session_but_the_choice_to_leave_has_the_platform_told_ended() {
+    // The phone ends the session without asking, or goes away without a word. The Mac locks.
+    for how in ["end", "drop"] {
+        let rig = Rig::with(|platform, _| platform.set_control(true)).await;
+        let (phone, handle) = controlling_phone(&rig).await;
+        assert!(handle.can_leave(), "{how}");
+        until_the_phone_has_a_picture(&rig, &phone).await;
+        match how {
+            "end" => handle.end(),
+            _ => drop(handle),
+        }
+        rig.nothing_is_left().await;
+        assert_eq!(
+            told_at_the_end(&rig.platform),
+            [SharerCall::Ended, SharerCall::Release],
+            "{how}"
+        );
+        rig.platform.assert_no_complaints();
+    }
+}
+
+#[tokio::test]
+async fn a_platform_that_cannot_leave_does_not_offer_it_and_is_told_ended_at_every_end() {
+    let rig = Rig::with(|platform, _| {
+        platform.set_control(true);
+        platform.set_cannot_leave();
+    })
+    .await;
+    let (phone, handle) = controlling_phone(&rig).await;
+    // The screen is still private, with everything that a platform of this version can do about
+    // it, and the phone is not offered the choice.
+    assert!(handle.private());
+    assert!(!handle.can_leave());
+    until_the_phone_has_a_picture(&rig, &phone).await;
+
+    // A phone that asks all the same ends the session as it ends every other, and is told that
+    // the choice was not made.
+    assert!(!handle.end_leaving());
+    rig.nothing_is_left().await;
+    assert_eq!(
+        told_at_the_end(&rig.platform),
+        [SharerCall::Ended, SharerCall::Release]
+    );
+    rig.platform.assert_no_complaints();
+}
+
 #[tokio::test]
 async fn a_window_that_the_person_picked_is_not_told_what_is_lifted_whatever_the_session_says() {
     // The library drops a word about what is lifted when the session is not private, so the thread

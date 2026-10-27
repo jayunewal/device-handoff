@@ -26,8 +26,9 @@
 //! that turns sound on and off faster than the platform answers is told the last of it only, which
 //! the platform takes as it takes each: `hear(true)` is always a fresh start.
 //!
-//! The same thread runs `start`, `lift`, `hear`, `ended` and `release` of the window, which is the
-//! one thread that the header promises for all the calls of a window. It holds the window from the
+//! The same thread runs `start`, `lift`, `hear`, `ended` (or `leave`, when the person at the other
+//! device chose that the device stay as it is) and `release` of the window, which is the one thread
+//! that the header promises for all the calls of a window. It holds the window from the
 //! start and lets go of it when the session is over, so a platform that is in the middle of a post
 //! when the session ends is waited for, and the release of a press that was posted is not lost.
 //!
@@ -147,6 +148,9 @@ struct Waiting {
     /// came is replaced by it.
     hear: Option<bool>,
     phase: Phase,
+    /// The session ended with the choice of the person at the other device to leave the device as
+    /// it is, which the window is told in place of an ordinary end.
+    leaving: bool,
 }
 
 /// What the thread does next.
@@ -323,6 +327,24 @@ impl Input {
         self.wake.notify_one();
     }
 
+    /// The session is over, and the person at the other device chose that the device stay as it
+    /// is: the window is told so when it is let go of, in place of an ordinary end. Only the first
+    /// end of a session counts, so a session that was over already stays as it ended.
+    fn over_leaving(&self) {
+        let mut waiting = lock(&self.waiting);
+        if waiting.phase == Phase::Running {
+            waiting.phase = Phase::Over;
+            waiting.leaving = true;
+        }
+        drop(waiting);
+        self.wake.notify_one();
+    }
+
+    /// Whether the session ended with the choice to leave the device as it is.
+    fn leaving(&self) -> bool {
+        lock(&self.waiting).leaving
+    }
+
     /// The window is to be told that the session is over, and let go of.
     fn close(&self) {
         lock(&self.waiting).phase = Phase::Closed;
@@ -400,6 +422,10 @@ impl SourceEvents for Forward {
 
     fn ended(&mut self) {
         self.input.over();
+    }
+
+    fn ended_leaving(&mut self) {
+        self.input.over_leaving();
     }
 }
 
@@ -518,7 +544,13 @@ impl Worker {
                     self.release_held();
                     // Before the platform is told, which may take its time to stop its threads.
                     self.tell(true);
-                    self.window.ended();
+                    // The privacy that a platform ends without locking is the privacy of a screen
+                    // that it gave as private, so a word about leaving any other is not passed on.
+                    if self.private && self.input.leaving() {
+                        self.window.ended_leaving();
+                    } else {
+                        self.window.ended();
+                    }
                     return;
                 }
             }
@@ -995,7 +1027,7 @@ mod tests {
                 if seen
                     .log()
                     .iter()
-                    .any(|(_, call)| matches!(call, SharerCall::Ended))
+                    .any(|(_, call)| matches!(call, SharerCall::Ended | SharerCall::Leave))
                 {
                     flag.store(true, Ordering::SeqCst);
                 }
@@ -2212,6 +2244,126 @@ mod tests {
                 SharerCall::Release
             ]
         );
+    }
+
+    #[test]
+    fn the_end_that_the_person_chose_to_leave_tells_a_private_window_leave_and_not_ended() {
+        let mut served = Served::private(LONG);
+        served.knows_a_frame();
+        served.hears(vec![pointer(
+            7,
+            (0.5, 0.5),
+            PointerAction::Down(Button::Left),
+        )]);
+        served.wait_for_posts(1);
+
+        // As at any end: what is down is released first, and the window is told only when the link
+        // has been closed, which the thread waits for.
+        served.forward.ended_leaving();
+        served.wait_for_posts(2);
+        thread::sleep(QUIET);
+        assert_eq!(
+            served.posts(),
+            [left_down(300.0, 200.0), left_up(300.0, 200.0)]
+        );
+        let told_early = |calls: &[SharerCall]| {
+            calls
+                .iter()
+                .any(|call| matches!(call, SharerCall::Ended | SharerCall::Leave))
+        };
+        assert!(!told_early(&served.platform.calls(1)));
+
+        // What the platform is told is that the person chose to leave the Mac as it is, in place of
+        // the end and not as well as it.
+        served.close();
+        let calls = served.platform.calls(1);
+        assert_eq!(
+            calls[calls.len() - 2..],
+            [SharerCall::Leave, SharerCall::Release]
+        );
+        assert!(!calls.contains(&SharerCall::Ended), "{calls:?}");
+        assert!(!served.late.load(Ordering::SeqCst));
+        served.platform.assert_no_complaints();
+    }
+
+    #[test]
+    fn a_window_that_is_not_a_private_screen_is_told_ended_whatever_the_session_says_of_leaving() {
+        // The library says that the person chose to leave only for a private session, so this is
+        // the second guard: the `leave` of the platform is for a display that it gave as private
+        // and for no other window, and a word about leaving any other is not passed on.
+        for display in [false, true] {
+            let mut served = Served::shared(TIMING, Duration::ZERO, display, |_| {});
+            served.forward.ended_leaving();
+            served.close();
+            let calls = served.platform.calls(1);
+            assert_eq!(
+                calls[calls.len() - 2..],
+                [SharerCall::Ended, SharerCall::Release],
+                "display: {display}"
+            );
+            assert!(!calls.contains(&SharerCall::Leave), "display: {display}");
+            served.platform.assert_no_complaints();
+        }
+    }
+
+    #[test]
+    fn a_private_window_that_is_closed_without_the_choice_is_told_ended() {
+        // The link goes, or the runtime shuts down, with nobody having chosen anything.
+        let mut served = Served::private(TIMING);
+        served.close();
+        let calls = served.platform.calls(1);
+        assert_eq!(
+            calls[calls.len() - 2..],
+            [SharerCall::Ended, SharerCall::Release]
+        );
+        assert!(!calls.contains(&SharerCall::Leave));
+        served.platform.assert_no_complaints();
+    }
+
+    #[test]
+    fn only_the_first_end_of_the_session_counts_whether_it_was_the_choice_to_leave_or_not() {
+        // An end that was not the choice, and then the choice: the session ended the first way.
+        let mut served = Served::private(TIMING);
+        served.forward.ended();
+        served.forward.ended_leaving();
+        served.close();
+        let calls = served.platform.calls(1);
+        assert_eq!(
+            calls[calls.len() - 2..],
+            [SharerCall::Ended, SharerCall::Release]
+        );
+        assert!(!calls.contains(&SharerCall::Leave));
+        served.platform.assert_no_complaints();
+
+        // The choice, and then another end: the session ended with the choice.
+        let mut served = Served::private(TIMING);
+        served.forward.ended_leaving();
+        served.forward.ended();
+        served.close();
+        let calls = served.platform.calls(1);
+        assert_eq!(
+            calls[calls.len() - 2..],
+            [SharerCall::Leave, SharerCall::Release]
+        );
+        assert!(!calls.contains(&SharerCall::Ended));
+        served.platform.assert_no_complaints();
+    }
+
+    #[test]
+    fn a_platform_that_cannot_leave_is_told_ended_when_the_person_chose_to() {
+        // The library says it only for a platform that said it could, so this is the second guard:
+        // a window of a platform that gave no `leave` is told that the session ended, and locks.
+        let mut served = Served::build(TIMING, Duration::ZERO, true, true, |platform| {
+            platform.set_cannot_leave();
+        });
+        served.forward.ended_leaving();
+        served.close();
+        let calls = served.platform.calls(1);
+        assert_eq!(
+            calls[calls.len() - 2..],
+            [SharerCall::Ended, SharerCall::Release]
+        );
+        served.platform.assert_no_complaints();
     }
 
     #[test]

@@ -36,8 +36,8 @@ use baton_stream_abi::{
         BatonLimits, BatonMessage, BatonPicked, BatonPicture, BatonPlay, BatonPost, BatonRect,
         BatonScreen, BatonSharerVTable, BatonSound, BatonSoundPacket, BatonSourceMessage,
         BatonSurroundings, BatonTakes, BatonViewerVTable, BatonWindow, CancelPickFn, ControlFn,
-        DecodeFn, EndedFn, HearFn, LiftFn, LimitsFn, OpenFn, PickFn, PlayFn, PostFn, PrepareFn,
-        ReleaseFn, ScreenFn, ShowFn, SoundFn, SourceFn, StartFn, StateFn, StoppedFn,
+        DecodeFn, EndedFn, HearFn, LeaveFn, LiftFn, LimitsFn, OpenFn, PickFn, PlayFn, PostFn,
+        PrepareFn, ReleaseFn, ScreenFn, ShowFn, SoundFn, SourceFn, StartFn, StateFn, StoppedFn,
         SurroundingsFn,
     },
     exports::{
@@ -701,6 +701,7 @@ fn tables_of_functions() -> Vec<RustStruct> {
             screen: Option<ScreenFn> = "BatonScreenFn",
             lift: Option<LiftFn> = "BatonLiftFn",
             hear: Option<HearFn> = "BatonHearFn",
+            leave: Option<LeaveFn> = "BatonLeaveFn",
         }),
     ]
 }
@@ -785,6 +786,8 @@ fn rust_fn_types() -> Vec<CFunction> {
             is unsafe extern "C" fn(*mut c_void, u32)),
         rust_fn_type!(HearFn as "BatonHearFn": "void" ["void *", "uint32_t"]
             is unsafe extern "C" fn(*mut c_void, u32)),
+        rust_fn_type!(LeaveFn as "BatonLeaveFn": "void" ["void *"]
+            is unsafe extern "C" fn(*mut c_void)),
     ]
 }
 
@@ -1451,6 +1454,8 @@ static void lift(void *picked, uint32_t lifted) {
 
 static void window_ended(void *picked) { (void)picked; }
 
+static void window_left(void *picked) { (void)picked; }
+
 static void window_released(void *picked) { (void)picked; }
 
 static uint32_t listening = 0;
@@ -1477,6 +1482,7 @@ static int32_t register_sharer(void) {
     table.screen = screen;
     table.lift = lift;
     table.hear = hear;
+    table.leave = window_left;
     return baton_stream_register_sharer(&table);
 }
 
@@ -1827,8 +1833,12 @@ fn a_compiler_refuses_a_header_whose_numbers_are_wrong() {
             "offsetof(BatonSharerVTable, hear) == 96",
         ),
         (
+            "offsetof(BatonSharerVTable, leave) == 112",
+            "offsetof(BatonSharerVTable, leave) == 104",
+        ),
+        (
+            "sizeof(BatonSharerVTable) == 120",
             "sizeof(BatonSharerVTable) == 112",
-            "sizeof(BatonSharerVTable) == 104",
         ),
         (
             "offsetof(BatonViewerVTable, play) == 88",
