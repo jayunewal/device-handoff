@@ -905,6 +905,10 @@ mod tests {
                 json!({"Done": "Rejected"}),
             ),
             (
+                UnlockFinish::Unkept(UnlockOutcome::Unlocked),
+                json!({"Unkept": "Unlocked"}),
+            ),
+            (
                 UnlockFinish::Cancelled(CancelReason::KeyLost),
                 json!({"Cancelled": "KeyLost"}),
             ),

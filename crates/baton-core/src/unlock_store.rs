@@ -506,6 +506,10 @@ mod tests {
         let mut finishes: Vec<_> = outcomes
             .into_iter()
             .map(|(outcome, ends)| (UnlockFinish::Done(outcome), ends))
+            .chain(outcomes.into_iter().map(|(outcome, _)| {
+                // A platform that said it without having kept a new box, whatever it said.
+                (UnlockFinish::Unkept(outcome), true)
+            }))
             .chain(
                 reasons
                     .into_iter()

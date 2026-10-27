@@ -381,9 +381,14 @@ fn given(unlocking: &mut Unlocking, number: u64, at: Duration) -> Given {
     Given { attempt, waiting }
 }
 
-/// The platform says `outcome`, and the session waits for it and writes it down. The viewer is not
-/// told yet.
-async fn report(unlocking: &mut Unlocking, given: Given, outcome: UnlockOutcome) {
+/// The platform puts the password in a new box, which it does before it checks or types anything.
+fn keeps(attempt: &mut UnlockAttempt) {
+    attempt.keep(vec![0xee; 40], sealed_key(2)).unwrap();
+}
+
+/// The platform says `outcome` as it is, with the box it has kept or none, and the session waits
+/// for it and writes it down. The viewer is not told yet.
+async fn report_as_it_is(unlocking: &mut Unlocking, given: Given, outcome: UnlockOutcome) {
     let Given { attempt, waiting } = given;
     attempt.done(outcome);
     let (number, report) = waiting.report(secs(5)).await;
@@ -391,6 +396,16 @@ async fn report(unlocking: &mut Unlocking, given: Given, outcome: UnlockOutcome)
         .reported(number, report)
         .expect("nothing was to be written")
         .run();
+}
+
+/// The platform says `outcome`, and the session waits for it and writes it down. The viewer is not
+/// told yet. The platform has kept a new box by then, unless it says `Stale` or `Failed`, which it
+/// says without.
+async fn report(unlocking: &mut Unlocking, mut given: Given, outcome: UnlockOutcome) {
+    if !matches!(outcome, UnlockOutcome::Stale | UnlockOutcome::Failed) {
+        keeps(&mut given.attempt);
+    }
+    report_as_it_is(unlocking, given, outcome).await;
 }
 
 /// The record of what the platform reported is written, and the viewer is told. A job that comes
@@ -402,11 +417,15 @@ fn closed(unlocking: &mut Unlocking, number: u64, now: Duration) -> Option<Sourc
 }
 
 #[test]
-fn a_setup_ends_with_a_password_that_was_rejected_a_box_that_was_not_opened_and_a_lost_key() {
+fn a_setup_ends_with_a_rejected_password_a_box_that_was_not_opened_a_lost_key_and_a_box_not_kept() {
     for finish in [
         Finish::Done(UnlockOutcome::Rejected),
         Finish::Done(UnlockOutcome::Stale),
         Finish::Cancelled(CancelReason::KeyLost),
+        Finish::Unkept(UnlockOutcome::Unlocked),
+        Finish::Unkept(UnlockOutcome::Rejected),
+        Finish::Unkept(UnlockOutcome::NotLocked),
+        Finish::Unkept(UnlockOutcome::NotPrivate),
     ] {
         assert!(finish.ends_setup(), "{finish:?}");
     }
@@ -426,6 +445,14 @@ fn a_setup_ends_with_a_password_that_was_rejected_a_box_that_was_not_opened_and_
     ] {
         assert!(!finish.ends_setup(), "{finish:?}");
     }
+}
+
+#[test]
+fn the_debug_form_of_a_record_says_how_big_the_box_is_and_not_what_is_in_it() {
+    let text = format!("{:?}", record(1));
+    assert!(text.contains("40 bytes"), "{text}");
+    // The bytes of the box are 177.
+    assert!(!text.contains("177"), "{text}");
 }
 
 #[test]
@@ -809,6 +836,138 @@ async fn an_outcome_that_the_platform_may_not_say_is_failed() {
 }
 
 #[tokio::test]
+async fn a_platform_that_says_what_follows_a_new_box_without_having_kept_one_ends_the_setup() {
+    for outcome in [
+        UnlockOutcome::Unlocked,
+        UnlockOutcome::Rejected,
+        UnlockOutcome::NotLocked,
+        UnlockOutcome::NotPrivate,
+    ] {
+        let (mut unlocking, store) = ready();
+        let attempt = given(&mut unlocking, 4, secs(1));
+        report_as_it_is(&mut unlocking, attempt, outcome).await;
+        // The record says so, about the box that the source still holds, before the viewer is told.
+        assert_eq!(
+            store.history(),
+            [Concluded {
+                finish: Finish::Unkept(outcome),
+                sealed: Some(sealed_key(1)),
+            }],
+            "{outcome:?}"
+        );
+        assert!(!store.usable(), "{outcome:?}");
+        // The viewer is told what the platform said, and finds no setup after it.
+        assert_eq!(
+            closed(&mut unlocking, 4, secs(3)),
+            told(4, outcome),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            said(&unlocking.asked(5, secs(4), true)),
+            told(5, UnlockOutcome::NotSetUp),
+            "{outcome:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_platform_that_types_after_a_box_that_could_not_be_kept_ends_the_setup() {
+    let (mut unlocking, store) = ready();
+    let Given {
+        mut attempt,
+        waiting,
+    } = given(&mut unlocking, 1, secs(1));
+    store.make_unwritable();
+    assert_eq!(
+        attempt.keep(vec![0xee; 40], sealed_key(2)),
+        Err(KeepError::Unwritable)
+    );
+    attempt.done(UnlockOutcome::Unlocked);
+    let (number, report) = waiting.report(secs(5)).await;
+    unlocking.reported(number, report).unwrap().run();
+    assert_eq!(store.finishes(), [Finish::Unkept(UnlockOutcome::Unlocked)]);
+    assert!(!store.usable());
+    assert_eq!(
+        closed(&mut unlocking, 1, secs(3)),
+        told(1, UnlockOutcome::Unlocked)
+    );
+}
+
+#[tokio::test]
+async fn a_platform_that_keeps_no_box_and_says_failed_or_stale_has_kept_the_order() {
+    // It could not keep one, and typed nothing: the setup is as it was.
+    let (mut unlocking, store) = ready();
+    let attempt = given(&mut unlocking, 1, secs(1));
+    report_as_it_is(&mut unlocking, attempt, UnlockOutcome::Failed).await;
+    assert_eq!(store.finishes(), [Finish::Done(UnlockOutcome::Failed)]);
+    assert!(store.usable());
+    assert_eq!(
+        closed(&mut unlocking, 1, secs(3)),
+        told(1, UnlockOutcome::Failed)
+    );
+
+    // The key did not open the box, which the platform finds before it has a password to put in a
+    // new one. The setup ends for that.
+    let (mut unlocking, store) = ready();
+    let attempt = given(&mut unlocking, 1, secs(1));
+    report_as_it_is(&mut unlocking, attempt, UnlockOutcome::Stale).await;
+    assert_eq!(store.finishes(), [Finish::Done(UnlockOutcome::Stale)]);
+    assert!(!store.usable());
+}
+
+#[tokio::test]
+async fn a_rejection_without_a_new_box_is_not_given_back_when_the_screen_unlocks() {
+    // While the record is on its way to the disk.
+    let (mut unlocking, store) = ready();
+    let Given { attempt, waiting } = given(&mut unlocking, 1, secs(1));
+    attempt.done(UnlockOutcome::Rejected);
+    let (number, report) = waiting.report(secs(5)).await;
+    let job = unlocking.reported(number, report).unwrap();
+    let step = unlocking.locked(false, secs(11));
+    assert!(step.say.is_none() && step.job.is_none());
+    job.run();
+    let mut step = unlocking.closed(1, secs(12));
+    assert_eq!(said(&step), told(1, UnlockOutcome::Rejected));
+    assert!(step.job.is_none());
+    write(&mut step);
+    assert_eq!(store.restored(), []);
+    assert!(!store.usable());
+
+    // And within the grace after the viewer was told.
+    let (mut unlocking, store) = ready();
+    let attempt = given(&mut unlocking, 1, secs(1));
+    report_as_it_is(&mut unlocking, attempt, UnlockOutcome::Rejected).await;
+    assert_eq!(
+        closed(&mut unlocking, 1, secs(12)),
+        told(1, UnlockOutcome::Rejected)
+    );
+    let mut step = unlocking.locked(false, secs(15));
+    assert!(step.say.is_none());
+    write(&mut step);
+    assert_eq!(store.restored(), []);
+    assert!(!store.usable());
+}
+
+#[tokio::test]
+async fn only_a_rejection_is_told_as_unlocked_when_the_screen_unlocked_while_it_was_written() {
+    for outcome in [UnlockOutcome::Stale, UnlockOutcome::Failed] {
+        let (mut unlocking, store) = ready();
+        let Given { attempt, waiting } = given(&mut unlocking, 1, secs(1));
+        attempt.done(outcome);
+        let (number, report) = waiting.report(secs(5)).await;
+        let job = unlocking.reported(number, report).unwrap();
+        let step = unlocking.locked(false, secs(11));
+        assert!(step.say.is_none() && step.job.is_none());
+        job.run();
+        let mut step = unlocking.closed(1, secs(12));
+        assert_eq!(said(&step), told(1, outcome), "{outcome:?}");
+        assert!(step.job.is_none(), "{outcome:?}");
+        write(&mut step);
+        assert_eq!(store.restored(), [], "{outcome:?}");
+    }
+}
+
+#[tokio::test]
 async fn an_attempt_that_is_let_go_of_without_a_word_has_failed() {
     let (mut unlocking, store) = ready();
     let Given { attempt, waiting } = given(&mut unlocking, 1, secs(1));
@@ -845,7 +1004,11 @@ async fn a_platform_that_does_not_report_in_time_has_failed_and_the_attempt_is_n
 #[tokio::test]
 async fn a_report_for_another_attempt_or_a_second_report_is_dropped() {
     let (mut unlocking, store) = ready();
-    let Given { attempt, waiting } = given(&mut unlocking, 1, secs(1));
+    let Given {
+        mut attempt,
+        waiting,
+    } = given(&mut unlocking, 1, secs(1));
+    keeps(&mut attempt);
     attempt.done(UnlockOutcome::Unlocked);
     let (number, report) = waiting.report(secs(5)).await;
     assert!(unlocking.reported(number + 1, None).is_none());
@@ -863,7 +1026,11 @@ async fn a_report_for_another_attempt_or_a_second_report_is_dropped() {
 #[tokio::test]
 async fn the_source_is_busy_until_the_record_is_written_and_the_viewer_told() {
     let (mut unlocking, _store) = ready();
-    let Given { attempt, waiting } = given(&mut unlocking, 1, secs(1));
+    let Given {
+        mut attempt,
+        waiting,
+    } = given(&mut unlocking, 1, secs(1));
+    keeps(&mut attempt);
     attempt.done(UnlockOutcome::Unlocked);
     // Busy while the platform works.
     assert_eq!(
@@ -885,7 +1052,11 @@ async fn the_source_is_busy_until_the_record_is_written_and_the_viewer_told() {
 #[tokio::test]
 async fn a_viewer_that_gives_up_while_the_password_is_typed_stops_the_attempt_and_hears_nothing() {
     let (mut unlocking, store) = ready();
-    let Given { attempt, waiting } = given(&mut unlocking, 1, secs(1));
+    let Given {
+        mut attempt,
+        waiting,
+    } = given(&mut unlocking, 1, secs(1));
+    keeps(&mut attempt);
     let step = unlocking.cancelled(CancelReason::Failed, secs(2));
     assert!(step.say.is_none() && step.job.is_none());
     assert!(!attempt.is_live());
@@ -1018,9 +1189,13 @@ async fn a_rejected_password_ends_the_setup_of_the_session_whatever_the_store_do
 }
 
 #[tokio::test]
-async fn a_screen_that_unlocked_while_the_rejection_was_written_gives_the_setup_back_first() {
+async fn a_screen_that_unlocked_while_the_rejection_was_written_gives_the_setup_back_and_is_told() {
     let (mut unlocking, store) = ready();
-    let Given { attempt, waiting } = given(&mut unlocking, 1, secs(1));
+    let Given {
+        mut attempt,
+        waiting,
+    } = given(&mut unlocking, 1, secs(1));
+    keeps(&mut attempt);
     attempt.done(UnlockOutcome::Rejected);
     let (number, report) = waiting.report(secs(5)).await;
     let job = unlocking.reported(number, report).unwrap();
@@ -1028,14 +1203,17 @@ async fn a_screen_that_unlocked_while_the_rejection_was_written_gives_the_setup_
     let step = unlocking.locked(false, secs(11));
     assert!(step.say.is_none() && step.job.is_none());
     job.run();
+    // The record says what the platform said.
+    assert_eq!(store.finishes(), [Finish::Done(UnlockOutcome::Rejected)]);
     assert!(!store.usable());
-    // The setup is back before the viewer is told, so that its next tap finds it.
+    // The setup is back before the viewer is told, so that its next tap finds it. The viewer is
+    // told that the screen is unlocked, which is what it is, whatever the system said at first.
     let mut step = unlocking.closed(1, secs(12));
-    assert_eq!(said(&step), told(1, UnlockOutcome::Rejected));
+    assert_eq!(said(&step), told(1, UnlockOutcome::Unlocked));
     assert!(step.job.is_some());
     assert!(!store.usable());
     write(&mut step);
-    assert_eq!(store.restored(), [sealed_key(1)]);
+    assert_eq!(store.restored(), [sealed_key(2)]);
     assert!(store.usable());
     let _ = unlocking.locked(true, secs(40));
     assert!(asks(&unlocking.asked(2, secs(41), true)));
@@ -1056,7 +1234,7 @@ async fn a_screen_that_unlocks_soon_after_a_rejected_password_gives_the_setup_ba
     let mut step = unlocking.locked(false, secs(32));
     assert!(step.say.is_none());
     write(&mut step);
-    assert_eq!(store.restored(), [sealed_key(1)]);
+    assert_eq!(store.restored(), [sealed_key(2)]);
     assert!(store.usable());
     // And the next session of the screen can be unlocked again.
     let _ = unlocking.locked(true, secs(40));
@@ -1105,7 +1283,11 @@ async fn a_session_that_ends_writes_down_what_it_waited_for() {
     // An attempt that the platform works on stops being live, and what the platform reports is
     // written down when it does.
     let (mut unlocking, store) = ready();
-    let Given { attempt, waiting } = given(&mut unlocking, 1, secs(1));
+    let Given {
+        mut attempt,
+        waiting,
+    } = given(&mut unlocking, 1, secs(1));
+    keeps(&mut attempt);
     let step = unlocking.ended(secs(2));
     assert!(step.say.is_none() && step.job.is_none());
     assert!(!attempt.is_live());
@@ -1565,6 +1747,45 @@ impl SourceEvents for Typing {
     fn ended(&mut self) {}
 }
 
+/// A platform that has what the trait gives it and nothing else, which is no privacy to vouch for
+/// and no password to type.
+struct Reticent;
+
+impl SourceEvents for Reticent {
+    fn report(&mut self, _: Report) {}
+
+    fn want(&mut self, _: Want) {}
+
+    fn input(&mut self, _: InputBatch, _: Duration) {}
+
+    fn held(&mut self, _: Vec<LtrToken>) {}
+
+    fn recovery(&mut self) {}
+
+    fn ended(&mut self) {}
+}
+
+/// A platform that vouches for the privacy, and has the rest from the trait: it cannot type.
+struct Vouching;
+
+impl SourceEvents for Vouching {
+    fn report(&mut self, _: Report) {}
+
+    fn want(&mut self, _: Want) {}
+
+    fn input(&mut self, _: InputBatch, _: Duration) {}
+
+    fn held(&mut self, _: Vec<LtrToken>) {}
+
+    fn recovery(&mut self) {}
+
+    fn private_in_place(&mut self) -> bool {
+        true
+    }
+
+    fn ended(&mut self) {}
+}
+
 /// The picture format of the tests.
 fn format() -> Format {
     Format {
@@ -1623,6 +1844,22 @@ struct SourceRig {
 impl SourceRig {
     /// What the session is set up with, given the store that is made for it.
     async fn with(params: SourceParams, unlock: impl FnOnce(&MemoryStore) -> UnlockSetup) -> Self {
+        Self::on(params, unlock, |in_place, attempts| {
+            Box::new(Typing { in_place, attempts })
+        })
+        .await
+    }
+
+    /// A source session that takes an unlock, on the platform that `platform` makes of the
+    /// switch for the privacy and the way to the attempts that the rig reads.
+    async fn on(
+        params: SourceParams,
+        unlock: impl FnOnce(&MemoryStore) -> UnlockSetup,
+        platform: impl FnOnce(
+            Arc<AtomicBool>,
+            mpsc::UnboundedSender<UnlockAttempt>,
+        ) -> Box<dyn SourceEvents>,
+    ) -> Self {
         let streaming = Streaming::new();
         let sinks = Sinks::default().install(Kind::Control, 1, streaming.clone());
         let source = Device::new(sinks, PATIENCE).await;
@@ -1634,10 +1871,7 @@ impl SourceRig {
         let (sender, attempts) = mpsc::unbounded_channel();
         let in_place = Arc::new(AtomicBool::new(true));
         // The session is given the platform in a box, as a node gives it.
-        let platform: Box<dyn SourceEvents> = Box::new(Typing {
-            in_place: Arc::clone(&in_place),
-            attempts: sender,
-        });
+        let platform = platform(Arc::clone(&in_place), sender);
         let setup = source_setup(params, true, unlock(&store));
         let handle = streaming
             .source(&paired, dialed, None, session_id(), setup, platform)
@@ -1824,6 +2058,53 @@ async fn a_refusal_is_answered_at_once_with_the_number_that_came() {
 }
 
 #[tokio::test]
+async fn a_platform_that_does_not_answer_for_the_privacy_is_not_private() {
+    let mut rig = SourceRig::on(
+        quick_source(),
+        |store| UnlockSetup::Offered(Arc::new(store.clone())),
+        |_, _| Box::new(Reticent),
+    )
+    .await;
+    let (mut viewer, mut source) = rig.streams().await;
+    rig.handle.pause(PauseReason::Locked);
+    assert!(matches!(source.next().await, SourceMessage::Pause(_)));
+    say(&mut viewer, unlock_message(1)).await;
+    // No question comes for the face: the answer is a refusal, and the setup is as it was.
+    assert_eq!(
+        source.next().await,
+        done_message(1, UnlockOutcome::NotPrivate)
+    );
+    assert_eq!(rig.store.sealed(), Some(sealed_key(1)));
+    assert!(rig.store.usable());
+}
+
+#[tokio::test]
+async fn a_platform_that_cannot_type_lets_go_of_the_attempt_and_the_viewer_hears_failed() {
+    let mut rig = SourceRig::on(
+        quick_source(),
+        |store| UnlockSetup::Offered(Arc::new(store.clone())),
+        |_, _| Box::new(Vouching),
+    )
+    .await;
+    let (mut viewer, mut source) = rig.streams().await;
+    rig.handle.pause(PauseReason::Locked);
+    assert!(matches!(source.next().await, SourceMessage::Pause(_)));
+    let question = ask(&mut viewer, &mut source, 1).await;
+    say(
+        &mut viewer,
+        ViewerMessage::UnlockOpened(answer_with(&question, box_key(1))),
+    )
+    .await;
+    assert_eq!(source.next().await, done_message(1, UnlockOutcome::Failed));
+    assert_eq!(rig.store.finishes(), [Finish::Done(UnlockOutcome::Failed)]);
+    // Nothing was kept, nothing ended the setup, and the viewer can ask again.
+    assert_eq!(rig.store.sealed(), Some(sealed_key(1)));
+    assert!(rig.store.usable());
+    let again = ask(&mut viewer, &mut source, 2).await;
+    assert_eq!(again.number, 2);
+}
+
+#[tokio::test]
 async fn a_session_whose_offer_did_not_say_unlock_drops_the_messages_of_one() {
     let mut rig = SourceRig::with(quick_source(), |_| UnlockSetup::NotOffered).await;
     let (mut viewer, mut source) = rig.streams().await;
@@ -1981,7 +2262,8 @@ async fn a_session_that_ends_while_the_password_is_typed_stops_the_attempt_and_k
         ViewerMessage::UnlockOpened(answer_with(&question, box_key(1))),
     )
     .await;
-    let attempt = rig.attempt().await;
+    let mut attempt = rig.attempt().await;
+    keeps(&mut attempt);
     rig.handle.end();
     assert_eq!(rig.ended().await, End::Local);
     until("the attempt to stop being live", || !attempt.is_live()).await;
@@ -2063,7 +2345,8 @@ async fn a_screen_that_unlocks_after_the_session_has_ended_gives_nothing_back() 
         ViewerMessage::UnlockOpened(answer_with(&question, box_key(1))),
     )
     .await;
-    let attempt = rig.attempt().await;
+    let mut attempt = rig.attempt().await;
+    keeps(&mut attempt);
     attempt.done(UnlockOutcome::Rejected);
     assert_eq!(
         source.next().await,
@@ -2091,7 +2374,8 @@ async fn the_viewer_is_told_only_when_the_record_of_what_came_of_it_is_written()
         ViewerMessage::UnlockOpened(answer_with(&question, box_key(1))),
     )
     .await;
-    let attempt = rig.attempt().await;
+    let mut attempt = rig.attempt().await;
+    keeps(&mut attempt);
     attempt.done(UnlockOutcome::Unlocked);
     until("the record to come to the disk", || disk.arrived() == 1).await;
     // The disk is slow, and the viewer waits.
@@ -2121,7 +2405,8 @@ async fn a_screen_that_unlocks_while_the_rejection_is_written_gives_the_setup_ba
         ViewerMessage::UnlockOpened(answer_with(&question, box_key(1))),
     )
     .await;
-    let attempt = rig.attempt().await;
+    let mut attempt = rig.attempt().await;
+    keeps(&mut attempt);
     attempt.done(UnlockOutcome::Rejected);
     until("the record to come to the disk", || disk.arrived() == 1).await;
     // The system unlocks the screen while the rejection is on its way to the disk.
@@ -2133,11 +2418,17 @@ async fn a_screen_that_unlocks_while_the_rejection_is_written_gives_the_setup_ba
     source.nothing().await;
     assert_eq!(rig.store.restored(), []);
     disk.allow(1);
+    // The screen is unlocked, so that is what the viewer is told, and what the record says is what
+    // the platform said.
     assert_eq!(
         source.next().await,
-        done_message(1, UnlockOutcome::Rejected)
+        done_message(1, UnlockOutcome::Unlocked)
     );
-    assert_eq!(rig.store.restored(), [sealed_key(1)]);
+    assert_eq!(
+        rig.store.finishes(),
+        [Finish::Done(UnlockOutcome::Rejected)]
+    );
+    assert_eq!(rig.store.restored(), [sealed_key(2)]);
     assert!(rig.store.usable());
 }
 
@@ -2674,7 +2965,8 @@ async fn a_password_that_was_rejected_ends_the_setup_for_the_next_try() {
     let mut rig = PairRig::new().await;
     let question = rig.asked().await;
     question.opened(box_key(1));
-    let attempt = rig.attempt().await;
+    let mut attempt = rig.attempt().await;
+    keeps(&mut attempt);
     attempt.done(UnlockOutcome::Rejected);
     rig.until_seen(2).await;
     assert_eq!(
