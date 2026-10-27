@@ -1355,6 +1355,10 @@ void main() {
           ),
           findsOneWidget,
         );
+        // The sound is off already and the other device knows it, so the line offers to be put
+        // away and nothing else.
+        expect(find.text('Turn off the sound'), findsNothing);
+        expect(find.text('Close'), findsOneWidget);
 
         await tester.tap(silent);
         await tester.pumpAndSettle();
@@ -1367,6 +1371,29 @@ void main() {
           (session: 1, listen: true),
           (session: 1, listen: true),
         ]);
+      },
+    );
+
+    testWidgets(
+      'puts the line about a sound that this device could not play away with Close alone, and asks nothing',
+      (tester) async {
+        final shown = await _open(tester, window: screenWithSound());
+        await tester.tap(off);
+        await tester.pumpAndSettle();
+        hearOf(shown, WindowSound.cannotPlay);
+        await tester.pumpAndSettle();
+        final line = find.textContaining('could not play');
+        expect(line, findsOneWidget);
+
+        await tester.tap(find.text('Close'));
+        await tester.pumpAndSettle();
+
+        // The line goes, the speaker still says there is no sound, and nobody was told anything:
+        // this device did that when it could not play.
+        expect(line, findsNothing);
+        expect(find.text('Close'), findsNothing);
+        expect(silent, findsOneWidget);
+        expect(shown.session.windowHears, [(session: 1, listen: true)]);
       },
     );
 

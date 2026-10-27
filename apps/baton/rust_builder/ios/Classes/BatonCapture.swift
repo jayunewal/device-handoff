@@ -447,7 +447,11 @@ final class MacSharedWindow: SharedWindow {
   func lift(screen: Bool, input: Bool) {
     // A screen that is not private keeps nothing from the people at this Mac, and has nothing to
     // lift.
-    privateSession?.lift(screen: screen, input: input)
+    guard let privateSession else { return }
+    privateSession.lift(screen: screen, input: input)
+    // The people at this Mac hear it again while they can see what is on the screen, except while
+    // the other device listens.
+    sound?.screenShown(screen)
   }
 
   func hear(_ on: Bool) {

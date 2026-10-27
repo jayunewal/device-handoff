@@ -6,6 +6,8 @@
 //! of the windows that run. There is one for the process ([`registered_windows`]), which the
 //! functions of the interface use, and a test makes its own.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::{
     collections::BTreeMap,
     fmt,
@@ -300,9 +302,40 @@ impl Registry {
 
 static GLOBAL: LazyLock<Registry> = LazyLock::new(Registry::new);
 
+#[cfg(test)]
+thread_local! {
+    /// The registry that a test put in the place of the one of the process on this thread
+    /// ([`standing_in`]).
+    static STANDING_IN: Cell<Option<&'static Registry>> = const { Cell::new(None) };
+}
+
 /// The registry of this process, which the functions of the interface use.
 pub(crate) fn global() -> &'static Registry {
+    #[cfg(test)]
+    if let Some(registry) = STANDING_IN.get() {
+        return registry;
+    }
     &GLOBAL
+}
+
+/// Runs `then` with `registry` in the place of the one of the process on this thread, so that a
+/// test can call a function of the interface itself, and not the method of the registry that it
+/// calls, on the registry of a device that it made. The one of the process takes a viewer and a
+/// sharer once for as long as the process lives, which the tests of the functions of the
+/// interface use.
+#[cfg(test)]
+pub(crate) fn standing_in<R>(registry: &Arc<Registry>, then: impl FnOnce() -> R) -> R {
+    /// Puts the registry that stood there back, also when `then` panics.
+    struct Back(Option<&'static Registry>);
+    impl Drop for Back {
+        fn drop(&mut self) {
+            STANDING_IN.set(self.0);
+        }
+    }
+    // The borrow has to live as long as the process; a test that leaks one registry is short.
+    let registry: &'static Registry = Box::leak(Box::new(Arc::clone(registry)));
+    let _back = Back(STANDING_IN.replace(Some(registry)));
+    then()
 }
 
 /// What the device is given to take part in window streaming with, as far as the platform has

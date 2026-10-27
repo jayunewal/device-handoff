@@ -234,13 +234,17 @@ let soundSilenceSeconds = 2.0
 /// stopped and the Mac plays again. A screen that is private (`quiet`) keeps the Mac quiet for the
 /// whole of the session instead: the tap is made at once (`keepQuiet`), what it reads is thrown
 /// away while nobody listens, and it is stopped by `close`, which the platform calls when the Mac
-/// is locked again.
+/// is locked again. While the person at the other device shows the screen on the Mac
+/// (`screenShown`), the people at the Mac can see what is on it, and the Mac is quiet only while
+/// the other device listens, as for a screen that is not private; when the screen is dark again,
+/// the Mac is quiet for the rest of the session.
 ///
 /// Everything happens on one queue, and the calls from outside only put work on it.
 final class SoundPump {
   private let queue = DispatchQueue(label: "io.github.jayunewal.baton.sound")
   private let session: SoundSession
-  private let quiet: Bool
+  /// Whether the screen is private, and so kept quiet unless it is shown at the Mac.
+  private let isPrivate: Bool
   private let makeTap: () -> SoundTap
   private let makeEncoder: (SoundForm) throws -> SoundEncoder
 
@@ -265,8 +269,12 @@ final class SoundPump {
   private var silentFrames = 0
   private var playedAtBegin: Bool?
   private var heardSound = false
-  /// How many packets of this run the library refused.
+  /// How many packets of this run were handed to the library, and how many of them it refused.
+  private var handed = 0
   private var refusals = 0
+  /// Whether the Mac is kept quiet for the whole session, whether or not the other device listens:
+  /// a screen that is private, as long as it is not shown at the Mac.
+  private var quiet: Bool
   private var closed = false
 
   init(
@@ -274,6 +282,7 @@ final class SoundPump {
     makeEncoder: @escaping (SoundForm) throws -> SoundEncoder
   ) {
     self.session = session
+    self.isPrivate = quiet
     self.quiet = quiet
     self.makeTap = makeTap
     self.makeEncoder = makeEncoder
@@ -286,6 +295,23 @@ final class SoundPump {
     queue.sync {
       guard !closed else { return }
       _ = ensureTap()
+    }
+  }
+
+  /// The person at the other device shows the screen on the Mac (true), or puts the cover back
+  /// (false). It is for a screen that is private, and does nothing for another. While the people at
+  /// the Mac can see what is on the screen, the Mac is quiet only while the other device listens,
+  /// and plays at once when nobody does; when the cover is back, it is quiet again for the rest of
+  /// the session. A run that goes is not touched either way.
+  func screenShown(_ shown: Bool) {
+    queue.async { [self] in
+      guard !closed, isPrivate, quiet == shown else { return }
+      quiet = !shown
+      if quiet {
+        _ = ensureTap()
+      } else if !running {
+        stopTap()
+      }
     }
   }
 
@@ -345,6 +371,9 @@ final class SoundPump {
     case .taken:
       form = chosen
       running = true
+      NSLog(
+        "Baton: a run of sound began (%ld Hz, %ld channels, the tap at %.0f Hz, the Mac quiet).",
+        Int(chosen.rate), Int(chosen.channels), tapRate)
     case .refused:
       tellWhy(.failed)
     case .over:
@@ -354,6 +383,9 @@ final class SoundPump {
 
   /// The run is over, and nothing is handed to the library until the next begins.
   private func endRun() {
+    if running {
+      NSLog("Baton: the run of sound ended after %ld packets, %ld refused.", handed, refusals)
+    }
     running = false
     pending.removeAll(keepingCapacity: true)
     encoder?.invalidate()
@@ -361,6 +393,7 @@ final class SoundPump {
     resampler = nil
     silentFrames = 0
     playedAtBegin = nil
+    handed = 0
     refusals = 0
   }
 
@@ -466,8 +499,10 @@ final class SoundPump {
   private func hand(_ packet: Data, _ captured: UInt64) -> Bool {
     switch session.send(packet, captureTime: captured) {
     case .sent, .dropped:
+      handed += 1
       return true
     case .tooLarge, .refused:
+      handed += 1
       refusals += 1
       if refusals == 1 { NSLog("Baton: the library did not take a packet of sound.") }
       return true
