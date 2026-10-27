@@ -879,6 +879,42 @@ tests += [
     testAFinishThatComesWhileSomethingIsBeingLiftedWaitsForTheLiftAndThenPutsItBack
   ),
   (
+    "a leave lowers the cover, locks nothing and does not wait for a lock screen",
+    testALeaveLowersTheCoverAndLocksNothingAndDoesNotWaitForALockScreen
+  ),
+  (
+    "a leave of a Mac that is locked keeps it locked and keeps the cover for the lock screen",
+    testALeaveOfAMacThatIsLockedKeepsItLockedAndKeepsTheCoverUntilTheLockScreenIsDrawn
+  ),
+  (
+    "a session that ends by leaving with something lifted puts it back and lowers the cover",
+    testASessionThatEndsByLeavingWithSomethingLiftedPutsItBackAndLowersTheCoverWithoutALock
+  ),
+  (
+    "a part that cannot be put back before a leave locks the Mac after all",
+    testAPartThatCannotBePutBackBeforeALeaveLocksTheMacAfterAll
+  ),
+  (
+    "a leave that comes after something at the Mac began to lock waits for the lock",
+    testALeaveThatComesAfterSomethingAtTheMacBeganToLockWaitsForTheLockAndLeavesNothing
+  ),
+  (
+    "something at the Mac while it is being left does not lock it",
+    testSomethingAtTheMacWhileItIsBeingLeftDoesNotLockIt
+  ),
+  (
+    "the end of a session that comes while the Mac is being left waits for the leave",
+    testTheEndOfASessionThatComesWhileTheMacIsBeingLeftWaitsForTheLeaveAndLocksNothing
+  ),
+  (
+    "a leave ends the session, and then the guard is let go of and not told again",
+    testALeaveEndsTheSessionAndThenTheGuardIsLetGoOfAndNotToldAgain
+  ),
+  (
+    "a window that was never raised is not left either",
+    testAWindowThatWasNeverRaisedIsNotLeftEither
+  ),
+  (
     "the guard is handed the Mac before the cover goes up and let go of after it comes down",
     testTheGuardIsHandedTheMacBeforeTheCoverGoesUpAndLetGoOfAfterItComesDown
   ),

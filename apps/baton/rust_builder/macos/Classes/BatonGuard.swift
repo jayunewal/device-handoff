@@ -95,8 +95,9 @@ protocol SessionGuard: AnyObject {
   /// Says that the privacy of the app is well. It does not wait.
   func beat()
 
-  /// The session is over, the Mac is locked and the cover is down: the guard ends without locking
-  /// anything. `lost` is not called after this.
+  /// The session is over and the cover is down, and the Mac is locked or, at the choice of the
+  /// person at the other device, left as it is: the guard ends without locking anything. `lost` is
+  /// not called after this.
   func disarm()
 }
 

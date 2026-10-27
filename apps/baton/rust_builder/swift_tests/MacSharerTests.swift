@@ -14,6 +14,7 @@ func testTheMacGivesItsMainScreenOrSaysWhyItCannot() {
   guard #available(macOS 14.0, *) else { return }
   let sharer = MacSharer()
   check(sharer.canGiveScreen, "a Mac that cannot give its screen")
+  check(sharer.canLeave, "a Mac that cannot leave itself as it is")
   do {
     let given = try sharer.screen(privacy: .open)
     check(given.info.display, "what was given is not a display")
