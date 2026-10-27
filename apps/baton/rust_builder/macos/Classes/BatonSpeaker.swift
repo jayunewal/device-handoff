@@ -294,35 +294,25 @@ final class SoundRing {
 /// device reads from a thread of its own. A call that comes when the speaker has been closed does
 /// nothing.
 ///
-/// A run that cannot be made or started is not given up: what stopped it may be over in a moment
-/// (a phone call holds the audio session of the phone, and an output may come back), so the form
-/// is kept, and the next packet that comes a second or more after the last try makes it again.
+/// A run that cannot be made or started is not tried again by the speaker: it says so, once, with
+/// `cannotPlay`, and goes on without a run. The Rust side turns the sound off and has the other
+/// device stop sending it, the person is told, and a new run comes only when they ask for the
+/// sound again. A phone call that holds the audio session of the phone, or an output that is gone,
+/// may be over by then, and a speaker that went on trying by itself would leave the other device
+/// quiet for a sound that nobody hears.
 final class ScreenSpeaker {
   private let queue = DispatchQueue(
     label: "io.github.jayunewal.baton.speaker", qos: .userInteractive)
   private let makeDecoder: (SoundForm) throws -> SoundDecoder
   private let makeOutput: (SoundForm, SoundRing) throws -> SoundOutput
   private let levels: SoundLevels
-  private let retryAfter: TimeInterval
-  private let clock: () -> TimeInterval
+  private let cannotPlay: () -> Void
 
   private let lock = NSLock()
   private var closed = false
 
   /// The run that goes, or nil. Only the queue touches it.
   private var run: Run?
-
-  /// The run that could not be made or started, and is tried again, or nil. Only the queue touches
-  /// it.
-  private var waiting: Waiting?
-
-  private struct Waiting {
-    var form: SoundForm
-    /// How many times it has been tried.
-    var tries: Int
-    /// The time on the clock from which the next try is made.
-    var at: TimeInterval
-  }
 
   /// What belongs to one run of sound, from a `sound` to the call that ends it.
   private final class Run {
@@ -349,18 +339,17 @@ final class ScreenSpeaker {
 
   /// `makeDecoder` makes the decoder for a form, and `makeOutput` the output that plays a ring of
   /// it; either one throws when the device cannot. Both are called from the queue of the speaker.
-  /// A run that could not be made is tried again `retryAfter` seconds after the last try, on a
-  /// packet, by `clock`.
+  /// `cannotPlay` is called, from the queue too and once for each run, when a run could not be
+  /// made or started; on a device it tells the Rust side (`baton_stream_link_sound_failed`), which
+  /// must not be called from inside a call of the Rust side, and this is not one.
   init(
     levels: SoundLevels = .standard,
-    retryAfter: TimeInterval = 1,
-    clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+    cannotPlay: @escaping () -> Void,
     makeDecoder: @escaping (SoundForm) throws -> SoundDecoder,
     makeOutput: @escaping (SoundForm, SoundRing) throws -> SoundOutput
   ) {
     self.levels = levels
-    self.retryAfter = retryAfter
-    self.clock = clock
+    self.cannotPlay = cannotPlay
     self.makeDecoder = makeDecoder
     self.makeOutput = makeOutput
   }
@@ -416,13 +405,13 @@ final class ScreenSpeaker {
     return closed
   }
 
-  /// Makes the run, or keeps the form to try again. `tries` is how many times it was tried before.
-  private func startRun(_ form: SoundForm, tries: Int = 0) {
+  /// Makes the run, or says that the device cannot play it.
+  private func startRun(_ form: SoundForm) {
     let decoder: SoundDecoder
     do {
       decoder = try makeDecoder(form)
     } catch {
-      return failed(form, tries: tries, "make the decoder", error)
+      return failed("make the decoder", error)
     }
     let ring = SoundRing(rate: Int(form.rate), channels: Int(form.channels), levels: levels)
     let output: SoundOutput
@@ -430,33 +419,27 @@ final class ScreenSpeaker {
       output = try makeOutput(form, ring)
     } catch {
       decoder.invalidate()
-      return failed(form, tries: tries, "make the output", error)
+      return failed("make the output", error)
     }
     do {
       try output.start()
     } catch {
       output.stop()
       decoder.invalidate()
-      return failed(form, tries: tries, "start the output", error)
+      return failed("start the output", error)
     }
-    waiting = nil
     run = Run(form: form, decoder: decoder, ring: ring, output: output)
-    if tries > 0 {
-      NSLog("Baton: the sound of a screen plays now, after %ld tries.", tries + 1)
-    }
   }
 
-  /// The run could not be made: it is told in the log the first time, and tried again after a
-  /// while.
-  private func failed(_ form: SoundForm, tries: Int, _ step: String, _ error: Error) {
-    if tries == 0 { report(step, error) }
-    waiting = Waiting(form: form, tries: tries + 1, at: clock() + retryAfter)
+  /// The run could not be made: it is told in the log, and to the Rust side, unless the screen is
+  /// over and nobody is left to tell.
+  private func failed(_ step: String, _ error: Error) {
+    report(step, error)
+    if isClosed { return }
+    cannotPlay()
   }
 
   private func decode(_ bytes: Data, first: Bool, lost: UInt64) {
-    if run == nil, let again = waiting, clock() >= again.at {
-      startRun(again.form, tries: again.tries)
-    }
     guard let run else { return }
     run.owed = first ? 0 : run.owed &+ min(lost, ScreenSpeaker.mostCovered)
     // A decoder goes on from the packet before, and these do not: the first of a run, and the one
@@ -480,7 +463,6 @@ final class ScreenSpeaker {
   }
 
   private func endRun() {
-    waiting = nil
     guard let old = run else { return }
     run = nil
     // The output first, so that nothing reads the ring when the decoder is let go of.
@@ -494,8 +476,9 @@ final class ScreenSpeaker {
       old.undecodable)
   }
 
-  /// Says in the log, once, that a run of sound cannot be played. The person is not told: the Rust
-  /// side has no way to take it, and nothing in the log names a program or a person.
+  /// Says in the log that a run of sound cannot be played, with the step and the code of the
+  /// system. The person is told through `cannotPlay`, and nothing in the log names a program or a
+  /// person.
   private func report(_ step: String, _ error: Error) {
     if let failure = error as? SoundFailure {
       NSLog(

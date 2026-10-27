@@ -1456,12 +1456,14 @@ async fn a_link_that_the_session_has_not_reached_yet_or_has_left_does_nothing() 
 
     // Nothing is left of the session for the link to reach, and the link does not keep it.
     link.decode_failed();
+    link.sound_failed();
     tokio::time::sleep(QUIET).await;
     assert_eq!(pair.sharer.heard.count("recovery"), recoveries);
     assert!(!pair.sharing.app.end_window(shared.id));
 
     // A link that no session was ever made for does nothing either.
     ScreenLink::default().decode_failed();
+    ScreenLink::default().sound_failed();
 }
 
 #[tokio::test]
@@ -3582,6 +3584,65 @@ async fn a_source_that_cannot_record_says_why_and_tries_again_when_the_person_as
         pair.viewer.sounds.all(),
         ["stopped Some(NoPermission)", "sound Aac 1024"]
     );
+}
+
+#[tokio::test]
+async fn a_device_that_cannot_play_the_sound_says_so_and_the_source_stops_sending_it() {
+    let pair = sounding().await;
+    let mut viewing_events = pair.viewing.app.events();
+    let WindowShared::Started(_) = pair.offered_and_answered(true, false).await else {
+        panic!("the screen was not shared");
+    };
+    let shown = shown_window(&mut viewing_events).await;
+    let handle = source_handle(&pair.sharer).await;
+    until("the pictures to be shown", || {
+        pair.viewer.heard.has("show 2")
+    })
+    .await;
+    assert!(pair.viewing.app.hear_window(shown.id, true));
+    until("the platform of the source to be asked", || {
+        pair.sharer.heard.count("hear 1") == 1
+    })
+    .await;
+    handle.begin_sound(AAC).unwrap();
+    assert_eq!(
+        next_sound(&mut viewing_events, shown.id).await,
+        WindowSound::Playing
+    );
+
+    // The speaker of the platform finds that it cannot play the run, from a thread of its own,
+    // with the link that `open` gave it. The person hears that it was this device, the speaker is
+    // stopped, and the Mac is told, so that it plays again.
+    let link = pair.viewer.links.lock().unwrap()[0].clone();
+    link.sound_failed();
+    assert_eq!(
+        next_sound(&mut viewing_events, shown.id).await,
+        WindowSound::CannotPlay
+    );
+    until("the platform of the source to be told", || {
+        pair.sharer.heard.has("hear 0")
+    })
+    .await;
+    assert_eq!(pair.viewer.sounds.all().last().unwrap(), "stopped None");
+
+    // A second report is about a run that is over: nothing more is told to anyone.
+    link.sound_failed();
+    tokio::time::sleep(QUIET).await;
+    assert_eq!(pair.sharer.heard.count("hear 0"), 1);
+    assert_eq!(pair.viewer.sounds.count("stopped"), 1);
+
+    // The person asks again. The Mac is asked, begins a new run, and this time it plays.
+    assert!(pair.viewing.app.hear_window(shown.id, true));
+    until("the platform of the source to be asked again", || {
+        pair.sharer.heard.count("hear 1") == 2
+    })
+    .await;
+    handle.begin_sound(AAC).unwrap();
+    assert_eq!(
+        next_sound(&mut viewing_events, shown.id).await,
+        WindowSound::Playing
+    );
+    assert_eq!(pair.viewer.sounds.count("sound"), 2);
 }
 
 #[tokio::test]

@@ -106,6 +106,7 @@ class WindowsController extends ChangeNotifier {
   final Map<int, PictureSize> _pictures = {};
   final Map<int, LiftedPrivacy> _lifted = {};
   final Map<int, ScreenSound> _sounds = {};
+  final Set<int> _silenceClosed = {};
   final List<WindowNote> _notes = [];
 
   /// What this device does with windows. Offer only what is possible.
@@ -157,6 +158,12 @@ class WindowsController extends ChangeNotifier {
   /// session starts, and for a session whose `WindowSession.sound` is not set, which has none.
   ScreenSound soundOf(WindowSession session) =>
       _sounds[session.id.toInt()] ?? soundOff;
+
+  /// Whether the person put away the line that says why [session] has no sound. The speaker in the
+  /// bar still shows that there is none. The line comes back when the sound stands differently: the
+  /// person asks again, or the reason changes.
+  bool silenceClosedOf(WindowSession session) =>
+      _silenceClosed.contains(session.id.toInt());
 
   /// Each offer as it comes, so that a screen that covers the list can say that one waits.
   Stream<WindowRequest> get asked => _asked.stream;
@@ -251,6 +258,8 @@ class WindowsController extends ChangeNotifier {
         };
         if (_sounds[id.toInt()] == next) return;
         _sounds[id.toInt()] = next;
+        // A line that was put away is about the sound as it stood.
+        _silenceClosed.remove(id.toInt());
         notifyListeners();
       case Event_WindowEnded(:final id, :final end):
         final index = _sessions.indexWhere((s) => s.id == id);
@@ -258,6 +267,7 @@ class WindowsController extends ChangeNotifier {
         _pictures.remove(id.toInt());
         _lifted.remove(id.toInt());
         _sounds.remove(id.toInt());
+        _silenceClosed.remove(id.toInt());
         final session = _sessions.removeAt(index);
         // The person who ended it knows.
         if (end is! WindowEnd_ThisDevice) _note(WindowOver(session, end));
@@ -360,6 +370,7 @@ class WindowsController extends ChangeNotifier {
     _pictures.remove(session.id.toInt());
     _lifted.remove(session.id.toInt());
     _sounds.remove(session.id.toInt());
+    _silenceClosed.remove(session.id.toInt());
     if (_sessions.length != kept) _settle();
     return running;
   }
@@ -404,8 +415,10 @@ class WindowsController extends ChangeNotifier {
   /// Asks the device that shares [session], a screen that is shown here whose `WindowSession.sound`
   /// is set, to send its sound ([listen]), or to stop. Returns whether the other device was
   /// asked. When it was not (the session is over, or it has no sound), things stay as they were,
-  /// and [soundOf] says so. The other device answers with `Event_WindowSound`: the sound plays, or
-  /// the other device says why it sends none, and a person who asks again makes it try again.
+  /// and [soundOf] says so. The answer comes as `Event_WindowSound`: the sound plays, the other
+  /// device says why it sends none, or this device could not play it (the other device is then told
+  /// to stop, and nothing is tried again until the person asks). A person who asks again makes it
+  /// try again.
   /// Asking for what is being asked for or plays already, or to stop what is off, asks nothing.
   /// The rules of what may be asked are kept in Rust, once, and not repeated here.
   bool hear(WindowSession session, {required bool listen}) {
@@ -416,8 +429,19 @@ class WindowsController extends ChangeNotifier {
     _sounds[session.id.toInt()] = listen
         ? (stage: SoundStage.asking, why: null)
         : soundOff;
+    // Asking again, or turning the sound off, is a new start for the line about the sound.
+    _silenceClosed.remove(session.id.toInt());
     notifyListeners();
     return true;
+  }
+
+  /// Puts away the line that says why [session] has no sound ([silenceClosedOf]). It is for a
+  /// person who has read it and does not want it over the picture; nothing is asked of the other
+  /// device, and the sound stays as it was.
+  void closeSilence(WindowSession session) {
+    final id = session.id.toInt();
+    if (soundOf(session).stage != SoundStage.silent) return;
+    if (_silenceClosed.add(id)) notifyListeners();
   }
 
   /// How [session] ended, if it ended some other way than the person ending it and the person

@@ -21,7 +21,8 @@
 //!   (AVCC), holds the parameter sets to the size the device said it can show, and passes the
 //!   result across the interface.
 //! - A decoder that fails later, on a thread of its own, says so with a link that `open` gave it
-//!   ([`exports::baton_stream_link_decode_failed`]).
+//!   ([`exports::baton_stream_link_decode_failed`]). So does a speaker that cannot play the sound
+//!   of the screen ([`exports::baton_stream_link_sound_failed`]).
 //! - The window that the person picks ([`exports::baton_stream_pick_done`]) belongs to the Rust
 //!   side from then on, and is passed from one owner to the next: it is prepared only after the
 //!   other person says yes, started when the session runs, and let go of exactly once, started or

@@ -29,7 +29,8 @@
  *   The platform calls these functions of the Rust side:
  *     at launch: baton_stream_abi_version, baton_stream_register_viewer and
  *       baton_stream_register_sharer;
- *     while a window is shown: baton_stream_link_decode_failed;
+ *     while a window is shown: baton_stream_link_decode_failed, and, for a platform that plays
+ *       sound, baton_stream_link_sound_failed;
  *     while the person picks a window or a display to share: baton_stream_pick_done;
  *     while a window is shared: the baton_stream_source_ functions, those of the sound among
  *       them (baton_stream_source_sound_begin, baton_stream_source_sound_silent and
@@ -59,10 +60,11 @@
  *   - No call waits for long. The Rust side makes the calls of a screen while it holds the lock
  *     of the session, so a decoder that takes time hands the picture to a thread of its own, and
  *     reports a failure that comes later with baton_stream_link_decode_failed, and a speaker
- *     that decodes sound hands the packets to a thread of its own too. The calls of a
- *     window that is shared hold no lock that a function of this interface needs, so ended and
- *     release may stop the platform's capture threads, also ones that are inside a function of
- *     this interface at that moment.
+ *     that decodes sound hands the packets to a thread of its own too, and reports a run that it
+ *     could not make with baton_stream_link_sound_failed. The calls of a window that is shared
+ *     hold no lock that a function of this interface needs, so ended and release may stop the
+ *     platform's capture threads, also ones that are inside a function of this interface at that
+ *     moment.
  *   - A function of this interface that is called from inside a call of a vtable, on the same
  *     thread, is refused with BATON_E_REENTRANT. From another thread it is allowed, but the call
  *     of the vtable must not wait for that thread.
@@ -647,9 +649,10 @@ typedef struct BatonSoundPacket {
  *   limits:  fills in what the device can show. Called once, at registration.
  *   open:    the person said yes to a window: makes the decoder and the screen for it, and fills
  *            in screen, whose context is not NULL. link is the number to give
- *            baton_stream_link_decode_failed for this screen, and it is valid until release. On a
- *            failure fills in message if it can; a success without a context is a failure too.
- *            Does not wait: a platform that needs time fails here, with a sentence.
+ *            baton_stream_link_decode_failed and baton_stream_link_sound_failed for this screen,
+ *            and it is valid until release. On a failure fills in message if it can; a success
+ *            without a context is a failure too. Does not wait: a platform that needs time
+ *            fails here, with a sentence.
  *   decode:  decodes the frame. A failure means that this frame cannot be decoded, and the Rust
  *            side asks the source for another key frame.
  *   show:    shows the picture of frame number, the newest that decode took.
@@ -675,8 +678,11 @@ typedef struct BatonSoundPacket {
  *            the platform; there is no failure to report, since the Rust side has nothing to do
  *            about it.
  *   stopped: no sound is wanted or sent. why is a BATON_SILENT_ number: BATON_SILENT_OFF if the
- *            person turned the sound off, and otherwise the reason that the source gave. A form
- *            that the library does not play (it plays AAC-LC in packets of 1024 or 960 samples)
+ *            person turned the sound off, or if the screen said with
+ *            baton_stream_link_sound_failed that it cannot play (the library has turned the sound
+ *            off then, and the person has to turn it on again to try again), and otherwise the
+ *            reason that the source gave. A form that the library does not play (it plays AAC-LC
+ *            in packets of 1024 or 960 samples)
  *            never reaches sound: the library says BATON_SILENT_OTHER itself and turns the sound
  *            off, so the person has to turn it on again. BATON_SILENT_WINDOW, the reason for a
  *            screen that shows a window, is not given: the app does not ask for the sound of
@@ -938,6 +944,22 @@ int32_t baton_stream_register_viewer(const BatonViewerVTable *vtable);
  * BATON_E_UNKNOWN_LINK, BATON_E_REENTRANT or BATON_E_PANIC.
  */
 int32_t baton_stream_link_decode_failed(uint64_t link);
+
+/*
+ * The speaker of a screen could not play the sound: after the library began a run with sound, what
+ * decodes the packets or plays them could not be made or started (a call holds the audio of a
+ * phone, there is nothing to play on, the system has no decoder for the form). Called from a thread
+ * of its own, never from inside a call of the vtable, with the link that open gave for the screen.
+ * The library turns the sound of the screen off and tells the other device to stop sending it, so
+ * that the other device plays its own sound again, and the person is told that this device cannot
+ * play the sound. They try again by turning the sound on, which begins a new run (sound). The
+ * platform is not to try again by itself. stopped follows with BATON_SILENT_OFF, and the packets
+ * that were on their way are dropped. A report that comes when the sound is off already, as when
+ * the person turned it off while the platform tried, is about a run that is over, and changes
+ * nothing. Returns BATON_OK, also when the session is not running yet or is over (nothing happens
+ * then), or BATON_E_UNKNOWN_LINK, BATON_E_REENTRANT or BATON_E_PANIC.
+ */
+int32_t baton_stream_link_sound_failed(uint64_t link);
 
 /*
  * Registers the platform's sharer. Call it once, at launch, before the app starts. A platform

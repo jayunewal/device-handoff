@@ -725,8 +725,9 @@ impl App {
     /// (sound goes with a whole screen only), when this device plays no sound
     /// ([`WindowViewer::plays_sound`](crate::windows::WindowViewer::plays_sound)), or when the
     /// other device sends none. How it came out is told with [`Event::WindowSound`]: that the sound
-    /// plays, or why the other device sends none. A request to hear that is made again asks the
-    /// other device to try again, which a person does after it said that it could not.
+    /// plays, why the other device sends none, or that this device could not play it. A request to
+    /// hear that is made again asks the other device to try again, which a person does after it
+    /// said that it could not, and gives this device a new run to try after it could not play.
     pub fn hear_window(&self, session: u64, on: bool) -> bool {
         self.inner.sessions.hear(session, on)
     }

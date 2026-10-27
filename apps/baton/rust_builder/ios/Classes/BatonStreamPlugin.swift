@@ -86,8 +86,9 @@ final class DeviceViewer: ViewerPlatform {
     maxWidth: 3840, maxHeight: 2160, maxFps: 60, codecs: UInt32(BATON_CODEC_H264))
 
   /// Every device that runs the app has a decoder for AAC-LC and a way to play it. A device with
-  /// nothing to play on at the moment, such as a Mac with no output, plays nothing and says so in
-  /// the log: the Rust side has no way to be told.
+  /// nothing to play on at the moment, such as a Mac with no output or a phone in a call, says so
+  /// to the Rust side when a run cannot be made (`baton_stream_link_sound_failed`), and the person
+  /// is told.
   let playsSound = true
 
   private let places: ScreenPlaces<TextureSlot>
@@ -118,6 +119,7 @@ final class DeviceViewer: ViewerPlatform {
         places.give(slot)
       },
       speaker: ScreenSpeaker(
+        cannotPlay: { _ = baton_stream_link_sound_failed(link) },
         makeDecoder: { try AacDecoder(form: $0) },
         makeOutput: { form, ring in try EngineOutput(form: form, ring: ring) }))
     return MadeScreen(screen: screen, id: slot.id)

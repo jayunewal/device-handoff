@@ -205,6 +205,22 @@ impl ScreenLink {
             session.decode_failed();
         }
     }
+
+    /// The platform could not play the sound of the screen: what decodes or plays the run that
+    /// began could not be made or started, because a call holds the audio of a phone, say, or
+    /// there is nothing to play on. Sound is turned off, the other device stops sending it, and
+    /// the person is told with [`Event::WindowSound`](crate::Event::WindowSound) that this device
+    /// cannot play it. They can try again with [`App::hear_window`](crate::App::hear_window).
+    ///
+    /// It does nothing when sound is off already: the report is about a run that is over. Like
+    /// [`decode_failed`](Self::decode_failed), it is for a thread of the platform, never for a
+    /// call of the [`Speaker`], which the session makes with its lock held.
+    pub fn sound_failed(&self) {
+        let session = locked(&self.session).upgrade();
+        if let Some(session) = session {
+            session.sound_failed();
+        }
+    }
 }
 
 impl fmt::Debug for ScreenLink {

@@ -22,7 +22,7 @@ void main() {
     );
     expect(version(), 2);
 
-    // Called with what a platform could get wrong, the two others answer with a number and do
+    // Called with what a platform could get wrong, the others answer with a number and do
     // nothing: no table to register, and a link that is not open.
     final register = library
         .lookupFunction<
@@ -35,6 +35,11 @@ void main() {
           'baton_stream_link_decode_failed',
         );
     expect(failed(0), -4);
+    final soundFailed = library
+        .lookupFunction<Int32 Function(Uint64), int Function(int)>(
+          'baton_stream_link_sound_failed',
+        );
+    expect(soundFailed(0), -4);
   });
 
   test('the library carries the functions for sharing a window', () {

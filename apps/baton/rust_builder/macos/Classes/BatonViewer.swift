@@ -49,11 +49,11 @@ protocol ViewerPlatform: AnyObject {
   var limits: ViewerLimits { get }
 
   /// Makes the decoder and the screen for `window`, and gives the number that the user interface
-  /// draws the screen with. `link` is the number to give `baton_stream_link_decode_failed` for
-  /// this screen. The call does not wait: a platform that needs time fails, with a sentence. Two
-  /// windows that are said yes to at the same moment are made on two threads, and the calls of the
-  /// screens that are open go on meanwhile, so whatever this shares with them is kept under a
-  /// lock.
+  /// draws the screen with. `link` is the number to give `baton_stream_link_decode_failed` and
+  /// `baton_stream_link_sound_failed` for this screen. The call does not wait: a platform that
+  /// needs time fails, with a sentence. Two windows that are said yes to at the same moment are
+  /// made on two threads, and the calls of the screens that are open go on meanwhile, so whatever
+  /// this shares with them is kept under a lock.
   func makeScreen(for window: WindowInfo, link: UInt64) throws -> MadeScreen
 
   /// Whether the screens that it makes play the sound of a screen. A platform that does not is not

@@ -252,6 +252,22 @@ impl Registry {
         Ok(())
     }
 
+    /// The speaker of the screen that `link` was given for could not play the sound: it could not
+    /// make or start what decodes and plays a run.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Reentrant`] if this thread is inside a call of the platform, and
+    /// [`Error::UnknownLink`] if no screen is open under that number.
+    pub fn link_sound_failed(&self, link: u64) -> Result<(), Error> {
+        if inside_call() {
+            return Err(Error::Reentrant);
+        }
+        let link = self.links.screen(link).ok_or(Error::UnknownLink)?;
+        link.sound_failed();
+        Ok(())
+    }
+
     /// The session of the window that `link` was given for, for the functions that the platform
     /// calls about a window that it shares.
     ///
@@ -887,16 +903,20 @@ mod tests {
         let registry = Registry::new();
         for number in [0, 1, 99, u64::MAX] {
             assert_eq!(registry.link_decode_failed(number), Err(Error::UnknownLink));
+            assert_eq!(registry.link_sound_failed(number), Err(Error::UnknownLink));
         }
         let number = registry.links.add(ScreenLink::default());
         assert_eq!(registry.link_decode_failed(number), Ok(()));
+        assert_eq!(registry.link_sound_failed(number), Ok(()));
         assert_eq!(registry.open_links(), 1);
         // A number that is not the one that is open is not taken for it.
         for other in [number + 1, number + 100, number - 1] {
             assert_eq!(registry.link_decode_failed(other), Err(Error::UnknownLink));
+            assert_eq!(registry.link_sound_failed(other), Err(Error::UnknownLink));
         }
         registry.links.remove(number);
         assert_eq!(registry.link_decode_failed(number), Err(Error::UnknownLink));
+        assert_eq!(registry.link_sound_failed(number), Err(Error::UnknownLink));
         assert_eq!(registry.open_links(), 0);
     }
 
