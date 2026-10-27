@@ -259,6 +259,9 @@ pub struct NodeBuilder {
     private_sessions: bool,
     /// Whether this device can be unlocked from a paired device that the person set up for that.
     unlockable: bool,
+    /// Whether this device can leave its screen as it is when a private session ends, if the
+    /// person at the viewer asks.
+    leaves: bool,
     /// Who gives the key that an unlock is sealed to, if this device unlocks others with the face
     /// of its person.
     approver: Option<Arc<dyn UnlockApprover>>,
@@ -299,6 +302,7 @@ impl NodeBuilder {
             plays_sound: false,
             private_sessions: false,
             unlockable: false,
+            leaves: false,
             approver: None,
             starts: None,
             holds: None,
@@ -353,6 +357,7 @@ impl NodeBuilder {
             starter: None,
             sound: false,
             unlock: None,
+            leave: false,
         });
         self
     }
@@ -410,6 +415,22 @@ impl NodeBuilder {
     #[must_use]
     pub fn allow_unlock(mut self) -> Self {
         self.unlockable = true;
+        self
+    }
+
+    /// Has this device leave its screen as it is, and not lock it, when the person at the viewer
+    /// of a private session ends the session and asks for that
+    /// ([`ViewHandle::end_leaving`](crate::streaming::ViewHandle::end_leaving)). The platform does
+    /// what it does before it locks, and does not lock ([`SourceEvents::ended_leaving`]). Every
+    /// other end of a private session locks, as it always did.
+    ///
+    /// It needs [`private_sessions`](Self::private_sessions), and [`bind`](Self::bind) fails
+    /// without it. Without it, a device always locks, and says nothing about it. With it, a
+    /// private session is offered with `leave`, to a viewer that takes the offer as it is: an older
+    /// viewer ignores it.
+    #[must_use]
+    pub fn allow_leave(mut self) -> Self {
+        self.leaves = true;
         self
     }
 
@@ -520,6 +541,8 @@ impl NodeBuilder {
             "playing sound needs the device to show the windows of others"
         } else if self.unlockable && !self.private_sessions {
             "being unlocked needs the device to keep its screen private"
+        } else if self.leaves && !self.private_sessions {
+            "leaving the screen as it is needs the device to keep its screen private"
         } else if self.approver.is_some() && self.windows.is_none() {
             "approving unlocks needs the device to show the windows of others"
         } else {
@@ -547,6 +570,7 @@ impl NodeBuilder {
             plays_sound,
             private_sessions,
             unlockable,
+            leaves,
             approver,
             starts,
             holds,
@@ -578,6 +602,7 @@ impl NodeBuilder {
             private: private_sessions,
             sound: sends_sound,
             unlock: unlocks,
+            leave: leaves,
             ..sharer
         });
         let (sinks, streaming) = take_streams(
@@ -1142,6 +1167,8 @@ impl Node {
     ) -> Result<ShareOutcome> {
         let streaming = &self.shared.streaming;
         let wait = self.shared.tuning.offer_reply_deadline();
+        // What the viewer is told of the end of the session, which no connection decides.
+        let leave = streaming.leaves(window.private());
         let mut attempt = 0;
         let (session, hold, id, unlock, reply) = loop {
             attempt += 1;
@@ -1163,7 +1190,7 @@ impl Node {
             };
             // What the viewer is told of an unlock, which this connection's introduction decides.
             let unlock = streaming.unlock_setup(paired, &session.peer, window.private());
-            let offer = window.offer(id, unlock.is_offered());
+            let offer = window.offer(id, unlock.is_offered(), leave);
             // A device that asked for the offer may have taken its asking back since the place was
             // taken, while the application got ready. Then nothing is offered, and the person
             // there is not asked about an offer that nobody wants: the cancellation is looked at
@@ -1207,6 +1234,7 @@ impl Node {
                 window.is_display(),
             ),
             unlock,
+            leave,
         };
         streaming.begin(offered, reply, events, choose).await
     }

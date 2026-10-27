@@ -388,13 +388,14 @@ impl Offers {
     /// What `offer`, which came on the connection `link`, granted the viewer, and what the source
     /// on it said of itself. The offer says `unlock` only of a private session, and a viewer takes
     /// it only from a source that advertised `unlock.target`, as it advertised `unlock.approve`
-    /// itself.
+    /// itself. It says `leave` only of a private session too, and a viewer takes it as it is.
     pub(super) fn granted(&self, link: Link, offer: &Offer) -> Granted {
         Granted {
             control: offer.control,
             private: offer.private,
             sound: self.sounding.contains(&link),
             unlock: offer.unlock && offer.private && self.unlocking.contains(&link),
+            leave: offer.leave && offer.private,
         }
     }
 

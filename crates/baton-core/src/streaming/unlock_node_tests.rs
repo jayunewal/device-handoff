@@ -833,6 +833,7 @@ fn unlockable(trust: TrustStore, mac: DeviceId) -> Arc<Streaming> {
             starter: None,
             sound: false,
             unlock: Some(Unlocks::new(trust, Arc::new(SystemClock), mac)),
+            leave: false,
         }),
     )
 }
@@ -897,6 +898,7 @@ async fn a_session_is_offered_an_unlock_only_when_private_and_set_up_for_a_viewe
                 starter: None,
                 sound: false,
                 unlock: None,
+                leave: false,
             }),
         ),
         Streaming::new(),

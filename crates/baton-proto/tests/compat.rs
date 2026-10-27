@@ -690,15 +690,52 @@ fn a_kind_of_stream_request_this_version_does_not_know_is_an_error() {
 }
 
 fn offer_that_says(unlock: Option<Value>) -> Vec<u8> {
+    offer_with("unlock", unlock)
+}
+
+/// A private offer of a display, with the key `key` as `value` if there is one.
+fn offer_with(key: &str, value: Option<Value>) -> Vec<u8> {
     let mut offer = cbor!({
         "session" => session_id(), "source" => "Display", "title" => "", "app" => "",
         "width" => 3024, "height" => 1964, "control" => true, "private" => true,
     })
     .unwrap();
-    if let (Some(unlock), Value::Map(fields)) = (unlock, &mut offer) {
-        fields.push((Value::Text("unlock".into()), unlock));
+    if let (Some(value), Value::Map(fields)) = (value, &mut offer) {
+        fields.push((Value::Text(key.into()), value));
     }
     encode(&cbor!({ "Stream" => { "Offer" => offer } }).unwrap())
+}
+
+#[test]
+fn an_offer_that_does_not_say_leave_does_not_leave_the_screen() {
+    // What a message leaves out stays as a session starts, which is the strict way: the source
+    // locks when the session ends, and the viewer has nothing to ask.
+    let read = |leave: Option<Value>| {
+        let Request::Stream(StreamRequest::Offer(offer)) =
+            frame::decode_payload::<Request>(&offer_with("leave", leave)).unwrap()
+        else {
+            panic!("not an offer");
+        };
+        offer
+    };
+    assert!(!read(None).leave);
+    assert!(!read(Some(Value::Bool(false))).leave);
+    assert!(read(Some(Value::Bool(true))).leave);
+    // Each key is its own: leaving says nothing of the unlock, and the unlock says nothing of it.
+    assert!(!read(Some(Value::Bool(true))).unlock);
+    let Request::Stream(StreamRequest::Offer(unlocking)) =
+        frame::decode_payload::<Request>(&offer_that_says(Some(Value::Bool(true)))).unwrap()
+    else {
+        panic!("not an offer");
+    };
+    assert!(unlocking.unlock && !unlocking.leave);
+    // A word that is not a yes or a no is not a yes.
+    for wrong in [Value::from(1), Value::Text("true".into()), Value::Null] {
+        assert!(
+            frame::decode_payload::<Request>(&offer_with("leave", Some(wrong.clone()))).is_err(),
+            "{wrong:?}"
+        );
+    }
 }
 
 #[test]

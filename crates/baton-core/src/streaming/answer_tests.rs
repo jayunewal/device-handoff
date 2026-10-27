@@ -270,6 +270,7 @@ pub(super) fn offer(byte: u8) -> Offer {
         control: false,
         private: false,
         unlock: false,
+        leave: false,
     }
 }
 
@@ -751,6 +752,10 @@ impl SourceEvents for Platform {
 
     fn hear(&mut self, on: bool) {
         lock(&(self.0).lines).push(if on { "hear" } else { "hush" }.to_owned());
+    }
+
+    fn ended_leaving(&mut self) {
+        lock(&(self.0).lines).push("left".to_owned());
     }
 
     fn ended(&mut self) {

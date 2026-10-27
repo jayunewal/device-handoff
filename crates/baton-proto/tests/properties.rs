@@ -182,10 +182,11 @@ fn stream_request() -> impl Strategy<Value = StreamRequest> {
             1..=MAX_WINDOW_EDGE,
             any::<bool>(),
             any::<bool>(),
+            any::<bool>(),
             any::<bool>()
         )
             .prop_map(
-                |(session, source, title, app, width, height, control, private, unlock)| {
+                |(session, source, title, app, width, height, control, private, unlock, leave)| {
                     StreamRequest::Offer(stream::Offer {
                         session,
                         source,
@@ -196,6 +197,7 @@ fn stream_request() -> impl Strategy<Value = StreamRequest> {
                         control,
                         private,
                         unlock,
+                        leave,
                     })
                 }
             ),
