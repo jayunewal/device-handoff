@@ -8,6 +8,7 @@ import 'dart:io';
 
 import 'package:baton/src/awake.dart';
 import 'package:baton/src/file_shower.dart';
+import 'package:baton/src/notice_access.dart';
 import 'package:baton/src/rust_backend.dart';
 import 'package:baton/src/support_folder.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -228,6 +229,52 @@ void main() {
         '    showReceivedFilesInFinder(messenger: flutterViewController.engine.binaryMessenger)',
       ),
     );
+  });
+
+  test('the Mac app answers what Baton asks about notifications', () {
+    // The channel, its questions and the words of its answers are named in
+    // lib/src/notice_access.dart and in the app. If they differ, Baton cannot tell the person
+    // that a device unlocked the Mac, and nothing fails but that: the history has it all the
+    // same.
+    final swift = _read('macos/Runner/MainFlutterWindow.swift');
+    expect(swift, contains('name: "${PlatformNoticeKeeper.channelName}"'));
+    for (final question in [
+      PlatformNoticeKeeper.stateQuestion,
+      PlatformNoticeKeeper.requestQuestion,
+      PlatformNoticeKeeper.postQuestion,
+    ]) {
+      expect(swift, contains('case "$question":'), reason: question);
+    }
+    for (final word in ['allowed', 'needed', 'denied', 'unavailable']) {
+      expect(swift, contains('return "$word"'), reason: word);
+    }
+    // The question is registered, and notifications show while Baton is the app in front: the
+    // person who comes back to the Mac and opens Baton is the one who most needs to see one.
+    expect(
+      swift,
+      contains(
+        '    answerAboutNotifications(messenger: flutterViewController.engine.binaryMessenger)',
+      ),
+    );
+    expect(swift, contains('center.delegate = noticeDelegate'));
+    expect(swift, contains('completionHandler([.banner, .list])'));
+  });
+
+  test('the Mac app shows a notification only where the system allows it', () {
+    // The system takes a notification from an app that was told no and shows nothing, so the
+    // app checks first and says that it was not shown.
+    final swift = _read('macos/Runner/MainFlutterWindow.swift');
+    expect(
+      swift,
+      contains('guard noticeAccess(settings.authorizationStatus) == "allowed"'),
+    );
+    // Only the title and the body that the app gave are shown: no sound, no badge, and no
+    // action.
+    expect(swift, contains('content.title = title'));
+    expect(swift, contains('content.body = body'));
+    expect(swift, isNot(contains('content.sound')));
+    expect(swift, isNot(contains('content.badge')));
+    expect(swift, contains('requestAuthorization(options: [.alert])'));
   });
 
   test('the apps show the files that arrived and never open them', () {

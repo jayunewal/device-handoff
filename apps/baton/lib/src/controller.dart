@@ -172,6 +172,9 @@ class DevicesController extends ChangeNotifier {
     switch (event) {
       case Event_DevicesChanged() || Event_Resync():
         unawaited(_readDevices());
+      case Event_UnlockAttempted():
+        // The record of the device may have ended with it, and its history has a line more.
+        notifyListeners();
       default:
         // The other events are for the screens that pair devices and show the inbox.
         break;
@@ -234,6 +237,46 @@ class DevicesController extends ChangeNotifier {
       return e.message;
     }
   }
+
+  /// How the unlock of [device] stands at this device: whether the person set it up so that the
+  /// device can unlock this one while it is locked, and whether it ended since. `null` if it is not
+  /// paired with this device any more, say because it forgot this one first.
+  UnlockStatus? unlockStatus(Device device) {
+    try {
+      return _session.unlockStatus(device.id);
+    } on BatonError {
+      return null;
+    }
+  }
+
+  /// Sets the unlock of this device up for [device], with [password], the password of the person
+  /// who uses this device. The call waits for the person at [device] if the platform there asks
+  /// them. The password is given to Baton and kept nowhere here. A failure comes as
+  /// `UnlockSetUp_NotDone` with its sentence, so that the screen shows every way it can end alike.
+  Future<UnlockSetUp> setUpUnlock(Device device, String password) async {
+    try {
+      return await _session.setUpUnlock(device.id, password);
+    } on BatonError catch (e) {
+      return UnlockSetUp.notDone(message: e.message);
+    }
+  }
+
+  /// Turns the unlock for [device] off. Returns what to tell the person if that did not work, and
+  /// `null` if it did, also when it was off already.
+  Future<String?> turnOffUnlock(Device device) async {
+    try {
+      await _session.turnOffUnlock(device.id);
+      return null;
+    } on BatonError catch (e) {
+      return e.message;
+    }
+  }
+
+  /// The last attempts of [device] to unlock this one, the latest first, up to [limit].
+  List<UnlockEntry> unlockAttempts(Device device, {int limit = 5}) => [
+    for (final entry in _session.unlockHistory())
+      if (entry.deviceId == device.id) entry,
+  ].take(limit).toList();
 
   Future<void> _readDevices() async {
     if (_readingDevices) {

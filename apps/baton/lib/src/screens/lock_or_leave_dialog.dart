@@ -16,9 +16,18 @@ enum EndAnswer {
   leave,
 }
 
+/// Whether ending [session] asks the person whether to lock the device: its device can be left as
+/// it is (`WindowSession.leave`) and it is not locked. A screen that the device says is locked
+/// ([WindowsController.lockedOf]) has nothing to lock, and stays locked whatever the answer, so
+/// there is no question. The word of the device may be out of date, in which case a device that
+/// is unlocked is locked by the end, as at every end the person did not choose.
+bool asksToLock(WindowsController controller, WindowSession session) =>
+    session.leave && !controller.lockedOf(session);
+
 /// Ends [session], which is shown here, the way the person chooses. A screen whose device can be
 /// left as it is (`WindowSession.leave`) asks first: lock the device, which is what ends every
-/// session, leave it as it is, or keep the session. Any other session ends without a question.
+/// session, leave it as it is, or keep the session. Any other session ends without a question,
+/// and so does one whose device is locked ([asksToLock]).
 ///
 /// The question is asked every time and the answer is kept nowhere, because a stored "leave it"
 /// would be one consent given once for a device that stays open at every end after it. Only the
@@ -31,7 +40,7 @@ Future<bool> endAskingToLock(
   WindowsController controller,
   WindowSession session,
 ) async {
-  if (!session.leave) {
+  if (!asksToLock(controller, session)) {
     controller.end(session);
     return true;
   }
@@ -118,11 +127,18 @@ class _LockOrLeaveDialogState extends State<LockOrLeaveDialog> {
   @override
   Widget build(BuildContext context) {
     final device = visibleText(widget.session.deviceName);
+    // A device that was unlocked from here is the case the question is for: the person did not
+    // touch it, and anyone near it can use it until it is locked.
+    final unlockedHere = widget.controller.unlockedHereOf(widget.session);
     return AlertDialog(
       title: Text('Lock $device?'),
       content: Text(
-        '$device locks when you stop showing it. If you leave it, anyone at '
-        '$device can use it until it is locked.',
+        unlockedHere
+            ? 'You unlocked $device from this device. $device locks when you '
+                  'stop showing it. If you leave it, anyone at $device can use '
+                  'it until it is locked.'
+            : '$device locks when you stop showing it. If you leave it, anyone '
+                  'at $device can use it until it is locked.',
       ),
       actions: [
         TextButton(onPressed: () => _answer(null), child: const Text('Cancel')),

@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1694714639;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 350337545;
 
 // Section: executor
 
@@ -1425,6 +1425,68 @@ fn wire__crate__api__baton__Baton_set_start_access_impl(
         },
     )
 }
+fn wire__crate__api__baton__Baton_set_up_unlock_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Baton_set_up_unlock",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Baton>,
+            >>::sse_decode(&mut deserializer);
+            let api_id = <String>::sse_decode(&mut deserializer);
+            let api_password = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, crate::api::error::BatonError>(
+                    (move || async move {
+                        let mut api_that_guard = None;
+                        let decode_indices_ =
+                            flutter_rust_bridge::for_generated::lockable_compute_decode_order(
+                                vec![flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                    &api_that, 0, false,
+                                )],
+                            );
+                        for i in decode_indices_ {
+                            match i {
+                                0 => {
+                                    api_that_guard =
+                                        Some(api_that.lockable_decode_async_ref().await)
+                                }
+                                _ => unreachable!(),
+                            }
+                        }
+                        let api_that_guard = api_that_guard.unwrap();
+                        let output_ok = crate::api::baton::Baton::set_up_unlock(
+                            &*api_that_guard,
+                            api_id,
+                            api_password,
+                        )
+                        .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__baton__Baton_share_window_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -1695,6 +1757,201 @@ fn wire__crate__api__baton__Baton_stop_impl(
                     .await,
                 )
             }
+        },
+    )
+}
+fn wire__crate__api__baton__Baton_turn_off_unlock_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Baton_turn_off_unlock",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Baton>,
+            >>::sse_decode(&mut deserializer);
+            let api_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::error::BatonError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok =
+                        crate::api::baton::Baton::turn_off_unlock(&*api_that_guard, api_id)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
+        },
+    )
+}
+fn wire__crate__api__baton__Baton_unlock_history_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Baton_unlock_history",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Baton>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let mut api_that_guard = None;
+                let decode_indices_ =
+                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                            &api_that, 0, false,
+                        ),
+                    ]);
+                for i in decode_indices_ {
+                    match i {
+                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                        _ => unreachable!(),
+                    }
+                }
+                let api_that_guard = api_that_guard.unwrap();
+                let output_ok =
+                    Ok::<_, ()>(crate::api::baton::Baton::unlock_history(&*api_that_guard))?;
+                std::result::Result::Ok(output_ok)
+            })())
+        },
+    )
+}
+fn wire__crate__api__baton__Baton_unlock_status_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Baton_unlock_status",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Baton>,
+            >>::sse_decode(&mut deserializer);
+            let api_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, crate::api::error::BatonError>((move || {
+                let mut api_that_guard = None;
+                let decode_indices_ =
+                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                            &api_that, 0, false,
+                        ),
+                    ]);
+                for i in decode_indices_ {
+                    match i {
+                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                        _ => unreachable!(),
+                    }
+                }
+                let api_that_guard = api_that_guard.unwrap();
+                let output_ok = crate::api::baton::Baton::unlock_status(&*api_that_guard, api_id)?;
+                std::result::Result::Ok(output_ok)
+            })())
+        },
+    )
+}
+fn wire__crate__api__baton__Baton_unlock_window_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Baton_unlock_window",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Baton>,
+            >>::sse_decode(&mut deserializer);
+            let api_session = <i64>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let mut api_that_guard = None;
+                let decode_indices_ =
+                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                            &api_that, 0, false,
+                        ),
+                    ]);
+                for i in decode_indices_ {
+                    match i {
+                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                        _ => unreachable!(),
+                    }
+                }
+                let api_that_guard = api_that_guard.unwrap();
+                let output_ok = Ok::<_, ()>(crate::api::baton::Baton::unlock_window(
+                    &*api_that_guard,
+                    api_session,
+                ))?;
+                std::result::Result::Ok(output_ok)
+            })())
         },
     )
 }
@@ -2489,13 +2746,33 @@ impl SseDecode for crate::api::model::Event {
             }
             14 => {
                 let mut var_id = <i64>::sse_decode(deserializer);
+                let mut var_locked = <bool>::sse_decode(deserializer);
+                return crate::api::model::Event::WindowLocked {
+                    id: var_id,
+                    locked: var_locked,
+                };
+            }
+            15 => {
+                let mut var_id = <i64>::sse_decode(deserializer);
+                let mut var_step = <crate::api::model::WindowUnlock>::sse_decode(deserializer);
+                return crate::api::model::Event::WindowUnlock {
+                    id: var_id,
+                    step: var_step,
+                };
+            }
+            16 => {
+                let mut var_entry = <crate::api::model::UnlockEntry>::sse_decode(deserializer);
+                return crate::api::model::Event::UnlockAttempted { entry: var_entry };
+            }
+            17 => {
+                let mut var_id = <i64>::sse_decode(deserializer);
                 let mut var_end = <crate::api::model::WindowEnd>::sse_decode(deserializer);
                 return crate::api::model::Event::WindowEnded {
                     id: var_id,
                     end: var_end,
                 };
             }
-            15 => {
+            18 => {
                 return crate::api::model::Event::Resync;
             }
             _ => {
@@ -2639,6 +2916,18 @@ impl SseDecode for Vec<crate::api::model::Received> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<crate::api::model::Received>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::model::UnlockEntry> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::model::UnlockEntry>::sse_decode(deserializer));
         }
         return ans_;
     }
@@ -3044,6 +3333,97 @@ impl SseDecode for () {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {}
 }
 
+impl SseDecode for crate::api::model::UnlockEntry {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_at = <i64>::sse_decode(deserializer);
+        let mut var_deviceId = <String>::sse_decode(deserializer);
+        let mut var_deviceName = <String>::sse_decode(deserializer);
+        let mut var_result = <crate::api::model::UnlockResult>::sse_decode(deserializer);
+        let mut var_notify = <bool>::sse_decode(deserializer);
+        return crate::api::model::UnlockEntry {
+            at: var_at,
+            device_id: var_deviceId,
+            device_name: var_deviceName,
+            result: var_result,
+            notify: var_notify,
+        };
+    }
+}
+
+impl SseDecode for crate::api::model::UnlockResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::model::UnlockResult::Unlocked,
+            1 => crate::api::model::UnlockResult::NotSetUp,
+            2 => crate::api::model::UnlockResult::NotLocked,
+            3 => crate::api::model::UnlockResult::NotPrivate,
+            4 => crate::api::model::UnlockResult::Busy,
+            5 => crate::api::model::UnlockResult::Stale,
+            6 => crate::api::model::UnlockResult::Rejected,
+            7 => crate::api::model::UnlockResult::TimedOut,
+            8 => crate::api::model::UnlockResult::Failed,
+            9 => crate::api::model::UnlockResult::Other,
+            10 => crate::api::model::UnlockResult::Declined,
+            11 => crate::api::model::UnlockResult::KeyLost,
+            12 => crate::api::model::UnlockResult::GaveUp,
+            13 => crate::api::model::UnlockResult::NoQuestion,
+            14 => crate::api::model::UnlockResult::NoResult,
+            15 => crate::api::model::UnlockResult::SessionEnded,
+            _ => unreachable!("Invalid variant for UnlockResult: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::model::UnlockSetUp {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                return crate::api::model::UnlockSetUp::Done;
+            }
+            1 => {
+                return crate::api::model::UnlockSetUp::WrongPassword;
+            }
+            2 => {
+                let mut var_message = <String>::sse_decode(deserializer);
+                return crate::api::model::UnlockSetUp::NotDone {
+                    message: var_message,
+                };
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
+impl SseDecode for crate::api::model::UnlockStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                return crate::api::model::UnlockStatus::Off;
+            }
+            1 => {
+                let mut var_since = <i64>::sse_decode(deserializer);
+                return crate::api::model::UnlockStatus::On { since: var_since };
+            }
+            2 => {
+                let mut var_since = <i64>::sse_decode(deserializer);
+                return crate::api::model::UnlockStatus::Ended { since: var_since };
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
 impl SseDecode for usize {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3058,11 +3438,15 @@ impl SseDecode for crate::api::model::WindowAbilities {
         let mut var_canShare = <bool>::sse_decode(deserializer);
         let mut var_canControl = <bool>::sse_decode(deserializer);
         let mut var_canGiveScreen = <bool>::sse_decode(deserializer);
+        let mut var_canBeUnlocked = <bool>::sse_decode(deserializer);
+        let mut var_canUnlock = <bool>::sse_decode(deserializer);
         return crate::api::model::WindowAbilities {
             can_show: var_canShow,
             can_share: var_canShare,
             can_control: var_canControl,
             can_give_screen: var_canGiveScreen,
+            can_be_unlocked: var_canBeUnlocked,
+            can_unlock: var_canUnlock,
         };
     }
 }
@@ -3275,6 +3659,7 @@ impl SseDecode for crate::api::model::WindowSession {
         let mut var_private = <bool>::sse_decode(deserializer);
         let mut var_sound = <bool>::sse_decode(deserializer);
         let mut var_leave = <bool>::sse_decode(deserializer);
+        let mut var_unlock = <bool>::sse_decode(deserializer);
         let mut var_screen = <Option<i64>>::sse_decode(deserializer);
         return crate::api::model::WindowSession {
             id: var_id,
@@ -3290,6 +3675,7 @@ impl SseDecode for crate::api::model::WindowSession {
             private: var_private,
             sound: var_sound,
             leave: var_leave,
+            unlock: var_unlock,
             screen: var_screen,
         };
     }
@@ -3340,6 +3726,28 @@ impl SseDecode for crate::api::model::WindowSound {
     }
 }
 
+impl SseDecode for crate::api::model::WindowUnlock {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                return crate::api::model::WindowUnlock::Asking;
+            }
+            1 => {
+                return crate::api::model::WindowUnlock::Typing;
+            }
+            2 => {
+                let mut var_result = <crate::api::model::UnlockResult>::sse_decode(deserializer);
+                return crate::api::model::WindowUnlock::Ended { result: var_result };
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
 fn pde_ffi_dispatcher_primary_impl(
     func_id: i32,
     port: flutter_rust_bridge::for_generated::MessagePort,
@@ -3369,16 +3777,20 @@ fn pde_ffi_dispatcher_primary_impl(
         26 => {
             wire__crate__api__baton__Baton_set_start_access_impl(port, ptr, rust_vec_len, data_len)
         }
-        27 => wire__crate__api__baton__Baton_share_window_impl(port, ptr, rust_vec_len, data_len),
-        28 => wire__crate__api__baton__Baton_start_impl(port, ptr, rust_vec_len, data_len),
-        30 => wire__crate__api__baton__Baton_start_screen_impl(port, ptr, rust_vec_len, data_len),
-        31 => wire__crate__api__baton__Baton_stop_impl(port, ptr, rust_vec_len, data_len),
-        32 => wire__crate__api__baton__Baton_unpair_impl(port, ptr, rust_vec_len, data_len),
-        37 => wire__crate__api__baton__FileSend_outcome_impl(port, ptr, rust_vec_len, data_len),
-        39 => wire__crate__api__baton__device_name_impl(port, ptr, rust_vec_len, data_len),
-        40 => wire__crate__api__startup__init_app_impl(port, ptr, rust_vec_len, data_len),
-        42 => wire__crate__api__baton__set_device_name_impl(port, ptr, rust_vec_len, data_len),
-        44 => wire__crate__api__model__window_modifiers_default_impl(
+        27 => wire__crate__api__baton__Baton_set_up_unlock_impl(port, ptr, rust_vec_len, data_len),
+        28 => wire__crate__api__baton__Baton_share_window_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__crate__api__baton__Baton_start_impl(port, ptr, rust_vec_len, data_len),
+        31 => wire__crate__api__baton__Baton_start_screen_impl(port, ptr, rust_vec_len, data_len),
+        32 => wire__crate__api__baton__Baton_stop_impl(port, ptr, rust_vec_len, data_len),
+        33 => {
+            wire__crate__api__baton__Baton_turn_off_unlock_impl(port, ptr, rust_vec_len, data_len)
+        }
+        37 => wire__crate__api__baton__Baton_unpair_impl(port, ptr, rust_vec_len, data_len),
+        42 => wire__crate__api__baton__FileSend_outcome_impl(port, ptr, rust_vec_len, data_len),
+        44 => wire__crate__api__baton__device_name_impl(port, ptr, rust_vec_len, data_len),
+        45 => wire__crate__api__startup__init_app_impl(port, ptr, rust_vec_len, data_len),
+        47 => wire__crate__api__baton__set_device_name_impl(port, ptr, rust_vec_len, data_len),
+        49 => wire__crate__api__model__window_modifiers_default_impl(
             port,
             ptr,
             rust_vec_len,
@@ -3408,14 +3820,17 @@ fn pde_ffi_dispatcher_sync_impl(
         15 => wire__crate__api__baton__Baton_me_impl(ptr, rust_vec_len, data_len),
         19 => wire__crate__api__baton__Baton_receiving_impl(ptr, rust_vec_len, data_len),
         20 => wire__crate__api__baton__Baton_release_window_input_impl(ptr, rust_vec_len, data_len),
-        29 => wire__crate__api__baton__Baton_start_access_impl(ptr, rust_vec_len, data_len),
-        33 => wire__crate__api__baton__Baton_window_abilities_impl(ptr, rust_vec_len, data_len),
-        34 => wire__crate__api__baton__Baton_window_input_impl(ptr, rust_vec_len, data_len),
-        35 => wire__crate__api__baton__Baton_window_lift_impl(ptr, rust_vec_len, data_len),
-        36 => wire__crate__api__baton__FileSend_cancel_impl(ptr, rust_vec_len, data_len),
-        38 => wire__crate__api__baton__FileSend_progress_impl(ptr, rust_vec_len, data_len),
-        41 => wire__crate__api__startup__recent_log_impl(ptr, rust_vec_len, data_len),
-        43 => wire__crate__api__baton__web_address_impl(ptr, rust_vec_len, data_len),
+        30 => wire__crate__api__baton__Baton_start_access_impl(ptr, rust_vec_len, data_len),
+        34 => wire__crate__api__baton__Baton_unlock_history_impl(ptr, rust_vec_len, data_len),
+        35 => wire__crate__api__baton__Baton_unlock_status_impl(ptr, rust_vec_len, data_len),
+        36 => wire__crate__api__baton__Baton_unlock_window_impl(ptr, rust_vec_len, data_len),
+        38 => wire__crate__api__baton__Baton_window_abilities_impl(ptr, rust_vec_len, data_len),
+        39 => wire__crate__api__baton__Baton_window_input_impl(ptr, rust_vec_len, data_len),
+        40 => wire__crate__api__baton__Baton_window_lift_impl(ptr, rust_vec_len, data_len),
+        41 => wire__crate__api__baton__FileSend_cancel_impl(ptr, rust_vec_len, data_len),
+        43 => wire__crate__api__baton__FileSend_progress_impl(ptr, rust_vec_len, data_len),
+        46 => wire__crate__api__startup__recent_log_impl(ptr, rust_vec_len, data_len),
+        48 => wire__crate__api__baton__web_address_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -3578,13 +3993,28 @@ impl flutter_rust_bridge::IntoDart for crate::api::model::Event {
                 sound.into_into_dart().into_dart(),
             ]
             .into_dart(),
-            crate::api::model::Event::WindowEnded { id, end } => [
+            crate::api::model::Event::WindowLocked { id, locked } => [
                 14.into_dart(),
+                id.into_into_dart().into_dart(),
+                locked.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
+            crate::api::model::Event::WindowUnlock { id, step } => [
+                15.into_dart(),
+                id.into_into_dart().into_dart(),
+                step.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
+            crate::api::model::Event::UnlockAttempted { entry } => {
+                [16.into_dart(), entry.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::model::Event::WindowEnded { id, end } => [
+                17.into_dart(),
                 id.into_into_dart().into_dart(),
                 end.into_into_dart().into_dart(),
             ]
             .into_dart(),
-            crate::api::model::Event::Resync => [15.into_dart()].into_dart(),
+            crate::api::model::Event::Resync => [18.into_dart()].into_dart(),
             _ => {
                 unimplemented!("");
             }
@@ -4083,6 +4513,119 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::model::TransferResult>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::model::UnlockEntry {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.at.into_into_dart().into_dart(),
+            self.device_id.into_into_dart().into_dart(),
+            self.device_name.into_into_dart().into_dart(),
+            self.result.into_into_dart().into_dart(),
+            self.notify.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::model::UnlockEntry
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::model::UnlockEntry>
+    for crate::api::model::UnlockEntry
+{
+    fn into_into_dart(self) -> crate::api::model::UnlockEntry {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::model::UnlockResult {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Unlocked => 0.into_dart(),
+            Self::NotSetUp => 1.into_dart(),
+            Self::NotLocked => 2.into_dart(),
+            Self::NotPrivate => 3.into_dart(),
+            Self::Busy => 4.into_dart(),
+            Self::Stale => 5.into_dart(),
+            Self::Rejected => 6.into_dart(),
+            Self::TimedOut => 7.into_dart(),
+            Self::Failed => 8.into_dart(),
+            Self::Other => 9.into_dart(),
+            Self::Declined => 10.into_dart(),
+            Self::KeyLost => 11.into_dart(),
+            Self::GaveUp => 12.into_dart(),
+            Self::NoQuestion => 13.into_dart(),
+            Self::NoResult => 14.into_dart(),
+            Self::SessionEnded => 15.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::model::UnlockResult
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::model::UnlockResult>
+    for crate::api::model::UnlockResult
+{
+    fn into_into_dart(self) -> crate::api::model::UnlockResult {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::model::UnlockSetUp {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::api::model::UnlockSetUp::Done => [0.into_dart()].into_dart(),
+            crate::api::model::UnlockSetUp::WrongPassword => [1.into_dart()].into_dart(),
+            crate::api::model::UnlockSetUp::NotDone { message } => {
+                [2.into_dart(), message.into_into_dart().into_dart()].into_dart()
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::model::UnlockSetUp
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::model::UnlockSetUp>
+    for crate::api::model::UnlockSetUp
+{
+    fn into_into_dart(self) -> crate::api::model::UnlockSetUp {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::model::UnlockStatus {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::api::model::UnlockStatus::Off => [0.into_dart()].into_dart(),
+            crate::api::model::UnlockStatus::On { since } => {
+                [1.into_dart(), since.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::model::UnlockStatus::Ended { since } => {
+                [2.into_dart(), since.into_into_dart().into_dart()].into_dart()
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::model::UnlockStatus
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::model::UnlockStatus>
+    for crate::api::model::UnlockStatus
+{
+    fn into_into_dart(self) -> crate::api::model::UnlockStatus {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::model::WindowAbilities {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -4090,6 +4633,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::model::WindowAbilities {
             self.can_share.into_into_dart().into_dart(),
             self.can_control.into_into_dart().into_dart(),
             self.can_give_screen.into_into_dart().into_dart(),
+            self.can_be_unlocked.into_into_dart().into_dart(),
+            self.can_unlock.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -4355,6 +4900,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::model::WindowSession {
             self.private.into_into_dart().into_dart(),
             self.sound.into_into_dart().into_dart(),
             self.leave.into_into_dart().into_dart(),
+            self.unlock.into_into_dart().into_dart(),
             self.screen.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -4423,6 +4969,32 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::model::WindowSound>
     for crate::api::model::WindowSound
 {
     fn into_into_dart(self) -> crate::api::model::WindowSound {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::model::WindowUnlock {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::api::model::WindowUnlock::Asking => [0.into_dart()].into_dart(),
+            crate::api::model::WindowUnlock::Typing => [1.into_dart()].into_dart(),
+            crate::api::model::WindowUnlock::Ended { result } => {
+                [2.into_dart(), result.into_into_dart().into_dart()].into_dart()
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::model::WindowUnlock
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::model::WindowUnlock>
+    for crate::api::model::WindowUnlock
+{
+    fn into_into_dart(self) -> crate::api::model::WindowUnlock {
         self
     }
 }
@@ -4616,13 +5188,27 @@ impl SseEncode for crate::api::model::Event {
                 <i64>::sse_encode(id, serializer);
                 <crate::api::model::WindowSound>::sse_encode(sound, serializer);
             }
-            crate::api::model::Event::WindowEnded { id, end } => {
+            crate::api::model::Event::WindowLocked { id, locked } => {
                 <i32>::sse_encode(14, serializer);
+                <i64>::sse_encode(id, serializer);
+                <bool>::sse_encode(locked, serializer);
+            }
+            crate::api::model::Event::WindowUnlock { id, step } => {
+                <i32>::sse_encode(15, serializer);
+                <i64>::sse_encode(id, serializer);
+                <crate::api::model::WindowUnlock>::sse_encode(step, serializer);
+            }
+            crate::api::model::Event::UnlockAttempted { entry } => {
+                <i32>::sse_encode(16, serializer);
+                <crate::api::model::UnlockEntry>::sse_encode(entry, serializer);
+            }
+            crate::api::model::Event::WindowEnded { id, end } => {
+                <i32>::sse_encode(17, serializer);
                 <i64>::sse_encode(id, serializer);
                 <crate::api::model::WindowEnd>::sse_encode(end, serializer);
             }
             crate::api::model::Event::Resync => {
-                <i32>::sse_encode(15, serializer);
+                <i32>::sse_encode(18, serializer);
             }
             _ => {
                 unimplemented!("");
@@ -4742,6 +5328,16 @@ impl SseEncode for Vec<crate::api::model::Received> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::api::model::Received>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::model::UnlockEntry> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::model::UnlockEntry>::sse_encode(item, serializer);
         }
     }
 }
@@ -5083,6 +5679,90 @@ impl SseEncode for () {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {}
 }
 
+impl SseEncode for crate::api::model::UnlockEntry {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i64>::sse_encode(self.at, serializer);
+        <String>::sse_encode(self.device_id, serializer);
+        <String>::sse_encode(self.device_name, serializer);
+        <crate::api::model::UnlockResult>::sse_encode(self.result, serializer);
+        <bool>::sse_encode(self.notify, serializer);
+    }
+}
+
+impl SseEncode for crate::api::model::UnlockResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::model::UnlockResult::Unlocked => 0,
+                crate::api::model::UnlockResult::NotSetUp => 1,
+                crate::api::model::UnlockResult::NotLocked => 2,
+                crate::api::model::UnlockResult::NotPrivate => 3,
+                crate::api::model::UnlockResult::Busy => 4,
+                crate::api::model::UnlockResult::Stale => 5,
+                crate::api::model::UnlockResult::Rejected => 6,
+                crate::api::model::UnlockResult::TimedOut => 7,
+                crate::api::model::UnlockResult::Failed => 8,
+                crate::api::model::UnlockResult::Other => 9,
+                crate::api::model::UnlockResult::Declined => 10,
+                crate::api::model::UnlockResult::KeyLost => 11,
+                crate::api::model::UnlockResult::GaveUp => 12,
+                crate::api::model::UnlockResult::NoQuestion => 13,
+                crate::api::model::UnlockResult::NoResult => 14,
+                crate::api::model::UnlockResult::SessionEnded => 15,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::model::UnlockSetUp {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {
+            crate::api::model::UnlockSetUp::Done => {
+                <i32>::sse_encode(0, serializer);
+            }
+            crate::api::model::UnlockSetUp::WrongPassword => {
+                <i32>::sse_encode(1, serializer);
+            }
+            crate::api::model::UnlockSetUp::NotDone { message } => {
+                <i32>::sse_encode(2, serializer);
+                <String>::sse_encode(message, serializer);
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
+impl SseEncode for crate::api::model::UnlockStatus {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {
+            crate::api::model::UnlockStatus::Off => {
+                <i32>::sse_encode(0, serializer);
+            }
+            crate::api::model::UnlockStatus::On { since } => {
+                <i32>::sse_encode(1, serializer);
+                <i64>::sse_encode(since, serializer);
+            }
+            crate::api::model::UnlockStatus::Ended { since } => {
+                <i32>::sse_encode(2, serializer);
+                <i64>::sse_encode(since, serializer);
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
 impl SseEncode for usize {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -5100,6 +5780,8 @@ impl SseEncode for crate::api::model::WindowAbilities {
         <bool>::sse_encode(self.can_share, serializer);
         <bool>::sse_encode(self.can_control, serializer);
         <bool>::sse_encode(self.can_give_screen, serializer);
+        <bool>::sse_encode(self.can_be_unlocked, serializer);
+        <bool>::sse_encode(self.can_unlock, serializer);
     }
 }
 
@@ -5295,6 +5977,7 @@ impl SseEncode for crate::api::model::WindowSession {
         <bool>::sse_encode(self.private, serializer);
         <bool>::sse_encode(self.sound, serializer);
         <bool>::sse_encode(self.leave, serializer);
+        <bool>::sse_encode(self.unlock, serializer);
         <Option<i64>>::sse_encode(self.screen, serializer);
     }
 }
@@ -5340,6 +6023,27 @@ impl SseEncode for crate::api::model::WindowSound {
             },
             serializer,
         );
+    }
+}
+
+impl SseEncode for crate::api::model::WindowUnlock {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {
+            crate::api::model::WindowUnlock::Asking => {
+                <i32>::sse_encode(0, serializer);
+            }
+            crate::api::model::WindowUnlock::Typing => {
+                <i32>::sse_encode(1, serializer);
+            }
+            crate::api::model::WindowUnlock::Ended { result } => {
+                <i32>::sse_encode(2, serializer);
+                <crate::api::model::UnlockResult>::sse_encode(result, serializer);
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
     }
 }
 

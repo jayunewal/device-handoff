@@ -117,6 +117,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   TransferRequest dco_decode_box_autoadd_transfer_request(dynamic raw);
 
   @protected
+  UnlockEntry dco_decode_box_autoadd_unlock_entry(dynamic raw);
+
+  @protected
   WindowEnd dco_decode_box_autoadd_window_end(dynamic raw);
 
   @protected
@@ -133,6 +136,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WindowSession dco_decode_box_autoadd_window_session(dynamic raw);
+
+  @protected
+  WindowUnlock dco_decode_box_autoadd_window_unlock(dynamic raw);
 
   @protected
   Device dco_decode_device(dynamic raw);
@@ -175,6 +181,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<Received> dco_decode_list_received(dynamic raw);
+
+  @protected
+  List<UnlockEntry> dco_decode_list_unlock_entry(dynamic raw);
 
   @protected
   Me dco_decode_me(dynamic raw);
@@ -252,6 +261,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void dco_decode_unit(dynamic raw);
 
   @protected
+  UnlockEntry dco_decode_unlock_entry(dynamic raw);
+
+  @protected
+  UnlockResult dco_decode_unlock_result(dynamic raw);
+
+  @protected
+  UnlockSetUp dco_decode_unlock_set_up(dynamic raw);
+
+  @protected
+  UnlockStatus dco_decode_unlock_status(dynamic raw);
+
+  @protected
   BigInt dco_decode_usize(dynamic raw);
 
   @protected
@@ -289,6 +310,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WindowSound dco_decode_window_sound(dynamic raw);
+
+  @protected
+  WindowUnlock dco_decode_window_unlock(dynamic raw);
 
   @protected
   AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer);
@@ -382,6 +406,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  UnlockEntry sse_decode_box_autoadd_unlock_entry(SseDeserializer deserializer);
+
+  @protected
   WindowEnd sse_decode_box_autoadd_window_end(SseDeserializer deserializer);
 
   @protected
@@ -404,6 +431,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WindowSession sse_decode_box_autoadd_window_session(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  WindowUnlock sse_decode_box_autoadd_window_unlock(
     SseDeserializer deserializer,
   );
 
@@ -448,6 +480,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<Received> sse_decode_list_received(SseDeserializer deserializer);
+
+  @protected
+  List<UnlockEntry> sse_decode_list_unlock_entry(SseDeserializer deserializer);
 
   @protected
   Me sse_decode_me(SseDeserializer deserializer);
@@ -525,6 +560,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_decode_unit(SseDeserializer deserializer);
 
   @protected
+  UnlockEntry sse_decode_unlock_entry(SseDeserializer deserializer);
+
+  @protected
+  UnlockResult sse_decode_unlock_result(SseDeserializer deserializer);
+
+  @protected
+  UnlockSetUp sse_decode_unlock_set_up(SseDeserializer deserializer);
+
+  @protected
+  UnlockStatus sse_decode_unlock_status(SseDeserializer deserializer);
+
+  @protected
   BigInt sse_decode_usize(SseDeserializer deserializer);
 
   @protected
@@ -564,6 +611,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WindowSound sse_decode_window_sound(SseDeserializer deserializer);
+
+  @protected
+  WindowUnlock sse_decode_window_unlock(SseDeserializer deserializer);
 
   @protected
   void sse_encode_AnyhowException(
@@ -680,6 +730,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_unlock_entry(
+    UnlockEntry self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_window_end(
     WindowEnd self,
     SseSerializer serializer,
@@ -712,6 +768,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_window_session(
     WindowSession self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_window_unlock(
+    WindowUnlock self,
     SseSerializer serializer,
   );
 
@@ -762,6 +824,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_list_received(List<Received> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_unlock_entry(
+    List<UnlockEntry> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_me(Me self, SseSerializer serializer);
@@ -851,6 +919,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_unit(void self, SseSerializer serializer);
 
   @protected
+  void sse_encode_unlock_entry(UnlockEntry self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_unlock_result(UnlockResult self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_unlock_set_up(UnlockSetUp self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_unlock_status(UnlockStatus self, SseSerializer serializer);
+
+  @protected
   void sse_encode_usize(BigInt self, SseSerializer serializer);
 
   @protected
@@ -897,6 +977,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_window_sound(WindowSound self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_window_unlock(WindowUnlock self, SseSerializer serializer);
 }
 
 // Section: wire_class

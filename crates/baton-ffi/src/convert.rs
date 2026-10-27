@@ -13,9 +13,10 @@ use crate::api::{
     model::{
         Device, Event, FileProgress, FilesSent, Me, Network, Offer, OfferOutcome, PairingRequest,
         Platform, PreviewName, Reach, Received, ReceivedItem, Receiving, Route, ScreenStarted,
-        SendStage, StartAccess, TransferEnd, TransferRequest, TransferResult, WindowAbilities,
-        WindowButton, WindowEnd, WindowInput, WindowModifiers, WindowNoticeReason, WindowPointer,
-        WindowRequest, WindowRole, WindowSession, WindowShared, WindowSound,
+        SendStage, StartAccess, TransferEnd, TransferRequest, TransferResult, UnlockEntry,
+        UnlockResult, UnlockSetUp, UnlockStatus, WindowAbilities, WindowButton, WindowEnd,
+        WindowInput, WindowModifiers, WindowNoticeReason, WindowPointer, WindowRequest, WindowRole,
+        WindowSession, WindowShared, WindowSound, WindowUnlock,
     },
 };
 
@@ -213,15 +214,16 @@ impl From<app::WindowAbilities> for WindowAbilities {
             can_share,
             can_control,
             can_give_screen,
-            // What a device can do about a locked screen is not carried over to Dart yet.
-            can_be_unlocked: _,
-            can_unlock: _,
+            can_be_unlocked,
+            can_unlock,
         } = abilities;
         Self {
             can_show,
             can_share,
             can_control,
             can_give_screen,
+            can_be_unlocked,
+            can_unlock,
         }
     }
 }
@@ -360,9 +362,8 @@ impl From<app::WindowSession> for WindowSession {
             private,
             sound,
             leave,
+            unlock,
             screen,
-            // Nor whether the person here can unlock the screen.
-            unlock: _,
         } = session;
         Self {
             id: signed(id),
@@ -378,6 +379,7 @@ impl From<app::WindowSession> for WindowSession {
             private,
             sound,
             leave,
+            unlock,
             screen,
         }
     }
@@ -394,6 +396,84 @@ impl From<app::WindowSound> for WindowSound {
             app::WindowSound::Other => Self::Other,
             app::WindowSound::CannotPlay => Self::CannotPlay,
             app::WindowSound::NotAllowed => Self::NotAllowed,
+        }
+    }
+}
+
+impl From<app::UnlockResult> for UnlockResult {
+    fn from(result: app::UnlockResult) -> Self {
+        match result {
+            app::UnlockResult::Unlocked => Self::Unlocked,
+            app::UnlockResult::NotSetUp => Self::NotSetUp,
+            app::UnlockResult::NotLocked => Self::NotLocked,
+            app::UnlockResult::NotPrivate => Self::NotPrivate,
+            app::UnlockResult::Busy => Self::Busy,
+            app::UnlockResult::Stale => Self::Stale,
+            app::UnlockResult::Rejected => Self::Rejected,
+            app::UnlockResult::TimedOut => Self::TimedOut,
+            app::UnlockResult::Failed => Self::Failed,
+            app::UnlockResult::Other => Self::Other,
+            app::UnlockResult::Declined => Self::Declined,
+            app::UnlockResult::KeyLost => Self::KeyLost,
+            app::UnlockResult::GaveUp => Self::GaveUp,
+            app::UnlockResult::NoQuestion => Self::NoQuestion,
+            app::UnlockResult::NoResult => Self::NoResult,
+            app::UnlockResult::SessionEnded => Self::SessionEnded,
+        }
+    }
+}
+
+impl From<app::WindowUnlock> for WindowUnlock {
+    fn from(step: app::WindowUnlock) -> Self {
+        match step {
+            app::WindowUnlock::Asking => Self::Asking,
+            app::WindowUnlock::Typing => Self::Typing,
+            app::WindowUnlock::Ended(result) => Self::Ended {
+                result: result.into(),
+            },
+        }
+    }
+}
+
+impl From<app::UnlockStatus> for UnlockStatus {
+    fn from(status: app::UnlockStatus) -> Self {
+        match status {
+            app::UnlockStatus::Off => Self::Off,
+            app::UnlockStatus::On { since } => Self::On {
+                since: signed(since),
+            },
+            app::UnlockStatus::Ended { since } => Self::Ended {
+                since: signed(since),
+            },
+        }
+    }
+}
+
+impl From<app::UnlockSetUp> for UnlockSetUp {
+    fn from(set_up: app::UnlockSetUp) -> Self {
+        match set_up {
+            app::UnlockSetUp::Done => Self::Done,
+            app::UnlockSetUp::WrongPassword => Self::WrongPassword,
+            app::UnlockSetUp::NotDone(message) => Self::NotDone { message },
+        }
+    }
+}
+
+impl From<app::UnlockEntry> for UnlockEntry {
+    fn from(entry: app::UnlockEntry) -> Self {
+        let app::UnlockEntry {
+            at,
+            device_id,
+            device_name,
+            result,
+        } = entry;
+        Self {
+            at: signed(at),
+            device_id,
+            device_name,
+            // The rule is the app's, so that a screen does not hold a copy of it.
+            notify: result.notifies(),
+            result: result.into(),
         }
     }
 }
@@ -629,16 +709,22 @@ impl From<app::Event> for Event {
                 id: signed(id),
                 sound: sound.into(),
             },
+            app::Event::WindowLocked { id, locked } => Self::WindowLocked {
+                id: signed(id),
+                locked,
+            },
+            app::Event::WindowUnlock { id, step } => Self::WindowUnlock {
+                id: signed(id),
+                step: step.into(),
+            },
+            app::Event::UnlockAttempted(entry) => Self::UnlockAttempted {
+                entry: entry.into(),
+            },
             app::Event::WindowEnded { id, end } => Self::WindowEnded {
                 id: signed(id),
                 end: end.into(),
             },
-            // Dart does not take what happens to a locked screen yet. A reread is what the
-            // missed events of those are made good by, as `app::Event::Resync` says.
-            app::Event::WindowLocked { .. }
-            | app::Event::WindowUnlock { .. }
-            | app::Event::UnlockAttempted(_)
-            | app::Event::Resync => Self::Resync,
+            app::Event::Resync => Self::Resync,
         }
     }
 }
@@ -719,6 +805,7 @@ mod tests {
         assert!(converted.private);
         assert!(converted.sound);
         assert!(converted.leave);
+        assert!(converted.unlock);
         assert_eq!(converted.screen, Some(7));
         let sharing = WindowSession::from(app::WindowSession {
             role: app::WindowRole::Sharing,
@@ -731,7 +818,12 @@ mod tests {
             leave: false,
             ..session()
         });
-        assert!(!stays.leave && stays.private && stays.sound);
+        assert!(!stays.leave && stays.private && stays.sound && stays.unlock);
+        let locked_out = WindowSession::from(app::WindowSession {
+            unlock: false,
+            ..session()
+        });
+        assert!(!locked_out.unlock && locked_out.leave && locked_out.private && locked_out.sound);
         let display = WindowSession::from(app::WindowSession {
             display: true,
             ..session()
@@ -832,26 +924,179 @@ mod tests {
         }
     }
 
+    // Every result of an attempt, with what Dart sees. A result added to `baton_app` stops this
+    // crate from compiling at the conversion, and the list below is where its mate is named.
+    const RESULTS: [(app::UnlockResult, UnlockResult); 16] = [
+        (app::UnlockResult::Unlocked, UnlockResult::Unlocked),
+        (app::UnlockResult::NotSetUp, UnlockResult::NotSetUp),
+        (app::UnlockResult::NotLocked, UnlockResult::NotLocked),
+        (app::UnlockResult::NotPrivate, UnlockResult::NotPrivate),
+        (app::UnlockResult::Busy, UnlockResult::Busy),
+        (app::UnlockResult::Stale, UnlockResult::Stale),
+        (app::UnlockResult::Rejected, UnlockResult::Rejected),
+        (app::UnlockResult::TimedOut, UnlockResult::TimedOut),
+        (app::UnlockResult::Failed, UnlockResult::Failed),
+        (app::UnlockResult::Other, UnlockResult::Other),
+        (app::UnlockResult::Declined, UnlockResult::Declined),
+        (app::UnlockResult::KeyLost, UnlockResult::KeyLost),
+        (app::UnlockResult::GaveUp, UnlockResult::GaveUp),
+        (app::UnlockResult::NoQuestion, UnlockResult::NoQuestion),
+        (app::UnlockResult::NoResult, UnlockResult::NoResult),
+        (app::UnlockResult::SessionEnded, UnlockResult::SessionEnded),
+    ];
+
     #[test]
-    fn what_happens_to_a_locked_screen_is_told_to_dart_as_a_reason_to_read_again() {
-        for event in [
-            app::Event::WindowLocked {
-                id: 4,
-                locked: true,
-            },
-            app::Event::WindowUnlock {
-                id: 4,
-                step: app::WindowUnlock::Asking,
-            },
-            app::Event::UnlockAttempted(app::UnlockEntry {
+    fn each_result_of_an_unlock_is_carried_over_as_itself() {
+        for (result, shown) in RESULTS {
+            assert_eq!(UnlockResult::from(result), shown, "{result:?}");
+        }
+        // No two of them are the same one: a person is told something different for each.
+        for (index, (_, shown)) in RESULTS.iter().enumerate() {
+            for (_, other) in &RESULTS[index + 1..] {
+                assert_ne!(shown, other);
+            }
+        }
+    }
+
+    #[test]
+    fn a_screen_that_locks_and_unlocks_is_told_to_dart_with_its_number() {
+        for locked in [true, false] {
+            assert_eq!(
+                Event::from(app::Event::WindowLocked { id: 4, locked }),
+                Event::WindowLocked { id: 4, locked }
+            );
+        }
+        assert!(matches!(
+            Event::from(app::Event::WindowLocked {
+                id: u64::MAX,
+                locked: true
+            }),
+            Event::WindowLocked {
+                id: i64::MAX,
+                locked: true
+            }
+        ));
+    }
+
+    #[test]
+    fn each_step_of_an_unlock_is_told_to_dart_with_its_number() {
+        let steps = [
+            (app::WindowUnlock::Asking, WindowUnlock::Asking),
+            (app::WindowUnlock::Typing, WindowUnlock::Typing),
+        ];
+        for (step, shown) in steps {
+            assert_eq!(
+                Event::from(app::Event::WindowUnlock { id: 4, step }),
+                Event::WindowUnlock { id: 4, step: shown }
+            );
+        }
+        for (result, shown) in RESULTS {
+            assert_eq!(
+                Event::from(app::Event::WindowUnlock {
+                    id: 4,
+                    step: app::WindowUnlock::Ended(result),
+                }),
+                Event::WindowUnlock {
+                    id: 4,
+                    step: WindowUnlock::Ended { result: shown },
+                },
+                "{result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_attempt_to_unlock_this_device_says_whether_to_tell_the_person() {
+        for (result, shown) in RESULTS {
+            let entry = app::UnlockEntry {
                 at: 1_700_000_000,
                 device_id: "ab".repeat(32),
                 device_name: "Pocket Phone".to_owned(),
-                result: app::UnlockResult::Unlocked,
-            }),
-        ] {
-            assert_eq!(Event::from(event), Event::Resync);
+                result,
+            };
+            let told = Event::from(app::Event::UnlockAttempted(entry.clone()));
+            let Event::UnlockAttempted { entry: seen } = told else {
+                panic!("{told:?}");
+            };
+            assert_eq!(seen.at, 1_700_000_000);
+            assert_eq!(seen.device_id, "ab".repeat(32));
+            assert_eq!(seen.device_name, "Pocket Phone");
+            assert_eq!(seen.result, shown);
+            // The rule is the app's, and the history says the same for the same attempt.
+            assert_eq!(seen.notify, result.notifies(), "{result:?}");
+            assert_eq!(UnlockEntry::from(entry), seen);
         }
+        // The ones a person is told of, so that a change of the rule is seen here too.
+        let told: Vec<_> = RESULTS
+            .iter()
+            .filter(|(result, _)| result.notifies())
+            .map(|(_, shown)| *shown)
+            .collect();
+        assert_eq!(
+            told,
+            [
+                UnlockResult::Unlocked,
+                UnlockResult::Stale,
+                UnlockResult::Rejected,
+                UnlockResult::TimedOut,
+                UnlockResult::Failed,
+                UnlockResult::Other,
+                UnlockResult::KeyLost,
+                UnlockResult::GaveUp,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_time_that_is_too_large_for_dart_is_the_largest_it_has() {
+        let entry = UnlockEntry::from(app::UnlockEntry {
+            at: u64::MAX,
+            device_id: "ab".repeat(32),
+            device_name: "Pocket Phone".to_owned(),
+            result: app::UnlockResult::Unlocked,
+        });
+        assert_eq!(entry.at, i64::MAX);
+        assert_eq!(
+            UnlockStatus::from(app::UnlockStatus::On { since: u64::MAX }),
+            UnlockStatus::On { since: i64::MAX }
+        );
+    }
+
+    #[test]
+    fn where_the_unlock_of_a_device_stands_is_carried_over() {
+        assert_eq!(
+            UnlockStatus::from(app::UnlockStatus::Off),
+            UnlockStatus::Off
+        );
+        assert_eq!(
+            UnlockStatus::from(app::UnlockStatus::On {
+                since: 1_700_000_000
+            }),
+            UnlockStatus::On {
+                since: 1_700_000_000
+            }
+        );
+        assert_eq!(
+            UnlockStatus::from(app::UnlockStatus::Ended { since: 5 }),
+            UnlockStatus::Ended { since: 5 }
+        );
+    }
+
+    #[test]
+    fn what_came_of_setting_the_unlock_up_keeps_its_sentence() {
+        assert_eq!(UnlockSetUp::from(app::UnlockSetUp::Done), UnlockSetUp::Done);
+        assert_eq!(
+            UnlockSetUp::from(app::UnlockSetUp::WrongPassword),
+            UnlockSetUp::WrongPassword
+        );
+        assert_eq!(
+            UnlockSetUp::from(app::UnlockSetUp::NotDone(
+                "Pocket Phone has no face to ask for.".to_owned()
+            )),
+            UnlockSetUp::NotDone {
+                message: "Pocket Phone has no face to ask for.".to_owned()
+            }
+        );
     }
 
     #[test]
@@ -887,9 +1132,11 @@ mod tests {
                 converted.can_show,
                 converted.can_share,
                 converted.can_control,
-                converted.can_give_screen
+                converted.can_give_screen,
+                converted.can_be_unlocked,
+                converted.can_unlock
             ),
-            (true, false, true, false)
+            (true, false, true, false, true, false)
         );
         let converted = WindowAbilities::from(app::WindowAbilities {
             can_show: false,
@@ -904,9 +1151,11 @@ mod tests {
                 converted.can_show,
                 converted.can_share,
                 converted.can_control,
-                converted.can_give_screen
+                converted.can_give_screen,
+                converted.can_be_unlocked,
+                converted.can_unlock
             ),
-            (false, true, false, true)
+            (false, true, false, true, false, true)
         );
     }
 

@@ -12,6 +12,7 @@ import '../window_control.dart';
 import '../window_sound.dart';
 import '../windows_controller.dart';
 import 'lock_or_leave_dialog.dart';
+import 'unlock_card.dart';
 import 'windows_panel.dart';
 
 /// A window of another device, drawn live. The picture comes from the platform: the session gives
@@ -32,6 +33,11 @@ import 'windows_panel.dart';
 /// device locks itself when the session ends. If it can also be left as it is, leaving the screen
 /// asks "Lock" or "Leave it" instead of the usual question ([endAskingToLock]); only that answer
 /// leaves it unlocked.
+///
+/// A screen that the other device says is locked is covered with that, and, where the person at that
+/// device set it up for this one, with an Unlock button: this device asks for Face ID or Touch ID,
+/// and the other device types its own password ([LockedCard]). The question at the end of the
+/// session is not asked for a device that is locked ([asksToLock]).
 ///
 /// A whole screen whose device can send its sound has a speaker in the bar, which turns the sound
 /// on and off and shows how it stands. When the other device says that it sends none, a line over
@@ -158,6 +164,20 @@ class _WindowScreenState extends State<WindowScreen> {
     }
   }
 
+  /// Asks the device that shares the screen to unlock it. Baton may not take the request, and the
+  /// person is told so: the screen is over, or an attempt is going.
+  void _unlock() {
+    if (widget.controller.unlock(widget.session)) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Baton could not ask ${visibleText(widget.session.deviceName)} to '
+          'unlock. Try again.',
+        ),
+      ),
+    );
+  }
+
   /// Opens the settings for the session, over the picture: the touches of the person then go to
   /// the switches and not to the other device.
   Future<void> _showSettings() => showModalBottomSheet<void>(
@@ -174,7 +194,7 @@ class _WindowScreenState extends State<WindowScreen> {
   /// screen whose device can be left as it is asks whether to lock the device instead, and that
   /// question is the one that ends the session.
   Future<void> _confirmStop() async {
-    if (widget.session.leave) {
+    if (asksToLock(widget.controller, widget.session)) {
       final ended = await endAskingToLock(
         context,
         widget.controller,
@@ -336,6 +356,14 @@ class _WindowScreenState extends State<WindowScreen> {
                                   control: _control,
                                   pictureKey: _picture,
                                 ),
+                                if (widget.controller.lockedOf(session))
+                                  Positioned.fill(
+                                    child: LockedCard(
+                                      controller: widget.controller,
+                                      session: session,
+                                      onUnlock: _unlock,
+                                    ),
+                                  ),
                                 if (_control.on)
                                   Positioned(
                                     left: 0,

@@ -72,7 +72,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 1694714639;
+  int get rustContentHash => 350337545;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -194,6 +194,12 @@ abstract class RustLibApi extends BaseApi {
     required StartAccess access,
   });
 
+  Future<UnlockSetUp> crateApiBatonBatonSetUpUnlock({
+    required Baton that,
+    required String id,
+    required String password,
+  });
+
   Future<WindowShared> crateApiBatonBatonShareWindow({
     required Baton that,
     required String id,
@@ -219,6 +225,23 @@ abstract class RustLibApi extends BaseApi {
   });
 
   Future<void> crateApiBatonBatonStop({required Baton that});
+
+  Future<bool> crateApiBatonBatonTurnOffUnlock({
+    required Baton that,
+    required String id,
+  });
+
+  List<UnlockEntry> crateApiBatonBatonUnlockHistory({required Baton that});
+
+  UnlockStatus crateApiBatonBatonUnlockStatus({
+    required Baton that,
+    required String id,
+  });
+
+  bool crateApiBatonBatonUnlockWindow({
+    required Baton that,
+    required PlatformInt64 session,
+  });
 
   Future<void> crateApiBatonBatonUnpair({
     required Baton that,
@@ -1169,6 +1192,46 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<UnlockSetUp> crateApiBatonBatonSetUpUnlock({
+    required Baton that,
+    required String id,
+    required String password,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBaton(
+            that,
+            serializer,
+          );
+          sse_encode_String(id, serializer);
+          sse_encode_String(password, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 27,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unlock_set_up,
+          decodeErrorData: sse_decode_baton_error,
+        ),
+        constMeta: kCrateApiBatonBatonSetUpUnlockConstMeta,
+        argValues: [that, id, password],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiBatonBatonSetUpUnlockConstMeta =>
+      const TaskConstMeta(
+        debugName: "Baton_set_up_unlock",
+        argNames: ["that", "id", "password"],
+      );
+
+  @override
   Future<WindowShared> crateApiBatonBatonShareWindow({
     required Baton that,
     required String id,
@@ -1187,7 +1250,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 27,
+            funcId: 28,
             port: port_,
           );
         },
@@ -1226,7 +1289,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 28,
+            funcId: 29,
             port: port_,
           );
         },
@@ -1261,7 +1324,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             serializer,
           );
           sse_encode_String(id, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 29)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 30)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_start_access,
@@ -1299,7 +1362,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 30,
+            funcId: 31,
             port: port_,
           );
         },
@@ -1333,7 +1396,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 31,
+            funcId: 32,
             port: port_,
           );
         },
@@ -1352,6 +1415,139 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "Baton_stop", argNames: ["that"]);
 
   @override
+  Future<bool> crateApiBatonBatonTurnOffUnlock({
+    required Baton that,
+    required String id,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBaton(
+            that,
+            serializer,
+          );
+          sse_encode_String(id, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 33,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: sse_decode_baton_error,
+        ),
+        constMeta: kCrateApiBatonBatonTurnOffUnlockConstMeta,
+        argValues: [that, id],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiBatonBatonTurnOffUnlockConstMeta =>
+      const TaskConstMeta(
+        debugName: "Baton_turn_off_unlock",
+        argNames: ["that", "id"],
+      );
+
+  @override
+  List<UnlockEntry> crateApiBatonBatonUnlockHistory({required Baton that}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBaton(
+            that,
+            serializer,
+          );
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 34)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_unlock_entry,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiBatonBatonUnlockHistoryConstMeta,
+        argValues: [that],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiBatonBatonUnlockHistoryConstMeta =>
+      const TaskConstMeta(
+        debugName: "Baton_unlock_history",
+        argNames: ["that"],
+      );
+
+  @override
+  UnlockStatus crateApiBatonBatonUnlockStatus({
+    required Baton that,
+    required String id,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBaton(
+            that,
+            serializer,
+          );
+          sse_encode_String(id, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 35)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unlock_status,
+          decodeErrorData: sse_decode_baton_error,
+        ),
+        constMeta: kCrateApiBatonBatonUnlockStatusConstMeta,
+        argValues: [that, id],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiBatonBatonUnlockStatusConstMeta =>
+      const TaskConstMeta(
+        debugName: "Baton_unlock_status",
+        argNames: ["that", "id"],
+      );
+
+  @override
+  bool crateApiBatonBatonUnlockWindow({
+    required Baton that,
+    required PlatformInt64 session,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBaton(
+            that,
+            serializer,
+          );
+          sse_encode_i_64(session, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 36)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiBatonBatonUnlockWindowConstMeta,
+        argValues: [that, session],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiBatonBatonUnlockWindowConstMeta =>
+      const TaskConstMeta(
+        debugName: "Baton_unlock_window",
+        argNames: ["that", "session"],
+      );
+
+  @override
   Future<void> crateApiBatonBatonUnpair({
     required Baton that,
     required String id,
@@ -1368,7 +1564,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 32,
+            funcId: 37,
             port: port_,
           );
         },
@@ -1396,7 +1592,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 33)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 38)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_window_abilities,
@@ -1431,7 +1627,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
           sse_encode_i_64(session, serializer);
           sse_encode_box_autoadd_window_input(input, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 34)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 39)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -1468,7 +1664,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sse_encode_i_64(session, serializer);
           sse_encode_bool(screen, serializer);
           sse_encode_bool(input, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 35)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 40)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_bool,
@@ -1497,7 +1693,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 36)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 41)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_unit,
@@ -1526,7 +1722,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 37,
+            funcId: 42,
             port: port_,
           );
         },
@@ -1554,7 +1750,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 38)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 43)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_file_progress,
@@ -1580,7 +1776,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 39,
+            funcId: 44,
             port: port_,
           );
         },
@@ -1607,7 +1803,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 40,
+            funcId: 45,
             port: port_,
           );
         },
@@ -1631,7 +1827,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 41)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 46)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_list_String,
@@ -1661,7 +1857,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 42,
+            funcId: 47,
             port: port_,
           );
         },
@@ -1688,7 +1884,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(url, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 43)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 48)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_opt_String,
@@ -1713,7 +1909,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 44,
+            funcId: 49,
             port: port_,
           );
         },
@@ -1900,6 +2096,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  UnlockEntry dco_decode_box_autoadd_unlock_entry(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_unlock_entry(raw);
+  }
+
+  @protected
   WindowEnd dco_decode_box_autoadd_window_end(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_window_end(raw);
@@ -1933,6 +2135,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   WindowSession dco_decode_box_autoadd_window_session(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_window_session(raw);
+  }
+
+  @protected
+  WindowUnlock dco_decode_box_autoadd_window_unlock(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_window_unlock(raw);
   }
 
   @protected
@@ -2018,11 +2226,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           sound: dco_decode_window_sound(raw[2]),
         );
       case 14:
+        return Event_WindowLocked(
+          id: dco_decode_i_64(raw[1]),
+          locked: dco_decode_bool(raw[2]),
+        );
+      case 15:
+        return Event_WindowUnlock(
+          id: dco_decode_i_64(raw[1]),
+          step: dco_decode_box_autoadd_window_unlock(raw[2]),
+        );
+      case 16:
+        return Event_UnlockAttempted(
+          entry: dco_decode_box_autoadd_unlock_entry(raw[1]),
+        );
+      case 17:
         return Event_WindowEnded(
           id: dco_decode_i_64(raw[1]),
           end: dco_decode_box_autoadd_window_end(raw[2]),
         );
-      case 15:
+      case 18:
         return Event_Resync();
       default:
         throw Exception("unreachable");
@@ -2123,6 +2345,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   List<Received> dco_decode_list_received(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_received).toList();
+  }
+
+  @protected
+  List<UnlockEntry> dco_decode_list_unlock_entry(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_unlock_entry).toList();
   }
 
   @protected
@@ -2406,6 +2634,57 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  UnlockEntry dco_decode_unlock_entry(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    return UnlockEntry(
+      at: dco_decode_i_64(arr[0]),
+      deviceId: dco_decode_String(arr[1]),
+      deviceName: dco_decode_String(arr[2]),
+      result: dco_decode_unlock_result(arr[3]),
+      notify: dco_decode_bool(arr[4]),
+    );
+  }
+
+  @protected
+  UnlockResult dco_decode_unlock_result(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return UnlockResult.values[raw as int];
+  }
+
+  @protected
+  UnlockSetUp dco_decode_unlock_set_up(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    switch (raw[0]) {
+      case 0:
+        return UnlockSetUp_Done();
+      case 1:
+        return UnlockSetUp_WrongPassword();
+      case 2:
+        return UnlockSetUp_NotDone(message: dco_decode_String(raw[1]));
+      default:
+        throw Exception("unreachable");
+    }
+  }
+
+  @protected
+  UnlockStatus dco_decode_unlock_status(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    switch (raw[0]) {
+      case 0:
+        return UnlockStatus_Off();
+      case 1:
+        return UnlockStatus_On(since: dco_decode_i_64(raw[1]));
+      case 2:
+        return UnlockStatus_Ended(since: dco_decode_i_64(raw[1]));
+      default:
+        throw Exception("unreachable");
+    }
+  }
+
+  @protected
   BigInt dco_decode_usize(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dcoDecodeU64(raw);
@@ -2415,13 +2694,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   WindowAbilities dco_decode_window_abilities(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 4)
-      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
     return WindowAbilities(
       canShow: dco_decode_bool(arr[0]),
       canShare: dco_decode_bool(arr[1]),
       canControl: dco_decode_bool(arr[2]),
       canGiveScreen: dco_decode_bool(arr[3]),
+      canBeUnlocked: dco_decode_bool(arr[4]),
+      canUnlock: dco_decode_bool(arr[5]),
     );
   }
 
@@ -2542,8 +2823,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   WindowSession dco_decode_window_session(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 14)
-      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
+    if (arr.length != 15)
+      throw Exception('unexpected arr length: expect 15 but see ${arr.length}');
     return WindowSession(
       id: dco_decode_i_64(arr[0]),
       role: dco_decode_window_role(arr[1]),
@@ -2558,7 +2839,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       private: dco_decode_bool(arr[10]),
       sound: dco_decode_bool(arr[11]),
       leave: dco_decode_bool(arr[12]),
-      screen: dco_decode_opt_box_autoadd_i_64(arr[13]),
+      unlock: dco_decode_bool(arr[13]),
+      screen: dco_decode_opt_box_autoadd_i_64(arr[14]),
     );
   }
 
@@ -2583,6 +2865,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   WindowSound dco_decode_window_sound(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return WindowSound.values[raw as int];
+  }
+
+  @protected
+  WindowUnlock dco_decode_window_unlock(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    switch (raw[0]) {
+      case 0:
+        return WindowUnlock_Asking();
+      case 1:
+        return WindowUnlock_Typing();
+      case 2:
+        return WindowUnlock_Ended(result: dco_decode_unlock_result(raw[1]));
+      default:
+        throw Exception("unreachable");
+    }
   }
 
   @protected
@@ -2764,6 +3061,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  UnlockEntry sse_decode_box_autoadd_unlock_entry(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_unlock_entry(deserializer));
+  }
+
+  @protected
   WindowEnd sse_decode_box_autoadd_window_end(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_window_end(deserializer));
@@ -2807,6 +3112,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_window_session(deserializer));
+  }
+
+  @protected
+  WindowUnlock sse_decode_box_autoadd_window_unlock(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_window_unlock(deserializer));
   }
 
   @protected
@@ -2898,9 +3211,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         return Event_WindowSound(id: var_id, sound: var_sound);
       case 14:
         var var_id = sse_decode_i_64(deserializer);
+        var var_locked = sse_decode_bool(deserializer);
+        return Event_WindowLocked(id: var_id, locked: var_locked);
+      case 15:
+        var var_id = sse_decode_i_64(deserializer);
+        var var_step = sse_decode_box_autoadd_window_unlock(deserializer);
+        return Event_WindowUnlock(id: var_id, step: var_step);
+      case 16:
+        var var_entry = sse_decode_box_autoadd_unlock_entry(deserializer);
+        return Event_UnlockAttempted(entry: var_entry);
+      case 17:
+        var var_id = sse_decode_i_64(deserializer);
         var var_end = sse_decode_box_autoadd_window_end(deserializer);
         return Event_WindowEnded(id: var_id, end: var_end);
-      case 15:
+      case 18:
         return Event_Resync();
       default:
         throw UnimplementedError('');
@@ -3028,6 +3352,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var ans_ = <Received>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_received(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<UnlockEntry> sse_decode_list_unlock_entry(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <UnlockEntry>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_unlock_entry(deserializer));
     }
     return ans_;
   }
@@ -3352,6 +3688,67 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  UnlockEntry sse_decode_unlock_entry(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_at = sse_decode_i_64(deserializer);
+    var var_deviceId = sse_decode_String(deserializer);
+    var var_deviceName = sse_decode_String(deserializer);
+    var var_result = sse_decode_unlock_result(deserializer);
+    var var_notify = sse_decode_bool(deserializer);
+    return UnlockEntry(
+      at: var_at,
+      deviceId: var_deviceId,
+      deviceName: var_deviceName,
+      result: var_result,
+      notify: var_notify,
+    );
+  }
+
+  @protected
+  UnlockResult sse_decode_unlock_result(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return UnlockResult.values[inner];
+  }
+
+  @protected
+  UnlockSetUp sse_decode_unlock_set_up(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var tag_ = sse_decode_i_32(deserializer);
+    switch (tag_) {
+      case 0:
+        return UnlockSetUp_Done();
+      case 1:
+        return UnlockSetUp_WrongPassword();
+      case 2:
+        var var_message = sse_decode_String(deserializer);
+        return UnlockSetUp_NotDone(message: var_message);
+      default:
+        throw UnimplementedError('');
+    }
+  }
+
+  @protected
+  UnlockStatus sse_decode_unlock_status(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var tag_ = sse_decode_i_32(deserializer);
+    switch (tag_) {
+      case 0:
+        return UnlockStatus_Off();
+      case 1:
+        var var_since = sse_decode_i_64(deserializer);
+        return UnlockStatus_On(since: var_since);
+      case 2:
+        var var_since = sse_decode_i_64(deserializer);
+        return UnlockStatus_Ended(since: var_since);
+      default:
+        throw UnimplementedError('');
+    }
+  }
+
+  @protected
   BigInt sse_decode_usize(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return deserializer.buffer.getBigUint64();
@@ -3364,11 +3761,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_canShare = sse_decode_bool(deserializer);
     var var_canControl = sse_decode_bool(deserializer);
     var var_canGiveScreen = sse_decode_bool(deserializer);
+    var var_canBeUnlocked = sse_decode_bool(deserializer);
+    var var_canUnlock = sse_decode_bool(deserializer);
     return WindowAbilities(
       canShow: var_canShow,
       canShare: var_canShare,
       canControl: var_canControl,
       canGiveScreen: var_canGiveScreen,
+      canBeUnlocked: var_canBeUnlocked,
+      canUnlock: var_canUnlock,
     );
   }
 
@@ -3535,6 +3936,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_private = sse_decode_bool(deserializer);
     var var_sound = sse_decode_bool(deserializer);
     var var_leave = sse_decode_bool(deserializer);
+    var var_unlock = sse_decode_bool(deserializer);
     var var_screen = sse_decode_opt_box_autoadd_i_64(deserializer);
     return WindowSession(
       id: var_id,
@@ -3550,6 +3952,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       private: var_private,
       sound: var_sound,
       leave: var_leave,
+      unlock: var_unlock,
       screen: var_screen,
     );
   }
@@ -3578,6 +3981,24 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
     return WindowSound.values[inner];
+  }
+
+  @protected
+  WindowUnlock sse_decode_window_unlock(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var tag_ = sse_decode_i_32(deserializer);
+    switch (tag_) {
+      case 0:
+        return WindowUnlock_Asking();
+      case 1:
+        return WindowUnlock_Typing();
+      case 2:
+        var var_result = sse_decode_unlock_result(deserializer);
+        return WindowUnlock_Ended(result: var_result);
+      default:
+        throw UnimplementedError('');
+    }
   }
 
   @protected
@@ -3796,6 +4217,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_unlock_entry(
+    UnlockEntry self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_unlock_entry(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_window_end(
     WindowEnd self,
     SseSerializer serializer,
@@ -3847,6 +4277,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_window_session(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_window_unlock(
+    WindowUnlock self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_window_unlock(self, serializer);
   }
 
   @protected
@@ -3925,12 +4364,23 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_i_32(13, serializer);
         sse_encode_i_64(id, serializer);
         sse_encode_window_sound(sound, serializer);
-      case Event_WindowEnded(id: final id, end: final end):
+      case Event_WindowLocked(id: final id, locked: final locked):
         sse_encode_i_32(14, serializer);
+        sse_encode_i_64(id, serializer);
+        sse_encode_bool(locked, serializer);
+      case Event_WindowUnlock(id: final id, step: final step):
+        sse_encode_i_32(15, serializer);
+        sse_encode_i_64(id, serializer);
+        sse_encode_box_autoadd_window_unlock(step, serializer);
+      case Event_UnlockAttempted(entry: final entry):
+        sse_encode_i_32(16, serializer);
+        sse_encode_box_autoadd_unlock_entry(entry, serializer);
+      case Event_WindowEnded(id: final id, end: final end):
+        sse_encode_i_32(17, serializer);
         sse_encode_i_64(id, serializer);
         sse_encode_box_autoadd_window_end(end, serializer);
       case Event_Resync():
-        sse_encode_i_32(15, serializer);
+        sse_encode_i_32(18, serializer);
     }
   }
 
@@ -4033,6 +4483,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_received(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_unlock_entry(
+    List<UnlockEntry> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_unlock_entry(item, serializer);
     }
   }
 
@@ -4287,6 +4749,51 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_unlock_entry(UnlockEntry self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_64(self.at, serializer);
+    sse_encode_String(self.deviceId, serializer);
+    sse_encode_String(self.deviceName, serializer);
+    sse_encode_unlock_result(self.result, serializer);
+    sse_encode_bool(self.notify, serializer);
+  }
+
+  @protected
+  void sse_encode_unlock_result(UnlockResult self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_unlock_set_up(UnlockSetUp self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    switch (self) {
+      case UnlockSetUp_Done():
+        sse_encode_i_32(0, serializer);
+      case UnlockSetUp_WrongPassword():
+        sse_encode_i_32(1, serializer);
+      case UnlockSetUp_NotDone(message: final message):
+        sse_encode_i_32(2, serializer);
+        sse_encode_String(message, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_unlock_status(UnlockStatus self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    switch (self) {
+      case UnlockStatus_Off():
+        sse_encode_i_32(0, serializer);
+      case UnlockStatus_On(since: final since):
+        sse_encode_i_32(1, serializer);
+        sse_encode_i_64(since, serializer);
+      case UnlockStatus_Ended(since: final since):
+        sse_encode_i_32(2, serializer);
+        sse_encode_i_64(since, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_usize(BigInt self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putBigUint64(self);
@@ -4302,6 +4809,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.canShare, serializer);
     sse_encode_bool(self.canControl, serializer);
     sse_encode_bool(self.canGiveScreen, serializer);
+    sse_encode_bool(self.canBeUnlocked, serializer);
+    sse_encode_bool(self.canUnlock, serializer);
   }
 
   @protected
@@ -4434,6 +4943,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self.private, serializer);
     sse_encode_bool(self.sound, serializer);
     sse_encode_bool(self.leave, serializer);
+    sse_encode_bool(self.unlock, serializer);
     sse_encode_opt_box_autoadd_i_64(self.screen, serializer);
   }
 
@@ -4456,6 +4966,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_window_sound(WindowSound self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_window_unlock(WindowUnlock self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    switch (self) {
+      case WindowUnlock_Asking():
+        sse_encode_i_32(0, serializer);
+      case WindowUnlock_Typing():
+        sse_encode_i_32(1, serializer);
+      case WindowUnlock_Ended(result: final result):
+        sse_encode_i_32(2, serializer);
+        sse_encode_unlock_result(result, serializer);
+    }
   }
 }
 
@@ -4683,6 +5207,35 @@ class BatonImpl extends RustOpaque implements Baton {
     access: access,
   );
 
+  /// Sets up the unlock of this device for the paired device `id`, so that it can unlock this one
+  /// while it is locked, with the face of the person there. What was set up for it before is
+  /// replaced. `password` is the password of the person who uses this device: the system here
+  /// checks it first (`UnlockSetUp.wrongPassword`, and nothing is asked of the other device), and
+  /// then it is kept in a box that only the other device opens, after the face of its person.
+  ///
+  /// The password cannot be wiped from Dart: the screen should hide it while it is typed, give it
+  /// to this call once, and let go of it at once. The call can last as long as the person at the
+  /// other device takes to answer, when the platform there asks them.
+  ///
+  /// A set-up that stops after the other device made its new key turns the unlock that was set
+  /// up before off, since what was sealed to the old key opens nothing now, and
+  /// `UnlockSetUp.notDone` says so: read `unlockStatus` again after it. A call that fails with
+  /// `ErrorKind.unreachable` may have stopped after that point without knowing it, and then
+  /// leaves what was set up before: it ends at the first tap that finds it stale.
+  ///
+  /// Throws `ErrorKind.notPaired`, `ErrorKind.unreachable`, `ErrorKind.declined` if the other
+  /// device cannot approve an unlock, `ErrorKind.storage` if it could not be kept, and
+  /// `ErrorKind.other` if this device cannot be unlocked from another
+  /// (`windowAbilities().canBeUnlocked`).
+  Future<UnlockSetUp> setUpUnlock({
+    required String id,
+    required String password,
+  }) => RustLib.instance.api.crateApiBatonBatonSetUpUnlock(
+    that: this,
+    id: id,
+    password: password,
+  );
+
   /// Lets the person pick a window or a whole screen of this device, and offers it to the
   /// paired device `id`. The call returns when the person at the other device has answered,
   /// which can take as long as a person takes to decide. `control` lets the other device
@@ -4729,6 +5282,38 @@ class BatonImpl extends RustOpaque implements Baton {
   /// `ErrorKind.stopped`, and the stream from `events` ends.
   Future<void> stop() =>
       RustLib.instance.api.crateApiBatonBatonStop(that: this);
+
+  /// Turns the unlock of the paired device `id` off: the box and the keys are deleted, and the
+  /// device cannot unlock this one until the person sets it up again. Returns whether there was
+  /// one to turn off. Unpairing a device turns its unlock off as well. Throws
+  /// `ErrorKind.notPaired`, and `ErrorKind.storage` if the change could not be kept.
+  Future<bool> turnOffUnlock({required String id}) =>
+      RustLib.instance.api.crateApiBatonBatonTurnOffUnlock(that: this, id: id);
+
+  /// The last attempts to unlock this device, the latest first, up to a hundred: who tried, when
+  /// and how it ended. Each one comes as `Event.unlockAttempted` when it ends. It says nothing of
+  /// the password or of the keys.
+  List<UnlockEntry> unlockHistory() =>
+      RustLib.instance.api.crateApiBatonBatonUnlockHistory(that: this);
+
+  /// How the unlock of the paired device `id` stands at this device: whether the person set it
+  /// up so that the device can unlock this one while it is locked, and whether it ended since.
+  /// Throws `ErrorKind.notPaired`.
+  UnlockStatus unlockStatus({required String id}) =>
+      RustLib.instance.api.crateApiBatonBatonUnlockStatus(that: this, id: id);
+
+  /// Asks the device that shares the screen `session`, which is shown here, to unlock it. It is
+  /// for a screen that is locked (`Event.windowLocked`), in a session whose
+  /// `WindowSession.unlock` is set: the person at the other device set the unlock up for this
+  /// one, and the screen is kept private there. This device then asks for the face of the person,
+  /// and the other device types its password if the face is recognised. `Event.windowUnlock`
+  /// tells how it goes and how it ends, and `Event.windowLocked` tells that the screen is not
+  /// locked any more. Returns whether the request was made, which is not so for a window that is
+  /// not shown here, a session that takes no unlock, one whose attempt is going, and a session
+  /// that is over. A person who declined the face at once and taps again within a moment may
+  /// get a false: the next tap is taken.
+  bool unlockWindow({required PlatformInt64 session}) => RustLib.instance.api
+      .crateApiBatonBatonUnlockWindow(that: this, session: session);
 
   /// Forgets a paired device. It can no longer reach this one until it is paired again.
   Future<void> unpair({required String id}) =>

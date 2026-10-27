@@ -3,12 +3,14 @@
 import 'package:baton/src/backend.dart';
 import 'package:baton/src/control_access.dart';
 import 'package:baton/src/file_chooser.dart';
+import 'package:baton/src/notice_access.dart';
 import 'package:baton/src/screens/home_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'fake_backend.dart';
 import 'fake_control_access.dart';
+import 'fake_notices.dart';
 import 'fake_screen.dart';
 import 'fake_shower.dart';
 
@@ -67,6 +69,7 @@ Future<FakeSession> _show(
   FakeScreen? screen,
   ControlAccessKeeper? controlAccess,
   ScreenAccessKeeper? screenAccess,
+  NoticeKeeper? notices,
 ]) async {
   final session = given ?? _session();
   tester.view
@@ -88,6 +91,7 @@ Future<FakeSession> _show(
             controlAccess ?? FakeControlAccess(ControlAccess.unavailable),
         screenAccess:
             screenAccess ?? FakeScreenAccess(ScreenAccess.unavailable),
+        notices: notices ?? FakeNotices(NoticeAccess.unavailable),
       ),
     ),
   );
@@ -116,6 +120,8 @@ const _windowAbilities = WindowAbilities(
   canShare: true,
   canControl: false,
   canGiveScreen: false,
+  canBeUnlocked: false,
+  canUnlock: false,
 );
 
 /// A phone, which shows the screens of others and shares nothing.
@@ -124,6 +130,8 @@ const _phoneAbilities = WindowAbilities(
   canShare: false,
   canControl: false,
   canGiveScreen: false,
+  canBeUnlocked: false,
+  canUnlock: false,
 );
 
 /// A Mac that gives its screen to a device that was allowed to ask for it.
@@ -132,6 +140,18 @@ const _macAbilities = WindowAbilities(
   canShare: true,
   canControl: true,
   canGiveScreen: true,
+  canBeUnlocked: false,
+  canUnlock: false,
+);
+
+/// A Mac that a paired device can unlock while it is locked.
+const _unlockableMacAbilities = WindowAbilities(
+  canShow: false,
+  canShare: true,
+  canControl: true,
+  canGiveScreen: true,
+  canBeUnlocked: true,
+  canUnlock: false,
 );
 
 const _plan = ReceivedItem.link(
@@ -549,6 +569,117 @@ void main() {
     },
   );
 
+  testWidgets(
+    'a Mac that can be unlocked lets the person set it up for a tablet',
+    (tester) async {
+      final session = _session()..abilities = _unlockableMacAbilities;
+      await _show(
+        tester,
+        session,
+        const SystemFileChooser(),
+        null,
+        null,
+        null,
+        null,
+        FakeNotices(),
+      );
+
+      await tester.tap(find.byTooltip('More about Kitchen iPad'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Let this device unlock this Mac…'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'correct horse');
+      await tester.pump();
+      await tester.tap(find.widgetWithText(FilledButton, 'Set up'));
+      await tester.pumpAndSettle();
+
+      expect(session.unlocksSetUp, [
+        (id: _kitchenIpad.id, password: 'correct horse'),
+      ]);
+      expect(
+        find.text('Kitchen iPad can now unlock this Mac while it is locked.'),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets('a device that cannot be unlocked offers no such choice', (
+    tester,
+  ) async {
+    final session = _session()..abilities = _macAbilities;
+    await _show(tester, session);
+
+    await tester.tap(find.byTooltip('More about Kitchen iPad'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Let this device unlock this Mac…'), findsNothing);
+  });
+
+  testWidgets('a device that unlocks others offers no choice to be unlocked', (
+    tester,
+  ) async {
+    final session = _session()..abilities = _phoneAbilities;
+    await _show(tester, session);
+
+    await tester.tap(find.byTooltip('More about Kitchen iPad'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Let this device unlock this Mac…'), findsNothing);
+  });
+
+  testWidgets(
+    'a notification tells the person that a device unlocked this one',
+    (tester) async {
+      final notices = FakeNotices();
+      final session = _session()..abilities = _unlockableMacAbilities;
+      await _show(
+        tester,
+        session,
+        const SystemFileChooser(),
+        null,
+        null,
+        null,
+        null,
+        notices,
+      );
+
+      session.emit(
+        Event.unlockAttempted(entry: sampleUnlockEntry(device: 'Kitchen iPad')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(notices.posted.map((n) => n.title), [
+        'This device was unlocked from Kitchen iPad',
+      ]);
+    },
+  );
+
+  testWidgets('no notification is shown for an attempt that came to nothing', (
+    tester,
+  ) async {
+    final notices = FakeNotices();
+    final session = _session()..abilities = _unlockableMacAbilities;
+    await _show(
+      tester,
+      session,
+      const SystemFileChooser(),
+      null,
+      null,
+      null,
+      null,
+      notices,
+    );
+
+    session.emit(
+      Event.unlockAttempted(
+        entry: sampleUnlockEntry(result: UnlockResult.declined),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(notices.posted, isEmpty);
+  });
+
   testWidgets('a device that gives no screen offers no such choice', (
     tester,
   ) async {
@@ -571,6 +702,8 @@ void main() {
           canShare: true,
           canControl: true,
           canGiveScreen: false,
+          canBeUnlocked: false,
+          canUnlock: false,
         );
       await _show(tester, session);
 

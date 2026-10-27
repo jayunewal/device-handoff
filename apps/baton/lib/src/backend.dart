@@ -20,13 +20,16 @@ export 'rust/api/model.dart'
         Event_TransferEnded,
         Event_TransferRequestEnded,
         Event_TransferRequested,
+        Event_UnlockAttempted,
         Event_WindowEnded,
+        Event_WindowLocked,
         Event_WindowNotice,
         Event_WindowPicture,
         Event_WindowRequestEnded,
         Event_WindowRequested,
         Event_WindowSound,
         Event_WindowStarted,
+        Event_WindowUnlock,
         FileProgress,
         FilesSent,
         JoinProgress,
@@ -66,6 +69,16 @@ export 'rust/api/model.dart'
         TransferResult,
         TransferResult_Dropped,
         TransferResult_Received,
+        UnlockEntry,
+        UnlockResult,
+        UnlockSetUp,
+        UnlockSetUp_Done,
+        UnlockSetUp_NotDone,
+        UnlockSetUp_WrongPassword,
+        UnlockStatus,
+        UnlockStatus_Ended,
+        UnlockStatus_Off,
+        UnlockStatus_On,
         WindowAbilities,
         WindowButton,
         WindowEnd,
@@ -90,7 +103,11 @@ export 'rust/api/model.dart'
         WindowShared_Declined,
         WindowShared_NothingChosen,
         WindowShared_Started,
-        WindowSound;
+        WindowSound,
+        WindowUnlock,
+        WindowUnlock_Asking,
+        WindowUnlock_Ended,
+        WindowUnlock_Typing;
 
 /// Opens the folder where Baton keeps its files and starts Baton in it.
 abstract interface class Backend {
@@ -298,6 +315,46 @@ abstract interface class Session {
   /// out comes as `Event_WindowSound`. A request to hear that is made again asks the other
   /// device to try again, which a person does after it said that it could not.
   bool hearWindow(int session, {required bool listen});
+
+  /// Asks the device that shares the screen [session], which is shown here, to unlock it. It is
+  /// for a screen that is locked (`Event_WindowLocked`), in a session whose `WindowSession.unlock`
+  /// is set: the person at the other device set the unlock up for this one, and the screen is kept
+  /// private there. This device then asks for the face of the person, and the other device types
+  /// its password if the face is recognised. `Event_WindowUnlock` tells how it goes and how it
+  /// ends, and `Event_WindowLocked` tells that the screen is not locked any more. Returns whether
+  /// the request was made, which is not so for a window that is not shown here, a session that
+  /// takes no unlock, one whose attempt is going, and a session that is over. A person who
+  /// declined the face at once and taps again within a moment may get a `false`: the next tap is
+  /// taken.
+  bool unlockWindow(int session);
+
+  /// How the unlock of the paired device [id] stands at this device: whether the person set it up
+  /// so that the device can unlock this one while it is locked, and whether it ended since. Throws
+  /// a `BatonError` of kind `notPaired`.
+  UnlockStatus unlockStatus(String id);
+
+  /// Sets up the unlock of this device for the paired device [id], so that it can unlock this one
+  /// while it is locked, with the face of the person there. What was set up for it before is
+  /// replaced. [password] is the password of the person who uses this device: the system here
+  /// checks it first (`UnlockSetUp_WrongPassword`, and nothing is asked of the other device), and
+  /// then it is kept in a box that only the other device opens, after the face of its person. The
+  /// call can last as long as the person at the other device takes to answer. A set-up that stops
+  /// after the other device made its new key turns the unlock that was set up before off, and
+  /// `UnlockSetUp_NotDone` says so, so the status is read again after it. Throws a
+  /// `BatonError` of kind `notPaired`, `unreachable`, `declined` if the other device cannot
+  /// approve an unlock, `storage`, or `other` if this device cannot be unlocked from another.
+  Future<UnlockSetUp> setUpUnlock(String id, String password);
+
+  /// Turns the unlock of the paired device [id] off: the box and the keys are deleted, and the
+  /// device cannot unlock this one until the person sets it up again. Returns whether there was
+  /// one to turn off. Throws a `BatonError` of kind `notPaired`, or `storage` if the change could
+  /// not be kept.
+  Future<bool> turnOffUnlock(String id);
+
+  /// The last attempts to unlock this device, the latest first, up to a hundred: who tried, when
+  /// and how it ended. Each one comes as `Event_UnlockAttempted` when it ends. It says nothing of
+  /// the password or of the keys.
+  List<UnlockEntry> unlockHistory();
 
   /// What other devices have sent, newest first.
   Future<List<Received>> inbox();

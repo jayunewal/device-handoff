@@ -1,5 +1,6 @@
 import Cocoa
 import FlutterMacOS
+import UserNotifications
 
 class MainFlutterWindow: NSWindow {
   override func awakeFromNib() {
@@ -13,6 +14,7 @@ class MainFlutterWindow: NSWindow {
     RegisterGeneratedPlugins(registry: flutterViewController)
     answerWhereReceivedFilesGo(messenger: flutterViewController.engine.binaryMessenger)
     showReceivedFilesInFinder(messenger: flutterViewController.engine.binaryMessenger)
+    answerAboutNotifications(messenger: flutterViewController.engine.binaryMessenger)
 
     super.awakeFromNib()
   }
@@ -46,6 +48,98 @@ private func showReceivedFilesInFinder(messenger: FlutterBinaryMessenger) {
     }
   }
 }
+
+/// Shows a notification when a paired device unlocked this Mac, or tried to, and answers what the
+/// system says about showing them. The notification names the device and says nothing of the
+/// password. The names of the channel and of the questions, and the words of the answers, must be
+/// the ones in lib/src/notice_access.dart.
+private func answerAboutNotifications(messenger: FlutterBinaryMessenger) {
+  let center = UNUserNotificationCenter.current()
+  center.delegate = noticeDelegate
+  let channel = FlutterMethodChannel(
+    name: "io.github.jayunewal.baton/notices", binaryMessenger: messenger)
+  channel.setMethodCallHandler { call, result in
+    switch call.method {
+    case "state":
+      center.getNotificationSettings { settings in
+        let answer = noticeAccess(settings.authorizationStatus)
+        DispatchQueue.main.async { result(answer) }
+      }
+    case "request":
+      // The system asks the person once, and says the same thing when asked again.
+      center.requestAuthorization(options: [.alert]) { _, error in
+        if let error = error {
+          NSLog("Baton could not ask to show notifications: \(error)")
+        }
+        center.getNotificationSettings { settings in
+          let answer = noticeAccess(settings.authorizationStatus)
+          DispatchQueue.main.async { result(answer) }
+        }
+      }
+    case "post":
+      guard let arguments = call.arguments as? [String: String],
+        let title = arguments["title"], let body = arguments["body"]
+      else {
+        result(
+          FlutterError(
+            code: "bad_notice", message: "The notice was not a title and a body.", details: nil))
+        return
+      }
+      center.getNotificationSettings { settings in
+        // The system takes a notification from an app that was told no, and shows nothing, so the
+        // app is told that it was not shown.
+        guard noticeAccess(settings.authorizationStatus) == "allowed" else {
+          DispatchQueue.main.async { result(false) }
+          return
+        }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        let request = UNNotificationRequest(
+          identifier: UUID().uuidString, content: content, trigger: nil)
+        center.add(request) { error in
+          if let error = error {
+            NSLog("Baton could not show a notification: \(error)")
+          }
+          DispatchQueue.main.async { result(error == nil) }
+        }
+      }
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+}
+
+/// What the system says about showing notifications, in the words of lib/src/notice_access.dart.
+private func noticeAccess(_ status: UNAuthorizationStatus) -> String {
+  switch status {
+  case .authorized, .provisional:
+    return "allowed"
+  case .notDetermined:
+    return "needed"
+  case .denied:
+    return "denied"
+  default:
+    // A state that this version of the system adds, or one that only the iPhone has.
+    return "unavailable"
+  }
+}
+
+/// Lets a notification show while Baton is the app in front. The system shows none then unless the
+/// app says to, and the person who comes back to the Mac and opens Baton is the one who most needs
+/// to see that it was unlocked.
+private final class NoticeDelegate: NSObject, UNUserNotificationCenterDelegate {
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+    withCompletionHandler completionHandler:
+      @escaping (UNNotificationPresentationOptions) -> Void
+  ) {
+    completionHandler([.banner, .list])
+  }
+}
+
+/// The center keeps its delegate weakly, so this holds it for as long as the app runs.
+private let noticeDelegate = NoticeDelegate()
 
 /// Tells the app where the files that other devices send are put: the Downloads folder of the
 /// person. The names of the channel and of the question must be the ones in

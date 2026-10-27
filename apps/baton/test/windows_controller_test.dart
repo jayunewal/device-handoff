@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import 'package:baton/src/backend.dart';
+import 'package:baton/src/unlock_text.dart';
 import 'package:baton/src/window_sound.dart';
 import 'package:baton/src/windows_controller.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -771,6 +772,303 @@ void main() {
         expect(told, 1);
       },
     );
+  });
+
+  group('a screen that is locked at its device', () {
+    WindowSession unlockable({int id = 1}) => sampleWindowSession(
+      id: id,
+      display: true,
+      control: true,
+      private: true,
+      leave: true,
+      unlock: true,
+    );
+
+    Future<void> say(FakeSession session, Event event) async {
+      session.emit(event);
+      await pumpEventQueue();
+    }
+
+    test('is not locked until its device says so', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = unlockable();
+      await _begin(session, window);
+
+      expect(controller.lockedOf(window), isFalse);
+      expect(controller.unlockOf(window), unlockIdle);
+      expect(controller.unlockedHereOf(window), isFalse);
+    });
+
+    test(
+      'is locked when its device says so, and not when it says no',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        final window = unlockable();
+        await _begin(session, window);
+        var told = 0;
+        controller.addListener(() => told++);
+
+        await say(session, const Event.windowLocked(id: 1, locked: true));
+
+        expect(controller.lockedOf(window), isTrue);
+        expect(told, 1);
+
+        // A word that changes nothing draws nothing.
+        await say(session, const Event.windowLocked(id: 1, locked: true));
+
+        expect(told, 1);
+
+        await say(session, const Event.windowLocked(id: 1, locked: false));
+
+        expect(controller.lockedOf(window), isFalse);
+        expect(told, 2);
+      },
+    );
+
+    test(
+      'is not locked by a word about a window that is not shown here',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        final shared = sampleWindowSession(id: 2, role: WindowRole.sharing);
+        await _begin(session, unlockable());
+        await _begin(session, shared);
+        var told = 0;
+        controller.addListener(() => told++);
+
+        await say(session, const Event.windowLocked(id: 2, locked: true));
+        await say(session, const Event.windowLocked(id: 9, locked: true));
+
+        expect(controller.lockedOf(shared), isFalse);
+        expect(told, 0);
+      },
+    );
+
+    test('is asked to unlock, and the unlock starts', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = unlockable();
+      await _begin(session, window);
+      await say(session, const Event.windowLocked(id: 1, locked: true));
+      var told = 0;
+      controller.addListener(() => told++);
+
+      expect(controller.unlock(window), isTrue);
+
+      expect(session.windowUnlocks, [1]);
+      expect(controller.unlockOf(window), (
+        stage: UnlockStage.starting,
+        result: null,
+      ));
+      expect(told, 1);
+    });
+
+    test(
+      'is not said to be starting when Baton did not take the request',
+      () async {
+        final session = _session()..windowUnlockTaken = false;
+        final controller = await _controller(session);
+        final window = unlockable();
+        await _begin(session, window);
+        var told = 0;
+        controller.addListener(() => told++);
+
+        expect(controller.unlock(window), isFalse);
+
+        expect(session.windowUnlocks, [1]);
+        expect(controller.unlockOf(window), unlockIdle);
+        expect(told, 0);
+      },
+    );
+
+    test('is followed step by step until it is unlocked', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = unlockable();
+      await _begin(session, window);
+      await say(session, const Event.windowLocked(id: 1, locked: true));
+      controller.unlock(window);
+      var told = 0;
+      controller.addListener(() => told++);
+
+      await say(
+        session,
+        const Event.windowUnlock(id: 1, step: WindowUnlock.asking()),
+      );
+
+      expect(controller.unlockOf(window), (
+        stage: UnlockStage.asking,
+        result: null,
+      ));
+
+      await say(
+        session,
+        const Event.windowUnlock(id: 1, step: WindowUnlock.typing()),
+      );
+
+      expect(controller.unlockOf(window), (
+        stage: UnlockStage.typing,
+        result: null,
+      ));
+      expect(controller.unlockedHereOf(window), isFalse);
+
+      await say(
+        session,
+        const Event.windowUnlock(
+          id: 1,
+          step: WindowUnlock.ended(result: UnlockResult.unlocked),
+        ),
+      );
+
+      expect(controller.unlockOf(window), (
+        stage: UnlockStage.ended,
+        result: UnlockResult.unlocked,
+      ));
+      expect(controller.unlockedHereOf(window), isTrue);
+      expect(told, 3);
+
+      // The picture comes back, and the device is not locked any more. It stays a device that
+      // was unlocked from here, for the question at the end.
+      await say(session, const Event.windowLocked(id: 1, locked: false));
+
+      expect(controller.lockedOf(window), isFalse);
+      expect(controller.unlockOf(window), unlockIdle);
+      expect(controller.unlockedHereOf(window), isTrue);
+    });
+
+    test('says the same step once', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = unlockable();
+      await _begin(session, window);
+      var told = 0;
+      controller.addListener(() => told++);
+
+      for (var i = 0; i < 3; i++) {
+        await say(
+          session,
+          const Event.windowUnlock(id: 1, step: WindowUnlock.asking()),
+        );
+      }
+
+      expect(told, 1);
+    });
+
+    test(
+      'keeps how the last try ended, and is not a device unlocked from here',
+      () async {
+        final session = _session();
+        final controller = await _controller(session);
+        final window = unlockable();
+        await _begin(session, window);
+        await say(session, const Event.windowLocked(id: 1, locked: true));
+        controller.unlock(window);
+
+        await say(
+          session,
+          const Event.windowUnlock(
+            id: 1,
+            step: WindowUnlock.ended(result: UnlockResult.declined),
+          ),
+        );
+
+        expect(controller.unlockOf(window), (
+          stage: UnlockStage.ended,
+          result: UnlockResult.declined,
+        ));
+        expect(controller.unlockedHereOf(window), isFalse);
+
+        // The person tries again, and the story starts over.
+        expect(controller.unlock(window), isTrue);
+
+        expect(controller.unlockOf(window), (
+          stage: UnlockStage.starting,
+          result: null,
+        ));
+      },
+    );
+
+    test('starts the story over when the lock changes', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = unlockable();
+      await _begin(session, window);
+      await say(session, const Event.windowLocked(id: 1, locked: true));
+      await say(
+        session,
+        const Event.windowUnlock(
+          id: 1,
+          step: WindowUnlock.ended(result: UnlockResult.failed),
+        ),
+      );
+      expect(controller.unlockOf(window).stage, UnlockStage.ended);
+
+      // Unlocked at the device itself, and locked again later.
+      await say(session, const Event.windowLocked(id: 1, locked: false));
+      await say(session, const Event.windowLocked(id: 1, locked: true));
+
+      expect(controller.unlockOf(window), unlockIdle);
+    });
+
+    test('takes no step for a window that is not shown here', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final shared = sampleWindowSession(id: 2, role: WindowRole.sharing);
+      await _begin(session, shared);
+      var told = 0;
+      controller.addListener(() => told++);
+
+      await say(
+        session,
+        const Event.windowUnlock(id: 2, step: WindowUnlock.typing()),
+      );
+      await say(
+        session,
+        const Event.windowUnlock(id: 9, step: WindowUnlock.typing()),
+      );
+
+      expect(controller.unlockOf(shared), unlockIdle);
+      expect(told, 0);
+    });
+
+    test('is forgotten when the window ends', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = unlockable();
+      await _begin(session, window);
+      await say(session, const Event.windowLocked(id: 1, locked: true));
+      await say(
+        session,
+        const Event.windowUnlock(
+          id: 1,
+          step: WindowUnlock.ended(result: UnlockResult.unlocked),
+        ),
+      );
+      expect(controller.unlockedHereOf(window), isTrue);
+
+      await _end(session, 1, const WindowEnd.otherDevice());
+
+      expect(controller.lockedOf(window), isFalse);
+      expect(controller.unlockOf(window), unlockIdle);
+      expect(controller.unlockedHereOf(window), isFalse);
+    });
+
+    test('is forgotten when the person ends the window', () async {
+      final session = _session();
+      final controller = await _controller(session);
+      final window = unlockable();
+      await _begin(session, window);
+      await say(session, const Event.windowLocked(id: 1, locked: true));
+      controller.unlock(window);
+
+      controller.end(window);
+
+      expect(controller.lockedOf(window), isFalse);
+      expect(controller.unlockOf(window), unlockIdle);
+      expect(controller.unlockedHereOf(window), isFalse);
+    });
   });
 
   group('the picture of a window that runs', () {
@@ -2328,6 +2626,8 @@ void main() {
         canShare: false,
         canControl: false,
         canGiveScreen: true,
+        canBeUnlocked: false,
+        canUnlock: false,
       );
     final controller = await _controller(session);
 
@@ -2338,6 +2638,8 @@ void main() {
         canShare: false,
         canControl: false,
         canGiveScreen: true,
+        canBeUnlocked: false,
+        canUnlock: false,
       ),
     );
     expect(controller.abilities, session.windowAbilities());

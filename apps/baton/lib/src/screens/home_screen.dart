@@ -12,8 +12,10 @@ import '../file_shower.dart';
 import '../format.dart';
 import '../inbox_controller.dart';
 import '../links.dart';
+import '../notice_access.dart';
 import '../scanner.dart';
 import '../transfers_controller.dart';
+import '../unlock_notices.dart';
 import '../windows_controller.dart';
 import 'devices_screen.dart';
 import 'inbox_screen.dart';
@@ -35,6 +37,7 @@ class HomeScreen extends StatefulWidget {
     this.screen = const PlatformScreenKeeper(),
     this.controlAccess = const PlatformControlAccess(),
     this.screenAccess = const PlatformScreenAccess(),
+    this.notices = const PlatformNoticeKeeper(),
     super.key,
   });
 
@@ -67,6 +70,10 @@ class HomeScreen extends StatefulWidget {
   /// of their own.
   final ScreenAccessKeeper screenAccess;
 
+  /// What the system says about showing notifications, and what shows them: a paired device that
+  /// unlocked this one, or tried to, is told of that way. Tests give it one of their own.
+  final NoticeKeeper notices;
+
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
@@ -82,6 +89,10 @@ class _HomeScreenState extends State<HomeScreen> {
   late final WindowsController _windows = WindowsController(
     widget.session,
     screen: widget.screen,
+  );
+  late final UnlockNotices _unlockNotices = UnlockNotices(
+    widget.session,
+    widget.notices,
   );
   StreamSubscription<Received>? _arrivals;
   StreamSubscription<TransferRequest>? _requests;
@@ -99,6 +110,7 @@ class _HomeScreenState extends State<HomeScreen> {
     unawaited(_inbox.start());
     unawaited(_transfers.start());
     unawaited(_windows.start());
+    unawaited(_unlockNotices.start());
   }
 
   @override
@@ -110,6 +122,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _inbox.dispose();
     _transfers.dispose();
     _windows.dispose();
+    _unlockNotices.dispose();
     super.dispose();
   }
 
@@ -226,6 +239,7 @@ class _HomeScreenState extends State<HomeScreen> {
             chooser: widget.chooser,
             controlAccess: widget.controlAccess,
             screenAccess: widget.screenAccess,
+            notices: widget.notices,
             onShareWindow: _windows.abilities.canShare
                 ? (device, {required control}) =>
                       unawaited(_windows.share(device, control: control))
@@ -235,6 +249,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       unawaited(_windows.startScreen(device, control: control))
                 : null,
             canGiveScreen: _windows.abilities.canGiveScreen,
+            canBeUnlocked: _windows.abilities.canBeUnlocked,
           ),
           InboxScreen(
             controller: _inbox,
