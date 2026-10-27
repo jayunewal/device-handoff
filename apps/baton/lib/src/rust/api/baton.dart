@@ -66,6 +66,18 @@ abstract class Baton implements RustOpaqueInterface {
   /// device. `Event.windowEnded` follows. Returns whether there was such a window.
   bool endWindow({required PlatformInt64 session});
 
+  /// Ends the window `session`, which is shown here, and asks the device that shares it to
+  /// leave its screen as it is when the session is over, and not lock it. It is for the person
+  /// who was asked at the end of a session whose `WindowSession.leave` is set and answered that
+  /// the screen stays as it is; every other end locks it, `Baton.endWindow` among them.
+  /// `Event.windowEnded` follows. Returns whether the choice was made: this call ended the
+  /// session, and the other device had offered it. The other device does not answer, so a true
+  /// says that it was asked and not that the screen was left: if the connection goes first, the
+  /// device locks. A false is a window that is not shown here, one that has ended already, or
+  /// one whose device cannot leave its screen as it is; the last of these ends as
+  /// `Baton.endWindow` ends it.
+  bool endWindowLeaving({required PlatformInt64 session});
+
   /// Events from now on, as a stream that ends when the app stops. The call returns once
   /// the subscription is made, so `await` it before reading `devices` or `inbox`: nothing
   /// that happens after that is lost, even if the stream is not being listened to yet.

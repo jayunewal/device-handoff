@@ -290,6 +290,9 @@ void main() {
     expect(a.answerWindow(request: -1, accept: true), isFalse);
     expect(a.endWindow(session: 1), isFalse);
     expect(a.endWindow(session: -1), isFalse);
+    // Nor is a device asked to leave a screen as it is when no screen runs.
+    expect(a.endWindowLeaving(session: 1), isFalse);
+    expect(a.endWindowLeaving(session: -1), isFalse);
     // Nor is anything touched where nothing runs, whichever way the number or the event is
     // written: every kind of event goes over the bridge and comes back as "not taken".
     const keys = WindowModifiers(

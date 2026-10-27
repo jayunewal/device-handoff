@@ -363,6 +363,15 @@ impl Sessions {
         true
     }
 
+    /// Ends the session `id`, which is shown here, and tells the device that shares it that the
+    /// person chose to leave it as it is. Returns whether the choice was made, which is whether this
+    /// call ended the session and the device could be asked ([`ViewHandle::end_leaving`]). A window
+    /// that is not shown here, or whose device cannot leave its screen, ends as `end` ends it, or
+    /// not at all, and says no.
+    pub(crate) fn end_leaving(&self, id: u64) -> bool {
+        self.viewing(id).is_some_and(|handle| handle.end_leaving())
+    }
+
     fn emit(&self, event: Event) {
         // Nobody listening is fine.
         let _ = self.events.send(event);
@@ -537,6 +546,7 @@ impl Sessions {
             private: handle.private(),
             // Sound goes with a whole screen only.
             sound: display && handle.can_hear(),
+            leave: handle.can_leave(),
             screen: Some(accepted.screen),
         };
         self.begin_viewing(session, handle, &accepted.link, &accepted.pictures);
@@ -605,6 +615,7 @@ impl Sessions {
                     control: handle.control(),
                     private: handle.private(),
                     sound: handle.can_hear(),
+                    leave: handle.can_leave(),
                     screen: Some(screen),
                 };
                 self.begin_viewing(session.clone(), handle, &link, &pictures);
@@ -683,6 +694,7 @@ impl Sessions {
                     control,
                     private,
                     sound: false,
+                    leave: false,
                     screen: None,
                 };
                 self.begin(
@@ -1056,6 +1068,7 @@ mod tests {
             control: false,
             private: false,
             sound: false,
+            leave: false,
             screen: Some(100),
         }
     }

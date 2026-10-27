@@ -22,6 +22,15 @@ final class WindowOver extends WindowNote {
   final WindowEnd end;
 }
 
+/// A window that the person ended by asking the device that shares it to stay as it is, and not
+/// to lock. The device does not answer, so this says that it was asked and never that it stayed
+/// as it was: if the connection went first, it locked.
+final class WindowLeft extends WindowNote {
+  const WindowLeft(this.session);
+
+  final WindowSession session;
+}
+
 /// A window that the person said yes to, and that the other device took back before it began.
 final class WindowWithdrawn extends WindowNote {
   const WindowWithdrawn(this.request);
@@ -365,14 +374,36 @@ class WindowsController extends ChangeNotifier {
   /// Returns whether it was running. The window is gone from [sessions] at once.
   bool end(WindowSession session) {
     final running = _session.endWindow(session.id.toInt());
+    if (_forget(session)) _settle();
+    return running;
+  }
+
+  /// Ends [session], a screen of another device that is shown here and whose device can leave it
+  /// as it is (`WindowSession.leave`), and asks the device not to lock it. It is for the person
+  /// who was asked and answered that the screen stays as it is; [end] is every other end, and the
+  /// device locks. Returns whether the device was asked, which is not so for a session that is
+  /// over, and for a device that cannot leave its screen: that one ends as [end] ends it.
+  ///
+  /// The device does not answer. When it was asked, [notes] says so, and never that the screen was
+  /// left: the device locks if the connection went first. The window is gone from [sessions] at
+  /// once. The rules of whether the device may be asked are kept in Rust, once, and not repeated
+  /// here.
+  bool endLeaving(WindowSession session) {
+    final asked = _session.endWindowLeaving(session.id.toInt());
+    if (asked) _note(WindowLeft(session));
+    if (_forget(session) || asked) _settle();
+    return asked;
+  }
+
+  /// Takes [session] and what is kept for it out of the lists. Returns whether it was there.
+  bool _forget(WindowSession session) {
     final kept = _sessions.length;
     _sessions.removeWhere((s) => s.id == session.id);
     _pictures.remove(session.id.toInt());
     _lifted.remove(session.id.toInt());
     _sounds.remove(session.id.toInt());
     _silenceClosed.remove(session.id.toInt());
-    if (_sessions.length != kept) _settle();
-    return running;
+    return _sessions.length != kept;
   }
 
   /// Gives [session] what the person did on its picture: a touch, a click, a scroll, a key. It

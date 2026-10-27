@@ -264,6 +264,7 @@ struct Chosen {
     size: (u32, u32),
 }
 
+#[allow(clippy::struct_excessive_bools)] // what the platform can do, each of its own
 struct Sharer {
     /// Whether the platform can post input. It can change while the app runs, as it does when the
     /// person takes back the consent to control the computer.
@@ -306,6 +307,13 @@ struct Sharer {
     privacies: Mutex<Vec<Privacy>>,
     /// Whether the platform can lift what keeps a screen private that it gave as private.
     lifts: bool,
+    /// Whether the platform can end a private session and leave the screen as it is, which is
+    /// ending it without locking it.
+    leaves: bool,
+    /// Whether a window that the person picks is given as private too, as a platform that lets the
+    /// person pick a whole display could, and not only the screen that the other device asks for.
+    /// It needs `lifts`.
+    picks_private: AtomicBool,
     /// What the people at the other device lifted of the privacy, as it reached the platform.
     lifted: Arc<Mutex<Vec<Lift>>>,
     /// How many times the person was given a picker.
@@ -324,12 +332,15 @@ enum ScreenPlan {
 }
 
 /// What a platform can do besides sharing the window that the person picked.
+#[allow(clippy::struct_excessive_bools)] // what the platform can do, each of its own
 #[derive(Clone, Copy, Default)]
 struct Can {
     /// Give its screen without the person picking it.
     screen: bool,
     /// Lift what keeps that screen private.
     lift: bool,
+    /// End a private session and leave that screen as it is.
+    leave: bool,
     /// Send the sound of a whole display.
     sound: bool,
 }
@@ -354,6 +365,18 @@ impl Sharer {
         let can = Can {
             screen: true,
             lift: true,
+            ..Can::default()
+        };
+        Self::building(control, None, can)
+    }
+
+    /// A platform that can give its screen without the person picking it, lift what keeps that
+    /// screen private, and end a private session without locking the screen.
+    fn with_leave(control: bool) -> Arc<Self> {
+        let can = Can {
+            screen: true,
+            lift: true,
+            leave: true,
             ..Can::default()
         };
         Self::building(control, None, can)
@@ -399,6 +422,8 @@ impl Sharer {
             screens: AtomicUsize::new(0),
             privacies: Mutex::new(Vec::new()),
             lifts: can.lift,
+            leaves: can.leave,
+            picks_private: AtomicBool::new(false),
             lifted: Arc::new(Mutex::new(Vec::new())),
             picks: AtomicUsize::new(0),
             sounds: can.sound,
@@ -434,7 +459,7 @@ impl Sharer {
             fails_at_once: self.fails_at_once.lock().unwrap().clone(),
             failure: Arc::clone(&self.failure),
             inputs: Arc::clone(&self.inputs),
-            private: false,
+            private: self.picks_private.load(Ordering::Relaxed) && self.lifts,
             lifted: Arc::clone(&self.lifted),
         }
     }
@@ -495,6 +520,10 @@ impl WindowSharer for Sharer {
 
     fn can_lift(&self) -> bool {
         self.lifts
+    }
+
+    fn can_leave(&self) -> bool {
+        self.leaves
     }
 
     fn sends_sound(&self) -> bool {
@@ -663,6 +692,10 @@ impl SourceEvents for Hearing {
 
     fn ended(&mut self) {
         self.0.push("ended");
+    }
+
+    fn ended_leaving(&mut self) {
+        self.0.push("ended leaving");
     }
 }
 
@@ -2894,6 +2927,16 @@ impl Asking {
     fn screens(&self) -> usize {
         self.sharer.screens.load(Ordering::Relaxed)
     }
+
+    /// Waits until a picture has been shown at the phone, which is when both control streams of
+    /// the session are up. A phone that ends the session before that is noticed by the Mac only
+    /// when it gives up waiting.
+    async fn until_shown(&self) {
+        until("a picture to be shown at the phone", || {
+            self.viewer.heard.has("show 0")
+        })
+        .await;
+    }
 }
 
 #[tokio::test]
@@ -3114,6 +3157,204 @@ async fn a_lift_for_a_window_that_is_not_shown_here_is_not_taken() {
     assert!(!asking.phone.app.window_lift(0, true, true));
     assert!(!asking.phone.app.window_lift(7, false, true));
     assert!(!asking.mac.app.window_lift(u64::MAX, true, false));
+}
+
+/// Waits until the end of the window `id` is told, and says how it ended.
+async fn ended_at(events: &mut Events, id: u64) -> WindowEnd {
+    next_matching(events, |event| match event {
+        Event::WindowEnded { id: ended, end } if ended == id => Some(end),
+        _ => None,
+    })
+    .await
+}
+
+#[tokio::test]
+async fn a_person_who_chooses_to_leave_the_mac_as_it_is_has_the_platform_of_the_mac_told_so() {
+    let asking = Asking::with(Sharer::with_leave(true)).await;
+    asking.allow(StartAccess::Control);
+    let mut phone_events = asking.phone.app.events();
+    let mut mac_events = asking.mac.app.events();
+
+    let session = asking.started(true).await;
+    let shared = started_at(&mut mac_events).await;
+
+    // The Mac offered the choice with its private screen, to the phone that shows it. A window
+    // that the Mac shares is not one to leave, and asking for it ends nothing.
+    assert!(session.private && session.leave);
+    assert!(shared.private && !shared.leave);
+    asking.until_shown().await;
+    assert!(!asking.mac.app.end_window_leaving(shared.id));
+    tokio::time::sleep(QUIET).await;
+    assert!(
+        asking
+            .sharer
+            .heard
+            .all()
+            .iter()
+            .all(|heard| !heard.starts_with("ended"))
+    );
+
+    // The person at the phone chooses to leave it. Both ends hear that it ended, and the platform
+    // of the Mac is told that the choice was made, in place of the ordinary end, once.
+    assert!(asking.phone.app.end_window_leaving(session.id));
+    assert_eq!(
+        ended_at(&mut phone_events, session.id).await,
+        WindowEnd::ThisDevice
+    );
+    assert_eq!(
+        ended_at(&mut mac_events, shared.id).await,
+        WindowEnd::OtherDevice
+    );
+    until("the platform of the Mac to be told", || {
+        asking.sharer.heard.has("ended leaving")
+    })
+    .await;
+    tokio::time::sleep(QUIET).await;
+    assert!(!asking.sharer.heard.has("ended"));
+    assert_eq!(asking.sharer.heard.count("ended"), 1);
+
+    // It is over: a second call finds nothing to end.
+    assert!(!asking.phone.app.end_window_leaving(session.id));
+    assert!(!asking.phone.app.end_window(session.id));
+}
+
+#[tokio::test]
+async fn every_end_of_a_session_that_could_be_left_but_the_choice_to_leave_is_an_ordinary_end() {
+    // The person ends it at the phone with the ordinary call, the person ends it at the Mac, and
+    // the phone goes away without a word. The Mac locks at each of them, which its platform hears
+    // as the ordinary end and never as the choice.
+    for how in ["phone", "mac", "gone"] {
+        let asking = Asking::with(Sharer::with_leave(true)).await;
+        asking.allow(StartAccess::Control);
+        let mut mac_events = asking.mac.app.events();
+        let session = asking.started(true).await;
+        let shared = started_at(&mut mac_events).await;
+        assert!(session.leave, "{how}");
+        asking.until_shown().await;
+        match how {
+            "phone" => assert!(asking.phone.app.end_window(session.id)),
+            "mac" => assert!(asking.mac.app.end_window(shared.id)),
+            _ => asking.phone.app.stop().await,
+        }
+        until("the platform of the Mac to be told", || {
+            asking.sharer.heard.has("ended")
+        })
+        .await;
+        tokio::time::sleep(QUIET).await;
+        assert!(!asking.sharer.heard.has("ended leaving"), "{how}");
+        assert_eq!(asking.sharer.heard.count("ended"), 1, "{how}");
+    }
+}
+
+#[tokio::test]
+async fn a_screen_that_the_phone_only_looks_at_has_nothing_to_leave_and_ends_as_any_other() {
+    let asking = Asking::with(Sharer::with_leave(true)).await;
+    asking.allow(StartAccess::Control);
+    let mut phone_events = asking.phone.app.events();
+
+    // Nothing is kept private for a screen that is only looked at, so nothing is offered.
+    let session = asking.started(false).await;
+    assert!(!session.private && !session.leave);
+    asking.until_shown().await;
+
+    // A phone that asks all the same ends the session as it ends every other, and is told that the
+    // choice was not made.
+    assert!(!asking.phone.app.end_window_leaving(session.id));
+    assert_eq!(
+        ended_at(&mut phone_events, session.id).await,
+        WindowEnd::ThisDevice
+    );
+    until("the platform of the Mac to be told", || {
+        asking.sharer.heard.has("ended")
+    })
+    .await;
+    tokio::time::sleep(QUIET).await;
+    assert!(!asking.sharer.heard.has("ended leaving"));
+}
+
+#[tokio::test]
+async fn a_screen_of_a_platform_that_cannot_leave_is_not_offered_to_leave_and_ends_as_any_other() {
+    let asking = Asking::with(Sharer::with_lift(true)).await;
+    asking.allow(StartAccess::Control);
+    let mut phone_events = asking.phone.app.events();
+
+    // The screen is private, with everything that the platform can do about it, and the phone is
+    // not offered the choice.
+    let session = asking.started(true).await;
+    assert!(session.control && session.private && !session.leave);
+    asking.until_shown().await;
+
+    // A phone that asks all the same ends the session as it ends every other, and is told that the
+    // choice was not made.
+    assert!(!asking.phone.app.end_window_leaving(session.id));
+    assert_eq!(
+        ended_at(&mut phone_events, session.id).await,
+        WindowEnd::ThisDevice
+    );
+    until("the platform of the Mac to be told", || {
+        asking.sharer.heard.has("ended")
+    })
+    .await;
+    tokio::time::sleep(QUIET).await;
+    assert!(!asking.sharer.heard.has("ended leaving"));
+}
+
+#[tokio::test]
+async fn a_choice_to_leave_a_window_that_is_not_shown_here_is_not_taken() {
+    let asking = Asking::with(Sharer::with_leave(true)).await;
+    assert!(!asking.phone.app.end_window_leaving(0));
+    assert!(!asking.phone.app.end_window_leaving(7));
+    assert!(!asking.mac.app.end_window_leaving(u64::MAX));
+}
+
+#[tokio::test]
+async fn a_screen_that_the_person_picks_and_the_platform_keeps_private_is_left_as_it_is_only_if_it_can_be()
+ {
+    // The phone does not always ask for the screen. A platform could keep a display that the person
+    // picked private as well, and the phone that says yes to it is offered the choice, if the
+    // platform can end such a session without locking, and only then.
+    for can_leave in [true, false] {
+        let platform = if can_leave {
+            Sharer::with_leave(true)
+        } else {
+            Sharer::with_lift(true)
+        };
+        let pair = Pair::with_sharer(platform).await;
+        *pair.sharer.next.lock().unwrap() = Some(whole_display());
+        pair.sharer.picks_private.store(true, Ordering::Relaxed);
+        let mut viewing_events = pair.viewing.app.events();
+
+        let app = pair.sharing.app.clone();
+        let to = pair.viewing.id();
+        let offer = tokio::spawn(async move { app.share_window(&to, true).await });
+        let request = pair.requested(&mut viewing_events).await;
+        assert!(pair.viewing.app.answer_window(request.id, true));
+        let WindowShared::Started(shared) = offer.await.unwrap().unwrap() else {
+            panic!("the display was not shared");
+        };
+        let session = started_at(&mut viewing_events).await;
+        assert!(shared.private && !shared.leave, "{can_leave}");
+        assert!(session.private, "{can_leave}");
+        assert_eq!(session.leave, can_leave);
+        until("a picture to be shown at the phone", || {
+            pair.viewer.heard.has("show 0")
+        })
+        .await;
+
+        // The choice is taken only if it was offered, and the platform hears which end it was.
+        assert_eq!(pair.viewing.app.end_window_leaving(session.id), can_leave);
+        let (told, not_told) = if can_leave {
+            ("ended leaving", "ended")
+        } else {
+            ("ended", "ended leaving")
+        };
+        until("the platform of the Mac to be told", || {
+            pair.sharer.heard.has(told)
+        })
+        .await;
+        tokio::time::sleep(QUIET).await;
+        assert!(!pair.sharer.heard.has(not_told), "{can_leave}");
+    }
 }
 
 #[tokio::test]

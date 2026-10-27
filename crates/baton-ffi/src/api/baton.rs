@@ -265,6 +265,21 @@ impl Baton {
         u64::try_from(session).is_ok_and(|session| self.app.end_window(session))
     }
 
+    /// Ends the window `session`, which is shown here, and asks the device that shares it to
+    /// leave its screen as it is when the session is over, and not lock it. It is for the person
+    /// who was asked at the end of a session whose `WindowSession.leave` is set and answered that
+    /// the screen stays as it is; every other end locks it, `Baton.endWindow` among them.
+    /// `Event.windowEnded` follows. Returns whether the choice was made: this call ended the
+    /// session, and the other device had offered it. The other device does not answer, so a true
+    /// says that it was asked and not that the screen was left: if the connection goes first, the
+    /// device locks. A false is a window that is not shown here, one that has ended already, or
+    /// one whose device cannot leave its screen as it is; the last of these ends as
+    /// `Baton.endWindow` ends it.
+    #[frb(sync)]
+    pub fn end_window_leaving(&self, session: i64) -> bool {
+        u64::try_from(session).is_ok_and(|session| self.app.end_window_leaving(session))
+    }
+
     /// Gives what the person did on the picture of the window `session`, which is shown here: a
     /// touch, a click, a scroll, a key. The event goes to the other device soon, in a batch with
     /// others, and is done there only if the person at that device let this one control the

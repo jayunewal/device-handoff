@@ -730,6 +730,103 @@ void main() {
       expect(find.byType(Card), findsNothing);
     });
 
+    group('and is a screen whose device can be left as it is', () {
+      final leavable = sampleWindowSession(
+        display: true,
+        title: null,
+        app: null,
+        control: true,
+        private: true,
+        leave: true,
+      );
+
+      Future<FakeSession> stopping(WidgetTester tester) async {
+        final (session, _) = await _show(tester);
+        await _begin(tester, session, leavable);
+        await tester.tap(find.text('Stop showing'));
+        await tester.pumpAndSettle();
+        return session;
+      }
+
+      testWidgets('is stopped only after the person is asked whether to lock', (
+        tester,
+      ) async {
+        final session = await stopping(tester);
+
+        expect(find.text('Lock Anna’s Mac?'), findsOneWidget);
+        expect(session.windowsEnded, isEmpty);
+        expect(session.windowsLeft, isEmpty);
+        expect(find.text('Showing a screen from Anna’s Mac'), findsOneWidget);
+      });
+
+      testWidgets('is locked with the ordinary end if the person says lock', (
+        tester,
+      ) async {
+        final session = await stopping(tester);
+
+        await tester.tap(find.text('Lock'));
+        await tester.pumpAndSettle();
+
+        expect(session.windowsEnded, [1]);
+        expect(session.windowsLeft, isEmpty);
+        expect(find.byType(Card), findsNothing);
+      });
+
+      testWidgets('asks the device to stay as it is if the person says so', (
+        tester,
+      ) async {
+        final session = await stopping(tester);
+
+        await tester.tap(find.text('Leave it'));
+        await tester.pumpAndSettle();
+
+        expect(session.windowsLeft, [1]);
+        expect(session.windowsEnded, isEmpty);
+        // The device does not answer, so the person is told that it was asked, and no more.
+        expect(find.text('You asked Anna’s Mac not to lock'), findsOneWidget);
+        expect(
+          find.text(
+            'It locks if the connection broke first. Look at Anna’s Mac to '
+            'see.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.text('Showing a screen from Anna’s Mac'), findsNothing);
+      });
+
+      testWidgets('keeps running if the person cancels', (tester) async {
+        final session = await stopping(tester);
+
+        await tester.tap(find.text('Cancel'));
+        await tester.pumpAndSettle();
+
+        expect(session.windowsEnded, isEmpty);
+        expect(session.windowsLeft, isEmpty);
+        expect(find.text('Lock Anna’s Mac?'), findsNothing);
+        expect(find.text('Showing a screen from Anna’s Mac'), findsOneWidget);
+      });
+
+      testWidgets('has its question closed by the end of the session', (
+        tester,
+      ) async {
+        final session = await stopping(tester);
+
+        session.emit(
+          const Event.windowEnded(id: 1, end: WindowEnd.otherDevice()),
+        );
+        await tester.pumpAndSettle();
+
+        // Nothing is asked of the device, and the person is told how the session ended.
+        expect(find.text('Lock Anna’s Mac?'), findsNothing);
+        expect(session.windowsEnded, isEmpty);
+        expect(session.windowsLeft, isEmpty);
+        expect(
+          find.text('Anna’s Mac stopped sharing a screen'),
+          findsOneWidget,
+        );
+      });
+    });
+
     testWidgets('is named after its application when it has no title', (
       tester,
     ) async {
@@ -1204,6 +1301,21 @@ void main() {
           detail: null,
           problem: true,
         ),
+      );
+    });
+
+    test('of a screen that the device was asked to leave as it is', () {
+      // The device does not answer, so this says that it was asked and nothing of how it is.
+      expect(describeWindowNote(WindowLeft(shown)), (
+        title: 'You asked Anna\u2019s Mac not to lock',
+        detail: 'It locks if the connection broke first. Look at Anna\u2019s Mac to see.',
+        problem: false,
+      ));
+      expect(
+        describeWindowNote(
+          WindowLeft(sampleWindowSession(device: 'Mac\u202Eexe')),
+        ).title,
+        'You asked Mac\uFFFDexe not to lock',
       );
     });
 

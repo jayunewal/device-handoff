@@ -356,6 +356,7 @@ impl From<app::WindowSession> for WindowSession {
             control,
             private,
             sound,
+            leave,
             screen,
         } = session;
         Self {
@@ -371,6 +372,7 @@ impl From<app::WindowSession> for WindowSession {
             control,
             private,
             sound,
+            leave,
             screen,
         }
     }
@@ -686,6 +688,7 @@ mod tests {
             control: true,
             private: true,
             sound: true,
+            leave: true,
             screen: Some(7),
         }
     }
@@ -704,6 +707,7 @@ mod tests {
         assert!(converted.control);
         assert!(converted.private);
         assert!(converted.sound);
+        assert!(converted.leave);
         assert_eq!(converted.screen, Some(7));
         let sharing = WindowSession::from(app::WindowSession {
             role: app::WindowRole::Sharing,
@@ -711,6 +715,12 @@ mod tests {
             ..session()
         });
         assert_eq!((sharing.role, sharing.screen), (WindowRole::Sharing, None));
+        // The facts are each of their own: one that is off leaves the others as they were.
+        let stays = WindowSession::from(app::WindowSession {
+            leave: false,
+            ..session()
+        });
+        assert!(!stays.leave && stays.private && stays.sound);
         let display = WindowSession::from(app::WindowSession {
             display: true,
             ..session()

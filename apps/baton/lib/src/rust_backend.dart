@@ -236,6 +236,10 @@ class _RustSession implements Session {
   bool endWindow(int session) => _baton.endWindow(session: session);
 
   @override
+  bool endWindowLeaving(int session) =>
+      _baton.endWindowLeaving(session: session);
+
+  @override
   bool windowInput(int session, WindowInput input) =>
       _baton.windowInput(session: session, input: input);
 

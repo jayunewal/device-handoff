@@ -1253,6 +1253,13 @@ class WindowSession {
   /// says. Sound is off when the session starts. `false` for a window that this device shares.
   final bool sound;
 
+  /// Whether the person here can have the device that shares the screen left as it is when they
+  /// end the session, and not locked, with `Baton.endWindowLeaving`: the screen is kept private
+  /// there, and the device said that it can end that without locking itself. The person is
+  /// asked every time they end such a session, and the device is locked unless they say
+  /// otherwise. `false` for a window that this device shares.
+  final bool leave;
+
   /// What to draw the picture with when the window is shown on this device: the number of
   /// the screen, which on Flutter is the id of a `Texture`. `null` when the window is shared
   /// from this device.
@@ -1271,6 +1278,7 @@ class WindowSession {
     required this.control,
     required this.private,
     required this.sound,
+    required this.leave,
     this.screen,
   });
 
@@ -1288,6 +1296,7 @@ class WindowSession {
       control.hashCode ^
       private.hashCode ^
       sound.hashCode ^
+      leave.hashCode ^
       screen.hashCode;
 
   @override
@@ -1307,6 +1316,7 @@ class WindowSession {
           control == other.control &&
           private == other.private &&
           sound == other.sound &&
+          leave == other.leave &&
           screen == other.screen;
 }
 
