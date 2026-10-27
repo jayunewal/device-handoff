@@ -488,7 +488,10 @@ func registerViewer(_ platform: ViewerPlatform) -> Int32 {
     release: viewerRelease,
     sound: sound,
     play: play,
-    stopped: stopped)
+    stopped: stopped,
+    unlock_key: nil,
+    unlock_open: nil,
+    unlock_cancel: nil)
   let code = baton_stream_register_viewer(&table)
   if code != ok {
     context.release()

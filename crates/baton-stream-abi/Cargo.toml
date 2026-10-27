@@ -43,6 +43,7 @@ baton-stream.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync"] }
 tracing.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -21,19 +21,25 @@ use std::{
     slice,
 };
 
-use baton_core::streaming::SoundPacket;
-use baton_proto::limits::{
-    MAX_NAME_BYTES, MAX_PICTURE_BYTES, MAX_SOUND_PACKET_BYTES, MAX_STREAM_TITLE_BYTES,
-    MAX_WINDOW_EDGE,
+use baton_core::streaming::{CancelReason, KeepError, SoundPacket};
+use baton_proto::{
+    limits::{
+        MAX_NAME_BYTES, MAX_PICTURE_BYTES, MAX_SOUND_PACKET_BYTES, MAX_STREAM_TITLE_BYTES,
+        MAX_WINDOW_EDGE,
+    },
+    unlock::{BoxKey, SealedKey},
 };
 use baton_stream::control::{Sound, SoundCodec};
+use zeroize::Zeroizing;
 
 use crate::{
     Error,
     abi::{
-        ABI_VERSION, BatonBytes, BatonFormat, BatonPicked, BatonPicture, BatonSharerVTable,
-        BatonSound, BatonSoundPacket, BatonViewerVTable, FRAME_REFERENCED, MESSAGE_MAX,
-        PICKED_DISPLAY, PICKED_WINDOW, SET_BYTES_MAX, SETS_MAX, SOUND_CODEC_AAC,
+        ABI_VERSION, BOX_KEY_BYTES, BatonBytes, BatonFormat, BatonPicked, BatonPicture,
+        BatonSharerVTable, BatonSound, BatonSoundPacket, BatonUnlockBox, BatonViewerVTable,
+        FACE_DECLINED, FACE_KEY_LOST, FRAME_REFERENCED, KEEP_CHANGED, KEEP_INVALID, KEEP_KEPT,
+        KEEP_OTHER, KEEP_OVER, KEEP_TWICE, KEEP_UNWRITABLE, MESSAGE_MAX, PICKED_DISPLAY,
+        PICKED_WINDOW, SET_BYTES_MAX, SETS_MAX, SOUND_CODEC_AAC, UNLOCK_BOX_MAX, UNLOCK_SEALED_MAX,
     },
     platform::{Chosen, geometry_of, inside_call},
     registry::{Registry, global},
@@ -250,6 +256,66 @@ pub unsafe extern "C" fn baton_stream_source_end(link: u64, sentence: *const Bat
     answer(|| unsafe { global().source_end(link, sentence) })
 }
 
+/// The face of the person at this device was recognised and the sealed key of a question is open:
+/// sends the key of the box to the device that asked. See the header.
+///
+/// # Safety
+///
+/// `key` is either null, or points to a `BatonBytes` with the bytes that it describes, which
+/// nothing writes to during the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn baton_stream_unlock_opened(
+    link: u64,
+    number: u64,
+    key: *const BatonBytes,
+) -> i32 {
+    // SAFETY: the caller's promise about `key` is this function's own.
+    answer(|| unsafe { global().unlock_opened(link, number, key) })
+}
+
+/// The question was not opened. See the header.
+#[unsafe(no_mangle)]
+pub extern "C" fn baton_stream_unlock_declined(link: u64, number: u64, reason: u32) -> i32 {
+    answer(|| global().unlock_declined(link, number, reason))
+}
+
+/// Says whether the privacy of the screen is in place. See the header. Unlike the functions above,
+/// it may be called from inside a call of the vtable.
+#[unsafe(no_mangle)]
+pub extern "C" fn baton_stream_source_private(link: u64, in_place: u32) -> i32 {
+    answer(|| global().source_private(link, in_place))
+}
+
+/// Asks, while an unlock runs, whether the attempt goes on. See the header. It may be called from
+/// inside a call of the vtable.
+///
+/// # Safety
+///
+/// `live` is either null, or points to a `u32` that can be written during the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn baton_stream_unlock_live(link: u64, live: *mut u32) -> i32 {
+    // SAFETY: the caller's promise about `live` is this function's own.
+    answer(|| unsafe { global().unlock_live(link, live) })
+}
+
+/// Keeps the new box of an unlock. See the header. It may be called from inside a call of the
+/// vtable.
+///
+/// # Safety
+///
+/// `boxed` is either null, or points to a `BatonUnlockBox` that begins with its size and is that
+/// long, whose bytes describe memory that can be read during the call and that nothing writes to
+/// meanwhile; `result` is either null, or points to a `u32` that can be written during the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn baton_stream_unlock_keep(
+    link: u64,
+    boxed: *const BatonUnlockBox,
+    result: *mut u32,
+) -> i32 {
+    // SAFETY: the caller's promise about the pointers is this function's own.
+    answer(|| unsafe { global().unlock_keep(link, boxed, result) })
+}
+
 // What the functions above do, as methods of a registry, so that a test can call them on one of
 // its own with the same pointers that a platform passes.
 impl Registry {
@@ -435,6 +501,155 @@ impl Registry {
         source.end(sentence);
         Ok(())
     }
+
+    /// The key of the box, from the face of the person, for the question with this number. A key
+    /// that cannot be read declines the question: the person is waiting for an answer.
+    ///
+    /// # Safety
+    ///
+    /// As for [`baton_stream_unlock_opened`].
+    pub(crate) unsafe fn unlock_opened(
+        &self,
+        link: u64,
+        number: u64,
+        key: *const BatonBytes,
+    ) -> Result<(), Error> {
+        let question = self
+            .screen_asking(link)?
+            .take(number)
+            .ok_or(Error::UnknownLink)?;
+        // SAFETY: the caller's promise about `key` is this function's own.
+        match unsafe { read_box_key(key) } {
+            Ok(key) => {
+                question.opened(key);
+                Ok(())
+            }
+            Err(error) => {
+                question.declined(CancelReason::Failed);
+                Err(error)
+            }
+        }
+    }
+
+    /// The question with this number was not opened, for a `FACE_` reason.
+    pub(crate) fn unlock_declined(&self, link: u64, number: u64, reason: u32) -> Result<(), Error> {
+        let question = self
+            .screen_asking(link)?
+            .take(number)
+            .ok_or(Error::UnknownLink)?;
+        question.declined(match reason {
+            FACE_DECLINED => CancelReason::Declined,
+            FACE_KEY_LOST => CancelReason::KeyLost,
+            // `FACE_FAILED`, and any reason that a newer platform knows and this version does not.
+            _ => CancelReason::Failed,
+        });
+        Ok(())
+    }
+
+    /// Whether the privacy of the screen is in place. Only a 1 says so: a number that is anything
+    /// else is a screen that is not, so a platform that gets it wrong fails closed.
+    pub(crate) fn source_private(&self, link: u64, in_place: u32) -> Result<(), Error> {
+        self.source_exempt(link)?.set_private(in_place == 1);
+        Ok(())
+    }
+
+    /// Whether the attempt to unlock the screen goes on.
+    ///
+    /// # Safety
+    ///
+    /// As for [`baton_stream_unlock_live`].
+    pub(crate) unsafe fn unlock_live(&self, link: u64, live: *mut u32) -> Result<(), Error> {
+        let source = self.source_exempt(link)?;
+        let live = writable(live)?;
+        let goes_on = source.unlock_live()?;
+        // SAFETY: `live` is writable for the call, as the caller promises, and was checked.
+        unsafe { live.write(u32::from(goes_on)) };
+        Ok(())
+    }
+
+    /// Keeps the new box of the attempt to unlock the screen. A box or a sealed key that is empty
+    /// or beyond its room is a `KEEP_INVALID`, not an argument that is wrong: what the person
+    /// wrote is not what the call is given.
+    ///
+    /// # Safety
+    ///
+    /// As for [`baton_stream_unlock_keep`].
+    pub(crate) unsafe fn unlock_keep(
+        &self,
+        link: u64,
+        boxed: *const BatonUnlockBox,
+        result: *mut u32,
+    ) -> Result<(), Error> {
+        let source = self.source_exempt(link)?;
+        let result = writable(result)?;
+        // SAFETY: the caller's promise about `boxed` is this function's own.
+        let new = unsafe { read_struct(boxed, size_of::<BatonUnlockBox>()) }?;
+        // SAFETY: the bytes that the struct describes can be read, as the caller promises.
+        let (boxed, sealed) = unsafe {
+            (
+                read_one_past(&new.boxed, UNLOCK_BOX_MAX)?,
+                read_one_past(&new.sealed, UNLOCK_SEALED_MAX)?,
+            )
+        };
+        let kept = source.unlock_keep(boxed, SealedKey::new(sealed))?;
+        // SAFETY: `result` is writable for the call, as the caller promises, and was checked.
+        unsafe { result.write(keep_code(kept)) };
+        Ok(())
+    }
+}
+
+/// The `KEEP_` number for what came of keeping the new box.
+fn keep_code(kept: Result<(), KeepError>) -> u32 {
+    match kept {
+        Ok(()) => KEEP_KEPT,
+        Err(KeepError::Over) => KEEP_OVER,
+        Err(KeepError::Twice) => KEEP_TWICE,
+        Err(KeepError::Invalid) => KEEP_INVALID,
+        Err(KeepError::Changed) => KEEP_CHANGED,
+        Err(KeepError::Unwritable) => KEEP_UNWRITABLE,
+        // A reason that a newer version of the library has.
+        Err(_) => KEEP_OTHER,
+    }
+}
+
+/// The key of a box that the platform passed: exactly `BOX_KEY_BYTES` bytes. The copy on the way
+/// is wiped.
+///
+/// # Safety
+///
+/// `pointer` is either null, or points to a `BatonBytes` that can be read during the call, and the
+/// bytes that it describes can be read too, if there are any, and nothing writes to either
+/// meanwhile.
+unsafe fn read_box_key(pointer: *const BatonBytes) -> Result<BoxKey, Error> {
+    if pointer.is_null() || !pointer.is_aligned() {
+        return Err(Error::Argument);
+    }
+    // SAFETY: not null and aligned, and the caller promises that it can be read.
+    let bytes = unsafe { pointer.read() };
+    if bytes.len != BOX_KEY_BYTES as usize {
+        return Err(Error::Argument);
+    }
+    // SAFETY: the caller's promise about the bytes is this function's own.
+    let read = unsafe { read_bytes(&bytes, BOX_KEY_BYTES as usize) }?;
+    let mut key = Zeroizing::new([0_u8; BoxKey::LEN]);
+    if read.len() != key.len() {
+        return Err(Error::Argument);
+    }
+    key.copy_from_slice(read);
+    Ok(BoxKey::from_bytes(*key))
+}
+
+/// The bytes that `bytes` describes, copied, as many as `most` and one more: a length beyond the
+/// most is seen without copying all of it.
+///
+/// # Safety
+///
+/// If `bytes.len` is not zero, `bytes.ptr` points to that many bytes that can be read during the
+/// call and that nothing writes to meanwhile.
+unsafe fn read_one_past(bytes: &BatonBytes, most: u32) -> Result<Vec<u8>, Error> {
+    // SAFETY: the caller's promise about the bytes is this function's own.
+    let read = unsafe { read_bytes(bytes, most as usize + 1) }?;
+    Ok(read.to_vec())
 }
 
 /// A pointer that is written through: not null and aligned. Nothing is written through it here.
@@ -1309,5 +1524,63 @@ mod tests {
             len: 2,
         }];
         assert_eq!(read(&picture(nowhere.as_ptr(), 1)), Err(Error::Argument));
+    }
+
+    #[test]
+    fn each_way_that_keeping_the_new_box_can_end_has_a_number_of_its_own() {
+        let ends = [
+            (Ok(()), KEEP_KEPT),
+            (Err(KeepError::Over), KEEP_OVER),
+            (Err(KeepError::Twice), KEEP_TWICE),
+            (Err(KeepError::Invalid), KEEP_INVALID),
+            (Err(KeepError::Changed), KEEP_CHANGED),
+            (Err(KeepError::Unwritable), KEEP_UNWRITABLE),
+        ];
+        let mut numbers = vec![KEEP_OTHER];
+        for (end, number) in ends {
+            assert_eq!(keep_code(end), number);
+            numbers.push(number);
+        }
+        // None is another's, and none is the one of a reason that this version does not know.
+        numbers.sort_unstable();
+        numbers.dedup();
+        assert_eq!(numbers.len(), 7);
+    }
+
+    #[test]
+    fn the_key_of_a_box_is_read_only_if_it_is_exactly_the_bytes_of_a_key() {
+        let key: Vec<u8> = (1..=32).collect();
+        let bytes = BatonBytes::of(&key);
+        // SAFETY: a struct that lives through the call, with bytes that do too.
+        let read = unsafe { read_box_key(&raw const bytes) }.unwrap();
+        assert_eq!(read.expose().as_slice(), key.as_slice());
+
+        for len in [0, 1, 31, 33, 64, 4096] {
+            let wrong = vec![1; len];
+            let bytes = BatonBytes::of(&wrong);
+            // SAFETY: as above.
+            let read = unsafe { read_box_key(&raw const bytes) };
+            assert_eq!(read.err(), Some(Error::Argument), "{len} bytes");
+        }
+
+        // A key that is said to be there and is not, or a struct that is not, is not read.
+        let nowhere = BatonBytes {
+            ptr: ptr::null(),
+            len: 32,
+        };
+        // SAFETY: a null pointer for the bytes is refused before it is read.
+        let read = unsafe { read_box_key(&raw const nowhere) };
+        assert_eq!(read.err(), Some(Error::Argument));
+        // SAFETY: a null pointer for the struct is refused before it is read.
+        let read = unsafe { read_box_key(ptr::null()) };
+        assert_eq!(read.err(), Some(Error::Argument));
+        let room = [0_u64; 4];
+        // SAFETY: only an address is made; the struct there would not be aligned, so it is refused
+        // before it is read.
+        #[allow(clippy::cast_ptr_alignment)] // the pointer is not aligned, which is the test
+        let unaligned = unsafe { room.as_ptr().cast::<u8>().add(1).cast::<BatonBytes>() };
+        // SAFETY: as above.
+        let read = unsafe { read_box_key(unaligned) };
+        assert_eq!(read.err(), Some(Error::Argument));
     }
 }

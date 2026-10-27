@@ -118,4 +118,40 @@ void main() {
         >('baton_stream_source_end');
     expect(end(0, nullptr), -4);
   });
+
+  test('the library carries the functions for unlocking a screen', () {
+    final library = DynamicLibrary.open(libraryPath());
+
+    // Called with what a platform could get wrong, each answers with a number and does nothing:
+    // a link that is not open (0 is never one) is the first thing that they look at.
+    final opened = library
+        .lookupFunction<
+          Int32 Function(Uint64, Uint64, Pointer<Void>),
+          int Function(int, int, Pointer<Void>)
+        >('baton_stream_unlock_opened');
+    expect(opened(0, 0, nullptr), -4);
+    final declined = library
+        .lookupFunction<
+          Int32 Function(Uint64, Uint64, Uint32),
+          int Function(int, int, int)
+        >('baton_stream_unlock_declined');
+    expect(declined(0, 0, 0), -4);
+    final private = library
+        .lookupFunction<Int32 Function(Uint64, Uint32), int Function(int, int)>(
+          'baton_stream_source_private',
+        );
+    expect(private(0, 1), -4);
+    final live = library
+        .lookupFunction<
+          Int32 Function(Uint64, Pointer<Uint32>),
+          int Function(int, Pointer<Uint32>)
+        >('baton_stream_unlock_live');
+    expect(live(0, nullptr), -4);
+    final keep = library
+        .lookupFunction<
+          Int32 Function(Uint64, Pointer<Void>, Pointer<Uint32>),
+          int Function(int, Pointer<Void>, Pointer<Uint32>)
+        >('baton_stream_unlock_keep');
+    expect(keep(0, nullptr, nullptr), -4);
+  });
 }

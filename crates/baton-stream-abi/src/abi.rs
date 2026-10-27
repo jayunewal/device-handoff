@@ -221,6 +221,75 @@ pub const SETS_MAX: u32 = 256;
 /// The most bytes of a parameter set.
 pub const SET_BYTES_MAX: u32 = 4096;
 
+/// A secret is sealed to a point of P-256 (65 bytes, uncompressed X9.63) with ECIES: the algorithm
+/// `eciesEncryptionStandardVariableIVX963SHA256AESGCM` of Security.framework.
+pub const SEALING_ECIES_P256: u32 = 1;
+
+/// What `unlock_check` and `unlock_setup` return when the system does not accept the password as
+/// the one of the account of the person.
+pub const PASSWORD_WRONG: i32 = 1;
+/// What `unlock_check` and `unlock_setup` return when this device cannot keep an unlock after all.
+pub const PASSWORD_UNSUPPORTED: i32 = 2;
+
+/// What `unlock` returns when the password was typed and the system says that the screen is
+/// unlocked.
+pub const UNLOCK_UNLOCKED: u32 = 0;
+/// What `unlock` returns when the password was typed and the screen stayed locked.
+pub const UNLOCK_REJECTED: u32 = 1;
+/// What `unlock` returns when the key did not open the box. Nothing was kept or typed.
+pub const UNLOCK_STALE: u32 = 2;
+/// What `unlock` returns for anything else that is the platform's own. A number that is not listed
+/// counts as this.
+pub const UNLOCK_FAILED: u32 = 3;
+/// What `unlock` returns when the screen is not locked. Nothing was typed.
+pub const UNLOCK_NOT_LOCKED: u32 = 4;
+/// What `unlock` returns when the cover, the hold of the keyboard and the pointer, or the guard is
+/// not in place. Nothing was typed.
+pub const UNLOCK_NOT_PRIVATE: u32 = 5;
+
+/// What `baton_stream_unlock_keep` says in `result` when the new box is what the Rust side holds.
+pub const KEEP_KEPT: u32 = 0;
+/// The attempt is over: the other device gave up, the session ended, or the time ran out.
+pub const KEEP_OVER: u32 = 1;
+/// The platform kept a box already in this attempt.
+pub const KEEP_TWICE: u32 = 2;
+/// The box or the sealed key is empty or larger than the most.
+pub const KEEP_INVALID: u32 = 3;
+/// The unlock was set up again, turned off or ended since the question was asked.
+pub const KEEP_CHANGED: u32 = 4;
+/// The disk did not take the new box.
+pub const KEEP_UNWRITABLE: u32 = 5;
+/// A reason that this version does not know.
+pub const KEEP_OTHER: u32 = 6;
+
+/// The most bytes of a box, which the Rust side gives room for and holds a platform to.
+pub const UNLOCK_BOX_MAX: u32 = 1024;
+/// The most bytes of a sealed key.
+pub const UNLOCK_SEALED_MAX: u32 = 1024;
+/// The most bytes of a public key that `unlock_key` gives, and that `unlock_setup` is given.
+pub const UNLOCK_KEY_MAX: u32 = 256;
+/// The most bytes of a password: the box pads it to 128, and one of them says how long it is.
+pub const UNLOCK_PASSWORD_MAX: u32 = 127;
+/// The bytes of the id of a device.
+pub const DEVICE_ID_BYTES: u32 = 32;
+/// The bytes of the key of a box.
+pub const BOX_KEY_BYTES: u32 = 32;
+
+/// What `unlock_key` returns when the person said no.
+pub const KEY_REFUSED: i32 = 1;
+/// What `unlock_key` returns when the settings of the device do not let the other device ask.
+pub const KEY_BLOCKED: i32 = 2;
+/// What `unlock_key` returns when the device cannot make such a key.
+pub const KEY_UNSUPPORTED: i32 = 3;
+
+/// The reason that `baton_stream_unlock_declined` gives when the person did not agree, their face
+/// was not recognised, or they cancelled.
+pub const FACE_DECLINED: u32 = 0;
+/// The reason when the device no longer has the key that opens the sealed key.
+pub const FACE_KEY_LOST: u32 = 1;
+/// The reason for anything else that went wrong. A number that is not listed counts as this.
+pub const FACE_FAILED: u32 = 2;
+
 /// The size of a struct for its `size` field. The structs of the interface are a few dozen bytes.
 #[allow(clippy::cast_possible_truncation)]
 pub(crate) const fn size_of_u32<T>() -> u32 {
@@ -617,6 +686,127 @@ pub struct BatonSoundPacket {
     pub bytes: BatonBytes,
 }
 
+/// What `unlock_setup` is given to put the password in a box that only the other device opens.
+/// Not for a log: the password is a secret.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BatonUnlockSetup {
+    /// The bytes of this struct.
+    pub size: u32,
+    /// A `SEALING_` number: how the key of the box is sealed to `viewer_key`.
+    pub sealing: u32,
+    /// The password, UTF-8, from 1 to [`UNLOCK_PASSWORD_MAX`] bytes.
+    pub password: BatonBytes,
+    /// The id of this device, [`DEVICE_ID_BYTES`] bytes. The box is bound to it.
+    pub target: BatonBytes,
+    /// The id of the other device, [`DEVICE_ID_BYTES`] bytes. The box is bound to it as well.
+    pub viewer: BatonBytes,
+    /// The public key of the other device, in the form that `sealing` names.
+    pub viewer_key: BatonBytes,
+}
+
+/// Room for what `unlock_setup` makes.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BatonUnlockMade {
+    /// The bytes of this struct.
+    pub size: u32,
+    /// How many bytes of `boxed` the platform wrote: at least 1 when it worked.
+    pub box_len: u32,
+    /// How many bytes of `sealed` the platform wrote: at least 1 when it worked.
+    pub sealed_len: u32,
+    /// Zero.
+    pub reserved: u32,
+    /// Room for [`UNLOCK_BOX_MAX`] bytes: the password in a box.
+    pub boxed: *mut u8,
+    /// Room for [`UNLOCK_SEALED_MAX`] bytes: the key of the box, sealed.
+    pub sealed: *mut u8,
+}
+
+/// The attempt to unlock that `unlock` is given. Not for a log.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BatonUnlock {
+    /// The bytes of this struct.
+    pub size: u32,
+    /// A `SEALING_` number: how the new key of the new box is sealed to `viewer_key`.
+    pub sealing: u32,
+    /// The key of the box, [`BOX_KEY_BYTES`] bytes. A secret.
+    pub box_key: BatonBytes,
+    /// The box that `unlock_setup` made.
+    pub boxed: BatonBytes,
+    /// The public key of the other device.
+    pub viewer_key: BatonBytes,
+    /// The id of this device, [`DEVICE_ID_BYTES`] bytes.
+    pub target: BatonBytes,
+    /// The id of the other device, [`DEVICE_ID_BYTES`] bytes.
+    pub viewer: BatonBytes,
+}
+
+/// What `baton_stream_unlock_keep` is given: the password in a new box, and the new key of the box
+/// sealed to the key of the other device.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BatonUnlockBox {
+    /// The bytes of this struct.
+    pub size: u32,
+    /// Zero.
+    pub reserved: u32,
+    /// The new box, from 1 to [`UNLOCK_BOX_MAX`] bytes.
+    pub boxed: BatonBytes,
+    /// The new key of the box, sealed, from 1 to [`UNLOCK_SEALED_MAX`] bytes.
+    pub sealed: BatonBytes,
+}
+
+/// The device that `unlock_key` makes a key for. The name is not for a log.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BatonUnlockSource {
+    /// The bytes of this struct.
+    pub size: u32,
+    /// 1 if the platform replaces the pair of keys it made for the device first, 0 if not.
+    pub renew: u32,
+    /// The id of the device, [`DEVICE_ID_BYTES`] bytes.
+    pub id: BatonBytes,
+    /// The name to show for it in a prompt, UTF-8.
+    pub name: BatonBytes,
+}
+
+/// Room for the public key that `unlock_key` gives.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BatonUnlockKey {
+    /// The bytes of this struct.
+    pub size: u32,
+    /// A `SEALING_` number: how a secret is sealed to the key.
+    pub sealing: u32,
+    /// How many bytes of `key` the platform wrote: at least 1 when it worked.
+    pub len: u32,
+    /// Zero.
+    pub reserved: u32,
+    /// Room for [`UNLOCK_KEY_MAX`] bytes.
+    pub key: *mut u8,
+}
+
+/// The question that the other device asks, which the person answers with their face. Not for a
+/// log: the name is the person's.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BatonUnlockQuestion {
+    /// The bytes of this struct.
+    pub size: u32,
+    /// Zero.
+    pub reserved: u32,
+    /// The number the answer repeats.
+    pub number: u64,
+    /// The key of the box, sealed to the key that `unlock_key` made for `id`.
+    pub sealed: BatonBytes,
+    /// The id of the device that asked, [`DEVICE_ID_BYTES`] bytes.
+    pub id: BatonBytes,
+    /// Its name, to show in the prompt, UTF-8.
+    pub name: BatonBytes,
+}
+
 /// Fills in what the device can show.
 pub type LimitsFn = unsafe extern "C" fn(context: *mut c_void, limits: *mut BatonLimits) -> i32;
 /// Makes the decoder and the screen for a window.
@@ -645,10 +835,24 @@ pub type SoundFn = unsafe extern "C" fn(screen: *mut c_void, sound: *const Baton
 pub type PlayFn = unsafe extern "C" fn(screen: *mut c_void, play: *const BatonPlay);
 /// The run of sound is over; `why` is a `SILENT_` number.
 pub type StoppedFn = unsafe extern "C" fn(screen: *mut c_void, why: u32);
+/// Makes, or finds, the key that an unlock of another device is sealed to, and gives its public
+/// half.
+pub type UnlockKeyFn = unsafe extern "C" fn(
+    context: *mut c_void,
+    source: *const BatonUnlockSource,
+    key: *mut BatonUnlockKey,
+    message: *mut BatonMessage,
+) -> i32;
+/// Takes a question of the other device, which the person answers with their face.
+pub type UnlockOpenFn =
+    unsafe extern "C" fn(screen: *mut c_void, question: *const BatonUnlockQuestion) -> i32;
+/// The question is not open any more.
+pub type UnlockCancelFn = unsafe extern "C" fn(screen: *mut c_void);
 
 /// What the platform registers. A function that is `None` here is a registration that is refused,
 /// except `sound`, `play` and `stopped`, which a platform that cannot play sound leaves out: all
-/// three or none.
+/// three or none; and `unlock_key`, `unlock_open` and `unlock_cancel`, which a platform that
+/// cannot unlock other devices with a face leaves out: all three or none.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct BatonViewerVTable {
@@ -680,6 +884,12 @@ pub struct BatonViewerVTable {
     pub play: Option<PlayFn>,
     /// See [`StoppedFn`].
     pub stopped: Option<StoppedFn>,
+    /// See [`UnlockKeyFn`]. A platform that cannot unlock other devices with a face leaves it out.
+    pub unlock_key: Option<UnlockKeyFn>,
+    /// See [`UnlockOpenFn`].
+    pub unlock_open: Option<UnlockOpenFn>,
+    /// See [`UnlockCancelFn`].
+    pub unlock_cancel: Option<UnlockCancelFn>,
 }
 
 /// Whether the person can let another device control a window that they share.
@@ -717,15 +927,31 @@ pub type HearFn = unsafe extern "C" fn(picked: *mut c_void, on: u32);
 /// The session is over, and the person at the other device chose that this device stay as it is:
 /// the same as [`EndedFn`], except that the device is not locked.
 pub type LeaveFn = unsafe extern "C" fn(picked: *mut c_void);
+/// Checks the password of the person against the account, and changes nothing.
+pub type UnlockCheckFn = unsafe extern "C" fn(
+    context: *mut c_void,
+    password: *const BatonBytes,
+    message: *mut BatonMessage,
+) -> i32;
+/// Puts the password in a box that only the other device opens.
+pub type UnlockSetupFn = unsafe extern "C" fn(
+    context: *mut c_void,
+    setup: *const BatonUnlockSetup,
+    made: *mut BatonUnlockMade,
+    message: *mut BatonMessage,
+) -> i32;
+/// Unlocks the screen with the password in the box, and returns an `UNLOCK_` number.
+pub type UnlockFn = unsafe extern "C" fn(picked: *mut c_void, unlock: *const BatonUnlock) -> u32;
 
 /// What the platform registers to share windows. A function that is `None` here is a registration
 /// that is refused, except `surroundings` and `post`, which a platform that cannot post input
 /// leaves out, `screen`, which a platform that cannot give its screen without a picker leaves out,
 /// `lift`, which a platform that cannot keep a screen private leaves out, `hear`, which a
-/// platform that cannot send the sound of its screen leaves out, and `leave`, which a platform that
-/// cannot end the privacy of a screen without locking the device leaves out. `ended` and `release`
-/// are called with the pointer of the window, where the viewer's are called with the pointer of a
-/// screen.
+/// platform that cannot send the sound of its screen leaves out, `leave`, which a platform that
+/// cannot end the privacy of a screen without locking the device leaves out, and `unlock_check`,
+/// `unlock_setup` and `unlock`, which a platform that cannot let another device unlock its screen
+/// leaves out: all three or none. `ended` and `release` are called with the pointer of the window,
+/// where the viewer's are called with the pointer of a screen.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct BatonSharerVTable {
@@ -762,4 +988,11 @@ pub struct BatonSharerVTable {
     /// See [`LeaveFn`]. A platform that cannot end the privacy of a screen without locking the
     /// device leaves it out.
     pub leave: Option<LeaveFn>,
+    /// See [`UnlockCheckFn`]. A platform that cannot let another device unlock its screen leaves
+    /// it out.
+    pub unlock_check: Option<UnlockCheckFn>,
+    /// See [`UnlockSetupFn`].
+    pub unlock_setup: Option<UnlockSetupFn>,
+    /// See [`UnlockFn`].
+    pub unlock: Option<UnlockFn>,
 }

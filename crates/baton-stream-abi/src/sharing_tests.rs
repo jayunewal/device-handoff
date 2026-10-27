@@ -80,6 +80,8 @@ use crate::{
     session_tests::{Dev, QUIET, WAIT, avcc, next_matching, pair, units_of, until, window_ended},
 };
 
+mod unlock;
+
 /// How long everything has to be let go after the end of a window. It is far less than the 30 s
 /// of silence after which a session ends by itself, so that a session that nobody ended does not
 /// pass for one that was.

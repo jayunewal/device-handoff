@@ -539,7 +539,10 @@ func registerSharer(_ platform: SharerPlatform) -> Int32 {
     screen: nil,
     lift: nil,
     hear: nil,
-    leave: nil)
+    leave: nil,
+    unlock_check: nil,
+    unlock_setup: nil,
+    unlock: nil)
   // A device that cannot give its screen leaves the entries out, and its paired devices are not
   // told that they can ask for it. The screen is the one thing that is given private, so what
   // lifts the privacy goes with it, and so does what ends it without the lock.

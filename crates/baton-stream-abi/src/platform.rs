@@ -26,7 +26,12 @@
 //!   has `screen` ([`SharerCalls::screen`]), whose answer is a window of the same kind, and one
 //!   that can keep that display private also has `lift` ([`PickedHandle::lift`]), which tells it
 //!   what the other device lets be lifted of that. A platform that can send the sound of its
-//!   screen has `hear` ([`PickedHandle::hear`]), which says when the sound is wanted.
+//!   screen has `hear` ([`PickedHandle::hear`]), which says when the sound is wanted. A platform
+//!   that lets another device unlock its screen has `unlock_check`, `unlock_setup` and `unlock`
+//!   ([`SharerCalls::unlock_check`], [`SharerCalls::unlock_setup`], [`PickedHandle::unlock`]); one
+//!   that unlocks other devices with a face has `unlock_key` ([`Calls::unlock_key`]) and, for
+//!   each screen, `unlock_open` and `unlock_cancel` ([`ScreenHandle::unlock_open`],
+//!   [`ScreenHandle::unlock_cancel`]).
 //!
 //! Every call is made inside [`within`], which marks the thread. The functions of the interface
 //! that the platform calls refuse to run on a thread that is inside a call into the platform,
@@ -39,8 +44,11 @@ use std::{
     ptr::{self, NonNull},
 };
 
-use baton_core::streaming::Play;
-use baton_proto::limits::MAX_WINDOW_EDGE;
+use baton_core::{NewUnlock, streaming::Play};
+use baton_proto::{
+    limits::MAX_WINDOW_EDGE,
+    unlock::{SealedKey, Sealing, SealingKey, UnlockKey},
+};
 use baton_stream::{
     control::{SilentReason, Sound, SoundCodec},
     gate::{Front, Geometry, Keyboard, Post, Rect, Size},
@@ -53,15 +61,20 @@ use crate::{
         ABI_VERSION, BUTTON_LEFT, BUTTON_MIDDLE, BUTTON_RIGHT, BatonBytes, BatonDecoderState,
         BatonFormat, BatonFrame, BatonFront, BatonGeometry, BatonLimits, BatonMessage, BatonPicked,
         BatonPlay, BatonPost, BatonRect, BatonScreen, BatonSharerVTable, BatonSound,
-        BatonSourceMessage, BatonSurroundings, BatonTakes, BatonViewerVTable, BatonWindow,
-        CancelPickFn, ControlFn, DecodeFn, EndedFn, FRONT_MENU, FRONT_SAME_APPLICATION, FRONTS_MAX,
-        HearFn, KEYBOARD_ELSEWHERE, KEYBOARD_SHARED, KEYBOARD_UNKNOWN, LeaveFn, LiftFn, LimitsFn,
-        MESSAGE_MAX, OK, OpenFn, PICKED_DISPLAY, PLAY_FIRST, POINTER_DOWN, POINTER_MOVE,
-        POINTER_SCROLL, POINTER_UP, POST_KEY, POST_POINTER, PickFn, PlayFn, PostFn, PrepareFn,
-        ReleaseFn, SCREEN_NEEDS_INPUT_PERMISSION, SCREEN_NEEDS_PERMISSION, SCREEN_PRIVATE,
-        SCREEN_UNAVAILABLE, SILENT_FAILED, SILENT_NO_PERMISSION, SILENT_OFF, SILENT_OTHER,
-        SILENT_WINDOW, SOUND_CODEC_AAC, ScreenFn, ShowFn, SoundFn, SourceFn, StartFn, StateFn,
-        StoppedFn, SurroundingsFn, size_of_u32,
+        BatonSourceMessage, BatonSurroundings, BatonTakes, BatonUnlock, BatonUnlockKey,
+        BatonUnlockMade, BatonUnlockQuestion, BatonUnlockSetup, BatonUnlockSource,
+        BatonViewerVTable, BatonWindow, CancelPickFn, ControlFn, DecodeFn, EndedFn, FRONT_MENU,
+        FRONT_SAME_APPLICATION, FRONTS_MAX, HearFn, KEY_BLOCKED, KEY_REFUSED, KEY_UNSUPPORTED,
+        KEYBOARD_ELSEWHERE, KEYBOARD_SHARED, KEYBOARD_UNKNOWN, LeaveFn, LiftFn, LimitsFn,
+        MESSAGE_MAX, OK, OpenFn, PASSWORD_UNSUPPORTED, PASSWORD_WRONG, PICKED_DISPLAY, PLAY_FIRST,
+        POINTER_DOWN, POINTER_MOVE, POINTER_SCROLL, POINTER_UP, POST_KEY, POST_POINTER, PickFn,
+        PlayFn, PostFn, PrepareFn, ReleaseFn, SCREEN_NEEDS_INPUT_PERMISSION,
+        SCREEN_NEEDS_PERMISSION, SCREEN_PRIVATE, SCREEN_UNAVAILABLE, SEALING_ECIES_P256,
+        SILENT_FAILED, SILENT_NO_PERMISSION, SILENT_OFF, SILENT_OTHER, SILENT_WINDOW,
+        SOUND_CODEC_AAC, ScreenFn, ShowFn, SoundFn, SourceFn, StartFn, StateFn, StoppedFn,
+        SurroundingsFn, UNLOCK_BOX_MAX, UNLOCK_KEY_MAX, UNLOCK_PASSWORD_MAX, UNLOCK_SEALED_MAX,
+        UnlockCancelFn, UnlockCheckFn, UnlockFn, UnlockKeyFn, UnlockOpenFn, UnlockSetupFn,
+        size_of_u32,
     },
     registry::Registry,
     sharer::Given,
@@ -152,6 +165,9 @@ pub(crate) struct Calls {
     /// `sound`, `play` and `stopped`, which a platform that cannot play sound leaves out: all three
     /// or none.
     speaker: Option<(SoundFn, PlayFn, StoppedFn)>,
+    /// `unlock_key`, `unlock_open` and `unlock_cancel`, which a platform that cannot unlock other
+    /// devices with a face leaves out: all three or none.
+    face: Option<(UnlockKeyFn, UnlockOpenFn, UnlockCancelFn)>,
 }
 
 // SAFETY: a `Calls` exists only for a vtable that the platform registered, and the header's
@@ -173,7 +189,8 @@ impl Calls {
     /// the end of it belongs to a newer version), or one of the functions up to `release` is
     /// missing. `sound`, `play` and `stopped` may be missing; a table that has only some of them
     /// has none. A table that ends before them, as the tables of platforms older than the sound
-    /// do, reads as one without them.
+    /// do, reads as one without them. So it is with `unlock_key`, `unlock_open` and
+    /// `unlock_cancel`, which a platform older than the unlock with a face lacks.
     ///
     /// # Safety
     ///
@@ -215,6 +232,10 @@ impl Calls {
                     (Some(sound), Some(play), Some(stopped)) => Some((sound, play, stopped)),
                     _ => None,
                 },
+                face: match (table.unlock_key, table.unlock_open, table.unlock_cancel) {
+                    (Some(key), Some(open), Some(cancel)) => Some((key, open, cancel)),
+                    _ => None,
+                },
             }),
             _ => Err(Error::Argument),
         }
@@ -223,6 +244,66 @@ impl Calls {
     /// Whether the platform gave the functions that play sound.
     pub(crate) fn can_play(&self) -> bool {
         self.speaker.is_some()
+    }
+
+    /// Whether the platform gave the functions that unlock other devices with a face.
+    pub(crate) fn can_unlock(&self) -> bool {
+        self.face.is_some()
+    }
+
+    /// Has the platform give the public key that an unlock of `device` is sealed to, and make
+    /// the pair if there is none, or a new pair if `renew`. The call may wait for as long as the
+    /// person takes to decide, so it is not made on a thread that other work waits for.
+    ///
+    /// # Errors
+    ///
+    /// The platform gave no function for it, or could not give a key: it says why with the number
+    /// it returns. A key that is not whole (empty, longer than the room, of a way of sealing that
+    /// the interface does not have, or not a point of P-256 where it says it is one) is a failure.
+    pub(crate) fn unlock_key(&self, device: &KeyFor<'_>) -> Result<UnlockKey, KeyFailure> {
+        let Some((call, _, _)) = self.face else {
+            return Err(KeyFailure::Unsupported);
+        };
+        let source = BatonUnlockSource {
+            size: size_of_u32::<BatonUnlockSource>(),
+            renew: u32::from(device.renew),
+            id: BatonBytes::of(device.id),
+            name: BatonBytes::of(device.name.as_bytes()),
+        };
+        let mut room = [0_u8; UNLOCK_KEY_MAX as usize];
+        let mut key = BatonUnlockKey {
+            size: size_of_u32::<BatonUnlockKey>(),
+            sealing: 0,
+            len: 0,
+            reserved: 0,
+            key: room.as_mut_ptr(),
+        };
+        // SAFETY: the structs and the room behind `key.key`, which is `UNLOCK_KEY_MAX` bytes long,
+        // and the buffer behind the message live until the call returns; the function is the
+        // platform's, called as the header says. The id and the name are borrowed from `device`
+        // for the same time.
+        let (code, text) = with_message_code(|message| {
+            within(|| unsafe { call(self.context, &raw const source, &raw mut key, message) })
+        });
+        match code {
+            OK => {}
+            KEY_REFUSED => return Err(KeyFailure::Refused),
+            KEY_BLOCKED => return Err(KeyFailure::Blocked),
+            KEY_UNSUPPORTED => return Err(KeyFailure::Unsupported),
+            _ => return Err(KeyFailure::Failed(Failure(text))),
+        }
+        let whole = usize::try_from(key.len)
+            .ok()
+            .and_then(|len| room.get(..len))
+            .filter(|bytes| !bytes.is_empty());
+        match (key.sealing, whole) {
+            // The point of P-256 in the uncompressed form: 0x04 and the two coordinates.
+            (SEALING_ECIES_P256, Some(bytes @ [0x04, ..])) if bytes.len() == 65 => Ok(UnlockKey {
+                sealing: Sealing::EciesP256,
+                public: SealingKey::new(bytes.to_vec()),
+            }),
+            _ => Err(KeyFailure::Failed(Failure(None))),
+        }
     }
 
     /// What the device can show, as the platform says it.
@@ -512,6 +593,71 @@ impl ScreenHandle {
         // SAFETY: `context` is the screen the platform gave, not yet released.
         within(|| unsafe { call(self.context.as_ptr(), why) });
     }
+
+    /// Gives the platform the question to answer with the face of the person. Whether it took the
+    /// question: a platform that unlocks nothing does not.
+    pub(crate) fn unlock_open(&mut self, ask: &Ask<'_>) -> bool {
+        let Some((_, call, _)) = self.calls.face else {
+            return false;
+        };
+        let question = BatonUnlockQuestion {
+            size: size_of_u32::<BatonUnlockQuestion>(),
+            reserved: 0,
+            number: ask.number,
+            sealed: BatonBytes::of(ask.sealed),
+            id: BatonBytes::of(ask.id),
+            name: BatonBytes::of(ask.name.as_bytes()),
+        };
+        // SAFETY: `question` and the bytes behind it live until the call returns, and `context` is
+        // the screen the platform gave, not yet released.
+        within(|| unsafe { call(self.context.as_ptr(), &raw const question) }) == OK
+    }
+
+    /// Tells the platform that the question it holds is not open any more. Nothing happens if
+    /// the platform unlocks nothing.
+    pub(crate) fn unlock_cancel(&mut self) {
+        let Some((_, _, call)) = self.calls.face else {
+            return;
+        };
+        // SAFETY: `context` is the screen the platform gave, not yet released.
+        within(|| unsafe { call(self.context.as_ptr()) });
+    }
+}
+
+/// What the platform is asked for a key: the device that the key is for, and whether the pair of
+/// keys that it has for that device is replaced first.
+pub(crate) struct KeyFor<'a> {
+    /// The id of the device, [`DEVICE_ID_BYTES`](crate::abi::DEVICE_ID_BYTES) bytes.
+    pub(crate) id: &'a [u8],
+    /// The name to show for it.
+    pub(crate) name: &'a str,
+    /// Whether the platform makes a new pair.
+    pub(crate) renew: bool,
+}
+
+/// Why the platform gave no key for an unlock.
+#[derive(Debug)]
+pub(crate) enum KeyFailure {
+    /// The person said no.
+    Refused,
+    /// The settings of the device do not let the other device ask.
+    Blocked,
+    /// The device cannot make such a key.
+    Unsupported,
+    /// The platform could not, or what it gave was not whole.
+    Failed(Failure),
+}
+
+/// The question that the other device asked, as the platform is given it.
+pub(crate) struct Ask<'a> {
+    /// The number that the answer repeats.
+    pub(crate) number: u64,
+    /// The key of the box, sealed to the key that the platform made for the device.
+    pub(crate) sealed: &'a [u8],
+    /// The id of the device that asked.
+    pub(crate) id: &'a [u8],
+    /// Its name.
+    pub(crate) name: &'a str,
 }
 
 impl Drop for ScreenHandle {
@@ -588,6 +734,9 @@ pub(crate) struct SharerCalls {
     /// `leave`, which a platform that cannot end the privacy of a screen without locking the
     /// device leaves out.
     leave: Option<LeaveFn>,
+    /// `unlock_check`, `unlock_setup` and `unlock`, which a platform that cannot let another device
+    /// unlock its screen leaves out: all three or none.
+    unlocking: Option<(UnlockCheckFn, UnlockSetupFn, UnlockFn)>,
 }
 
 // SAFETY: a `SharerCalls` exists only for a vtable that the platform registered, and the header's
@@ -612,7 +761,9 @@ impl SharerCalls {
     /// table that ends before it, as the tables of platforms older than the call do, reads as one
     /// without it. So may `lift`, in the same way: a platform without it gives a private screen
     /// that stays as it was given for the whole session. So may `hear`: a platform without it
-    /// sends no sound. So may `leave`: a platform without it locks the device at every end.
+    /// sends no sound. So may `leave`: a platform without it locks the device at every end. So
+    /// may `unlock_check`, `unlock_setup` and `unlock`: a platform without them cannot be unlocked
+    /// by another device, and a table that has only some of them has none.
     ///
     /// # Safety
     ///
@@ -652,6 +803,10 @@ impl SharerCalls {
                 lift: table.lift,
                 hear: table.hear,
                 leave: table.leave,
+                unlocking: match (table.unlock_check, table.unlock_setup, table.unlock) {
+                    (Some(check), Some(setup), Some(unlock)) => Some((check, setup, unlock)),
+                    _ => None,
+                },
             }),
             _ => Err(Error::Argument),
         }
@@ -704,6 +859,98 @@ impl SharerCalls {
     /// the device.
     pub(crate) fn can_leave(&self) -> bool {
         self.leave.is_some()
+    }
+
+    /// Whether the platform gave the functions that let another device unlock its screen.
+    pub(crate) fn can_unlock(&self) -> bool {
+        self.unlocking.is_some()
+    }
+
+    /// Has the platform check `password` against the account of the person who uses the device,
+    /// changing nothing. The call may wait for the system.
+    ///
+    /// # Errors
+    ///
+    /// The platform gave no function for it, the password is empty or longer than the interface
+    /// allows (the platform is not given one), or the platform does not accept it: it says why
+    /// with the number it returns, and a sentence if it can.
+    pub(crate) fn unlock_check(&self, password: &str) -> Result<(), SetupFailure> {
+        let Some((call, _, _)) = self.unlocking else {
+            return Err(SetupFailure::Unsupported);
+        };
+        if !(1..=UNLOCK_PASSWORD_MAX as usize).contains(&password.len()) {
+            return Err(SetupFailure::Failed(Failure(None)));
+        }
+        let password = BatonBytes::of(password.as_bytes());
+        // SAFETY: the bytes of the password and the buffer behind the message live until the call
+        // returns; the function is the platform's, called as the header says.
+        let (code, text) = with_message_code(|message| {
+            within(|| unsafe { call(self.context, &raw const password, message) })
+        });
+        setup_result(code, text)
+    }
+
+    /// Has the platform put the password of `setup` in a box that only the other device opens,
+    /// and give the box and the sealed key of the box back. The call may wait for the system.
+    ///
+    /// # Errors
+    ///
+    /// As for [`unlock_check`](Self::unlock_check), and a way of sealing that the interface does
+    /// not have is unsupported. A box or a sealed key that is empty, or longer than the room that
+    /// the platform was given, is a failure.
+    pub(crate) fn unlock_setup(&self, setup: &Setup<'_>) -> Result<NewUnlock, SetupFailure> {
+        let Some((_, call, _)) = self.unlocking else {
+            return Err(SetupFailure::Unsupported);
+        };
+        let sealing = match setup.key.sealing {
+            Sealing::EciesP256 => SEALING_ECIES_P256,
+            Sealing::Other => return Err(SetupFailure::Unsupported),
+        };
+        if !(1..=UNLOCK_PASSWORD_MAX as usize).contains(&setup.password.len()) {
+            return Err(SetupFailure::Failed(Failure(None)));
+        }
+        let c_setup = BatonUnlockSetup {
+            size: size_of_u32::<BatonUnlockSetup>(),
+            sealing,
+            password: BatonBytes::of(setup.password.as_bytes()),
+            target: BatonBytes::of(setup.target),
+            viewer: BatonBytes::of(setup.viewer),
+            viewer_key: BatonBytes::of(setup.key.public.as_bytes()),
+        };
+        let mut boxed = [0_u8; UNLOCK_BOX_MAX as usize];
+        let mut sealed = [0_u8; UNLOCK_SEALED_MAX as usize];
+        let mut made = BatonUnlockMade {
+            size: size_of_u32::<BatonUnlockMade>(),
+            box_len: 0,
+            sealed_len: 0,
+            reserved: 0,
+            boxed: boxed.as_mut_ptr(),
+            sealed: sealed.as_mut_ptr(),
+        };
+        // SAFETY: the structs, the two rooms behind `made`, which are `UNLOCK_BOX_MAX` and
+        // `UNLOCK_SEALED_MAX` bytes long, and the buffer behind the message live until the call
+        // returns; the function is the platform's, called as the header says. The password, the
+        // ids and the key are borrowed from `setup` for the same time.
+        let (code, text) = with_message_code(|message| {
+            within(|| unsafe { call(self.context, &raw const c_setup, &raw mut made, message) })
+        });
+        setup_result(code, text)?;
+        let whole = |bytes: &[u8], len: u32| {
+            usize::try_from(len)
+                .ok()
+                .and_then(|len| bytes.get(..len))
+                .filter(|bytes| !bytes.is_empty())
+                .map(<[u8]>::to_vec)
+        };
+        match (whole(&boxed, made.box_len), whole(&sealed, made.sealed_len)) {
+            (Some(boxed), Some(sealed)) => Ok(NewUnlock {
+                boxed,
+                sealed: SealedKey::new(sealed),
+                sealing: setup.key.sealing,
+                public: setup.key.public.clone(),
+            }),
+            _ => Err(SetupFailure::Failed(Failure(None))),
+        }
     }
 
     /// Has the platform give its main display, without the person choosing it, and keep it
@@ -943,6 +1190,77 @@ impl PickedHandle {
         // SAFETY: `context` is the window the platform gave, not yet released.
         within(|| unsafe { call(self.context.as_ptr()) });
     }
+
+    /// Has the platform unlock the screen with the password in the box, and gives the `UNLOCK_`
+    /// number that it returns. `None` if the platform gave no way to. The call takes as long as the
+    /// system does.
+    pub(crate) fn unlock(&mut self, attempt: &Attempt<'_>) -> Option<u32> {
+        let (_, _, call) = self.calls.unlocking?;
+        let c_unlock = BatonUnlock {
+            size: size_of_u32::<BatonUnlock>(),
+            sealing: attempt.sealing,
+            box_key: BatonBytes::of(attempt.box_key),
+            boxed: BatonBytes::of(attempt.boxed),
+            viewer_key: BatonBytes::of(attempt.viewer_key),
+            target: BatonBytes::of(attempt.target),
+            viewer: BatonBytes::of(attempt.viewer),
+        };
+        // SAFETY: `c_unlock` and the bytes behind it live until the call returns, and `context` is
+        // the window the platform gave, not yet released.
+        Some(within(|| unsafe {
+            call(self.context.as_ptr(), &raw const c_unlock)
+        }))
+    }
+}
+
+/// What the platform is given to put the password in a box.
+pub(crate) struct Setup<'a> {
+    /// The password, which the platform accepted with `unlock_check`.
+    pub(crate) password: &'a str,
+    /// The id of this device, [`DEVICE_ID_BYTES`](crate::abi::DEVICE_ID_BYTES) bytes.
+    pub(crate) target: &'a [u8],
+    /// The id of the other device.
+    pub(crate) viewer: &'a [u8],
+    /// The key of the other device that the key of the box is sealed to.
+    pub(crate) key: &'a UnlockKey,
+}
+
+/// Why the platform did not accept a password or did not make the box.
+#[derive(Debug)]
+pub(crate) enum SetupFailure {
+    /// The system does not accept the password as the one of the account.
+    WrongPassword,
+    /// The device cannot keep an unlock after all.
+    Unsupported,
+    /// The platform could not, or what it gave was not whole: the sentence it wrote, if it wrote
+    /// one.
+    Failed(Failure),
+}
+
+/// What `unlock_check` and `unlock_setup` returned, as a result.
+fn setup_result(code: i32, text: Option<String>) -> Result<(), SetupFailure> {
+    match code {
+        OK => Ok(()),
+        PASSWORD_WRONG => Err(SetupFailure::WrongPassword),
+        PASSWORD_UNSUPPORTED => Err(SetupFailure::Unsupported),
+        _ => Err(SetupFailure::Failed(Failure(text))),
+    }
+}
+
+/// The attempt to unlock that the platform is given. Every slice lives until the call returns.
+pub(crate) struct Attempt<'a> {
+    /// A `SEALING_` number.
+    pub(crate) sealing: u32,
+    /// The key of the box, [`BOX_KEY_BYTES`](crate::abi::BOX_KEY_BYTES) bytes. A secret.
+    pub(crate) box_key: &'a [u8],
+    /// The box that `unlock_setup` made.
+    pub(crate) boxed: &'a [u8],
+    /// The public key of the other device.
+    pub(crate) viewer_key: &'a [u8],
+    /// The id of this device.
+    pub(crate) target: &'a [u8],
+    /// The id of the other device.
+    pub(crate) viewer: &'a [u8],
 }
 
 /// What the Mac is doing around a window, as the platform said.
@@ -1146,11 +1464,12 @@ mod tests {
         abi::{
             CODEC_H264, FRAME_KEY, FRAME_REFERENCED, LIFT_INPUT, LIFT_SCREEN, MOD_CAPS_LOCK,
             MOD_COMMAND, MOD_CONTROL, MOD_OPTION, MOD_SHIFT, SOURCE_RESUME, THERMAL_SERIOUS,
+            UNLOCK_NOT_PRIVATE, UNLOCK_UNLOCKED,
         },
-        fake::{Call, Fake, OpenPlan, Played, Watchdog},
+        fake::{Call, Fake, KeyPlan, OpenPlan, Played, Watchdog, a_public_key},
         fake_sharer::{
-            Around, AroundPlan, FakeSharer, SharerCall, key_post, left_down, pointer_post,
-            read_table,
+            Around, AroundPlan, CheckPlan, FakeSharer, SetupPlan, SharerCall, key_post, left_down,
+            pointer_post, read_table,
         },
     };
 
@@ -2329,5 +2648,646 @@ mod tests {
         window.hear(false);
         assert!(!inside_call());
         assert_eq!(*inside.lock().unwrap(), [true, true]);
+    }
+
+    // The functions that unlock, at the device that shows the screen.
+
+    /// What the platform is asked for a key: the Mac that the device would unlock.
+    fn key_for(renew: bool) -> KeyFor<'static> {
+        KeyFor {
+            id: &[7; 32],
+            name: "Studio Mac",
+            renew,
+        }
+    }
+
+    /// The question that the Mac asked.
+    fn ask(number: u64) -> Ask<'static> {
+        Ask {
+            number,
+            sealed: b"a sealed key",
+            id: &[7; 32],
+            name: "Studio Mac",
+        }
+    }
+
+    fn is_about_face(call: &Call) -> bool {
+        matches!(
+            call,
+            Call::UnlockKey { .. } | Call::UnlockOpen { .. } | Call::UnlockCancel
+        )
+    }
+
+    #[test]
+    fn a_platform_that_cannot_unlock_with_a_face_is_asked_for_no_key_and_no_face() {
+        let fake = Fake::new();
+        assert!(calls_of(&fake.vtable()).can_unlock());
+
+        let whole = fake.vtable();
+        let at = |offset: usize| u32::try_from(offset).unwrap();
+        let tables = [
+            // Written before a face could unlock: the table ends at `stopped`.
+            ("a table that ends at stopped", fake.vtable_without_face()),
+            (
+                "a table with two of the three",
+                fake.vtable_with_some_face(),
+            ),
+            (
+                "a table without unlock_key",
+                BatonViewerVTable {
+                    unlock_key: None,
+                    ..whole
+                },
+            ),
+            (
+                "a table without unlock_open",
+                BatonViewerVTable {
+                    unlock_open: None,
+                    ..whole
+                },
+            ),
+            (
+                "a table without unlock_cancel",
+                BatonViewerVTable {
+                    unlock_cancel: None,
+                    ..whole
+                },
+            ),
+            // A size decides what is read, whatever the fields beyond it hold.
+            (
+                "a table that ends after unlock_key",
+                BatonViewerVTable {
+                    size: at(offset_of!(BatonViewerVTable, unlock_open)),
+                    ..whole
+                },
+            ),
+            (
+                "a table that ends after unlock_open",
+                BatonViewerVTable {
+                    size: at(offset_of!(BatonViewerVTable, unlock_cancel)),
+                    ..whole
+                },
+            ),
+            // A size that cuts a function in two gives half of a pointer to nobody.
+            (
+                "a size that cuts unlock_cancel",
+                BatonViewerVTable {
+                    size: at(offset_of!(BatonViewerVTable, unlock_cancel)) + 4,
+                    ..whole
+                },
+            ),
+        ];
+        let count = tables.len();
+        for (what, table) in tables {
+            let calls = calls_of(&table);
+            assert!(!calls.can_unlock(), "{what}");
+            assert!(
+                matches!(
+                    calls.unlock_key(&key_for(true)),
+                    Err(KeyFailure::Unsupported)
+                ),
+                "{what}"
+            );
+            // The screen of such a platform is a screen all the same: it is given no question,
+            // and no word that one is not open.
+            let mut opened = open(&calls);
+            assert!(!opened.screen.unlock_open(&ask(1)), "{what}");
+            opened.screen.unlock_cancel();
+            opened.screen.show(3);
+        }
+        assert_eq!(fake.count(is_about_face), 0);
+        assert_eq!(fake.count(|call| matches!(call, Call::Show(3))), count);
+        assert!(fake.complaints().is_empty(), "{:?}", fake.complaints());
+    }
+
+    #[test]
+    fn a_key_is_asked_for_as_the_header_says_and_a_whole_one_is_taken() {
+        let fake = Fake::new();
+        let calls = registered(&fake);
+        for renew in [false, true] {
+            let key = calls.unlock_key(&key_for(renew)).unwrap();
+            assert_eq!(key.sealing, Sealing::EciesP256);
+            assert_eq!(key.public.as_bytes(), a_public_key().as_slice());
+        }
+        let asked: Vec<_> = fake
+            .log()
+            .into_iter()
+            .filter_map(|(_, call)| match call {
+                Call::UnlockKey { id, name, renew } => Some((id, name, renew)),
+                _ => None,
+            })
+            .collect();
+        let studio = |renew| (vec![7; 32], "Studio Mac".to_owned(), renew);
+        assert_eq!(asked, [studio(false), studio(true)]);
+        assert!(fake.complaints().is_empty(), "{:?}", fake.complaints());
+    }
+
+    #[test]
+    fn a_key_that_is_not_whole_is_a_failure_without_a_sentence() {
+        let point = a_public_key();
+        assert_eq!((point.len(), point[0]), (65, 0x04));
+        let gives = |sealing, key: Vec<u8>| KeyPlan::Gives { sealing, key };
+        let claims = |len| KeyPlan::Claims {
+            sealing: SEALING_ECIES_P256,
+            len,
+        };
+        let mut compressed = point.clone();
+        compressed[0] = 0x02;
+        let cases = [
+            ("a way of sealing of none", gives(0, point.clone())),
+            (
+                "a way of sealing that is not known",
+                gives(SEALING_ECIES_P256 + 1, point.clone()),
+            ),
+            (
+                "a point in the compressed form",
+                gives(SEALING_ECIES_P256, compressed),
+            ),
+            (
+                "a key one byte short",
+                gives(SEALING_ECIES_P256, point[..64].to_vec()),
+            ),
+            (
+                "a key one byte long",
+                gives(SEALING_ECIES_P256, [point.clone(), vec![1]].concat()),
+            ),
+            ("a key of no bytes", gives(SEALING_ECIES_P256, Vec::new())),
+            ("a length of none", claims(0)),
+            ("a length beyond the room", claims(UNLOCK_KEY_MAX + 1)),
+            ("the largest length", claims(u32::MAX)),
+        ];
+        for (what, plan) in cases {
+            let fake = Fake::new();
+            let calls = registered(&fake);
+            fake.plan_key(plan);
+            let failure = calls.unlock_key(&key_for(true)).expect_err(what);
+            assert!(
+                matches!(failure, KeyFailure::Failed(Failure(None))),
+                "{what}: {failure:?}"
+            );
+            assert!(
+                fake.complaints().is_empty(),
+                "{what}: {:?}",
+                fake.complaints()
+            );
+        }
+    }
+
+    #[test]
+    fn the_number_that_a_platform_returns_without_a_key_says_why_it_gave_none() {
+        let fake = Fake::new();
+        let calls = registered(&fake);
+        let fails = |code: i32, text: &[u8], claimed_len: u32| KeyPlan::Fails {
+            code,
+            text: text.to_vec(),
+            claimed_len,
+        };
+        let name = |failure: KeyFailure| match failure {
+            KeyFailure::Refused => "refused",
+            KeyFailure::Blocked => "blocked",
+            KeyFailure::Unsupported => "unsupported",
+            KeyFailure::Failed(_) => "failed",
+        };
+        for (code, expected) in [
+            (KEY_REFUSED, "refused"),
+            (KEY_BLOCKED, "blocked"),
+            (KEY_UNSUPPORTED, "unsupported"),
+        ] {
+            // The sentence that comes with these is not shown: the number says it.
+            fake.plan_key(fails(code, b"Not shown.", 10));
+            let failure = calls.unlock_key(&key_for(true)).err().unwrap();
+            assert_eq!(name(failure), expected, "{code}");
+        }
+        // Any other number is a failure, with the sentence that the platform wrote, as far as
+        // there is one and as far as the room it was given.
+        for (code, text, claimed_len, sentence) in [
+            (-7, &b"  Face ID is off.  "[..], 19, Some("Face ID is off.")),
+            (4, b"", 0, None),
+            (1000, b"abc", 1000, Some("abc")),
+            (-1, b"   ", 3, None),
+        ] {
+            fake.plan_key(fails(code, text, claimed_len));
+            match calls.unlock_key(&key_for(true)) {
+                Err(KeyFailure::Failed(Failure(got))) => {
+                    assert_eq!(got.as_deref(), sentence, "{code}");
+                }
+                other => panic!("{code}: {other:?}"),
+            }
+        }
+        assert!(fake.complaints().is_empty(), "{:?}", fake.complaints());
+    }
+
+    #[test]
+    fn a_question_reaches_the_platform_of_the_screen_whole_and_is_taken_or_not() {
+        let fake = Fake::new();
+        let calls = registered(&fake);
+        let mut opened = open(&calls);
+        assert!(opened.screen.unlock_open(&ask(4)));
+        // A platform that does not take the question says so with any number but `OK`.
+        fake.plan_open_question(-1);
+        assert!(!opened.screen.unlock_open(&ask(5)));
+        opened.screen.unlock_cancel();
+        let heard: Vec<_> = fake
+            .log()
+            .into_iter()
+            .map(|(_, call)| call)
+            .filter(is_about_face)
+            .collect();
+        let question = |number| Call::UnlockOpen {
+            number,
+            sealed: b"a sealed key".to_vec(),
+            id: vec![7; 32],
+            name: "Studio Mac".to_owned(),
+        };
+        assert_eq!(heard, [question(4), question(5), Call::UnlockCancel]);
+        drop(opened);
+        assert!(fake.complaints().is_empty(), "{:?}", fake.complaints());
+    }
+
+    #[test]
+    fn the_calls_that_ask_for_a_face_are_calls_into_the_platform_too() {
+        let fake = Fake::new();
+        let inside = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&inside);
+        fake.on_call(move |call| {
+            if is_about_face(call) {
+                seen.lock().unwrap().push(inside_call());
+            }
+        });
+        let calls = registered(&fake);
+        calls.unlock_key(&key_for(false)).unwrap();
+        let mut opened = open(&calls);
+        assert!(opened.screen.unlock_open(&ask(1)));
+        opened.screen.unlock_cancel();
+        assert!(!inside_call());
+        assert_eq!(*inside.lock().unwrap(), [true, true, true]);
+    }
+
+    // The functions that unlock, at the device that is unlocked.
+
+    /// The key of the other device, which the key of a box is sealed to.
+    fn pad_key() -> UnlockKey {
+        UnlockKey {
+            sealing: Sealing::EciesP256,
+            public: SealingKey::new(a_public_key()),
+        }
+    }
+
+    fn setup_with<'a>(password: &'a str, key: &'a UnlockKey) -> Setup<'a> {
+        Setup {
+            password,
+            target: &[1; 32],
+            viewer: &[2; 32],
+            key,
+        }
+    }
+
+    fn attempt_with(viewer_key: &[u8]) -> Attempt<'_> {
+        Attempt {
+            sealing: SEALING_ECIES_P256,
+            box_key: &[9; 32],
+            boxed: b"a box",
+            viewer_key,
+            target: &[1; 32],
+            viewer: &[2; 32],
+        }
+    }
+
+    fn is_about_unlock(call: &SharerCall) -> bool {
+        matches!(
+            call,
+            SharerCall::UnlockCheck { .. }
+                | SharerCall::UnlockSetup { .. }
+                | SharerCall::Unlock { .. }
+        )
+    }
+
+    #[test]
+    fn a_platform_that_cannot_let_another_device_unlock_its_screen_is_asked_for_nothing() {
+        let fake = FakeSharer::new();
+        let whole = fake.vtable();
+        assert!(read_table(&whole).unwrap().can_unlock());
+        let at = |offset: usize| u32::try_from(offset).unwrap();
+        let tables = [
+            // Written before another device could unlock the screen: the table ends at `leave`.
+            ("a table that ends at leave", fake.vtable_without_unlock()),
+            ("a table that ends at hear", fake.vtable_without_leave()),
+            (
+                "a table with two of the three",
+                fake.vtable_with_some_unlock(),
+            ),
+            (
+                "a table without unlock_check",
+                BatonSharerVTable {
+                    unlock_check: None,
+                    ..whole
+                },
+            ),
+            (
+                "a table without unlock_setup",
+                BatonSharerVTable {
+                    unlock_setup: None,
+                    ..whole
+                },
+            ),
+            (
+                "a table without unlock",
+                BatonSharerVTable {
+                    unlock: None,
+                    ..whole
+                },
+            ),
+            // A size decides what is read, whatever the fields beyond it hold.
+            (
+                "a table that ends after unlock_check",
+                BatonSharerVTable {
+                    size: at(offset_of!(BatonSharerVTable, unlock_setup)),
+                    ..whole
+                },
+            ),
+            (
+                "a table that ends after unlock_setup",
+                BatonSharerVTable {
+                    size: at(offset_of!(BatonSharerVTable, unlock)),
+                    ..whole
+                },
+            ),
+            // A size that cuts a function in two gives half of a pointer to nobody.
+            (
+                "a size that cuts unlock",
+                BatonSharerVTable {
+                    size: at(offset_of!(BatonSharerVTable, unlock)) + 4,
+                    ..whole
+                },
+            ),
+        ];
+        let key = pad_key();
+        let viewer_key = a_public_key();
+        for (what, table) in tables {
+            let calls = read_table(&table).unwrap();
+            assert!(!calls.can_unlock(), "{what}");
+            assert!(
+                matches!(
+                    calls.unlock_check("hunter2"),
+                    Err(SetupFailure::Unsupported)
+                ),
+                "{what}"
+            );
+            assert!(
+                matches!(
+                    calls.unlock_setup(&setup_with("hunter2", &key)),
+                    Err(SetupFailure::Unsupported)
+                ),
+                "{what}"
+            );
+            // A window of such a platform is not asked to unlock, and the caller can tell.
+            let mut window = started(&fake, &calls);
+            assert_eq!(window.unlock(&attempt_with(&viewer_key)), None, "{what}");
+        }
+        assert_eq!(fake.count(is_about_unlock), 0);
+        fake.assert_no_complaints();
+    }
+
+    #[test]
+    fn a_password_that_the_interface_does_not_allow_is_not_given_to_the_platform() {
+        let fake = FakeSharer::new();
+        let calls = fake.platform();
+        let key = pad_key();
+        let limit = UNLOCK_PASSWORD_MAX as usize;
+        // The limit is in bytes, not in characters.
+        let accents = |count: usize| "\u{e9}".repeat(count);
+        let allowed = ["x".to_owned(), "x".repeat(limit), accents(limit / 2)];
+        let refused = [String::new(), "x".repeat(limit + 1), accents(limit / 2 + 1)];
+        for password in &allowed {
+            let what = password.len();
+            assert!(calls.unlock_check(password).is_ok(), "{what} bytes");
+            assert!(
+                calls.unlock_setup(&setup_with(password, &key)).is_ok(),
+                "{what} bytes"
+            );
+        }
+        for password in &refused {
+            let what = password.len();
+            assert!(
+                matches!(
+                    calls.unlock_check(password),
+                    Err(SetupFailure::Failed(Failure(None)))
+                ),
+                "{what} bytes"
+            );
+            assert!(
+                matches!(
+                    calls.unlock_setup(&setup_with(password, &key)),
+                    Err(SetupFailure::Failed(Failure(None)))
+                ),
+                "{what} bytes"
+            );
+        }
+        // The platform was given the ones that are allowed, whole, and nothing else.
+        let heard = fake.log();
+        let checked: Vec<_> = heard
+            .iter()
+            .filter_map(|(_, call)| match call {
+                SharerCall::UnlockCheck { password } => Some(password.clone()),
+                _ => None,
+            })
+            .collect();
+        let set_up: Vec<_> = heard
+            .iter()
+            .filter_map(|(_, call)| match call {
+                SharerCall::UnlockSetup { password, .. } => Some(password.clone()),
+                _ => None,
+            })
+            .collect();
+        let allowed = allowed.map(String::into_bytes);
+        assert_eq!(checked, allowed);
+        assert_eq!(set_up, allowed);
+        fake.assert_no_complaints();
+    }
+
+    #[test]
+    fn the_setup_reaches_the_platform_with_both_ids_and_the_key_of_the_other_device() {
+        let fake = FakeSharer::new();
+        let calls = fake.platform();
+        let key = pad_key();
+        let made = calls.unlock_setup(&setup_with("hunter2", &key)).unwrap();
+        // What the fake makes unless a test says otherwise.
+        assert_eq!(made.boxed, b"a box");
+        assert_eq!(made.sealed.as_bytes(), b"a sealed key");
+        assert_eq!(
+            (made.sealing, made.public),
+            (Sealing::EciesP256, key.public)
+        );
+        let heard: Vec<_> = fake.log().into_iter().map(|(_, call)| call).collect();
+        assert_eq!(
+            heard,
+            [SharerCall::UnlockSetup {
+                password: b"hunter2".to_vec(),
+                sealing: SEALING_ECIES_P256,
+                target: vec![1; 32],
+                viewer: vec![2; 32],
+                viewer_key: a_public_key(),
+            }]
+        );
+        fake.assert_no_complaints();
+    }
+
+    #[test]
+    fn the_number_that_a_platform_returns_for_a_password_says_why_it_was_not_accepted() {
+        let fake = FakeSharer::new();
+        let calls = fake.platform();
+        let key = pad_key();
+        let why = |result: Result<(), SetupFailure>| match result {
+            Ok(()) => "accepted".to_owned(),
+            Err(SetupFailure::WrongPassword) => "wrong".to_owned(),
+            Err(SetupFailure::Unsupported) => "unsupported".to_owned(),
+            Err(SetupFailure::Failed(Failure(Some(text)))) => format!("failed: {text}"),
+            Err(SetupFailure::Failed(Failure(None))) => "failed".to_owned(),
+        };
+        let cases: [(i32, &[u8], u32, &str); 5] = [
+            (PASSWORD_WRONG, b"Not shown.", 10, "wrong"),
+            (PASSWORD_UNSUPPORTED, b"Not shown.", 10, "unsupported"),
+            // Any other number is a failure, with the sentence as far as there is one.
+            (
+                -1,
+                b"  The disk is full.  ",
+                21,
+                "failed: The disk is full.",
+            ),
+            (7, b"", 0, "failed"),
+            (1000, b"abc", 1000, "failed: abc"),
+        ];
+        for (code, text, claimed_len, expected) in cases {
+            fake.plan_check(CheckPlan::Fails {
+                code,
+                text: text.to_vec(),
+                claimed_len,
+            });
+            fake.plan_setup(SetupPlan::Fails {
+                code,
+                text: text.to_vec(),
+                claimed_len,
+            });
+            assert_eq!(why(calls.unlock_check("hunter2")), expected, "check {code}");
+            assert_eq!(
+                why(calls.unlock_setup(&setup_with("hunter2", &key)).map(drop)),
+                expected,
+                "setup {code}"
+            );
+        }
+        fake.assert_no_complaints();
+    }
+
+    #[test]
+    fn a_box_or_a_sealed_key_that_is_not_whole_is_a_failure_and_the_largest_that_fit_are_not() {
+        let fake = FakeSharer::new();
+        let calls = fake.platform();
+        let key = pad_key();
+        let (box_max, sealed_max) = (UNLOCK_BOX_MAX as usize, UNLOCK_SEALED_MAX as usize);
+        // The largest that the rooms hold, and the smallest.
+        for (boxed, sealed) in [(box_max, sealed_max), (1, 1)] {
+            fake.plan_setup(SetupPlan::Makes {
+                boxed: vec![5; boxed],
+                sealed: vec![6; sealed],
+            });
+            let made = calls.unlock_setup(&setup_with("hunter2", &key)).unwrap();
+            assert_eq!(made.boxed, vec![5; boxed]);
+            assert_eq!(made.sealed.as_bytes(), vec![6; sealed].as_slice());
+        }
+        let makes = |boxed: Vec<u8>, sealed: Vec<u8>| SetupPlan::Makes { boxed, sealed };
+        let claims = |box_len, sealed_len| SetupPlan::Claims {
+            box_len,
+            sealed_len,
+        };
+        let cases = [
+            ("no box", makes(Vec::new(), vec![1])),
+            ("no sealed key", makes(vec![1], Vec::new())),
+            ("a box of none", claims(0, 3)),
+            ("a sealed key of none", claims(3, 0)),
+            ("a box beyond the room", claims(UNLOCK_BOX_MAX + 1, 3)),
+            (
+                "a sealed key beyond the room",
+                claims(3, UNLOCK_SEALED_MAX + 1),
+            ),
+            ("both as long as can be said", claims(u32::MAX, u32::MAX)),
+        ];
+        for (what, plan) in cases {
+            fake.plan_setup(plan);
+            let failure = calls
+                .unlock_setup(&setup_with("hunter2", &key))
+                .expect_err(what);
+            assert!(
+                matches!(failure, SetupFailure::Failed(Failure(None))),
+                "{what}: {failure:?}"
+            );
+        }
+        fake.assert_no_complaints();
+    }
+
+    #[test]
+    fn a_way_of_sealing_that_the_interface_does_not_have_is_not_carried_out_by_the_platform() {
+        let fake = FakeSharer::new();
+        let calls = fake.platform();
+        let key = UnlockKey {
+            sealing: Sealing::Other,
+            public: SealingKey::new(a_public_key()),
+        };
+        assert!(matches!(
+            calls.unlock_setup(&setup_with("hunter2", &key)),
+            Err(SetupFailure::Unsupported)
+        ));
+        assert_eq!(fake.count(is_about_unlock), 0);
+        fake.assert_no_complaints();
+    }
+
+    #[test]
+    fn an_attempt_reaches_the_platform_whole_and_what_it_returns_is_given_back_as_it_is() {
+        let fake = FakeSharer::new();
+        let code = Arc::new(Mutex::new(0_u32));
+        let script = Arc::clone(&code);
+        fake.plan_unlock(move |_, _| *script.lock().unwrap());
+        let mut window = started_private(&fake, &fake.platform());
+        let viewer_key = a_public_key();
+        let numbers = [UNLOCK_UNLOCKED, UNLOCK_NOT_PRIVATE, 6, 99, u32::MAX];
+        for number in numbers {
+            *code.lock().unwrap() = number;
+            assert_eq!(window.unlock(&attempt_with(&viewer_key)), Some(number));
+        }
+        let heard: Vec<_> = fake
+            .calls(1)
+            .into_iter()
+            .filter(|call| matches!(call, SharerCall::Unlock { .. }))
+            .collect();
+        let attempt = SharerCall::Unlock {
+            sealing: SEALING_ECIES_P256,
+            box_key: vec![9; 32],
+            boxed: b"a box".to_vec(),
+            viewer_key,
+            target: vec![1; 32],
+            viewer: vec![2; 32],
+        };
+        assert_eq!(heard, vec![attempt; numbers.len()]);
+        fake.assert_no_complaints();
+    }
+
+    #[test]
+    fn the_calls_that_let_another_device_unlock_are_calls_into_the_platform_too() {
+        let fake = FakeSharer::new();
+        let inside = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&inside);
+        fake.on_call(move |_, call| {
+            if is_about_unlock(call) {
+                seen.lock().unwrap().push(inside_call());
+            }
+        });
+        let calls = fake.platform();
+        calls.unlock_check("hunter2").unwrap();
+        calls
+            .unlock_setup(&setup_with("hunter2", &pad_key()))
+            .unwrap();
+        let mut window = started_private(&fake, &calls);
+        window.unlock(&attempt_with(&a_public_key()));
+        assert!(!inside_call());
+        assert_eq!(*inside.lock().unwrap(), [true, true, true]);
     }
 }
