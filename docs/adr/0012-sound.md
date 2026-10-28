@@ -1,6 +1,6 @@
 # 0012: Sound: the Mac sends what it plays, and is quiet while the other device listens
 
-Status: proposed
+Status: proposed. Built in the app on `main`; the checks on real devices in this record are not all run yet.
 
 ## Context
 

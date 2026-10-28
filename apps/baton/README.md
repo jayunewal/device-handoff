@@ -1,12 +1,15 @@
 # Baton app
 
-The Flutter app for iPhone, iPad and Mac. Android follows. It asks for a name for the device the
+The Flutter app for iPhone, iPad and Mac. Android is on hold. It asks for a name for the device the
 first time, then starts Baton and shows two places. One is the devices paired with it, where a new
 one is paired (one device shows a QR code, the other scans it or has it pasted in, and the person
 compares six digits) and where a tap on a device opens a screen to send it files, a folder (on a
 Mac), a link or some text. The other is an inbox of what other devices sent, with a link to open
 and an item to copy or remove. A device that asks to send files is asked about at the bottom of both
-places, and the person says yes or no. Everything it does goes through
+places, and the person says yes or no. A Mac also shares a window or its screen with a phone, which
+looks at it, controls it, plays its sound and can unlock it with Face ID (built, not yet tried on
+devices); the Swift code for that is in `rust_builder/macos/Classes` and `rust_builder/ios/Classes`.
+Everything it does goes through
 [`crates/baton-ffi`](../../crates/baton-ffi), the bridge to the Rust core; the app holds no
 protocol logic of its own. [docs/architecture.md](../../docs/architecture.md#the-bridge) says how
 the bridge is put together, and [the app](../../docs/architecture.md#the-app) how the screens sit

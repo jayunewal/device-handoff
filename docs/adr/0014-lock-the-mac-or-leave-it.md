@@ -1,6 +1,6 @@
 # 0014: Lock the Mac or leave it: the person who ends a private session at the other device is asked
 
-Status: proposed
+Status: proposed. Built in the app on `main`; none of the checks on real devices in this record has been run yet.
 
 ## Context
 
