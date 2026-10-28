@@ -1,6 +1,6 @@
 # 0013: Unlock from a phone: the face on the phone opens a key, and the Mac types its own password
 
-Status: proposed
+Status: proposed. Built in the app on `main`; the checks on real devices in this record are not all run yet.
 
 ## Context
 

@@ -1,6 +1,6 @@
 # 0009: Window streaming: the Mac offers, late frames are dropped, input stays in the window
 
-Status: proposed
+Status: proposed. Built in the app on `main`; the checks on real devices in this record are not all run yet.
 
 ## Context
 

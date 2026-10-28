@@ -2,13 +2,13 @@
 
 Baton is pre-alpha and is not in the App Store. You build the app on your Mac, and put it on an iPhone or iPad with a cable. A free Apple ID is enough: you do not need to join the Apple Developer Program. The price of the free Apple ID is that an app you install this way stops opening after seven days, and you install it again with the same command ([Every seven days](#every-seven-days)).
 
-This version asks for a name for the device, shows the devices paired with it, pairs two devices (one shows a QR code and the other scans it, or has it pasted in; [Pair two devices](#pair-two-devices)), sends links and text between them ([Send a link or some text](#send-a-link-or-some-text)), and sends files and folders ([Send files](#send-files)). A Baton that receives while the app is closed is not built; the [`baton` program](try-it.md) is the one that can send the clipboard and run in the background of a computer.
+This version asks for a name for the device, shows the devices paired with it, pairs two devices (one shows a QR code and the other scans it, or has it pasted in; [Pair two devices](#pair-two-devices)), sends links and text between them ([Send a link or some text](#send-a-link-or-some-text)), and sends files and folders ([Send files](#send-files)). From an iPhone or iPad you can also look at the Mac's screen or one of its windows, control it, hear its sound and unlock it with Face ID ([Look at and control the Mac](#look-at-and-control-the-mac)). A Baton that receives while the app is closed is not built; the [`baton` program](try-it.md) is the one that can run in the background of a computer.
 
 Everything below is typed in Terminal, which is a zsh shell on a Mac. Each command block can be pasted whole.
 
 ## What you need
 
-- A Mac, and an iPhone or iPad with iOS or iPadOS 15 or newer, if you want the phone app. The Mac app needs macOS 12 or newer.
+- A Mac, and an iPhone or iPad with iOS or iPadOS 15 or newer, if you want the phone app. The Mac app needs macOS 12 or newer. Sharing its screen needs macOS 14, its sound macOS 14.2, and control of a single window macOS 15.2.
 - [Xcode](https://apps.apple.com/app/xcode/id497799835), from the Mac App Store, new enough to know the iOS on your phone: Xcode says "Unsupported" for a phone with a newer iOS than it was made for. Open Xcode once, accept the license and let it download what it offers, including the iOS platform. Then run this once, to point the command line at it:
 
   ```sh
@@ -196,6 +196,50 @@ What to know in this version:
 - On an iPhone or an iPad the dialog copies what you choose into the app's temporary space before it is sent, so a very large file takes room for a second copy while it goes. Baton deletes the copies when the sending is over, however it went. If Baton is closed while files go, the copies stay until iOS clears them.
 - If Baton is closed on the device that sends while files go, nothing is kept of that transfer, and the device that takes the files still lists it and counts it. When Baton is opened again on the device that sent, it tells the other device to let go of it as soon as the two can reach each other, and keeps trying, less often as time goes by, until the other device answers. Until then, which is up to an hour if the sending device stays closed, a device that has left two transfers like that is turned away. The other device counts that hour only while it is awake, so a phone that slept in between may still hold the transfer after more than an hour of the clock. Stopping a transfer with **Stop sending** tells the other device at once, and if it cannot be reached then, Baton tells it later.
 
+## Look at and control the Mac
+
+An iPhone or iPad can show the Mac's whole screen or one of its windows, control it by touch, a trackpad or a keyboard, and play its sound. The phone cannot be shown or controlled itself, because iOS does not allow it. This part is built and tested in CI, and has been tried on real devices only in part: see the table in the [README](../README.md#what-works-today).
+
+### Give the Mac its permissions, once
+
+The Mac asks the first time it needs each of these. If you answered **Don't Allow**, turn it on in **System Settings**, **Privacy & Security**:
+
+- **Screen & System Audio Recording**, to share the screen or a window and its sound.
+- **Accessibility**, to let the phone control the Mac and to keep the Mac's own keyboard and trackpad held in privacy mode.
+- **Notifications**, so that the Mac can tell you afterwards that it was unlocked from the phone.
+
+**After every rebuild of the Mac app**, macOS treats it as a new program and the old permissions no longer apply, but the switches can still look on. Sharing or control then stops working without saying why. Reset them and grant them again:
+
+```sh
+tccutil reset All io.github.jayunewal.baton
+```
+
+Start Baton, allow each permission when it asks, then quit Baton and start it once more.
+
+### Start from the Mac
+
+On the Mac's **Devices** tab, the screen button on the phone's row offers **Share to look at** and **Share a window or screen to look at and control**. The system's picker opens; choose a window or a whole display. The phone shows it. **Stop sharing** ends it.
+
+### Start from the phone
+
+First allow it at the Mac, once: in the **More** menu (three dots) of the phone's row choose **Let this device ask for the screen…** and pick look only, or look and control. Then, on the phone, the eye button on the Mac's row offers **Look at its screen** and **Look at its screen and control it**.
+
+### Privacy mode
+
+A session that the phone controls is private: the Mac's screens stay dark, its own keyboard and trackpad are held, and the Mac locks when the session ends or the connection drops. Three presses of Escape within two seconds at the Mac end the session. Two switches in the settings button of the phone's bar lift this for one session: **Show screen on the Mac** and **Allow the Mac's keyboard and trackpad**. Both are off unless you turn them on.
+
+When you end a private session at the phone while the Mac is unlocked, the phone asks whether to lock the Mac: **Lock**, **Leave it** or **Cancel**. This question is built but not yet tried on real devices.
+
+### Sound
+
+The speaker button in the phone's bar plays the Mac's sound on the phone (**Hear the sound of** and the Mac's name), and the Mac stays quiet while it does. In a private session the sound is on from the start. Sound goes with a whole display, not a single window. At the Mac you choose which paired devices may hear it.
+
+### Unlock the Mac with Face ID
+
+When the Mac locks during a session, the phone shows a card saying so with an **Unlock** button. To set it up, at the Mac choose **Let this device unlock this Mac…** in the **More** menu of the phone's row and type the Mac's password once; it is kept locked by a key that only the phone's Face ID or Touch ID opens. Then **Unlock** asks for your face and the Mac types its own password. It works only in a private session with both switches off. The Mac shows a notification afterwards and keeps a list of attempts in that same window.
+
+This is built and tested in CI, and has not yet been tried on real devices. If you try it, use a Mac account whose password you can change back.
+
 ## Every seven days
 
 An app made with a free Apple ID stops opening after seven days. Its icon is still there, but it closes at once. To install it again, plug the phone in, unlock it and run, in `device-handoff/apps/baton`:
@@ -229,6 +273,7 @@ The two `pod install` lines matter when a newer version adds or removes files of
 - **`Developer Mode disabled`**: turn it on as above.
 - **The phone is listed as unsupported, or Xcode says it cannot use this iOS**: your Xcode is older than the iOS on the phone. Update macOS and Xcode.
 - **`Untrusted Developer` when you open Baton, or Baton closes at once**: trust yourself as above. If it was working and stopped, seven days have passed: install it again as above.
+- **Sharing, control or sound stopped working after a rebuild of the Mac app**: reset the permissions as in [Give the Mac its permissions, once](#give-the-mac-its-permissions-once).
 - **`cargo` or `rustup` not found**: Xcode does not use your shell's search path when you build from its window. Build with `flutter run --release --no-resident` in Terminal, as above, and if it still happens, check that `rustup --version` works in the same Terminal.
 - **`Unable to install` or `The code signature is invalid`**: unlock the phone, plug it in again and try once more. If it repeats, delete the Baton app from the phone and run `flutter run --release --no-resident` again. That also deletes what the app had stored.
 - **The camera does not start, or the picture stays black**: check that Baton may use the camera, in **Settings** on the phone, or **System Settings**, **Privacy & Security**, **Camera** on the Mac. The iPhone simulator has no camera. You can always paste the code instead.

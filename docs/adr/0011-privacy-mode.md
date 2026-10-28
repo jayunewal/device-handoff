@@ -1,6 +1,6 @@
 # 0011: Privacy mode: a Mac that another device controls shows nothing, takes no input, and locks when the session ends
 
-Status: proposed
+Status: proposed. Built in the app on `main`; the checks on real devices in this record are not all run yet.
 
 ## Context
 

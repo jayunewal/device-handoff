@@ -27,7 +27,7 @@ Done when: two machines on the same Wi-Fi pair with `baton`, a link sent from on
 
 Flutter apps for macOS, Windows, Android, iOS and iPadOS that wrap the core. QR pairing, a device list, sending and receiving links, clipboard and files. Tray icon and notifications on desktop. The apps register the `baton1:` URL scheme, which pairing tickets already start with, so scanning a ticket's QR code with the phone's own camera opens Baton on the pairing screen. The first apps are for iPhone, iPad and Mac, installed from Xcode with a free Apple ID. They are written against `baton-app` (see [architecture.md](architecture.md#the-app-layer)).
 
-**Order of work.** Pairing, sending links and text, the inbox, and sending and taking files and folders between a Mac and an iPhone or iPad (the person at the other end is asked first) are in the apps. Window streaming from a Mac to an iPhone or iPad with control from the phone comes next (milestone 5). The Android app waits until both work.
+**Order of work.** Pairing, sending links and text, the inbox, and sending and taking files and folders between a Mac and an iPhone or iPad (the person at the other end is asked first) are in the apps. Streaming a Mac's screen or a window to an iPhone or iPad, with control from the phone, privacy mode, sound and unlock with Face ID (milestone 5), is built too and is being tried on real devices. The Android app is on hold until the Apple apps are released.
 
 ## Milestone 3: tabs and sharing
 
@@ -41,13 +41,16 @@ A self-hostable server that keeps a device roster, so devices signed in to the s
 
 Stream a window from a Mac to an iPhone or iPad, with touch and keyboard control; a Windows PC as the source follows. The design is in [ADR 0009](adr/0009-window-streaming.md): the Mac offers a window that its person picked, frames travel on the existing connection as one QUIC stream each and are dropped when they are late, and input from the phone is confined to the shared window. No documented API captures a locked desktop (see [locked-devices.md](locked-devices.md)), so the first version needs the source unlocked while it streams and can lock it afterwards. A privacy mode or a separate session may follow.
 
+Where it stands: built for the Mac with the iPhone and iPad as viewers. The Mac shares a window or a whole display, the phone controls it, a private session keeps the Mac dark and held and locks it at the end ([ADR 0011](adr/0011-privacy-mode.md)), the Mac's sound plays on the phone ([ADR 0012](adr/0012-sound.md)), the phone can unlock the Mac with Face ID ([ADR 0013](adr/0013-unlock-from-a-phone.md)), and the person ending a private session at the phone is asked whether to lock the Mac ([ADR 0014](adr/0014-lock-the-mac-or-leave-it.md)). Looking at a window and hearing the sound have worked on real devices; the unlock and the question at the end have not yet been tried there. A Windows PC as the source is not built.
+
 **Order of work.** The part that needs no Apple hardware comes first: the messages, the kinds of stream, their budget and priorities, the rules for frames in flight, recovery and rate, and a benchmark with a synthetic stream, all tested in continuous integration. Then the Mac side (the picker, capture and encoding, with a view on the same Mac), then the viewer on the iPhone and iPad, then input from the phone, then the one-step hand-over from the Mac. Each step that needs a Mac and a phone says which of the tests in the record it has run.
 
 ## Later
 
 - iPhone control kit: AirPlay video plus a Bluetooth keyboard and mouse emulator, with a proof of concept to settle pointer calibration.
 - Mac bridge that exposes the iPhone Mirroring window to other devices.
-- Linux screen capture, audio, multi-monitor.
+- Linux screen capture, multi-monitor, the phone's microphone and camera for the Mac.
+- Android app (on hold).
 
 ## Open questions
 

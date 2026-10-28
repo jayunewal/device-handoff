@@ -1,6 +1,6 @@
 # 0010: Sessions that the viewer starts: allowed once at the Mac, asked for from the phone
 
-Status: proposed
+Status: proposed. Built in the app on `main`; the checks on real devices in this record are not all run yet.
 
 ## Context
 
