@@ -8,7 +8,7 @@ Everything below is typed in Terminal, which is a zsh shell on a Mac. Each comma
 
 ## What you need
 
-- A Mac, and an iPhone or iPad with iOS or iPadOS 15 or newer, if you want the phone app. The Mac app needs macOS 12 or newer. Sharing its screen needs macOS 14, its sound macOS 14.2, and control of a single window macOS 15.2.
+- A Mac, and an iPhone or iPad with iOS or iPadOS 15 or newer, if you want the phone app. The Mac app needs macOS 12 or newer. Sharing its screen needs macOS 14, its sound macOS 14.2, and control of a window or the whole screen macOS 15.2; privacy mode and the unlock go with control, so they need it too.
 - [Xcode](https://apps.apple.com/app/xcode/id497799835), from the Mac App Store, new enough to know the iOS on your phone: Xcode says "Unsupported" for a phone with a newer iOS than it was made for. Open Xcode once, accept the license and let it download what it offers, including the iOS platform. Then run this once, to point the command line at it:
 
   ```sh
@@ -198,7 +198,7 @@ What to know in this version:
 
 ## Look at and control the Mac
 
-An iPhone or iPad can show the Mac's whole screen or one of its windows, control it by touch, a trackpad or a keyboard, and play its sound. The phone cannot be shown or controlled itself, because iOS does not allow it. This part is built and tested in CI, and has been tried on real devices only in part: see the table in the [README](../README.md#what-works-today).
+An iPhone or iPad can show the Mac's whole screen or one of its windows, control it by touch and keyboard, and play its sound. The phone cannot be controlled itself, which iOS does not allow, and showing its screen is not built. This part is built and tested in CI, and has been tried on real devices only in part: see the table in the [README](../README.md#what-works-today).
 
 ### Give the Mac its permissions, once
 

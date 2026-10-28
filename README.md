@@ -12,16 +12,16 @@ Baton is an open source app for moving your work between your own devices. Send 
 | --- | --- | --- | --- | --- | --- |
 | Pair two devices (QR code or pasted code, six-digit check) | App | App | `baton` program | Not built | Tried on devices |
 | Send links and text, with an inbox | App | App | `baton` program | Not built | Tried on devices |
-| Send files and folders (the other side says yes first) | App, files and folders | App, files only | Not built | Not built | Built; not fully tried on devices |
-| Look at a window or the whole screen of the Mac | Shares (macOS 14 or newer) | Looks | Not built | Not built | Tried on an iPhone |
-| Control the Mac by touch, trackpad gestures and keyboard | Is controlled | Controls | Not built | Not built | Built; not fully tried on devices |
-| Privacy mode: the Mac stays dark, its own keyboard and trackpad are held, and it locks when the session ends | Yes | Starts it | Not built | Not built | Built; not fully tried on devices |
+| Send files and folders (the other side says yes first) | App, files and folders | App, files only | Not built | Not built | Tried between a Mac and an iPhone |
+| Look at a window or the whole screen of the Mac | Shares (macOS 14 or newer) | Looks | Not built | Not built | Tried on an iPhone and an iPad |
+| Control the Mac by touch and keyboard | Is controlled (macOS 15.2 or newer) | Controls | Not built | Not built | Built; not fully tried on devices |
+| Privacy mode: the Mac stays dark, its own keyboard and trackpad are held, and it locks when the session ends | Yes (macOS 15.2 or newer) | Starts it | Not built | Not built | Built; not fully tried on devices |
 | Hear the Mac's sound on the phone, with the Mac quiet meanwhile | Sends (macOS 14.2 or newer) | Plays | Not built | Not built | First try worked on an iPad |
-| "Lock the Mac?" when a private session ends at the phone (Lock, Leave it, Cancel) | Yes | Asks | Not built | Not built | Built, not yet tried on devices |
-| Unlock the Mac from the phone with Face ID or Touch ID | Is unlocked | Unlocks | Not built | Not built | Built, not yet tried on devices |
+| "Lock the Mac?" when a private session ends at the phone (Lock, Leave it, Cancel) | Yes (macOS 15.2 or newer) | Asks | Not built | Not built | Built, not yet tried on devices |
+| Unlock the Mac from the phone with Face ID or Touch ID | Is unlocked (macOS 15.2 or newer) | Unlocks | Not built | Not built | Built, not yet tried on devices |
 | Receive while the app is closed or the phone is locked | Not built | Not built | `baton listen` in a window | Not built | Needs the background agent and push |
 
-An iPhone or iPad can look at and control a Mac, but cannot be looked at or controlled itself: iOS does not allow it. Windows and Linux have only the `baton` command-line program for now, which pairs and sends links and text. The Android app is on hold until the Apple apps are released. A Windows PC as a screen to look at is planned.
+An iPhone or iPad can look at and control a Mac. It cannot be controlled itself, which iOS does not allow, and showing its screen is not built. Windows and Linux have only the `baton` command-line program for now, which pairs and sends links and text. The Android app is on hold until the Apple apps are released. A Windows PC as a screen to look at is planned.
 
 ## Run it on each device
 
@@ -37,7 +37,7 @@ If you rebuild the Mac app, macOS forgets the permissions it gave the old build 
 
 "Switch devices" is really two different features, and operating systems treat them very differently:
 
-1. **Hand off context.** Links, text and files can be moved to another device and opened there. Browser tabs and the clipboard are planned.
+1. **Hand off context.** Links, text and files can be moved to another device and opened there. Browser tabs, and the clipboard in the apps, are planned.
 2. **Stream a live screen.** Show a window or the whole screen of your Mac on your iPhone or iPad, with touch and keyboard control and the Mac's sound.
 
 What no third-party app can do on any platform is reach into another app and pull out its internal state, such as an unsaved document. Apple's Handoff and Microsoft's Cross-device Resume only work because the apps take part. Baton hands off what is portable and streams the rest.
