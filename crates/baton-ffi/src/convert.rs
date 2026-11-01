@@ -1119,44 +1119,58 @@ mod tests {
 
     #[test]
     fn what_a_device_can_do_with_windows_is_carried_over() {
-        let converted = WindowAbilities::from(app::WindowAbilities {
-            can_show: true,
-            can_share: false,
-            can_control: true,
-            can_give_screen: false,
-            can_be_unlocked: true,
-            can_unlock: false,
-        });
-        assert_eq!(
-            (
-                converted.can_show,
-                converted.can_share,
-                converted.can_control,
-                converted.can_give_screen,
-                converted.can_be_unlocked,
-                converted.can_unlock
-            ),
-            (true, false, true, false, true, false)
-        );
-        let converted = WindowAbilities::from(app::WindowAbilities {
+        let nothing = app::WindowAbilities {
             can_show: false,
-            can_share: true,
+            can_share: false,
             can_control: false,
-            can_give_screen: true,
+            can_give_screen: false,
             can_be_unlocked: false,
-            can_unlock: true,
-        });
-        assert_eq!(
-            (
+            can_unlock: false,
+        };
+        // Each ability alone, so that two of them cannot be swapped without it showing.
+        let each = [
+            app::WindowAbilities {
+                can_show: true,
+                ..nothing
+            },
+            app::WindowAbilities {
+                can_share: true,
+                ..nothing
+            },
+            app::WindowAbilities {
+                can_control: true,
+                ..nothing
+            },
+            app::WindowAbilities {
+                can_give_screen: true,
+                ..nothing
+            },
+            app::WindowAbilities {
+                can_be_unlocked: true,
+                ..nothing
+            },
+            app::WindowAbilities {
+                can_unlock: true,
+                ..nothing
+            },
+        ];
+        let flags = |abilities: app::WindowAbilities| {
+            let converted = WindowAbilities::from(abilities);
+            [
                 converted.can_show,
                 converted.can_share,
                 converted.can_control,
                 converted.can_give_screen,
                 converted.can_be_unlocked,
-                converted.can_unlock
-            ),
-            (false, true, false, true, false, true)
-        );
+                converted.can_unlock,
+            ]
+        };
+        assert_eq!(flags(nothing), [false; 6]);
+        for (place, ability) in each.into_iter().enumerate() {
+            let mut expected = [false; 6];
+            expected[place] = true;
+            assert_eq!(flags(ability), expected, "only ability {place}");
+        }
     }
 
     #[test]
