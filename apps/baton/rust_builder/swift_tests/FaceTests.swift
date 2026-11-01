@@ -93,6 +93,13 @@ func testARequestFromAStructThatIsTooShortIsNotRead() {
     short.pointee.size = UInt32(size)
     check(FaceKeyRequest(reading: short) == nil, "a struct of \(size) bytes")
   }
+  // A good request in a struct that says it is shorter than this version of the interface: only
+  // its size says that it cannot be read.
+  let lying = arena.shortStruct(BatonUnlockSource.self, size: whole)
+  lying.pointee.size = UInt32(whole - 1)
+  lying.pointee.id = arena.batonBytes(faceId())
+  lying.pointee.name = arena.batonBytes(Array("Studio".utf8))
+  check(FaceKeyRequest(reading: lying) == nil, "a good request in a struct that says it is short")
   let longer = arena.shortStruct(BatonUnlockSource.self, size: whole + 16)
   longer.pointee.size = UInt32(whole + 16)
   longer.pointee.id = arena.batonBytes(faceId())
