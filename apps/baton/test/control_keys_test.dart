@@ -165,6 +165,23 @@ void main() {
       );
     });
 
+    test('that goes down has text only if it made one character', () {
+      WindowInput_Key? delete(String character) => windowKey(
+        _down(PhysicalKeyboardKey.delete, LogicalKeyboardKey.delete, character),
+        noModifiers,
+      );
+
+      expect(delete('UIKeyInputDelete'), _key(0x4C));
+      expect(delete('ab'), _key(0x4C));
+      expect(delete(''), _key(0x4C));
+      expect(delete('a'), _key(0x4C, text: 'a'));
+      expect(
+        delete('e\u0301'),
+        _key(0x4C, text: 'e\u0301'),
+        reason: 'one character is made of two code points',
+      );
+    });
+
     test('that repeats is a key that goes down again, and says so', () {
       expect(
         windowKey(

@@ -115,9 +115,15 @@ WindowInput_Key? windowKey(KeyEvent event, WindowModifiers modifiers) {
     modifiers: modifiers,
     repeat: event is KeyRepeatEvent,
     // A key up never has a character.
-    text: event.character,
+    text: _textOf(event.character),
   );
 }
+
+/// What a key typed, or `null` if it typed nothing. A key types one character at most. A longer
+/// text is a name that the system may give a key that types none (inferred for the forward
+/// delete key of a keyboard on an iPad), and is not for the other device to type.
+String? _textOf(String? character) =>
+    character != null && character.characters.length == 1 ? character : null;
 
 /// A key that goes down and comes up, with [modifiers] down.
 List<WindowInput> keyTap(int code, WindowModifiers modifiers) => [
