@@ -959,6 +959,13 @@ void main() {
       await tester.pumpAndSettle();
     }
 
+    final following = find.text('Follow the session');
+
+    Future<void> follow(WidgetTester tester) async {
+      await tester.tap(following);
+      await tester.pumpAndSettle();
+    }
+
     testWidgets('shows the sound as on only where the device may control', (
       tester,
     ) async {
@@ -1008,14 +1015,14 @@ void main() {
       expect(byTheSession, findsOneWidget);
       expect(find.textContaining('every session'), findsNothing);
 
-      // A yes is for every session, and moving the switch back leaves it to the session.
+      // A yes is for every session, and the button leaves it to the session again.
       await flip(tester);
       expect(
         find.textContaining('Phone hears in every session, also when it only '),
         findsOneWidget,
       );
       expect(byTheSession, findsNothing);
-      await flip(tester);
+      await follow(tester);
       expect(byTheSession, findsOneWidget);
     });
 
@@ -1031,17 +1038,40 @@ void main() {
         findsOneWidget,
       );
       expect(find.textContaining('Left as it is'), findsNothing);
+      expect(following, findsOneWidget);
       await tester.tap(find.text('Cancel'));
       await tester.pumpAndSettle();
 
       session.hearSettings[phone.id] = false;
       await open(tester);
       expect(
-        find.textContaining('Phone gets the screen with no sound, and this'),
+        find.textContaining(
+          'Phone gets the screen with no sound, so it does not make this Mac '
+          'quiet.',
+        ),
         findsOneWidget,
       );
+      expect(find.textContaining('plays on'), findsNothing);
       expect(find.textContaining('every session'), findsNothing);
       expect(find.textContaining('Left as it is'), findsNothing);
+      expect(following, findsOneWidget);
+    });
+
+    testWidgets('offers to follow the session only where something was said', (
+      tester,
+    ) async {
+      await show(tester);
+      session.startAccesses[phone.id] = StartAccess.control;
+      await open(tester);
+      expect(following, findsNothing);
+
+      await flip(tester);
+      expect(hears(tester), isFalse);
+      expect(following, findsOneWidget);
+
+      await follow(tester);
+      expect(following, findsNothing);
+      expect(hears(tester), isTrue, reason: 'a device that controls hears');
     });
 
     testWidgets('follows the choice of the screen until the person moves the '
@@ -1112,31 +1142,56 @@ void main() {
       expect(session.hearSettingSet, isEmpty);
     });
 
-    testWidgets(
-      'keeps nothing when the switch is moved back to what the device '
-      'gets anyway',
-      (tester) async {
-        await show(tester);
-        session.startAccesses[phone.id] = StartAccess.look;
-        await open(tester);
+    testWidgets('keeps a yes and a no from every choice of the screen, in one '
+        'save', (tester) async {
+      await show(tester);
+      for (final access in [
+        StartAccess.off,
+        StartAccess.look,
+        StartAccess.control,
+      ]) {
+        for (final said in [true, false]) {
+          session.startAccesses[phone.id] = access;
+          session.hearSettings.remove(phone.id);
+          session.hearSettingSet.clear();
+          await open(tester);
 
-        await flip(tester);
-        await flip(tester);
-        await save(tester);
+          // The first move says the opposite of what the device gets, the second what it gets.
+          await flip(tester);
+          if (hears(tester) != said) await flip(tester);
+          expect(hears(tester), said, reason: '$access');
+          await save(tester);
 
-        expect(session.hearSettingSet, isEmpty);
-        expect(session.startAccessSet, isEmpty);
-      },
-    );
+          expect(session.hearSettingSet, [
+            (id: phone.id, setting: said),
+          ], reason: '$access, $said');
+          expect(session.startAccessSet, isEmpty);
+        }
+      }
+    });
 
-    testWidgets('takes back what was said when it is moved to what the device '
-        'gets anyway', (tester) async {
+    testWidgets('keeps nothing when what the person said is taken back before '
+        'it is kept', (tester) async {
+      await show(tester);
+      session.startAccesses[phone.id] = StartAccess.look;
+      await open(tester);
+
+      await flip(tester);
+      await follow(tester);
+      await save(tester);
+
+      expect(session.hearSettingSet, isEmpty);
+      expect(session.startAccessSet, isEmpty);
+    });
+
+    testWidgets('takes back what was said when the person leaves it to the '
+        'session', (tester) async {
       await show(tester);
       session.startAccesses[phone.id] = StartAccess.look;
       session.hearSettings[phone.id] = true;
       await open(tester);
 
-      await flip(tester);
+      await follow(tester);
       await save(tester);
 
       expect(session.hearSettingSet, [(id: phone.id, setting: null)]);

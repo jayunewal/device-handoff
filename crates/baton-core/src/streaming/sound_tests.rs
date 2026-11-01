@@ -1476,8 +1476,26 @@ impl NodeRig {
         Self::with_control(true, true, true).await
     }
 
+    /// The same as [`controlling`](Self::controlling), with a source that keeps a screen private
+    /// while a viewer controls it.
+    async fn keeping_private() -> Self {
+        Self::sharing(true, true, |builder| {
+            builder.share_windows(true).private_sessions()
+        })
+        .await
+    }
+
     /// The same as [`of`](Self::of), with a source that can take input only if `control`.
     async fn with_control(sends: bool, plays: bool, control: bool) -> Self {
+        Self::sharing(sends, plays, |builder| builder.share_windows(control)).await
+    }
+
+    /// The same, with a source that `share` sets up to share windows.
+    async fn sharing(
+        sends: bool,
+        plays: bool,
+        share: impl FnOnce(NodeBuilder) -> NodeBuilder,
+    ) -> Self {
         let app = App::new(Plan::Accept);
         let viewer = TestNode::with(|builder| {
             let builder = builder.window_handler(Arc::clone(&app));
@@ -1485,7 +1503,7 @@ impl NodeRig {
         })
         .await;
         let source = TestNode::with(|builder| {
-            let builder = builder.share_windows(control);
+            let builder = share(builder);
             if sends {
                 builder.share_sound()
             } else {
@@ -1771,6 +1789,35 @@ async fn a_device_hears_in_a_session_that_lets_it_control_the_screen_when_nothin
         rig.app.speech.all().last() == Some(&Spoken::Stopped(Some(SilentReason::NotAllowed)))
     })
     .await;
+}
+
+#[tokio::test]
+async fn a_device_hears_in_a_private_session_when_nothing_is_said() {
+    let rig = NodeRig::keeping_private().await;
+    // A screen is private for a device that controls it, so the session lets the device control
+    // the screen, and a device of which nothing is said hears.
+    rig.say(|policy| *policy = DevicePolicy::default());
+    let (handle, heard) = rig.share(display().with_control().with_private()).await;
+    let viewing = rig.app.handle(0);
+    assert!(viewing.control());
+    assert!(viewing.private());
+    assert!(viewing.hear(true));
+    until("the platform to be asked for sound", || {
+        heard.count("hear") == 1
+    })
+    .await;
+    handle.begin_sound(aac()).unwrap();
+    until("the speaker to be told the form", || {
+        rig.app.speech.all().last() == Some(&Spoken::Sound(aac()))
+    })
+    .await;
+    assert!(
+        !rig.app
+            .speech
+            .all()
+            .iter()
+            .any(|spoken| matches!(spoken, Spoken::Stopped(Some(SilentReason::NotAllowed))))
+    );
 }
 
 #[tokio::test]
