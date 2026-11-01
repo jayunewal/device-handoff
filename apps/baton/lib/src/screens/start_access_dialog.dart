@@ -49,34 +49,31 @@ class StartAccessDialog extends StatefulWidget {
 
 class _StartAccessDialogState extends State<StartAccessDialog> {
   late StartAccess _chosen = widget.current;
+
+  /// What the person has said of the sound: a yes, a no, or nothing (`null`), which leaves it to
+  /// the session. Moving the switch says a yes or a no, also where that is what the device gets
+  /// anyway, so that each of the three can be kept in one go. The button under it takes it back.
   late bool? _hear = widget.hear;
 
-  /// Whether the person has moved the switch. Until they have, it shows what the device gets
-  /// without being told in a session that it asks for: the sound where the screen can be
-  /// controlled.
-  bool _touched = false;
-
+  /// Whether the device hears where nothing is said, in a session that it asks for: where the
+  /// screen can be controlled. It is what the switch shows until the person moves it.
   bool get _hearsByDefault => _chosen == StartAccess.control;
-
-  /// What the sound would be kept as: `null` when it is left to the session. Saying what the
-  /// device gets anyway is saying nothing, so that a device that is moved to another choice later
-  /// follows it.
-  bool? get _saved => _touched && _hear == _hearsByDefault ? null : _hear;
 
   /// What to keep, or `null` when it is what was kept.
   StartChoice? get _choice {
-    final hear = _saved;
-    if (_chosen == widget.current && hear == widget.hear) return null;
-    return (access: _chosen, hear: hear);
+    if (_chosen == widget.current && _hear == widget.hear) return null;
+    return (access: _chosen, hear: _hear);
   }
 
   /// What the person is told of the sound, by what would be kept of it.
-  String _soundNote(String name, String computer) => switch (_saved) {
+  String _soundNote(String name, String computer) => switch (_hear) {
     null =>
       'Left as it is, $name hears when it controls $computer. When it only '
           'looks, it gets the screen with no sound, and $computer plays on.',
     true => '$name hears in every session, also when it only looks.',
-    false => '$name gets the screen with no sound, and $computer plays on.',
+    false =>
+      '$name gets the screen with no sound, so it does not make $computer '
+          'quiet.',
   };
 
   @override
@@ -128,16 +125,24 @@ class _StartAccessDialogState extends State<StartAccessDialog> {
           ),
           SwitchListTile(
             value: _hear ?? _hearsByDefault,
-            onChanged: (on) => setState(() {
-              _hear = on;
-              _touched = true;
-            }),
+            onChanged: (on) => setState(() => _hear = on),
             title: Text('Let $name hear the sound'),
             subtitle: Text(
               '$computer is quiet while $name listens. '
               '${_soundNote(name, computer)}',
             ),
           ),
+          if (_hear != null)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Padding(
+                padding: const EdgeInsets.only(left: 4),
+                child: TextButton(
+                  onPressed: () => setState(() => _hear = null),
+                  child: const Text('Follow the session'),
+                ),
+              ),
+            ),
           const SizedBox(height: 12),
           Text(
             'The screen shows only while $computer is awake and unlocked. '
