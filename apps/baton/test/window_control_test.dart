@@ -902,8 +902,9 @@ void main() {
       final before = FocusManager.instance.primaryFocus;
       expect(scopeOf(tester).hasFocus, isTrue);
 
-      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
-      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      // The system is told that the app took the key, so that it does not act on it as well.
+      expect(await tester.sendKeyEvent(LogicalKeyboardKey.tab), isTrue);
+      expect(await tester.sendKeyEvent(LogicalKeyboardKey.tab), isTrue);
 
       expect(FocusManager.instance.primaryFocus, same(before));
       expect(shown.given, [..._tap(HidKey.tab), ..._tap(HidKey.tab)]);
@@ -915,8 +916,8 @@ void main() {
       Focus.of(tester.element(find.byIcon(Icons.close))).requestFocus();
       await tester.pump();
 
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      expect(await tester.sendKeyEvent(LogicalKeyboardKey.enter), isTrue);
+      expect(await tester.sendKeyEvent(LogicalKeyboardKey.space), isTrue);
       await tester.pumpAndSettle();
 
       expect(shown.given, [
