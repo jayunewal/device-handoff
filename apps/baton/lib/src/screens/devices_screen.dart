@@ -161,7 +161,9 @@ class _DevicesScreenState extends State<DevicesScreen>
   /// Lets the person say whether [device] may ask this device for its screen, with no one here
   /// asked each time. To show the screen needs the consent of the system to record it, and to let
   /// the device control it needs the consent to control. Both are asked about now, once the
-  /// setting is kept, since nobody is here to say yes when the device asks.
+  /// setting is kept, since nobody is here to say yes when the device asks. They are asked about
+  /// also when the person saves what was kept already: a consent may have been taken back, or lost
+  /// with a new build of Baton, since.
   Future<void> _allowScreen(Device device) async {
     final current = _controller.startAccess(device);
     if (current == null) return;
