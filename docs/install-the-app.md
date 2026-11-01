@@ -228,7 +228,7 @@ First allow it at the Mac, once: in the **More** menu (three dots) of the phone'
 
 A session that the phone controls is private: the Mac's screens stay dark, its own keyboard and trackpad are held, and the Mac locks when the session ends or the connection drops. Three presses of Escape within two seconds at the Mac end the session. Two switches in the settings button of the phone's bar lift this for one session: **Show screen on the Mac** and **Allow the Mac's keyboard and trackpad**. Both are off unless you turn them on.
 
-When you end a private session at the phone while the Mac is unlocked, the phone asks whether to lock the Mac: **Lock**, **Leave it** or **Cancel**. This question is built but not yet tried on real devices.
+When you end a private session at the phone while the Mac is unlocked, the phone asks whether to lock the Mac: **Lock**, **Leave it** or **Cancel**.
 
 ### Sound
 
@@ -238,7 +238,7 @@ The speaker button in the phone's bar plays the Mac's sound on the phone (**Hear
 
 When the Mac locks during a session, the phone shows a card saying so with an **Unlock** button. To set it up, at the Mac choose **Let this device unlock this Mac…** in the **More** menu of the phone's row and type the Mac's password once; it is kept locked by a key that only the phone's Face ID or Touch ID opens. Then **Unlock** asks for your face and the Mac types its own password. It works only in a private session with both switches off. The Mac shows a notification afterwards and keeps a list of attempts in that same window.
 
-This is built and tested in CI, and has not yet been tried on real devices. If you try it, use a Mac account whose password you can change back.
+The first tries on real devices worked. When you try it, use a Mac account whose password you can change back.
 
 ## Every seven days
 

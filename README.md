@@ -4,7 +4,7 @@
 
 Baton is an open source app for moving your work between your own devices. Send a link, some text or files from one device to another, and look at and control your Mac from your iPhone or iPad, with its sound. Devices talk directly over your local network when they can and fall back to the internet when they can't. Everything between devices is end-to-end encrypted. "Baton" is a working name and may change.
 
-> **Status: pre-alpha.** Baton is built for one Mac with iPhones and iPads, installed from source with Xcode. Most of it has been tried on real devices only in part, and the newest pieces (unlocking the Mac with Face ID, and the question "Lock the Mac?" at the end of a session) are built and tested in CI but have not yet been tried on real devices. The table below says where each piece stands.
+> **Status: pre-alpha.** Baton is built for one Mac with iPhones and iPads, installed from source with Xcode. Each piece has been tried on real devices, some more thoroughly than others. The table below says where each piece stands.
 
 ## What works today
 
@@ -17,8 +17,8 @@ Baton is an open source app for moving your work between your own devices. Send 
 | Control the Mac by touch and keyboard | Is controlled (macOS 15.2 or newer) | Controls | Not built | Not built | Built; not fully tried on devices |
 | Privacy mode: the Mac stays dark, its own keyboard and trackpad are held, and it locks when the session ends | Yes (macOS 15.2 or newer) | Starts it | Not built | Not built | Built; not fully tried on devices |
 | Hear the Mac's sound on the phone, with the Mac quiet meanwhile | Sends (macOS 14.2 or newer) | Plays | Not built | Not built | First try worked on an iPad |
-| "Lock the Mac?" when a private session ends at the phone (Lock, Leave it, Cancel) | Yes (macOS 15.2 or newer) | Asks | Not built | Not built | Built, not yet tried on devices |
-| Unlock the Mac from the phone with Face ID or Touch ID | Is unlocked (macOS 15.2 or newer) | Unlocks | Not built | Not built | Built, not yet tried on devices |
+| "Lock the Mac?" when a private session ends at the phone (Lock, Leave it, Cancel) | Yes (macOS 15.2 or newer) | Asks | Not built | Not built | Tried on devices |
+| Unlock the Mac from the phone with Face ID or Touch ID | Is unlocked (macOS 15.2 or newer) | Unlocks | Not built | Not built | Tried on devices |
 | Receive while the app is closed or the phone is locked | Not built | Not built | `baton listen` in a window | Not built | Needs the background agent and push |
 
 An iPhone or iPad can look at and control a Mac. It cannot be controlled itself, which iOS does not allow, and showing its screen is not built. Windows and Linux have only the `baton` command-line program for now, which pairs and sends links and text. The Android app is on hold until the Apple apps are released. A Windows PC as a screen to look at is planned.
