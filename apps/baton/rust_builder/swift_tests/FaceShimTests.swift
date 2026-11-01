@@ -163,6 +163,14 @@ func testASentenceOfAFailedKeyIsCutBetweenTwoCharactersWhereItDoesNotFit() {
   let shortMessage = callKey(
     table, context: table.context, source: &source, key: &room.key, message: short)
   check(shortMessage == platformFailure, "a message of 8 bytes: code \(shortMessage)")
+  // Room for a sentence, in a struct that says it is shorter than this version of the interface:
+  // the number is the answer, and the room is left alone.
+  let older = FaceMessageRoom()
+  older.message.size = UInt32(MemoryLayout<BatonMessage>.size - 1)
+  let olderCode = callKey(
+    table, context: table.context, source: &source, key: &room.key, message: &older.message)
+  check(olderCode == platformFailure, "a message that says it is short: code \(olderCode)")
+  check(older.sentence == "", "a sentence was written to a short message: \(older.sentence)")
 }
 
 func testUnlockKeyNeverTrapsOnWhatItIsGivenAndNeverAsksThePlatformForIt() {

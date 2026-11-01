@@ -847,7 +847,7 @@ final class LibrarySourceSession: SourceSession {
           // The person is told in words that a picture could not be sent, and the log says why,
           // for whoever reads it afterwards: a window is first tried where nobody watches. The
           // log holds codes and sizes and never what is in a window.
-          NSLog("Baton: the library did not take a picture of the shared window (%d).", code)
+          NSLog("Baton: the library did not take a picture of what is shared (%d).", code)
           return .refused
         }
         switch outcome {
@@ -873,16 +873,16 @@ final class LibrarySourceSession: SourceSession {
   func pause(_ reason: PauseReason) {
     switch reason {
     case .locked:
-      NSLog("Baton: the shared window is paused, because the Mac is locked.")
+      NSLog("Baton: what is shared is paused, because the Mac is locked.")
       _ = baton_stream_source_pause(link, BATON_PAUSE_LOCKED)
     case .hidden:
-      NSLog("Baton: the shared window is paused, because it is not on the screen.")
+      NSLog("Baton: what is shared is paused, because it is not on the screen.")
       _ = baton_stream_source_pause(link, BATON_PAUSE_HIDDEN)
     }
   }
 
   func resume() {
-    NSLog("Baton: the shared window goes on.")
+    NSLog("Baton: what is shared goes on.")
     _ = baton_stream_source_resume(link)
   }
 

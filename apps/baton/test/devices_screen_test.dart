@@ -559,6 +559,12 @@ void main() {
           ),
           findsOneWidget,
         );
+        // The person is in the settings of the system for longer than a notice stays.
+        await tester.pump(const Duration(seconds: 30));
+        expect(find.textContaining('Then share it again.'), findsOneWidget);
+        await tester.tap(find.text('OK'));
+        await tester.pumpAndSettle();
+        expect(find.textContaining('Then share it again.'), findsNothing);
       },
     );
 
@@ -600,6 +606,10 @@ void main() {
         ),
         findsOneWidget,
       );
+      // It has nothing to do with the settings, and goes by itself.
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('needs macOS 15.2'), findsNothing);
     });
 
     testWidgets('is not offered when the system cannot do it', (tester) async {
@@ -1338,6 +1348,30 @@ void main() {
           find.text('$recordingSentence $controlSentence'),
           findsOneWidget,
         );
+      },
+    );
+
+    testWidgets(
+      'keeps what it says of the system until the person has said OK',
+      (tester) async {
+        await show(
+          tester,
+          access: ControlAccess.needed,
+          recording: ScreenAccess.needed,
+        );
+        await open(tester);
+        await choose(tester, 'Show it to look at and control');
+
+        // The person is in the settings of the system for longer than a notice stays.
+        await tester.pump(const Duration(seconds: 30));
+        expect(
+          find.text('$recordingSentence $controlSentence'),
+          findsOneWidget,
+        );
+
+        await tester.tap(find.text('OK'));
+        await tester.pumpAndSettle();
+        expect(find.textContaining('To let Phone'), findsNothing);
       },
     );
 

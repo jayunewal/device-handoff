@@ -46,16 +46,18 @@ class TouchGestures {
   /// How long a finger stays before it is a click with the right button.
   final Duration longPressAfter;
 
-  /// How many points the window scrolls for a point that two fingers move on the screen. A
+  /// How many points the window scrolls for a point that two fingers move on the picture. A
   /// picture is smaller than the window it shows, so the content under the fingers keeps up with
-  /// them only if this is more than 1. The screen sets it as the picture changes size.
+  /// them only if this is more than 1. The screen sets it as the picture changes size. A picture
+  /// that is zoomed is moved by the fingers as far as they move on the screen, which is further
+  /// than they move on the picture, and it is the picture that the window has to keep up with.
   double scrollGain;
 
   final Map<int, _Finger> _fingers = {};
   _Phase _phase = _Phase.idle;
   Timer? _hold;
 
-  /// The middle of the first two fingers, on the screen, while they scroll.
+  /// The middle of the first two fingers, on the picture, while they scroll.
   Offset _middle = Offset.zero;
 
   /// Whether the left button is down, because of a drag.
@@ -87,12 +89,10 @@ class TouchGestures {
   void move(int pointer, Offset local, Offset global) {
     final finger = _fingers[pointer];
     if (finger == null) return;
-    finger
-      ..local = local
-      ..global = global;
+    finger.local = local;
     switch (_phase) {
       case _Phase.waiting:
-        if ((local - finger.start).distance > slop) {
+        if ((global - finger.startGlobal).distance > slop) {
           _stopHold();
           _phase = _Phase.dragging;
           _pointer(finger.start, const WindowPointer.move());
@@ -166,23 +166,20 @@ class TouchGestures {
 
   void _startScroll() {
     _phase = _Phase.scrolling;
-    _middle = _middleOf((finger) => finger.global);
+    _middle = _middleOf();
   }
 
   void _scroll() {
-    final middle = _middleOf((finger) => finger.global);
+    final middle = _middleOf();
     final moved = (middle - _middle) * scrollGain;
     _middle = middle;
     if (moved == Offset.zero) return;
-    _pointer(
-      _middleOf((finger) => finger.local),
-      WindowPointer.scroll(dx: moved.dx, dy: moved.dy),
-    );
+    _pointer(middle, WindowPointer.scroll(dx: moved.dx, dy: moved.dy));
   }
 
-  /// The middle of the first two fingers.
-  Offset _middleOf(Offset Function(_Finger finger) place) {
-    final two = _fingers.values.take(2).map(place).toList();
+  /// The middle of the first two fingers, on the picture.
+  Offset _middleOf() {
+    final two = _fingers.values.take(2).map((finger) => finger.local).toList();
     return (two[0] + two[1]) / 2;
   }
 
@@ -236,14 +233,14 @@ enum _Phase {
 
 /// A finger that is down.
 class _Finger {
-  _Finger(this.start, this.global) : local = start;
+  _Finger(this.start, this.startGlobal) : local = start;
 
   /// Where it first touched, on the picture.
   final Offset start;
 
+  /// Where it first touched, on the screen.
+  final Offset startGlobal;
+
   /// Where it is now, on the picture.
   Offset local;
-
-  /// Where it is now, on the screen.
-  Offset global;
 }

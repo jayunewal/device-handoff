@@ -59,12 +59,16 @@ class _Rig {
   final List<WindowInput> sent = [];
   int longPresses = 0;
 
-  /// Puts a finger down at [at], where the screen is the picture shifted by (1000, 2000).
-  void down(int finger, Offset at) =>
-      gestures.down(finger, at, at + const Offset(1000, 2000));
+  /// How many times larger the picture is on the screen than it is told to the fingers.
+  double zoom = 1;
 
-  void move(int finger, Offset to) =>
-      gestures.move(finger, to, to + const Offset(1000, 2000));
+  /// A place on the picture, on the screen: zoomed, and shifted by (1000, 2000).
+  Offset _screen(Offset at) => at * zoom + const Offset(1000, 2000);
+
+  /// Puts a finger down at [at] on the picture.
+  void down(int finger, Offset at) => gestures.down(finger, at, _screen(at));
+
+  void move(int finger, Offset to) => gestures.move(finger, to, _screen(to));
 
   void up(int finger, Offset at) => gestures.up(finger, at);
 
@@ -220,6 +224,24 @@ void main() {
       ]);
     });
 
+    testWidgets(
+      'measures the slop on the screen, where a zoomed picture is larger',
+      (tester) async {
+        final rig = _Rig.standard()..zoom = 4;
+
+        rig.down(1, const Offset(100, 50));
+        rig.move(1, const Offset(102.5, 50));
+        expect(rig.sent, isEmpty, reason: '2.5 points at 4 times is the slop');
+        rig.move(1, const Offset(103, 50));
+
+        expect(rig.take(), [
+          _pointer(0.5, 0.5, const WindowPointer.move()),
+          _pointer(0.5, 0.5, const WindowPointer.down(button: _left)),
+          _pointer(0.515, 0.5, const WindowPointer.move()),
+        ]);
+      },
+    );
+
     testWidgets('keeps a drag on the picture when the finger leaves it', (
       tester,
     ) async {
@@ -268,7 +290,7 @@ void main() {
 
   group('two fingers', () {
     testWidgets(
-      'scroll by how far their middle moves on the screen, at the middle',
+      'scroll by how far their middle moves on the picture, at the middle',
       (tester) async {
         final rig = _Rig();
 
@@ -305,6 +327,27 @@ void main() {
         _pointer(0.5, 0.52, const WindowPointer.scroll(dx: 0, dy: 3)),
       ]);
     });
+
+    testWidgets(
+      'scroll by how far the picture moves, not how far a zoom shows',
+      (tester) async {
+        final rig = _Rig(scrollGain: 3)..zoom = 4;
+
+        rig.down(1, const Offset(80, 50));
+        rig.down(2, const Offset(120, 50));
+        rig.move(1, const Offset(80, 52));
+        rig.move(2, const Offset(120, 52));
+
+        expect(
+          rig.take(),
+          [
+            _pointer(0.5, 0.51, const WindowPointer.scroll(dx: 0, dy: 3)),
+            _pointer(0.5, 0.52, const WindowPointer.scroll(dx: 0, dy: 3)),
+          ],
+          reason: 'as without a zoom: the picture moved 1 point, the screen 4',
+        );
+      },
+    );
 
     testWidgets('scroll by as far as they move, until the screen says more', (
       tester,
