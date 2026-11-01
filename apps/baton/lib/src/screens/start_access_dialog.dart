@@ -14,8 +14,9 @@ typedef StartChoice = ({StartAccess access, bool? hear});
 /// device to start sharing its screen with it, to look at it or to look at it and control it, and
 /// whether it may hear the sound of the screen, which makes this device quiet while it listens.
 ///
-/// It returns what the person chose ([StartChoice]), and `null` when they leave it as it was.
-/// Nothing is kept here: the screen that opened it keeps the answer.
+/// It returns what the person chose ([StartChoice]) when they save, also when it is as it was, and
+/// `null` when they cancel. Nothing is kept here: the screen that opened it keeps what changed, and
+/// asks the system for the consents that a setting needs, which may have been taken back since.
 class StartAccessDialog extends StatefulWidget {
   const StartAccessDialog({
     required this.device,
@@ -59,11 +60,8 @@ class _StartAccessDialogState extends State<StartAccessDialog> {
   /// screen can be controlled. It is what the switch shows until the person moves it.
   bool get _hearsByDefault => _chosen == StartAccess.control;
 
-  /// What to keep, or `null` when it is what was kept.
-  StartChoice? get _choice {
-    if (_chosen == widget.current && _hear == widget.hear) return null;
-    return (access: _chosen, hear: _hear);
-  }
+  /// What the person chose, which may be what was kept already.
+  StartChoice get _choice => (access: _chosen, hear: _hear);
 
   /// What the person is told of the sound, by what would be kept of it.
   String _soundNote(String name, String computer) => switch (_hear) {

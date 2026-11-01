@@ -944,6 +944,50 @@ void main() {
       expect(session.startAccessSet, isEmpty);
     });
 
+    testWidgets(
+      'asks the system for the consents that are missing when nothing was '
+      'changed',
+      (tester) async {
+        // The consents were taken back, or lost with a new build, since the setting was kept.
+        await show(
+          tester,
+          access: ControlAccess.needed,
+          recording: ScreenAccess.needed,
+        );
+        session.startAccesses[phone.id] = StartAccess.control;
+        await open(tester);
+
+        await tester.tap(find.text('Save'));
+        await tester.pumpAndSettle();
+
+        expect(session.startAccessSet, isEmpty);
+        expect(session.hearSettingSet, isEmpty);
+        expect(recorder.requests, 1);
+        expect(keeper.requests, 1);
+        expect(
+          find.text('$recordingSentence $controlSentence'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets('asks nothing of the system when nothing was changed and the '
+        'device may not ask', (tester) async {
+      await show(
+        tester,
+        access: ControlAccess.needed,
+        recording: ScreenAccess.needed,
+      );
+      await open(tester);
+
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      expect(session.startAccessSet, isEmpty);
+      expect(recorder.requests, 0);
+      expect(keeper.requests, 0);
+    });
+
     final hearing = find.byType(SwitchListTile);
 
     bool hears(WidgetTester tester) =>
