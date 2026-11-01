@@ -137,7 +137,7 @@ class _DevicesScreenState extends State<DevicesScreen>
       case ControlAccess.needed:
         await widget.controlAccess.request();
         if (!mounted) return;
-        _tell('${_allowControl(device)} Then share it again.');
+        _tell('${_allowControl(device)} Then share it again.', stay: true);
       case ControlAccess.unavailable:
         _tell('Controlling a window or a screen needs macOS 15.2 or later.');
     }
@@ -201,7 +201,7 @@ class _DevicesScreenState extends State<DevicesScreen>
       await widget.controlAccess.request();
       sentences.add(_allowControl(device));
     }
-    if (mounted && sentences.isNotEmpty) _tell(sentences.join(' '));
+    if (mounted && sentences.isNotEmpty) _tell(sentences.join(' '), stay: true);
   }
 
   /// Lets the person say that [device] may unlock this one while it is locked, and turn that off,
@@ -240,10 +240,19 @@ class _DevicesScreenState extends State<DevicesScreen>
     }
   }
 
-  void _tell(String sentence) {
+  /// Tells the person a sentence for a few seconds, or until they say OK if it [stay]s. A sentence
+  /// about what to do in the settings of the system stays: the person is in the settings, and a
+  /// sentence that left in the meantime is not there to read when they are back.
+  void _tell(String sentence, {bool stay = false}) {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(sentence)));
+      ..showSnackBar(
+        SnackBar(
+          content: Text(sentence),
+          // A snack bar with an action stays until it is dismissed.
+          action: stay ? SnackBarAction(label: 'OK', onPressed: () {}) : null,
+        ),
+      );
   }
 
   void _add() {
