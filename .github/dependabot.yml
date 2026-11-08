@@ -12,6 +12,13 @@ updates:
       # together with the bound on libc in Cargo.toml.
       - dependency-name: libc
         versions: [">=0.2.190"]
+      # iroh 1.4 brings noq 1.4, which closes a connection when a stream holds more than 1024
+      # unread chunks, and an unread frame of a few MiB is more than that. Check a newer
+      # release with the test that sends an 8 MiB frame before lifting this.
+      - dependency-name: "iroh*"
+        versions: ["1.4.x"]
+      - dependency-name: "noq*"
+        versions: ["1.4.x"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
