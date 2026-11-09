@@ -84,7 +84,6 @@ class _SettingsScreenState extends State<SettingsScreen>
   Future<void> _checkPermissions() async {
     final checks = await checkPermissions(
       platform: widget.platform ?? defaultTargetPlatform,
-      screenAccess: widget.screenAccess,
       notices: widget.notices,
       system: widget.system,
     );

@@ -1103,6 +1103,35 @@ enum CaptureErrorCode {
   static let systemStopped = -3821
 }
 
+/// How long a screen that is shared has to give its first picture before the session ends: a
+/// screen gives one at once unless the system holds it back, such as while it asks the person a
+/// question.
+let firstPictureWait = DispatchTimeInterval.seconds(10)
+
+/// What becomes of a session when the wait for the first picture of its screen is over.
+enum FirstPictureVerdict: Equatable {
+  /// A picture came: nothing is to be done.
+  case fine
+  /// The session is paused, such as while the Mac is locked or its display sleeps, which gives no
+  /// picture. The wait begins again: a locked Mac may be unlocked from the other device, and a
+  /// session that stays paused is ended by the rule for long pauses.
+  case waitAgain
+  /// No picture came, and nothing explains it: the session ends.
+  case end
+}
+
+func firstPictureVerdict(pictured: Bool, paused: Bool) -> FirstPictureVerdict {
+  if pictured { return .fine }
+  return paused ? .waitAgain : .end
+}
+
+/// What the person at the other device is told when the screen gave no picture in time. The people
+/// at the Mac may not see the question either, while a private screen keeps it dark: they see it
+/// when the session is over.
+let noFirstPictureSentence =
+  "The Mac sent no picture. macOS may be asking a question there about recording the screen or "
+  + "its sound. Answer it at the Mac, then try again."
+
 /// The sentence that tells the person why the capture of a window stopped, or nil if they stopped it
 /// themselves and need not be told. `domain` and `code` are those of the error that the system gave.
 func captureStoppedSentence(domain: String, code: Int) -> String? {

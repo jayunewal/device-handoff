@@ -3,7 +3,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-import 'control_access.dart';
 import 'notice_access.dart';
 
 /// What Baton can ask the system to allow, one row each on the permissions screen.
@@ -16,8 +15,12 @@ enum Permission {
   /// cannot start without it, since it holds the Mac's own keys and pointer.
   inputMonitoring,
 
-  /// Screen and System Audio Recording, on a Mac: a device that is let look sees and hears it.
+  /// Screen Recording, on a Mac: a device that is let look sees its screen.
   screenRecording,
+
+  /// System Audio Recording, on a Mac: a device that is let look hears it too. The system asks the
+  /// person once, the first time Baton reads the sound, and does not tell Baton the answer.
+  systemAudio,
 
   /// Notifications, on a Mac: the person is told when a device unlocked it.
   notifications,
@@ -77,8 +80,8 @@ class PermissionCheck {
 }
 
 /// What the system says about the permissions it keeps on a channel of Baton's own (all but
-/// Screen Recording and Notifications, which have channels of their own), and what takes the
-/// person to the screen of Settings where a permission is turned on. Tests give it one of their
+/// Notifications, which has a channel of its own), and what takes the person to the screen of
+/// Settings where a permission is turned on. Tests give it one of their
 /// own.
 abstract class SystemSettingsKeeper {
   const SystemSettingsKeeper();
@@ -143,11 +146,10 @@ class PlatformSystemSettings extends SystemSettingsKeeper {
 }
 
 /// Everything Baton can ask the system for on [platform], and where each stands, in the order the
-/// permissions screen shows them. What the device cannot do is left out: a Mac too old to be
-/// controlled has no row for Accessibility, and an iPad with no Face ID none for Face ID.
+/// permissions screen shows them. What the device cannot do is left out: a Mac with no camera has
+/// no row for the camera, and an iPad with no Face ID none for Face ID.
 Future<List<PermissionCheck>> checkPermissions({
   required TargetPlatform platform,
-  required ScreenAccessKeeper screenAccess,
   required NoticeKeeper notices,
   required SystemSettingsKeeper system,
 }) async {
@@ -166,12 +168,12 @@ Future<List<PermissionCheck>> checkPermissions({
         Permission.inputMonitoring,
         await system.state(Permission.inputMonitoring),
       );
-      await add(Permission.screenRecording, switch (await screenAccess
-          .state()) {
-        ScreenAccess.allowed => PermissionState.on,
-        ScreenAccess.needed => PermissionState.off,
-        ScreenAccess.unavailable => null,
-      });
+      await add(
+        Permission.screenRecording,
+        await system.state(Permission.screenRecording),
+      );
+      // The system does not say whether Baton may record the sound, so the person looks.
+      await add(Permission.systemAudio, PermissionState.cannotCheck);
       await add(Permission.notifications, switch (await notices.state()) {
         NoticeAccess.allowed => PermissionState.on,
         NoticeAccess.needed => PermissionState.notAsked,

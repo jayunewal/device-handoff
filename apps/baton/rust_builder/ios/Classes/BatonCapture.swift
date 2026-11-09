@@ -381,17 +381,6 @@ final class MacSharedWindow: SharedWindow {
       unlockSession = unlocking
       unlockPosts = posts
     }
-    // The sound of a whole screen goes with its pictures, when the person at the other device asks
-    // for it (`hear`). A private screen keeps this Mac quiet from now until it is locked again,
-    // whether or not the other device listens: nobody is here to hear it, and the people at home
-    // would hear what the person at the other device does not. What `released` finds is let go of.
-    if info.display, #available(macOS 14.2, *) {
-      let pump = SoundPump(
-        session: LibrarySoundSession(link: link), quiet: privacy == .private,
-        makeTap: { MacSoundTap() }, makeEncoder: { try AacEncoder(form: $0) })
-      sound = pump
-      if privacy == .private { pump.keepQuiet() }
-    }
     // The window server and the system are asked about the window, or the display, while it is
     // shared: where it is in each picture, and whether it can be seen. A display is never hidden.
     let listing = MacWindowListing()
@@ -420,14 +409,33 @@ final class MacSharedWindow: SharedWindow {
     }
     do {
       // The system answers a start that fails (the person did not allow the recording, the window
-      // went away) after this returns, and then the session is ended with a sentence.
-      try made.begin(filter: filter)
+      // went away) after this returns, and then the session is ended with a sentence. A screen
+      // that gives no first picture in time ends the session too (`Capture.begin`): the system
+      // may be asking the person a question that nobody can see on a dark screen.
+      try made.begin(filter: filter, watchFirstPicture: info.display)
     } catch {
       let failure = error as NSError
       NSLog("Baton: the capture could not be set up (%@, %ld).", failure.domain, failure.code)
       throw SharerFailure(sentence: "This device could not start capturing the \(info.noun).")
     }
     capture = made
+    // The sound of a whole screen goes with its pictures, when the person at the other device asks
+    // for it (`hear`). A private screen keeps this Mac quiet from now until it is locked again,
+    // whether or not the other device listens: nobody is here to hear it, and the people at home
+    // would hear what the person at the other device does not. What `released` finds is let go of.
+    //
+    // The tap is made after the capture has begun, and not waited for: the first time, the system
+    // asks the person whether Baton may record the sound, and the tap may wait for that answer,
+    // which nobody can give on a dark screen. The pictures must not wait with it.
+    if info.display, #available(macOS 14.2, *) {
+      let pump = SoundPump(
+        session: LibrarySoundSession(link: link), quiet: privacy == .private,
+        makeTap: { MacSoundTap() }, makeEncoder: { try AacEncoder(form: $0) })
+      sound = pump
+      if privacy == .private {
+        DispatchQueue.global(qos: .userInitiated).async { pump.keepQuiet() }
+      }
+    }
   }
 
   func ended() {
@@ -448,7 +456,7 @@ final class MacSharedWindow: SharedWindow {
     privateSession?.finish(cause)
     // The Mac plays again: at once for a screen that is not private, and for a private one only now
     // that it is locked, or left.
-    sound?.close()
+    closeSound()
   }
 
   func released() {
@@ -458,7 +466,15 @@ final class MacSharedWindow: SharedWindow {
     // A private screen that was raised and then did not start is locked and given back here. One
     // that was given and never started raised nothing, and changes nothing.
     privateSession?.finish(.released)
-    sound?.close()
+    closeSound()
+  }
+
+  /// Stops the sound, and does not wait for it: a tap that waits for the person to answer the
+  /// system's question about recording the sound would hold the end of the session until then.
+  /// The sound pump does nothing after it is closed, whenever that is.
+  private func closeSound() {
+    guard let sound else { return }
+    DispatchQueue.global(qos: .userInitiated).async { sound.close() }
   }
 
   func surroundings() -> WindowSurroundings? {
@@ -521,6 +537,10 @@ private final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
   private var stream: SCStream?
   private var clock: DispatchSourceTimer?
   private var watch: DispatchSourceTimer?
+  /// Ends the session if no picture arrives in time, for a screen (`begin`).
+  private var firstLook: DispatchSourceTimer?
+  /// Whether a picture arrived. Read and written on `queue` only.
+  private var pictured = false
 
   /// `look` says whether the window can be seen, and is asked about once a second.
   init(
@@ -535,8 +555,14 @@ private final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
   }
 
   /// Throws if the capture cannot be set up. A capture that the system then fails to start ends
-  /// the session, with a sentence.
-  func begin(filter: SCContentFilter) throws {
+  /// the session, with a sentence. So does one that gives no picture in `firstPictureWait`, when
+  /// `watchFirstPicture` says to watch for it: a screen always gives its first picture at once,
+  /// unless the system holds it back, such as while it asks the person a question. On a private
+  /// screen nobody can see that question, and the person at the other device would look at
+  /// nothing until they gave up. A screen that is locked or asleep gives none either, and is
+  /// paused for it: the time is not counted while it is (`firstPictureVerdict`). A window is not
+  /// watched, since it gives none while it is hidden.
+  func begin(filter: SCContentFilter, watchFirstPicture: Bool) throws {
     let configuration = SCStreamConfiguration()
     configuration.width = Int(format.width)
     configuration.height = Int(format.height)
@@ -572,6 +598,14 @@ private final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
     watch = watcher
     watcher.resume()
 
+    if watchFirstPicture {
+      let looker = DispatchSource.makeTimerSource(queue: queue)
+      looker.schedule(deadline: .now() + firstPictureWait)
+      looker.setEventHandler { [weak self] in self?.noPictureYet() }
+      firstLook = looker
+      looker.resume()
+    }
+
     stream.startCapture { [weak self] error in
       if let error { self?.end(because: error) }
     }
@@ -584,6 +618,8 @@ private final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
     clock = nil
     watch?.cancel()
     watch = nil
+    firstLook?.cancel()
+    firstLook = nil
     if let stream {
       try? stream.removeStreamOutput(self, type: .screen)
       stream.stopCapture { _ in }
@@ -604,6 +640,21 @@ private final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
     }
   }
 
+  /// No picture arrived in time: the session ends, with a sentence that says what to look at.
+  /// It runs on the queue.
+  private func noPictureYet() {
+    switch firstPictureVerdict(pictured: pictured, paused: pauses.paused != nil) {
+    case .fine:
+      return
+    case .waitAgain:
+      firstLook?.schedule(deadline: .now() + firstPictureWait)
+    case .end:
+      NSLog("Baton: the screen gave no picture in time, so the session ends.")
+      pump.stop()
+      session.end(sentence: noFirstPictureSentence)
+    }
+  }
+
   // MARK: - What the system gives
 
   func stream(
@@ -619,6 +670,7 @@ private final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
       let raw = info[.status] as? Int, SCFrameStatus(rawValue: raw) == .complete,
       let image = CMSampleBufferGetImageBuffer(sampleBuffer)
     else { return }
+    pictured = true
     pump.captured(image, geometry: geometry(of: image, info))
   }
 

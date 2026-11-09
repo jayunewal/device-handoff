@@ -19,6 +19,7 @@ import 'fake_system_settings.dart';
 const _allOn = {
   Permission.accessibility: PermissionState.on,
   Permission.inputMonitoring: PermissionState.on,
+  Permission.screenRecording: PermissionState.on,
   Permission.camera: PermissionState.on,
   Permission.faceId: PermissionState.on,
 };
@@ -29,12 +30,10 @@ Map<Permission, PermissionState> _with(
 
 Future<List<PermissionCheck>> _check(
   TargetPlatform platform, {
-  ScreenAccess screen = ScreenAccess.allowed,
   NoticeAccess notices = NoticeAccess.allowed,
   Map<Permission, PermissionState> states = _allOn,
 }) => checkPermissions(
   platform: platform,
-  screenAccess: FakeScreenAccess(screen),
   notices: FakeNotices(notices),
   system: FakeSystemSettings(states),
 );
@@ -79,6 +78,7 @@ void main() {
           PermissionCheck(Permission.accessibility, PermissionState.on),
           PermissionCheck(Permission.inputMonitoring, PermissionState.on),
           PermissionCheck(Permission.screenRecording, PermissionState.on),
+          PermissionCheck(Permission.systemAudio, PermissionState.cannotCheck),
           PermissionCheck(Permission.notifications, PermissionState.on),
           PermissionCheck(Permission.camera, PermissionState.on),
           PermissionCheck(Permission.localNetwork, PermissionState.cannotCheck),
@@ -89,18 +89,19 @@ void main() {
     test('a Mac says what is off, and what was never asked', () async {
       final checks = await _check(
         TargetPlatform.macOS,
-        screen: ScreenAccess.needed,
         notices: NoticeAccess.needed,
         states: _with({
           Permission.accessibility: PermissionState.off,
           Permission.inputMonitoring: PermissionState.off,
+          Permission.screenRecording: PermissionState.off,
           Permission.camera: PermissionState.off,
         }),
       );
-      expect(checks.take(5), const [
+      expect(checks.take(6), const [
         PermissionCheck(Permission.accessibility, PermissionState.off),
         PermissionCheck(Permission.inputMonitoring, PermissionState.off),
         PermissionCheck(Permission.screenRecording, PermissionState.off),
+        PermissionCheck(Permission.systemAudio, PermissionState.cannotCheck),
         PermissionCheck(Permission.notifications, PermissionState.notAsked),
         PermissionCheck(Permission.camera, PermissionState.off),
       ]);
@@ -110,11 +111,11 @@ void main() {
     test('what a Mac cannot have has no row', () async {
       final checks = await _check(
         TargetPlatform.macOS,
-        screen: ScreenAccess.unavailable,
         notices: NoticeAccess.unavailable,
         states: const {},
       );
       expect(checks, const [
+        PermissionCheck(Permission.systemAudio, PermissionState.cannotCheck),
         PermissionCheck(Permission.localNetwork, PermissionState.cannotCheck),
       ]);
     });
@@ -147,8 +148,8 @@ void main() {
       await _showPermissions(tester, system: FakeSystemSettings(_allOn));
       expect(find.text('Everything Baton can check is on'), findsOneWidget);
       expect(find.text('On'), findsNWidgets(5));
-      // Only the network, which Baton cannot check, has a button.
-      expect(find.text('Open Settings'), findsOneWidget);
+      // Only the sound and the network, which Baton cannot check, have a button.
+      expect(find.text('Open Settings'), findsNWidgets(2));
     });
 
     testWidgets('asks for what was never asked, in one tap', (tester) async {
@@ -183,11 +184,12 @@ void main() {
 
     testWidgets('what a private screen needs is asked of the Mac, which opens '
         'Settings', (tester) async {
-      final screen = FakeScreenAccess(ScreenAccess.needed);
+      final screen = FakeScreenAccess();
       final system = FakeSystemSettings(
         _with({
           Permission.accessibility: PermissionState.off,
           Permission.inputMonitoring: PermissionState.off,
+          Permission.screenRecording: PermissionState.off,
         }),
       );
       await _showPermissions(tester, screen: screen, system: system);
@@ -200,15 +202,34 @@ void main() {
       );
       await tester.pumpAndSettle();
       await tester.tap(
-        find.bySemanticsLabel('Open Settings, Screen & System Audio Recording'),
+        find.bySemanticsLabel('Open Settings, Screen Recording'),
       );
       await tester.pumpAndSettle();
+      // Screen Recording is asked of the app itself, and not of the plugin that shares the screen,
+      // which may not be there.
       expect(system.requested, [
         Permission.accessibility,
         Permission.inputMonitoring,
+        Permission.screenRecording,
       ]);
-      expect(screen.requests, 1);
+      expect(screen.requests, 0);
       expect(system.opened, isEmpty);
+    });
+
+    testWidgets('the sound is asked for while the person can see the '
+        'question, then Settings opens', (tester) async {
+      final screen = FakeScreenAccess();
+      final system = FakeSystemSettings(_allOn);
+      await _showPermissions(tester, screen: screen, system: system);
+      expect(find.text('System Audio Recording'), findsOneWidget);
+      // It cannot be checked, so it never counts as needing the person.
+      expect(find.text('Everything Baton can check is on'), findsOneWidget);
+      await tester.tap(
+        find.bySemanticsLabel('Open Settings, System Audio Recording'),
+      );
+      await tester.pumpAndSettle();
+      expect(screen.soundRequests, 1);
+      expect(system.opened, [Permission.systemAudio]);
     });
 
     testWidgets('says where to go when Settings does not open', (tester) async {
@@ -346,6 +367,7 @@ void main() {
       for (final permission in [
         Permission.accessibility,
         Permission.inputMonitoring,
+        Permission.screenRecording,
         Permission.camera,
       ]) {
         expect(
@@ -355,7 +377,12 @@ void main() {
         );
       }
       final requests = _body(mac, 'func requestPermission(');
-      expect(requests, contains('case "accessibility", "inputMonitoring":'));
+      expect(
+        requests,
+        contains('case "accessibility", "inputMonitoring", "screenRecording":'),
+      );
+      expect(requests, contains('CGRequestScreenCaptureAccess()'));
+      expect(states, contains('CGPreflightScreenCaptureAccess()'));
       expect(requests, contains('case "camera":'));
       // And has a pane of System Settings for each permission that has a button there.
       final panes = _body(mac, 'func settingsAddress(');
@@ -364,7 +391,7 @@ void main() {
       )) {
         expect(
           panes,
-          contains('case "${permission.name}":'),
+          contains(RegExp('case [^\n]*"${permission.name}"[,:]')),
           reason: 'the pane for ${permission.name}',
         );
       }

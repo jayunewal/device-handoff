@@ -519,6 +519,14 @@ var tests: [(String, () -> Void)] = [
     "every sentence for a stopped capture fits in the library's message",
     testEverySentenceForAStoppedCaptureFitsInTheLibrarysMessage
   ),
+  (
+    "the sentence for a screen with no picture fits and says what to do",
+    testTheSentenceForAScreenWithNoPictureFitsAndSaysWhatToDo
+  ),
+  (
+    "a screen with no picture ends only when nothing explains it",
+    testAScreenWithNoPictureEndsOnlyWhenNothingExplainsIt
+  ),
 ]
 
 tests += [

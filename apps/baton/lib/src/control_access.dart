@@ -87,6 +87,12 @@ abstract class ScreenAccessKeeper {
   /// Asks the system to let Baton record the screen. The system shows its own question, or the
   /// person has to say yes in its settings: either way the answer comes later, and [state] tells.
   Future<void> request();
+
+  /// Reads the sound of this device for a moment, so that the system asks the person whether Baton
+  /// may record it while they can see the question, and not during a private screen, which keeps
+  /// the screen dark. The system asks only once, and tells Baton nothing of the answer. A device
+  /// whose sound cannot be read does nothing.
+  Future<void> requestSound() async {}
 }
 
 /// Asks the operating system, through the same plugin as [PlatformControlAccess]. Only a Mac is
@@ -97,6 +103,7 @@ class PlatformScreenAccess extends ScreenAccessKeeper {
   /// The questions and the answers must be those in macos/Classes/BatonStreamPlugin.swift.
   static const stateQuestion = 'screenAccess';
   static const requestQuestion = 'requestScreenAccess';
+  static const soundQuestion = 'requestSoundAccess';
 
   @override
   Future<ScreenAccess> state() async {
@@ -110,6 +117,11 @@ class PlatformScreenAccess extends ScreenAccessKeeper {
   @override
   Future<void> request() async {
     await _ask(requestQuestion);
+  }
+
+  @override
+  Future<void> requestSound() async {
+    await _ask(soundQuestion);
   }
 }
 
