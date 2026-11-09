@@ -10,7 +10,7 @@
 use std::path::Path;
 
 use baton_proto::{
-    device::{FALLBACK_NAME, sanitize_display_name},
+    device::{FALLBACK_NAME, MAX_DISPLAY_NAME_CHARS, sanitize_display_name, sanitize_text},
     limits::MAX_CLIPBOARD_TEXT_BYTES,
 };
 use serde::{Deserialize, Serialize};
@@ -215,12 +215,15 @@ impl Config {
         self.handoff.validate()
     }
 
-    /// The name to show other devices: the configured one, else the host name,
-    /// cleaned up for display either way.
+    /// The name to show other devices: the configured one, else the host name (with the
+    /// account's name on a Mac), cleaned up for display either way.
     pub fn device_name(&self) -> String {
         match &self.device_name {
             Some(name) => sanitize_display_name(name),
-            None => sanitize_display_name(&gethostname::gethostname().to_string_lossy()),
+            None => with_account(
+                &gethostname::gethostname().to_string_lossy(),
+                account_name().as_deref(),
+            ),
         }
     }
 
@@ -362,6 +365,37 @@ where
 
 fn config_error(message: impl Into<String>) -> Error {
     Error::Config(message.into())
+}
+
+/// The full name of the account that this program runs in, on a Mac. Several people can be
+/// logged in to one Mac at once, each running Baton in their own account, and each account is a
+/// device of its own: without the account in its name, every one of them would show the same
+/// name.
+#[cfg(target_os = "macos")]
+fn account_name() -> Option<String> {
+    whoami::fallible::realname().ok()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn account_name() -> Option<String> {
+    None
+}
+
+/// The host name with the account's name after it, "Host (Account)", cleaned up for display. A
+/// Mac's host name often ends in ".local", which is left out. The host is cut first when the
+/// whole would be too long, since the account is what tells the accounts of one Mac apart. An
+/// account whose name shows nothing is left out.
+fn with_account(host: &str, account: Option<&str>) -> String {
+    let host = host.strip_suffix(".local").unwrap_or(host);
+    let Some(account) = account.and_then(|a| sanitize_text(a, MAX_DISPLAY_NAME_CHARS / 2)) else {
+        return sanitize_display_name(host);
+    };
+    // The account, a space and two brackets.
+    let room = MAX_DISPLAY_NAME_CHARS - account.chars().count() - 3;
+    match sanitize_text(host, room) {
+        Some(host) => sanitize_display_name(&format!("{host} ({account})")),
+        None => sanitize_display_name(host),
+    }
 }
 
 #[cfg(test)]
@@ -601,6 +635,30 @@ mod tests {
         assert!(Config::from_toml("device_name = \"\"").is_err());
         assert!(Config::from_toml("device_name = \"   \"").is_err());
         assert!(Config::from_toml("device_name = \"\\u202E\"").is_err());
+    }
+
+    #[test]
+    fn a_default_name_carries_the_account_when_there_is_one() {
+        assert_eq!(with_account("Jays-MBP", Some("Jay")), "Jays-MBP (Jay)");
+        assert_eq!(
+            with_account("Jays-MBP.local", Some("Jay")),
+            "Jays-MBP (Jay)"
+        );
+        assert_eq!(with_account("Jays-MBP", None), "Jays-MBP");
+        assert_eq!(with_account("Jays-MBP", Some("  ")), "Jays-MBP");
+        assert_eq!(with_account("Jays-MBP", Some("  Jay  ")), "Jays-MBP (Jay)");
+        assert_eq!(
+            with_account("Jays-MBP", Some("Ann\u{202E}e")),
+            "Jays-MBP (Anne)"
+        );
+        // A long host is cut so that the account stays whole.
+        let long = "x".repeat(200);
+        let name = with_account(&long, Some("Jay"));
+        assert!(name.ends_with(" (Jay)"), "{name}");
+        assert_eq!(name.chars().count(), MAX_DISPLAY_NAME_CHARS);
+        // The host is cleaned when there is no account too.
+        let alone = with_account(&format!("{long}\u{202E}"), None);
+        assert_eq!(alone, "x".repeat(MAX_DISPLAY_NAME_CHARS));
     }
 
     #[test]

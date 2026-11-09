@@ -13,6 +13,12 @@ use baton_core::{Config, DataDir};
 
 use crate::{Error, Result};
 
+/// The name to offer the person for this device before one is chosen: the computer's own name,
+/// with the account's name after it on a Mac, where each account is a device of its own.
+pub fn suggested_device_name() -> String {
+    Config::default().device_name()
+}
+
 /// The name saved for this device in `data_dir`, if the person has chosen one.
 ///
 /// `None` means none has been chosen yet; the app then falls back to the computer's own

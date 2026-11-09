@@ -43,10 +43,12 @@ tracing.workspace = true
 url.workspace = true
 zeroize.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+whoami.workspace = true
+
 [dev-dependencies]
 # The crate's own tests use the test helpers.
 baton-core = { path = ".", features = ["test-support"] }
 ciborium.workspace = true
 proptest.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net", "test-util"] }
-

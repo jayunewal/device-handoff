@@ -30,6 +30,8 @@ data-encoding = "2.11"
 directories = "6"
 getrandom = "0.4"
 gethostname = "1"
+# The full name of the account that a Mac's default device name carries (crates/baton-core/src/config.rs).
+whoami = { version = "1.5", default-features = false }
 # Only for the normalisation forms of Unicode, with the data compiled in. The build already has it
 # for the DNS code that iroh uses.
 icu_normalizer = { version = "2", default-features = false, features = ["compiled_data"] }

@@ -510,6 +510,13 @@ pub fn device_name(data_dir: String) -> Result<Option<String>, BatonError> {
     Ok(baton_app::settings::device_name(Path::new(&data_dir))?)
 }
 
+/// The name to offer the person for this device before one is chosen: the computer's own
+/// name, with the account's name after it on a Mac.
+#[frb(sync)]
+pub fn suggested_device_name() -> String {
+    baton_app::settings::suggested_device_name()
+}
+
 /// Saves `name` as the name this device shows other devices. It takes effect the next time
 /// Baton starts, and only for devices that pair after that. A name with nothing visible in
 /// it is refused with `ErrorKind.badName`, and the message can be shown as it is.
