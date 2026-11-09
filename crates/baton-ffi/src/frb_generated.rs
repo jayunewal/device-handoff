@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -448146531;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1692732187;
 
 // Section: executor
 
@@ -2439,6 +2439,94 @@ fn wire__crate__api__baton__set_device_name_impl(
         },
     )
 }
+fn wire__crate__api__mac_unlock__ssh_mac_key_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "ssh_mac_key",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_host = <String>::sse_decode(&mut deserializer);
+            let api_port = <u16>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, ()>(
+                    (move || async move {
+                        let output_ok = Ok::<_, ()>(
+                            crate::api::mac_unlock::ssh_mac_key(api_host, api_port).await,
+                        )?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__mac_unlock__ssh_unlock_mac_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "ssh_unlock_mac",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_host = <String>::sse_decode(&mut deserializer);
+            let api_port = <u16>::sse_decode(&mut deserializer);
+            let api_account = <String>::sse_decode(&mut deserializer);
+            let api_password = <String>::sse_decode(&mut deserializer);
+            let api_trusted = <Vec<String>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, ()>(
+                    (move || async move {
+                        let output_ok = Ok::<_, ()>(
+                            crate::api::mac_unlock::ssh_unlock_mac(
+                                api_host,
+                                api_port,
+                                api_account,
+                                api_password,
+                                api_trusted,
+                            )
+                            .await,
+                        )?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__baton__suggested_device_name_impl(
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -3256,6 +3344,67 @@ impl SseDecode for crate::api::model::SendStage {
     }
 }
 
+impl SseDecode for crate::api::mac_unlock::SshKeyCheck {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                let mut var_fingerprint = <String>::sse_decode(deserializer);
+                return crate::api::mac_unlock::SshKeyCheck::Heard {
+                    fingerprint: var_fingerprint,
+                };
+            }
+            1 => {
+                let mut var_detail = <String>::sse_decode(deserializer);
+                return crate::api::mac_unlock::SshKeyCheck::Unreachable { detail: var_detail };
+            }
+            2 => {
+                let mut var_detail = <String>::sse_decode(deserializer);
+                return crate::api::mac_unlock::SshKeyCheck::Failed { detail: var_detail };
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
+impl SseDecode for crate::api::mac_unlock::SshUnlock {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                return crate::api::mac_unlock::SshUnlock::Accepted;
+            }
+            1 => {
+                return crate::api::mac_unlock::SshUnlock::Rejected;
+            }
+            2 => {
+                let mut var_fingerprint = <String>::sse_decode(deserializer);
+                return crate::api::mac_unlock::SshUnlock::UnknownKey {
+                    fingerprint: var_fingerprint,
+                };
+            }
+            3 => {
+                return crate::api::mac_unlock::SshUnlock::NoPassword;
+            }
+            4 => {
+                let mut var_detail = <String>::sse_decode(deserializer);
+                return crate::api::mac_unlock::SshUnlock::Unreachable { detail: var_detail };
+            }
+            5 => {
+                let mut var_detail = <String>::sse_decode(deserializer);
+                return crate::api::mac_unlock::SshUnlock::Failed { detail: var_detail };
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
 impl SseDecode for crate::api::model::StartAccess {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3819,7 +3968,9 @@ fn pde_ffi_dispatcher_primary_impl(
         44 => wire__crate__api__baton__device_name_impl(port, ptr, rust_vec_len, data_len),
         45 => wire__crate__api__startup__init_app_impl(port, ptr, rust_vec_len, data_len),
         47 => wire__crate__api__baton__set_device_name_impl(port, ptr, rust_vec_len, data_len),
-        50 => wire__crate__api__model__window_modifiers_default_impl(
+        48 => wire__crate__api__mac_unlock__ssh_mac_key_impl(port, ptr, rust_vec_len, data_len),
+        49 => wire__crate__api__mac_unlock__ssh_unlock_mac_impl(port, ptr, rust_vec_len, data_len),
+        52 => wire__crate__api__model__window_modifiers_default_impl(
             port,
             ptr,
             rust_vec_len,
@@ -3859,8 +4010,8 @@ fn pde_ffi_dispatcher_sync_impl(
         41 => wire__crate__api__baton__FileSend_cancel_impl(ptr, rust_vec_len, data_len),
         43 => wire__crate__api__baton__FileSend_progress_impl(ptr, rust_vec_len, data_len),
         46 => wire__crate__api__startup__recent_log_impl(ptr, rust_vec_len, data_len),
-        48 => wire__crate__api__baton__suggested_device_name_impl(ptr, rust_vec_len, data_len),
-        49 => wire__crate__api__baton__web_address_impl(ptr, rust_vec_len, data_len),
+        50 => wire__crate__api__baton__suggested_device_name_impl(ptr, rust_vec_len, data_len),
+        51 => wire__crate__api__baton__web_address_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -4438,6 +4589,69 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::model::SendStage>
     for crate::api::model::SendStage
 {
     fn into_into_dart(self) -> crate::api::model::SendStage {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::mac_unlock::SshKeyCheck {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::api::mac_unlock::SshKeyCheck::Heard { fingerprint } => {
+                [0.into_dart(), fingerprint.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::mac_unlock::SshKeyCheck::Unreachable { detail } => {
+                [1.into_dart(), detail.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::mac_unlock::SshKeyCheck::Failed { detail } => {
+                [2.into_dart(), detail.into_into_dart().into_dart()].into_dart()
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::mac_unlock::SshKeyCheck
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::mac_unlock::SshKeyCheck>
+    for crate::api::mac_unlock::SshKeyCheck
+{
+    fn into_into_dart(self) -> crate::api::mac_unlock::SshKeyCheck {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::mac_unlock::SshUnlock {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::api::mac_unlock::SshUnlock::Accepted => [0.into_dart()].into_dart(),
+            crate::api::mac_unlock::SshUnlock::Rejected => [1.into_dart()].into_dart(),
+            crate::api::mac_unlock::SshUnlock::UnknownKey { fingerprint } => {
+                [2.into_dart(), fingerprint.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::mac_unlock::SshUnlock::NoPassword => [3.into_dart()].into_dart(),
+            crate::api::mac_unlock::SshUnlock::Unreachable { detail } => {
+                [4.into_dart(), detail.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::mac_unlock::SshUnlock::Failed { detail } => {
+                [5.into_dart(), detail.into_into_dart().into_dart()].into_dart()
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::mac_unlock::SshUnlock
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::mac_unlock::SshUnlock>
+    for crate::api::mac_unlock::SshUnlock
+{
+    fn into_into_dart(self) -> crate::api::mac_unlock::SshUnlock {
         self
     }
 }
@@ -5617,6 +5831,61 @@ impl SseEncode for crate::api::model::SendStage {
             },
             serializer,
         );
+    }
+}
+
+impl SseEncode for crate::api::mac_unlock::SshKeyCheck {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {
+            crate::api::mac_unlock::SshKeyCheck::Heard { fingerprint } => {
+                <i32>::sse_encode(0, serializer);
+                <String>::sse_encode(fingerprint, serializer);
+            }
+            crate::api::mac_unlock::SshKeyCheck::Unreachable { detail } => {
+                <i32>::sse_encode(1, serializer);
+                <String>::sse_encode(detail, serializer);
+            }
+            crate::api::mac_unlock::SshKeyCheck::Failed { detail } => {
+                <i32>::sse_encode(2, serializer);
+                <String>::sse_encode(detail, serializer);
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+
+impl SseEncode for crate::api::mac_unlock::SshUnlock {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {
+            crate::api::mac_unlock::SshUnlock::Accepted => {
+                <i32>::sse_encode(0, serializer);
+            }
+            crate::api::mac_unlock::SshUnlock::Rejected => {
+                <i32>::sse_encode(1, serializer);
+            }
+            crate::api::mac_unlock::SshUnlock::UnknownKey { fingerprint } => {
+                <i32>::sse_encode(2, serializer);
+                <String>::sse_encode(fingerprint, serializer);
+            }
+            crate::api::mac_unlock::SshUnlock::NoPassword => {
+                <i32>::sse_encode(3, serializer);
+            }
+            crate::api::mac_unlock::SshUnlock::Unreachable { detail } => {
+                <i32>::sse_encode(4, serializer);
+                <String>::sse_encode(detail, serializer);
+            }
+            crate::api::mac_unlock::SshUnlock::Failed { detail } => {
+                <i32>::sse_encode(5, serializer);
+                <String>::sse_encode(detail, serializer);
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
     }
 }
 

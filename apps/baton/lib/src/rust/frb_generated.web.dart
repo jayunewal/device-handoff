@@ -8,6 +8,7 @@
 
 import 'api/baton.dart';
 import 'api/error.dart';
+import 'api/mac_unlock.dart';
 import 'api/model.dart';
 import 'api/startup.dart';
 
@@ -235,6 +236,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SendStage dco_decode_send_stage(dynamic raw);
+
+  @protected
+  SshKeyCheck dco_decode_ssh_key_check(dynamic raw);
+
+  @protected
+  SshUnlock dco_decode_ssh_unlock(dynamic raw);
 
   @protected
   StartAccess dco_decode_start_access(dynamic raw);
@@ -534,6 +541,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SendStage sse_decode_send_stage(SseDeserializer deserializer);
+
+  @protected
+  SshKeyCheck sse_decode_ssh_key_check(SseDeserializer deserializer);
+
+  @protected
+  SshUnlock sse_decode_ssh_unlock(SseDeserializer deserializer);
 
   @protected
   StartAccess sse_decode_start_access(SseDeserializer deserializer);
@@ -887,6 +900,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_send_stage(SendStage self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_ssh_key_check(SshKeyCheck self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_ssh_unlock(SshUnlock self, SseSerializer serializer);
 
   @protected
   void sse_encode_start_access(StartAccess self, SseSerializer serializer);

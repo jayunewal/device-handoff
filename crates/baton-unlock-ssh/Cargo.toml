@@ -1,0 +1,22 @@
+[package]
+name = "baton-unlock-ssh"
+description = "Unlocks a Mac that FileVault holds locked after a restart, by giving its password over SSH."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# `ring` is the cryptography that iroh already brings, and it builds for iPhones and iPads with
+# no C toolchain of its own. `rsa` stays off: a Mac's own keys are Ed25519 and ECDSA, and the
+# `rsa` crate has an open advisory about timing.
+russh = { version = "0.65", default-features = false, features = ["ring"] }
+tokio = { workspace = true, features = ["net", "time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "net", "time"] }

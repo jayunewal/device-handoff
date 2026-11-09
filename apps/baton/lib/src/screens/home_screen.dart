@@ -12,6 +12,7 @@ import '../file_shower.dart';
 import '../format.dart';
 import '../inbox_controller.dart';
 import '../links.dart';
+import '../mac_passwords.dart';
 import '../notice_access.dart';
 import '../scanner.dart';
 import '../transfers_controller.dart';
@@ -250,6 +251,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 : null,
             canGiveScreen: _windows.abilities.canGiveScreen,
             canBeUnlocked: _windows.abilities.canBeUnlocked,
+            macPasswords: PlatformMacPasswordKeeper.forThisDevice(),
           ),
           InboxScreen(
             controller: _inbox,

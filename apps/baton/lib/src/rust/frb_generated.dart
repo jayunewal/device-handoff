@@ -5,6 +5,7 @@
 
 import 'api/baton.dart';
 import 'api/error.dart';
+import 'api/mac_unlock.dart';
 import 'api/model.dart';
 import 'api/startup.dart';
 
@@ -72,7 +73,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -448146531;
+  int get rustContentHash => -1692732187;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -278,6 +279,19 @@ abstract class RustLibApi extends BaseApi {
   Future<void> crateApiBatonSetDeviceName({
     required String dataDir,
     required String name,
+  });
+
+  Future<SshKeyCheck> crateApiMacUnlockSshMacKey({
+    required String host,
+    required int port,
+  });
+
+  Future<SshUnlock> crateApiMacUnlockSshUnlockMac({
+    required String host,
+    required int port,
+    required String account,
+    required String password,
+    required List<String> trusted,
   });
 
   String crateApiBatonSuggestedDeviceName();
@@ -1880,12 +1894,85 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
+  Future<SshKeyCheck> crateApiMacUnlockSshMacKey({
+    required String host,
+    required int port,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(host, serializer);
+          sse_encode_u_16(port, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 48,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_ssh_key_check,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiMacUnlockSshMacKeyConstMeta,
+        argValues: [host, port],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiMacUnlockSshMacKeyConstMeta =>
+      const TaskConstMeta(debugName: "ssh_mac_key", argNames: ["host", "port"]);
+
+  @override
+  Future<SshUnlock> crateApiMacUnlockSshUnlockMac({
+    required String host,
+    required int port,
+    required String account,
+    required String password,
+    required List<String> trusted,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(host, serializer);
+          sse_encode_u_16(port, serializer);
+          sse_encode_String(account, serializer);
+          sse_encode_String(password, serializer);
+          sse_encode_list_String(trusted, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 49,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_ssh_unlock,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiMacUnlockSshUnlockMacConstMeta,
+        argValues: [host, port, account, password, trusted],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiMacUnlockSshUnlockMacConstMeta =>
+      const TaskConstMeta(
+        debugName: "ssh_unlock_mac",
+        argNames: ["host", "port", "account", "password", "trusted"],
+      );
+
+  @override
   String crateApiBatonSuggestedDeviceName() {
     return handler.executeSync(
       SyncTask(
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 48)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 50)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -1908,7 +1995,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(url, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 49)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 51)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_opt_String,
@@ -1933,7 +2020,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 50,
+            funcId: 52,
             port: port_,
           );
         },
@@ -2576,6 +2663,42 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   SendStage dco_decode_send_stage(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return SendStage.values[raw as int];
+  }
+
+  @protected
+  SshKeyCheck dco_decode_ssh_key_check(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    switch (raw[0]) {
+      case 0:
+        return SshKeyCheck_Heard(fingerprint: dco_decode_String(raw[1]));
+      case 1:
+        return SshKeyCheck_Unreachable(detail: dco_decode_String(raw[1]));
+      case 2:
+        return SshKeyCheck_Failed(detail: dco_decode_String(raw[1]));
+      default:
+        throw Exception("unreachable");
+    }
+  }
+
+  @protected
+  SshUnlock dco_decode_ssh_unlock(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    switch (raw[0]) {
+      case 0:
+        return SshUnlock_Accepted();
+      case 1:
+        return SshUnlock_Rejected();
+      case 2:
+        return SshUnlock_UnknownKey(fingerprint: dco_decode_String(raw[1]));
+      case 3:
+        return SshUnlock_NoPassword();
+      case 4:
+        return SshUnlock_Unreachable(detail: dco_decode_String(raw[1]));
+      case 5:
+        return SshUnlock_Failed(detail: dco_decode_String(raw[1]));
+      default:
+        throw Exception("unreachable");
+    }
   }
 
   @protected
@@ -3617,6 +3740,52 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
     return SendStage.values[inner];
+  }
+
+  @protected
+  SshKeyCheck sse_decode_ssh_key_check(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var tag_ = sse_decode_i_32(deserializer);
+    switch (tag_) {
+      case 0:
+        var var_fingerprint = sse_decode_String(deserializer);
+        return SshKeyCheck_Heard(fingerprint: var_fingerprint);
+      case 1:
+        var var_detail = sse_decode_String(deserializer);
+        return SshKeyCheck_Unreachable(detail: var_detail);
+      case 2:
+        var var_detail = sse_decode_String(deserializer);
+        return SshKeyCheck_Failed(detail: var_detail);
+      default:
+        throw UnimplementedError('');
+    }
+  }
+
+  @protected
+  SshUnlock sse_decode_ssh_unlock(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var tag_ = sse_decode_i_32(deserializer);
+    switch (tag_) {
+      case 0:
+        return SshUnlock_Accepted();
+      case 1:
+        return SshUnlock_Rejected();
+      case 2:
+        var var_fingerprint = sse_decode_String(deserializer);
+        return SshUnlock_UnknownKey(fingerprint: var_fingerprint);
+      case 3:
+        return SshUnlock_NoPassword();
+      case 4:
+        var var_detail = sse_decode_String(deserializer);
+        return SshUnlock_Unreachable(detail: var_detail);
+      case 5:
+        var var_detail = sse_decode_String(deserializer);
+        return SshUnlock_Failed(detail: var_detail);
+      default:
+        throw UnimplementedError('');
+    }
   }
 
   @protected
@@ -4697,6 +4866,44 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_send_stage(SendStage self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.index, serializer);
+  }
+
+  @protected
+  void sse_encode_ssh_key_check(SshKeyCheck self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    switch (self) {
+      case SshKeyCheck_Heard(fingerprint: final fingerprint):
+        sse_encode_i_32(0, serializer);
+        sse_encode_String(fingerprint, serializer);
+      case SshKeyCheck_Unreachable(detail: final detail):
+        sse_encode_i_32(1, serializer);
+        sse_encode_String(detail, serializer);
+      case SshKeyCheck_Failed(detail: final detail):
+        sse_encode_i_32(2, serializer);
+        sse_encode_String(detail, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_ssh_unlock(SshUnlock self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    switch (self) {
+      case SshUnlock_Accepted():
+        sse_encode_i_32(0, serializer);
+      case SshUnlock_Rejected():
+        sse_encode_i_32(1, serializer);
+      case SshUnlock_UnknownKey(fingerprint: final fingerprint):
+        sse_encode_i_32(2, serializer);
+        sse_encode_String(fingerprint, serializer);
+      case SshUnlock_NoPassword():
+        sse_encode_i_32(3, serializer);
+      case SshUnlock_Unreachable(detail: final detail):
+        sse_encode_i_32(4, serializer);
+        sse_encode_String(detail, serializer);
+      case SshUnlock_Failed(detail: final detail):
+        sse_encode_i_32(5, serializer);
+        sse_encode_String(detail, serializer);
+    }
   }
 
   @protected

@@ -16,6 +16,7 @@ import 'dart:io';
 
 import 'package:baton/src/rust/api/baton.dart';
 import 'package:baton/src/rust/api/error.dart';
+import 'package:baton/src/rust/api/mac_unlock.dart';
 import 'package:baton/src/rust/api/model.dart' hide Platform;
 import 'package:baton/src/rust/api/startup.dart';
 import 'package:baton/src/rust/frb_generated.dart';
@@ -30,6 +31,23 @@ const _wait = Duration(seconds: 30);
 void main() {
   setUpAll(() async {
     await RustLib.init(externalLibrary: ExternalLibrary.open(libraryPath()));
+  });
+
+  test('a Mac that is not there is unreachable, over SSH', () async {
+    // A port that was free a moment ago, on this computer, where nothing listens now.
+    final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final port = socket.port;
+    await socket.close();
+    final heard = await sshMacKey(host: '127.0.0.1', port: port);
+    expect(heard, isA<SshKeyCheck_Unreachable>());
+    final outcome = await sshUnlockMac(
+      host: '127.0.0.1',
+      port: port,
+      account: 'jay',
+      password: 'secret',
+      trusted: const [],
+    );
+    expect(outcome, isA<SshUnlock_Unreachable>());
   });
 
   test('the name is chosen before Baton starts', () async {
