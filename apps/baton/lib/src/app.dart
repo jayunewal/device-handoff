@@ -11,6 +11,7 @@ import 'scanner.dart';
 import 'screens/home_screen.dart';
 import 'screens/name_screen.dart';
 import 'screens/problem_screen.dart';
+import 'theme.dart';
 
 /// The whole app. The first time it asks for a name for this device. Then it starts Baton and
 /// shows the devices and the inbox.
@@ -53,8 +54,8 @@ class _BatonAppState extends State<BatonApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Baton',
-      theme: _theme(Brightness.light),
-      darkTheme: _theme(Brightness.dark),
+      theme: BatonTheme.light(),
+      darkTheme: BatonTheme.dark(),
       home: ListenableBuilder(
         listenable: _controller,
         builder: (context, _) => switch (_controller.phase) {
@@ -78,9 +79,3 @@ class _BatonAppState extends State<BatonApp> {
     );
   }
 }
-
-ThemeData _theme(Brightness brightness) => ThemeData(
-  colorSchemeSeed: const Color(0xFF3B5BDB),
-  brightness: brightness,
-  useMaterial3: true,
-);
