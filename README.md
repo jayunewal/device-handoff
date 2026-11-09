@@ -33,6 +33,13 @@ An iPhone or iPad can look at and control a Mac. It cannot be controlled itself,
 
 If you rebuild the Mac app, macOS forgets the permissions it gave the old build (Accessibility, and Screen & System Audio Recording), and sharing or control stops working without saying why. Run `tccutil reset All io.github.jayunewal.baton`, start Baton, allow the permissions again when it asks, then quit Baton and start it once more.
 
+### Download a release
+
+Each [release](https://github.com/jayunewal/device-handoff/releases) has the Mac app as `Baton-<version>.dmg` and the iPhone and iPad app as `Baton-<version>.ipa`. Neither is signed by a registered Apple developer.
+
+- **Mac**: open the .dmg and drag Baton to Applications. macOS refuses to open it the first time. On macOS 14 or older, Control-click Baton in Applications and choose **Open**. On macOS 15 or newer, try to open it once, then open **System Settings**, **Privacy & Security** and click **Open Anyway** next to the message about Baton. `xattr -dr com.apple.quarantine /Applications/Baton.app` in Terminal does the same on any version. Each release is a new build, so after an update macOS forgets Baton's permissions: reset them as the paragraph above says.
+- **iPhone and iPad**: install the .ipa with a sideloading tool that signs it with your own Apple ID, such as SideStore or AltStore. With a free Apple ID the app stops opening after seven days until the tool refreshes it.
+
 ## What Baton can and cannot do
 
 "Switch devices" is really two different features, and operating systems treat them very differently:
