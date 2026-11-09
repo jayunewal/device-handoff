@@ -19,6 +19,7 @@ baton-fs = { path = "crates/baton-fs" }
 baton-proto = { path = "crates/baton-proto" }
 baton-stream = { path = "crates/baton-stream" }
 baton-stream-abi = { path = "crates/baton-stream-abi" }
+baton-unlock-ssh = { path = "crates/baton-unlock-ssh" }
 
 # External. Versions are requirements; Cargo.lock pins what is actually built.
 # `image-data` (a default feature) is only for pictures, which Baton does not copy yet.

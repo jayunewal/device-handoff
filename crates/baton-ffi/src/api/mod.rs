@@ -8,5 +8,6 @@
 
 pub mod baton;
 pub mod error;
+pub mod mac_unlock;
 pub mod model;
 pub mod startup;

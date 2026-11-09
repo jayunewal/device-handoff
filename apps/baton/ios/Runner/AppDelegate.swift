@@ -1,4 +1,6 @@
 import Flutter
+import LocalAuthentication
+import Security
 import UIKit
 
 @main
@@ -19,6 +21,7 @@ import UIKit
     screenKeeper = ScreenKeeper(messenger: engineBridge.applicationRegistrar.messenger())
     answerWhereTheAppKeepsItsFiles(messenger: engineBridge.applicationRegistrar.messenger())
     showReceivedFilesInTheFilesApp(messenger: engineBridge.applicationRegistrar.messenger())
+    keepMacPasswords(messenger: engineBridge.applicationRegistrar.messenger())
   }
 }
 
@@ -210,5 +213,177 @@ private func keepBatonFolderOutOfBackups() {
     try folder.setResourceValues(values)
   } catch {
     NSLog("Baton could not keep its folder out of backups: \(error)")
+  }
+}
+
+// MARK: - Passwords of Macs to unlock after a restart
+
+/// Keeps what the app needs to unlock a Mac that FileVault holds locked after a restart
+/// (lib/src/mac_passwords.dart): for each Mac, a record with its address, the account and the
+/// host keys that are trusted, and the account's password. The names of the channel and of its
+/// methods must be the ones in that file.
+///
+/// Both are kept in the keychain, on this device only: in no backup, and never moved to another
+/// device. The record can be read whenever the device is unlocked, so that the app can list the
+/// Macs. The password can be read only with a face that the system recognises (Face ID, or Touch
+/// ID on a device without it). The passcode does not stand in for the face, and the password stops
+/// opening when a face is added or removed (`biometryCurrentSet`), so that someone who knows the
+/// passcode cannot add their own face and read it. It goes when the passcode is removed.
+///
+/// Nothing here writes a password, a record or an address to a log.
+private func keepMacPasswords(messenger: FlutterBinaryMessenger) {
+  let channel = FlutterMethodChannel(
+    name: "io.github.jayunewal.baton/mac-passwords", binaryMessenger: messenger)
+  channel.setMethodCallHandler { call, result in
+    let arguments = call.arguments as? [String: Any] ?? [:]
+    switch call.method {
+    case "list":
+      result(MacPasswords.records())
+    case "save":
+      guard let id = arguments["id"] as? String, let record = arguments["record"] as? String
+      else {
+        result(FlutterError(code: "bad_arguments", message: nil, details: nil))
+        return
+      }
+      result(MacPasswords.save(id: id, record: record, password: arguments["password"] as? String))
+    case "open":
+      guard let id = arguments["id"] as? String, let reason = arguments["reason"] as? String else {
+        result(FlutterError(code: "bad_arguments", message: nil, details: nil))
+        return
+      }
+      // Reading the password shows the prompt for the face and waits for it, which must not hold
+      // the main thread.
+      DispatchQueue.global(qos: .userInitiated).async {
+        let opened = MacPasswords.open(id: id, reason: reason)
+        DispatchQueue.main.async { result(opened) }
+      }
+    case "forget":
+      guard let id = arguments["id"] as? String else {
+        result(FlutterError(code: "bad_arguments", message: nil, details: nil))
+        return
+      }
+      MacPasswords.forget(id: id)
+      result(nil)
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+}
+
+private enum MacPasswords {
+  static let recordService = "io.github.jayunewal.baton.mac-record"
+  static let passwordService = "io.github.jayunewal.baton.mac-password"
+
+  /// Every record, as the text the app saved.
+  static func records() -> Any {
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: recordService,
+      kSecMatchLimit as String: kSecMatchLimitAll,
+      kSecReturnData as String: true,
+    ]
+    var found: CFTypeRef?
+    let status = SecItemCopyMatching(query as CFDictionary, &found)
+    if status == errSecItemNotFound { return [String]() }
+    guard status == errSecSuccess, let items = found as? [Data] else {
+      return failure("keychain", status)
+    }
+    return items.compactMap { String(data: $0, encoding: .utf8) }
+  }
+
+  /// Saves the record, and the password when there is one. Without one, the password that is
+  /// kept stays as it is.
+  static func save(id: String, record: String, password: String?) -> Any? {
+    if let password {
+      // A password that needs a face can be kept only on a device with a passcode and a face
+      // that is set up. Asking first gives the app a reason it can say, where the keychain would
+      // give a number that says little.
+      var problem: NSError?
+      if !LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &problem)
+      {
+        return FlutterError(
+          code: "no_face", message: problem.map { "\($0.domain) \($0.code)" }, details: nil)
+      }
+      guard
+        let rule = SecAccessControlCreateWithFlags(
+          nil, kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly, .biometryCurrentSet, nil)
+      else {
+        return FlutterError(code: "keychain", message: "access rule", details: nil)
+      }
+      delete(service: passwordService, id: id)
+      let add: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrService as String: passwordService,
+        kSecAttrAccount as String: id,
+        kSecAttrAccessControl as String: rule,
+        kSecValueData as String: Data(password.utf8),
+      ]
+      let status = SecItemAdd(add as CFDictionary, nil)
+      if status != errSecSuccess { return failure("keychain", status) }
+    }
+    delete(service: recordService, id: id)
+    let add: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: recordService,
+      kSecAttrAccount as String: id,
+      kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+      kSecValueData as String: Data(record.utf8),
+    ]
+    let status = SecItemAdd(add as CFDictionary, nil)
+    return status == errSecSuccess ? nil : failure("keychain", status)
+  }
+
+  /// The password, after the person has shown their face. The prompt says `reason`.
+  static func open(id: String, reason: String) -> Any {
+    let context = LAContext()
+    context.localizedReason = reason
+    // The passcode is no way round the face: the password's rule has none, and the prompt does
+    // not offer it.
+    context.localizedFallbackTitle = ""
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: passwordService,
+      kSecAttrAccount as String: id,
+      kSecMatchLimit as String: kSecMatchLimitOne,
+      kSecReturnData as String: true,
+      kSecUseAuthenticationContext as String: context,
+    ]
+    var found: CFTypeRef?
+    let status = SecItemCopyMatching(query as CFDictionary, &found)
+    switch status {
+    case errSecSuccess:
+      guard let data = found as? Data, let password = String(data: data, encoding: .utf8) else {
+        return FlutterError(code: "keychain", message: "not text", details: nil)
+      }
+      return password
+    case errSecUserCanceled:
+      return FlutterError(code: "cancelled", message: nil, details: nil)
+    case errSecItemNotFound:
+      // Also what a password whose faces have changed looks like: the system took it away.
+      return FlutterError(code: "gone", message: nil, details: nil)
+    case errSecAuthFailed:
+      return FlutterError(code: "not_recognised", message: nil, details: nil)
+    default:
+      return failure("keychain", status)
+    }
+  }
+
+  static func forget(id: String) {
+    delete(service: passwordService, id: id)
+    delete(service: recordService, id: id)
+  }
+
+  private static func delete(service: String, id: String) {
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: service,
+      kSecAttrAccount as String: id,
+    ]
+    SecItemDelete(query as CFDictionary)
+  }
+
+  private static func failure(_ code: String, _ status: OSStatus) -> FlutterError {
+    NSLog("Baton: Mac passwords: keychain status %d", status)
+    return FlutterError(code: code, message: "status \(status)", details: nil)
   }
 }

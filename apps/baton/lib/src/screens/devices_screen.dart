@@ -9,12 +9,14 @@ import '../control_access.dart';
 import '../controller.dart';
 import '../file_chooser.dart';
 import '../format.dart';
+import '../mac_passwords.dart';
 import '../notice_access.dart';
 import '../scanner.dart';
 import '../unlock_text.dart';
 import 'add_device_screen.dart';
 import 'content_box.dart';
 import 'diagnostics_screen.dart';
+import 'restart_unlock_screen.dart';
 import 'send_screen.dart';
 import 'start_access_dialog.dart';
 import 'unlock_dialog.dart';
@@ -33,6 +35,7 @@ class DevicesScreen extends StatefulWidget {
     this.controlAccess = const PlatformControlAccess(),
     this.screenAccess = const PlatformScreenAccess(),
     this.notices = const PlatformNoticeKeeper(),
+    this.macPasswords,
     super.key,
   });
 
@@ -77,12 +80,16 @@ class DevicesScreen extends StatefulWidget {
   /// unlocked this one. Tests give it one of their own.
   final NoticeKeeper notices;
 
+  /// Where the Macs to unlock after a restart are kept, or `null` on a device that does not
+  /// unlock them, which then does not offer it.
+  final MacPasswordKeeper? macPasswords;
+
   @override
   State<DevicesScreen> createState() => _DevicesScreenState();
 }
 
 /// What the menu at the top of the screen offers.
-enum _ScreenAction { diagnostics }
+enum _ScreenAction { restartUnlock, diagnostics }
 
 class _DevicesScreenState extends State<DevicesScreen>
     with WidgetsBindingObserver {
@@ -269,6 +276,14 @@ class _DevicesScreenState extends State<DevicesScreen>
     );
   }
 
+  void _restartUnlock(MacPasswordKeeper keeper) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => RestartUnlockScreen(keeper: keeper),
+      ),
+    );
+  }
+
   void _diagnostics() {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
@@ -331,9 +346,19 @@ class _DevicesScreenState extends State<DevicesScreen>
         actions: [
           PopupMenuButton<_ScreenAction>(
             tooltip: 'More',
-            onSelected: (_) => _diagnostics(),
-            itemBuilder: (context) => const [
-              PopupMenuItem(
+            onSelected: (action) => switch (action) {
+              _ScreenAction.restartUnlock => _restartUnlock(
+                widget.macPasswords!,
+              ),
+              _ScreenAction.diagnostics => _diagnostics(),
+            },
+            itemBuilder: (context) => [
+              if (widget.macPasswords != null)
+                const PopupMenuItem(
+                  value: _ScreenAction.restartUnlock,
+                  child: Text('Unlock a Mac after restart'),
+                ),
+              const PopupMenuItem(
                 value: _ScreenAction.diagnostics,
                 child: Text('Diagnostics'),
               ),
