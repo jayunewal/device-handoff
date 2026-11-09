@@ -241,6 +241,11 @@ func requestMacScreenAccess() {
 /// nothing to say whether it was taken, so the first time that the pointer is moved this way the
 /// log says whether the pointer followed.
 ///
+/// Several people can be logged in to a Mac at once, and each can steer their own account from
+/// another device. Only the account on the screen hands its events over as the Mac's keyboard and
+/// mouse; one that is behind it hands them into itself alone, and none are handed over while the
+/// Mac changes accounts (InputRouter in BatonInput.swift).
+///
 /// It is used by one thread at a time.
 final class MacEventPoster: EventPoster {
   /// How long an answer about consent is used again, in seconds.
@@ -259,12 +264,18 @@ final class MacEventPoster: EventPoster {
   /// Told when a key is handed to the system, in a session where nobody at the Mac may press one
   /// (BatonPrivacy.swift): the system counts that key as one of the Mac's.
   private let ledger: PostLedger?
+  /// Picks how each event is handed over, from whether this account is on the Mac's screen.
+  private let router: InputRouter
+  /// The route that was told about last, so that the log says when it changes.
+  private var toldRoute: InputRoute?
 
   init(
     ledger: PostLedger? = nil,
+    router: InputRouter? = nil,
     now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
   ) {
     self.ledger = ledger
+    self.router = router ?? InputRouter(watch: MacAccountWatch(), now: now)
     // Events for the system are those of a keyboard and a mouse that are there, and have the state
     // of those. The person at this Mac keeps their own pointer and keys: the system would
     // otherwise ignore them for a moment after each event that is posted, and a person who wants
@@ -276,15 +287,42 @@ final class MacEventPoster: EventPoster {
   }
 
   func post(_ event: SyntheticEvent) -> Bool {
-    guard consentGiven(), let source, let made = cgEvent(for: event, source) else { return false }
+    let route = router.route()
+    note(route)
+    guard route != .held else { return false }
+    guard consentGiven() else { return false }
+    let made: CGEvent?
+    if route == .account {
+      // An account that is not on the screen has no keyboard and mouse of its own to stand for,
+      // and the state of the Mac's own belongs to the account that is. The event has no source,
+      // as in the test on a Mac, and says its modifiers itself.
+      made = cgEvent(for: event, nil)
+    } else {
+      guard let source else { return false }
+      made = cgEvent(for: event, source)
+    }
+    guard let made else { return false }
     if case .key(let key) = event, key.down { ledger?.notedKeyDown() }
-    made.post(tap: .cghidEventTap)
+    made.post(tap: route == .account ? .cgSessionEventTap : .cghidEventTap)
     if !posted {
       posted = true
       controlLog.notice("Baton: the first input event was handed to the system.")
     }
     checkPointer(after: event)
     return true
+  }
+
+  /// Tells the log when the route of the events changes. Where the account is is not a secret.
+  private func note(_ route: InputRoute) {
+    guard route != toldRoute else { return }
+    toldRoute = route
+    let word: String
+    switch route {
+    case .hardware: word = "as the Mac's own keyboard and mouse"
+    case .account: word = "into this account only, which is not on the screen"
+    case .held: word = "not at all while the Mac changes accounts"
+    }
+    controlLog.notice("Baton: input events are handed over \(word, privacy: .public).")
   }
 
   /// The first time that the pointer is moved by a post, looks at whether it went there. Where it
@@ -326,7 +364,7 @@ final class MacEventPoster: EventPoster {
 
   // MARK: One event
 
-  private func cgEvent(for event: SyntheticEvent, _ source: CGEventSource) -> CGEvent? {
+  private func cgEvent(for event: SyntheticEvent, _ source: CGEventSource?) -> CGEvent? {
     switch event {
     case .mouse(let mouse): return mouseEvent(mouse, source)
     case .scroll(let scroll): return scrollEvent(scroll, source)
@@ -334,7 +372,7 @@ final class MacEventPoster: EventPoster {
     }
   }
 
-  private func mouseEvent(_ mouse: SyntheticMouse, _ source: CGEventSource) -> CGEvent? {
+  private func mouseEvent(_ mouse: SyntheticMouse, _ source: CGEventSource?) -> CGEvent? {
     let type: CGEventType
     let button: CGMouseButton
     switch (mouse.kind, mouse.button) {
@@ -366,7 +404,7 @@ final class MacEventPoster: EventPoster {
     return made
   }
 
-  private func scrollEvent(_ scroll: SyntheticScroll, _ source: CGEventSource) -> CGEvent? {
+  private func scrollEvent(_ scroll: SyntheticScroll, _ source: CGEventSource?) -> CGEvent? {
     // The first wheel is the vertical one, and the second the horizontal one. A positive number
     // moves the content down and to the right, as the finger of the person does.
     guard
@@ -379,7 +417,7 @@ final class MacEventPoster: EventPoster {
     return made
   }
 
-  private func keyEvent(_ key: SyntheticKey, _ source: CGEventSource) -> CGEvent? {
+  private func keyEvent(_ key: SyntheticKey, _ source: CGEventSource?) -> CGEvent? {
     guard
       let made = CGEvent(
         keyboardEventSource: source, virtualKey: CGKeyCode(key.virtualKey), keyDown: key.down)
@@ -439,6 +477,17 @@ func makeWindowControl(window: UInt32, process: Int32) -> WindowControl {
       doubleClickInterval: NSEvent.doubleClickInterval, movesPointerToScroll: true,
       dropsSystemShortcuts: true),
     poster: MacEventPoster())
+}
+
+/// Where this app's account is, as the window server says. Several people can be logged in to a
+/// Mac at once, each in their own account, and only one account is on the screen; the others go on
+/// running behind it.
+final class MacAccountWatch: AccountWatch {
+  func place() -> AccountPlace {
+    guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return .unknown }
+    guard let onScreen = session[kCGSessionOnConsoleKey as String] as? Bool else { return .unknown }
+    return onScreen ? .onScreen : .hidden
+  }
 }
 
 /// What the Rust side asks of a whole display that is shared with control, for the display with

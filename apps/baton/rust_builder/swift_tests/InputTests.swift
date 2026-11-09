@@ -2240,3 +2240,43 @@ func testTwoRectanglesOverlapOnlyWhenTheyShareSomeArea() {
   check(overlap(150, 250, 10, 10) == false, "in the same columns and not in the same rows")
   check(overlap(250, 150, 10, 10) == false, "in the same rows and not in the same columns")
 }
+
+// MARK: - The route of events on a Mac with several accounts
+
+final class FakeAccountWatch: AccountWatch {
+  var now: AccountPlace = .onScreen
+  func place() -> AccountPlace { now }
+}
+
+func testEventsGoAsTheMacsOwnOnlyFromTheAccountOnTheScreen() {
+  let watch = FakeAccountWatch()
+  var time: TimeInterval = 100
+  let router = InputRouter(watch: watch, now: { time })
+  check(router.route() == .hardware, "the account on the screen uses the keyboard and mouse")
+  watch.now = .hidden
+  let hiddenFromTheStart = InputRouter(watch: watch, now: { time })
+  check(hiddenFromTheStart.route() == .account, "an account behind the screen keeps to itself")
+  time += 5
+  check(router.route() == .held, "a change of account holds the events")
+  watch.now = .unknown
+  time += 5
+  check(router.route() == .held, "an account whose place is not known posts nothing")
+}
+
+func testEventsAreHeldForAMomentAfterTheMacChangesAccounts() {
+  let watch = FakeAccountWatch()
+  var time: TimeInterval = 100
+  let router = InputRouter(watch: watch, now: { time })
+  check(router.route() == .hardware)
+  watch.now = .hidden
+  check(router.route() == .held, "held as soon as the change is seen")
+  time += InputRouter.settle / 2
+  check(router.route() == .held, "still held while the change goes on")
+  time += InputRouter.settle
+  check(router.route() == .account, "handed into the account once the change is over")
+  watch.now = .onScreen
+  time += 0.01
+  check(router.route() == .held, "held again when the account comes back to the screen")
+  time += InputRouter.settle
+  check(router.route() == .hardware)
+}

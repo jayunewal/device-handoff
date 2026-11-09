@@ -20,6 +20,14 @@ var tests: [(String, () -> Void)] = [
     testARegistrationThatWorksKeepsThePlatformForTheLifeOfTheProcess
   ),
   (
+    "events go as the Mac's own only from the account on the screen",
+    testEventsGoAsTheMacsOwnOnlyFromTheAccountOnTheScreen
+  ),
+  (
+    "events are held for a moment after the Mac changes accounts",
+    testEventsAreHeldForAMomentAfterTheMacChangesAccounts
+  ),
+  (
     "limits are what the platform says and the room is checked",
     testLimitsAreWhatThePlatformSaysAndTheRoomIsChecked
   ),

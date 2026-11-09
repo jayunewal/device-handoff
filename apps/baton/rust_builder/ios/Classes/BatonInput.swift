@@ -1012,6 +1012,69 @@ protocol EventPoster: AnyObject {
   func post(_ event: SyntheticEvent) -> Bool
 }
 
+/// Where the account that this app runs in is, on a Mac where several people are logged in.
+enum AccountPlace: Equatable {
+  /// On the Mac's screen: the account of whoever sits at the Mac, or of nobody.
+  case onScreen
+  /// Logged in but not on the screen: another account, or the login window, is on the screen.
+  case hidden
+  /// The system did not say.
+  case unknown
+}
+
+/// Says where the account that this app runs in is (BatonControl.swift has the one of a Mac).
+protocol AccountWatch: AnyObject {
+  func place() -> AccountPlace
+}
+
+/// How an event is handed to the system.
+enum InputRoute: Equatable {
+  /// As if it came from the keyboard and the mouse of the Mac. Only the account on the screen may
+  /// use it: the system gives such an event to whichever account is on the screen, so an account
+  /// that is not would type and click in somebody else's (tried on a Mac, macOS 27.2).
+  case hardware
+  /// Into the account that this app runs in, and no other. It works while the account is not on
+  /// the screen, and nothing reaches the account that is.
+  case account
+  /// Not at all: the Mac is changing which account is on the screen, and while it does an event
+  /// can land in the login window or in the account that is coming.
+  case held
+}
+
+/// Picks the route of each event from where the account is. When the place changes, events are
+/// held for a moment, until the change of account is over.
+final class InputRouter {
+  /// How long events are held after the place of the account changed, in seconds.
+  static let settle: TimeInterval = 1.0
+
+  private let watch: AccountWatch
+  private let now: () -> TimeInterval
+  private var last: AccountPlace?
+  private var changedAt: TimeInterval?
+
+  init(
+    watch: AccountWatch,
+    now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+  ) {
+    self.watch = watch
+    self.now = now
+  }
+
+  func route() -> InputRoute {
+    let place = watch.place()
+    let time = now()
+    if let last, last != place { changedAt = time }
+    last = place
+    if let changedAt, time >= changedAt, time - changedAt < InputRouter.settle { return .held }
+    switch place {
+    case .onScreen: return .hardware
+    case .hidden: return .account
+    // Without knowing where the account is, the hardware route could reach somebody else's.
+    case .unknown: return .held
+    }
+  }
+}
+
 /// What the Rust side asks of a window, or a whole display, that is shared with control: its
 /// surroundings, and to have something that the person did put to it.
 final class WindowControl {
