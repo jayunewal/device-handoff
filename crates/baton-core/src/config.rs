@@ -10,7 +10,7 @@
 use std::path::Path;
 
 use baton_proto::{
-    device::{FALLBACK_NAME, sanitize_display_name},
+    device::{FALLBACK_NAME, MAX_DISPLAY_NAME_CHARS, sanitize_display_name, sanitize_text},
     limits::MAX_CLIPBOARD_TEXT_BYTES,
 };
 use serde::{Deserialize, Serialize};
@@ -381,15 +381,20 @@ fn account_name() -> Option<String> {
     None
 }
 
-/// The host name with the account's name after it, "Host (Account)", cleaned up for display. An
+/// The host name with the account's name after it, "Host (Account)", cleaned up for display. A
+/// Mac's host name often ends in ".local", which is left out. The host is cut first when the
+/// whole would be too long, since the account is what tells the accounts of one Mac apart. An
 /// account whose name shows nothing is left out.
 fn with_account(host: &str, account: Option<&str>) -> String {
-    let host = sanitize_display_name(host);
-    match account {
-        Some(account) if Config::is_usable_device_name(account) => {
-            sanitize_display_name(&format!("{host} ({})", sanitize_display_name(account)))
-        }
-        _ => host,
+    let host = host.strip_suffix(".local").unwrap_or(host);
+    let Some(account) = account.and_then(|a| sanitize_text(a, MAX_DISPLAY_NAME_CHARS / 2)) else {
+        return sanitize_display_name(host);
+    };
+    // The account, a space and two brackets.
+    let room = MAX_DISPLAY_NAME_CHARS - account.chars().count() - 3;
+    match sanitize_text(host, room) {
+        Some(host) => sanitize_display_name(&format!("{host} ({account})")),
+        None => sanitize_display_name(host),
     }
 }
 
@@ -635,15 +640,25 @@ mod tests {
     #[test]
     fn a_default_name_carries_the_account_when_there_is_one() {
         assert_eq!(with_account("Jays-MBP", Some("Jay")), "Jays-MBP (Jay)");
+        assert_eq!(
+            with_account("Jays-MBP.local", Some("Jay")),
+            "Jays-MBP (Jay)"
+        );
         assert_eq!(with_account("Jays-MBP", None), "Jays-MBP");
         assert_eq!(with_account("Jays-MBP", Some("  ")), "Jays-MBP");
+        assert_eq!(with_account("Jays-MBP", Some("  Jay  ")), "Jays-MBP (Jay)");
         assert_eq!(
             with_account("Jays-MBP", Some("Ann\u{202E}e")),
             "Jays-MBP (Anne)"
         );
+        // A long host is cut so that the account stays whole.
         let long = "x".repeat(200);
         let name = with_account(&long, Some("Jay"));
-        assert!(name.chars().count() <= baton_proto::device::MAX_DISPLAY_NAME_CHARS);
+        assert!(name.ends_with(" (Jay)"), "{name}");
+        assert_eq!(name.chars().count(), MAX_DISPLAY_NAME_CHARS);
+        // The host is cleaned when there is no account too.
+        let alone = with_account(&format!("{long}\u{202E}"), None);
+        assert_eq!(alone, "x".repeat(MAX_DISPLAY_NAME_CHARS));
     }
 
     #[test]

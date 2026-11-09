@@ -76,6 +76,15 @@ class RustBackend implements Backend {
 
   @override
   String suggestedName() {
+    // On a Mac each account is a device of its own, so its name carries the account's.
+    if (io.Platform.isMacOS) {
+      try {
+        final name = api.suggestedDeviceName();
+        if (name.isNotEmpty && name != 'localhost') return name;
+      } on Object {
+        // The host name below is offered instead.
+      }
+    }
     var host = '';
     try {
       host = io.Platform.localHostname.replaceFirst(RegExp(r'\.local$'), '');
