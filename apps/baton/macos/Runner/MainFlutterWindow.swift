@@ -236,13 +236,11 @@ private func answerAboutPermissions(messenger: FlutterBinaryMessenger) {
         DispatchQueue.main.async { result(cameraAccess()) }
       }
     case "openSettings":
-      guard let pane = call.arguments as? String, let address = settingsAddress(pane),
-        let url = URL(string: address)
-      else {
+      guard let pane = call.arguments as? String, let address = settingsAddress(pane) else {
         result(false)
         return
       }
-      result(NSWorkspace.shared.open(url))
+      result(openSystemSettings(address))
     default:
       // A Mac has no Face ID.
       result(FlutterMethodNotImplemented)
@@ -262,6 +260,16 @@ private func cameraAccess() -> String? {
   @unknown default:
     return nil
   }
+}
+
+/// Opens a pane of System Settings, and nothing else: an address that is not one of System
+/// Settings is refused. This is the only place the Mac app asks the system to open anything; the
+/// files that other devices send are only ever shown in Finder.
+private func openSystemSettings(_ address: String) -> Bool {
+  guard let url = URL(string: address), url.scheme == "x-apple.systempreferences" else {
+    return false
+  }
+  return NSWorkspace.shared.open(url)
 }
 
 /// The address of the pane of System Settings where a permission is turned on.
