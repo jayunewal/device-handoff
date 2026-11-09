@@ -1169,7 +1169,20 @@ func testWhatTheOtherDeviceIsToldIsAShortSentenceThatSaysTheMacLocks() {
 final class LockedAccountWatch: AccountWatch, @unchecked Sendable {
   private let mutex = NSLock()
   private var current: AccountPlace
+  private var count = 0
   init(_ place: AccountPlace) { current = place }
+  /// How many times the place was read.
+  var reads: Int {
+    mutex.lock()
+    defer { mutex.unlock() }
+    return count
+  }
+  /// Waits until the place was read `more` times from now, or 2 s went by.
+  func waitForReads(_ more: Int = 2) {
+    let until = reads + more
+    let end = Date().addingTimeInterval(2)
+    while reads < until && Date() < end { Thread.sleep(forTimeInterval: 0.002) }
+  }
   var now: AccountPlace {
     get {
       mutex.lock()
@@ -1182,7 +1195,12 @@ final class LockedAccountWatch: AccountWatch, @unchecked Sendable {
       mutex.unlock()
     }
   }
-  func place() -> AccountPlace { now }
+  func place() -> AccountPlace {
+    mutex.lock()
+    defer { mutex.unlock() }
+    count += 1
+    return current
+  }
 }
 
 final class CountingLocks: MacLocking, @unchecked Sendable {
@@ -1239,13 +1257,35 @@ func testAPlaceThatStaysUnknownIsTakenForTheScreen() {
     watch: watch, mac: CountingLocks(), every: 0.01, now: clock.now)
   let told = Told()
   check((try? curtain.raise(alarm: { told.tell($0.sentence) })) != nil)
+  // A moment of an unknown place, then a known one, starts the time again.
   watch.now = .unknown
-  Thread.sleep(forTimeInterval: 0.05)
-  check(told.all.isEmpty, "a moment of an unknown place ends nothing")
+  watch.waitForReads()
+  clock.sleep(HiddenAccountCurtain.unknownLimit / 2)
+  watch.now = .hidden
+  watch.waitForReads()
+  watch.now = .unknown
+  watch.waitForReads()
+  clock.sleep(HiddenAccountCurtain.unknownLimit * 3 / 4)
+  watch.waitForReads()
+  check(told.all.isEmpty, "unknown places with a known one between them are not added up")
   clock.sleep(HiddenAccountCurtain.unknownLimit)
   check(told.wait(seconds: 2), "an unknown place that lasts ends the session")
   check(told.all == [PrivacyAlarm.shown.sentence])
+  check(curtain.healthy, "each look counts, so the curtain stays healthy as the clock moves")
   curtain.lower()
+}
+
+func testAHiddenAccountIsLockedOnlyByTheCallUntilItIsOnTheScreen() {
+  let watch = LockedAccountWatch(.hidden)
+  let locks = CountingLocks()
+  let curtain = HiddenAccountCurtain(watch: watch, mac: locks, every: 3600)
+  for attempt in 0..<3 { curtain.lock(attempt: attempt) }
+  watch.now = .unknown
+  for attempt in 3..<6 { curtain.lock(attempt: attempt) }
+  check(locks.attempts == [0, 0, 0, 3, 3, 3], "\(locks.attempts)")
+  watch.now = .onScreen
+  for attempt in 6..<9 { curtain.lock(attempt: attempt) }
+  check(locks.attempts.suffix(3) == [6, 7, 8], "every way once the account is on the screen")
 }
 
 func testACurtainWhoseLooksStoppedIsNotHealthy() {
