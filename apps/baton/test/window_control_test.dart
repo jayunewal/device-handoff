@@ -12,6 +12,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'fake_backend.dart';
 import 'fake_screen.dart';
+import 'session_controls.dart';
 
 /// Everything a test of control holds on to.
 class _Shown {
@@ -105,6 +106,7 @@ Future<_Shown> _open(
 
 /// Turns control on, with the switch in the bar at the top.
 Future<void> _turnOn(WidgetTester tester) async {
+  await openSessionControls(tester);
   await tester.tap(find.text('Control'));
   await tester.pumpAndSettle();
 }
@@ -265,6 +267,7 @@ void main() {
     ) async {
       await _open(tester, control: false);
 
+      await openSessionControls(tester);
       expect(find.text('Control'), findsNothing);
       expect(find.text('Esc'), findsNothing);
     });
@@ -274,9 +277,11 @@ void main() {
     ) async {
       final shown = await _open(tester);
 
+      await openSessionControls(tester);
       expect(find.text('Control'), findsOneWidget);
       expect(find.text('Esc'), findsNothing);
       expect(find.byType(EditableText), findsNothing);
+      await openSessionControls(tester);
       expect(
         tester
             .widget<FilterChip>(find.widgetWithText(FilterChip, 'Control'))
@@ -293,6 +298,7 @@ void main() {
 
       await _turnOn(tester);
 
+      await openSessionControls(tester);
       expect(
         tester
             .widget<FilterChip>(find.widgetWithText(FilterChip, 'Control'))
@@ -324,15 +330,19 @@ void main() {
 
     testWidgets('says what it does, and then what it undoes', (tester) async {
       await _open(tester);
+      await openSessionControls(tester);
       expect(
         find.byTooltip('Control the window from this device'),
         findsOneWidget,
       );
+      await openSessionControls(tester);
       expect(find.byTooltip('Stop controlling the window'), findsNothing);
 
       await _turnOn(tester);
 
+      await openSessionControls(tester);
       expect(find.byTooltip('Stop controlling the window'), findsOneWidget);
+      await openSessionControls(tester);
       expect(
         find.byTooltip('Control the window from this device'),
         findsNothing,
@@ -343,10 +353,12 @@ void main() {
       tester,
     ) async {
       final shown = await _open(tester, display: true);
+      await openSessionControls(tester);
       expect(
         find.byTooltip('Control the screen from this device'),
         findsOneWidget,
       );
+      await openSessionControls(tester);
       expect(
         find.byTooltip('Control the window from this device'),
         findsNothing,
@@ -354,9 +366,12 @@ void main() {
 
       await _turnOn(tester);
 
+      await openSessionControls(tester);
       expect(find.byTooltip('Stop controlling the screen'), findsOneWidget);
+      await openSessionControls(tester);
       expect(find.byTooltip('Stop controlling the window'), findsNothing);
       expect(find.text('Esc'), findsOneWidget);
+      await closeSessionControls(tester);
 
       await tester.tapAt(_at(tester, 0.25, 0.75));
       await tester.pump(const Duration(seconds: 1));
@@ -369,7 +384,9 @@ void main() {
     ) async {
       await _open(tester, control: false, display: true);
 
+      await openSessionControls(tester);
       expect(find.text('Control'), findsNothing);
+      await openSessionControls(tester);
       expect(
         find.byTooltip('Control the screen from this device'),
         findsNothing,
@@ -565,6 +582,7 @@ void main() {
       final finger = await tester.startGesture(_at(tester, 0.5, 0.5));
       await finger.moveBy(const Offset(0, 100));
       shown.forget();
+      await openSessionControls(tester);
       await tester.tap(find.text('Control'));
       await tester.pumpAndSettle();
 
@@ -894,7 +912,7 @@ void main() {
 
   group('a key of a keyboard that the window takes', () {
     FocusScopeNode scopeOf(WidgetTester tester) =>
-        FocusScope.of(tester.element(find.byIcon(Icons.close)));
+        FocusScope.of(tester.element(find.byTooltip('Session controls')));
 
     testWidgets('does not move the focus of the app', (tester) async {
       final shown = await _open(tester);
@@ -913,7 +931,7 @@ void main() {
     testWidgets('does not press the button that has the focus', (tester) async {
       final shown = await _open(tester);
       await _turnOn(tester);
-      Focus.of(tester.element(find.byIcon(Icons.close))).requestFocus();
+      Focus.of(tester.element(find.byIcon(Icons.more_horiz))).requestFocus();
       await tester.pump();
 
       expect(await tester.sendKeyEvent(LogicalKeyboardKey.enter), isTrue);
@@ -926,6 +944,11 @@ void main() {
         _key(0x2C, down: false),
       ]);
       expect(find.text('Stop showing this window?'), findsNothing);
+      expect(
+        find.byTooltip('Stop showing'),
+        findsNothing,
+        reason: 'not opened',
+      );
       expect(find.text('Esc'), findsOneWidget, reason: 'control stays on');
     });
 
@@ -973,6 +996,7 @@ void main() {
     ) async {
       final shown = await _open(tester);
       await _turnOn(tester);
+      await openSessionControls(tester);
       await tester.tap(find.byTooltip('Stop showing'));
       await tester.pumpAndSettle();
       expect(find.text('Stop showing this window?'), findsOneWidget);
@@ -998,7 +1022,8 @@ void main() {
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pumpAndSettle();
 
-      expect(find.text('Stop showing this window?'), findsOneWidget);
+      // The ball took the focus, and Enter opened it.
+      expect(find.byTooltip('Stop showing'), findsOneWidget);
       expect(shown.session.windowInputs, isEmpty);
     });
   });
@@ -1307,9 +1332,9 @@ void main() {
       await _turnOn(tester);
       shown.session.emit(notice(WindowNoticeReason.locked));
       await tester.pump(Duration.zero);
-      final top = tester.getTopLeft(find.text('Anna’s Mac is locked.'));
+      final words = tester.getCenter(find.text('Anna’s Mac is locked.'));
 
-      await tester.tapAt(top + const Offset(2, 2));
+      await tester.tapAt(words);
       await tester.pump();
 
       expect(shown.given, hasLength(3));
@@ -1339,6 +1364,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Esc'), findsNothing);
+      await openSessionControls(tester);
       expect(find.text('Control'), findsNothing);
       expect(shown.session.windowInputsReleased, [1]);
       await tester.sendKeyDownEvent(LogicalKeyboardKey.keyA, character: 'a');
@@ -1384,7 +1410,9 @@ void main() {
         'of its keyboard', (tester) async {
       await _open(tester);
       await _turnOn(tester);
-      final scope = FocusScope.of(tester.element(find.byIcon(Icons.close)));
+      final scope = FocusScope.of(
+        tester.element(find.byTooltip('Session controls')),
+      );
       final keyboard = tester
           .widget<EditableText>(find.byType(EditableText))
           .focusNode;

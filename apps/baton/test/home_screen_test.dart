@@ -14,6 +14,7 @@ import 'fake_control_access.dart';
 import 'fake_notices.dart';
 import 'fake_screen.dart';
 import 'fake_shower.dart';
+import 'session_controls.dart';
 
 // Five minutes after the items in these tests were sent.
 final _now = DateTime.fromMillisecondsSinceEpoch((1760529600 + 300) * 1000);
@@ -779,6 +780,8 @@ void main() {
       expect(screen.on, isTrue, reason: 'and while the screen shows');
 
       // The person stops it, after being asked.
+      await openSessionControls(tester);
+      await openSessionControls(tester);
       await tester.tap(find.byTooltip('Stop showing'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Stop'));
@@ -882,6 +885,7 @@ void main() {
     expect(screen.on, isTrue, reason: 'and while the window shows');
 
     // The person stops it, after being asked.
+    await openSessionControls(tester);
     await tester.tap(find.byTooltip('Stop showing'));
     await tester.pumpAndSettle();
     expect(find.text('Stop showing this window?'), findsOneWidget);

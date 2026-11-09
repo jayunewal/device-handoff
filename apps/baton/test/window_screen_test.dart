@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'fake_backend.dart';
 import 'fake_screen.dart';
+import 'session_controls.dart';
 
 /// Everything a test of the screen holds on to.
 class _Shown {
@@ -319,11 +320,127 @@ void main() {
     );
   });
 
+  group('the ball that holds the controls', () {
+    Rect ballRect(WidgetTester tester) =>
+        tester.getRect(find.byIcon(Icons.more_horiz));
+
+    testWidgets('leaves the whole screen to the picture until it is opened', (
+      tester,
+    ) async {
+      await _open(tester);
+
+      expect(find.byType(AppBar), findsNothing);
+      expect(find.text('Budget.numbers'), findsNothing);
+      expect(find.byTooltip('Stop showing'), findsNothing);
+      // It waits low at the right, under the thumb.
+      final ball = ballRect(tester);
+      expect(ball.center.dx, greaterThan(450));
+      expect(ball.center.dy, greaterThan(800));
+
+      await tester.tap(find.byTooltip('Session controls'));
+      await tester.pump();
+      expect(find.text('Budget.numbers'), findsOneWidget);
+      expect(find.byTooltip('Stop showing'), findsOneWidget);
+    });
+
+    testWidgets('closes with a tap beside it, and the tap reaches nothing', (
+      tester,
+    ) async {
+      final shown = await _open(
+        tester,
+        window: sampleWindowSession(control: true),
+      );
+      await openSessionControls(tester);
+
+      await tester.tapAt(const Offset(450, 300));
+      await tester.pump();
+
+      expect(find.byTooltip('Stop showing'), findsNothing);
+      expect(shown.session.windowInputs, isEmpty);
+    });
+
+    testWidgets('goes where it is dragged, and settles at the nearer side', (
+      tester,
+    ) async {
+      await _open(tester);
+      final before = ballRect(tester);
+
+      await tester.drag(
+        find.byIcon(Icons.more_horiz),
+        Offset(-before.left + 200, -before.top + 300),
+      );
+      await tester.pump();
+
+      // Let go nearer the left, it moves to the left side, at the height where it was let go.
+      final after = ballRect(tester);
+      expect(after.left, lessThan(40));
+      expect(after.top, closeTo(300, 40));
+      expect(
+        find.byTooltip('Stop showing'),
+        findsNothing,
+        reason: 'not opened',
+      );
+
+      // Opened there, what it holds is beside it and on the screen.
+      await openSessionControls(tester);
+      final stop = tester.getRect(find.byTooltip('Stop showing'));
+      expect(stop.left, greaterThanOrEqualTo(0));
+      expect(stop.top, greaterThan(after.bottom));
+    });
+
+    testWidgets('stays on the screen when it is dragged off it', (
+      tester,
+    ) async {
+      await _open(tester);
+
+      await tester.drag(find.byIcon(Icons.more_horiz), const Offset(500, 5000));
+      await tester.pump();
+
+      final ball = ballRect(tester);
+      expect(ball.right, lessThanOrEqualTo(900));
+      expect(ball.bottom, lessThanOrEqualTo(1600));
+    });
+
+    testWidgets('shows that a setting of the session is on, while closed', (
+      tester,
+    ) async {
+      final shown = await _open(
+        tester,
+        window: sampleWindowSession(
+          display: true,
+          control: true,
+          private: true,
+        ),
+      );
+      Badge ballBadge() => tester.widget<Badge>(
+        find.ancestor(
+          of: find.byIcon(Icons.more_horiz),
+          matching: find.byType(Badge),
+        ),
+      );
+      expect(ballBadge().isLabelVisible, isFalse);
+
+      await openSessionControls(tester);
+      await tester.tap(find.byTooltip('Settings for this session'));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.widgetWithText(SwitchListTile, 'Show screen on the Mac'),
+      );
+      await tester.pumpAndSettle();
+      await tester.tapAt(const Offset(450, 40));
+      await tester.pumpAndSettle();
+
+      expect(shown.session.windowLifts, isNotEmpty);
+      expect(ballBadge().isLabelVisible, isTrue);
+    });
+  });
+
   group('the bar at the top', () {
     testWidgets('names the window and the device that shows it', (
       tester,
     ) async {
       await _open(tester);
+      await openSessionControls(tester);
 
       expect(find.text('Budget.numbers'), findsOneWidget);
       expect(find.text('from Anna’s Mac'), findsOneWidget);
@@ -333,6 +450,7 @@ void main() {
       'names a window with no title after its application, or calls it a window',
       (tester) async {
         await _open(tester, window: sampleWindowSession(title: null));
+        await openSessionControls(tester);
         expect(find.text('Numbers'), findsOneWidget);
 
         await tester.pumpWidget(const SizedBox());
@@ -340,6 +458,7 @@ void main() {
           tester,
           window: sampleWindowSession(title: null, app: null),
         );
+        await openSessionControls(tester);
         expect(find.text('a window'), findsOneWidget);
       },
     );
@@ -354,6 +473,7 @@ void main() {
           device: 'Mac\u202Eexe',
         ),
       );
+      await openSessionControls(tester);
 
       expect(find.text('Plan\uFFFDtxt'), findsOneWidget);
       expect(find.text('from Mac\uFFFDexe'), findsOneWidget);
@@ -416,6 +536,7 @@ void main() {
     ) async {
       final shown = await _open(tester);
 
+      await openSessionControls(tester);
       await tester.tap(find.byTooltip('Stop showing'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Stop'));
@@ -449,6 +570,7 @@ void main() {
     testWidgets('names the other device as fit to show', (tester) async {
       await _open(tester, window: sampleWindowSession(device: 'Mac\u202Eexe'));
 
+      await openSessionControls(tester);
       await tester.tap(find.byTooltip('Stop showing'));
       await tester.pumpAndSettle();
 
@@ -466,6 +588,7 @@ void main() {
     ) async {
       final shown = await _open(tester);
 
+      await openSessionControls(tester);
       await tester.tap(find.byTooltip('Stop showing'));
       await tester.pumpAndSettle();
 
@@ -489,6 +612,7 @@ void main() {
     ) async {
       final shown = await _open(tester);
 
+      await openSessionControls(tester);
       await tester.tap(find.byTooltip('Stop showing'));
       await tester.pumpAndSettle();
       expect(find.text('Stop showing this window?'), findsOneWidget);
@@ -509,6 +633,7 @@ void main() {
     ) async {
       final shown = await _open(tester);
 
+      await openSessionControls(tester);
       await tester.tap(find.byTooltip('Stop showing'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Stop'));
@@ -539,6 +664,7 @@ void main() {
     ) async {
       await _open(tester, window: sampleWindowSession(device: 'Desk PC'));
 
+      await openSessionControls(tester);
       await tester.tap(find.byTooltip('Stop showing'));
       await tester.pumpAndSettle();
 
@@ -552,6 +678,7 @@ void main() {
       'does not end a window that ended while the question was asked',
       (tester) async {
         final shown = await _open(tester);
+        await openSessionControls(tester);
         await tester.tap(find.byTooltip('Stop showing'));
         await tester.pumpAndSettle();
 
@@ -579,6 +706,7 @@ void main() {
         );
 
     Future<void> askToStop(WidgetTester tester) async {
+      await openSessionControls(tester);
       await tester.tap(find.byTooltip('Stop showing'));
       await tester.pumpAndSettle();
     }
@@ -1030,6 +1158,7 @@ void main() {
       'takes the touches that land on it, and gives none to the device',
       (tester) async {
         final shown = await _open(tester, window: lockable());
+        await openSessionControls(tester);
         await tester.tap(find.widgetWithText(FilterChip, 'Control'));
         await tester.pump();
 
@@ -1053,6 +1182,7 @@ void main() {
       final shown = await _open(tester, window: lockable());
       await lock(tester, shown);
 
+      await openSessionControls(tester);
       await tester.tap(find.byTooltip('Stop showing'));
       await tester.pumpAndSettle();
 
@@ -1073,6 +1203,7 @@ void main() {
       await lock(tester, shown);
       await lock(tester, shown, locked: false);
 
+      await openSessionControls(tester);
       await tester.tap(find.byTooltip('Stop showing'));
       await tester.pumpAndSettle();
 
@@ -1100,6 +1231,7 @@ void main() {
         );
         await lock(tester, shown, locked: false);
 
+        await openSessionControls(tester);
         await tester.tap(find.byTooltip('Stop showing'));
         await tester.pumpAndSettle();
 
@@ -1129,6 +1261,7 @@ void main() {
 
     testWidgets('is named a screen in the bar, and from where', (tester) async {
       await _open(tester, window: screen());
+      await openSessionControls(tester);
 
       expect(find.text('a screen'), findsOneWidget);
       expect(find.text('from Anna’s Mac'), findsOneWidget);
@@ -1140,6 +1273,7 @@ void main() {
     ) async {
       await _open(tester, window: screen());
 
+      await openSessionControls(tester);
       await tester.tap(find.byTooltip('Stop showing'));
       await tester.pumpAndSettle();
 
@@ -1375,6 +1509,7 @@ void main() {
     testWidgets('can be stopped while it waits', (tester) async {
       final shown = await _open(tester, window: asked(), settle: false);
 
+      await openSessionControls(tester);
       await tester.tap(find.byTooltip('Stop showing'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 500));
@@ -1454,6 +1589,7 @@ void main() {
     );
 
     Future<void> openSettings(WidgetTester tester) async {
+      await openSessionControls(tester);
       await tester.tap(find.byTooltip(RegExp('^Settings for this session')));
       await tester.pumpAndSettle();
     }
@@ -1471,10 +1607,12 @@ void main() {
       'are there only for a screen that the other device keeps private',
       (tester) async {
         await _open(tester, window: sampleWindowSession(control: true));
+        await openSessionControls(tester);
         expect(settings, findsNothing);
 
         await tester.pumpWidget(const SizedBox());
         await _open(tester, window: privateScreen());
+        await openSessionControls(tester);
         expect(settings, findsOneWidget);
       },
     );
@@ -1585,28 +1723,25 @@ void main() {
     ]) {
       testWidgets('show in the bar that $what is on', (tester) async {
         await _open(tester, window: privateScreen());
+        await openSessionControls(tester);
         expect(settingsWithSomethingOn, findsNothing);
-        expect(
-          tester.widget<Badge>(find.byType(Badge)).isLabelVisible,
-          isFalse,
-        );
+        expect(tester.widget<Badge>(_settingsBadge).isLabelVisible, isFalse);
 
         await openSettings(tester);
         await tester.tap(tile);
         await tester.pumpAndSettle();
         await closeSettings(tester);
+        await openSessionControls(tester);
         expect(settingsWithSomethingOn, findsOneWidget);
-        expect(tester.widget<Badge>(find.byType(Badge)).isLabelVisible, isTrue);
+        expect(tester.widget<Badge>(_settingsBadge).isLabelVisible, isTrue);
 
         await openSettings(tester);
         await tester.tap(tile);
         await tester.pumpAndSettle();
         await closeSettings(tester);
+        await openSessionControls(tester);
         expect(settingsWithSomethingOn, findsNothing);
-        expect(
-          tester.widget<Badge>(find.byType(Badge)).isLabelVisible,
-          isFalse,
-        );
+        expect(tester.widget<Badge>(_settingsBadge).isLabelVisible, isFalse);
       });
     }
 
@@ -1624,16 +1759,18 @@ void main() {
       await tester.tap(screenSwitch);
       await tester.pumpAndSettle();
       await closeSettings(tester);
+      await openSessionControls(tester);
       expect(settingsWithSomethingOn, findsOneWidget);
-      expect(tester.widget<Badge>(find.byType(Badge)).isLabelVisible, isTrue);
+      expect(tester.widget<Badge>(_settingsBadge).isLabelVisible, isTrue);
 
       // Then the keyboard and trackpad go off too, and nothing is on.
       await openSettings(tester);
       await tester.tap(inputSwitch);
       await tester.pumpAndSettle();
       await closeSettings(tester);
+      await openSessionControls(tester);
       expect(settingsWithSomethingOn, findsNothing);
-      expect(tester.widget<Badge>(find.byType(Badge)).isLabelVisible, isFalse);
+      expect(tester.widget<Badge>(_settingsBadge).isLabelVisible, isFalse);
     });
 
     testWidgets(
@@ -1713,6 +1850,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
+      await openSessionControls(tester);
       expect(settings, findsNothing);
     });
   });
@@ -1753,11 +1891,14 @@ void main() {
       'has a speaker in the bar only for a screen that can be heard',
       (tester) async {
         await _open(tester, window: sampleWindowSession(display: true));
+        await openSessionControls(tester);
         expect(anySpeaker, findsNothing);
 
         await tester.pumpWidget(const SizedBox());
         await _open(tester, window: screenWithSound());
+        await openSessionControls(tester);
         expect(off, findsOneWidget);
+        await openSessionControls(tester);
         expect(find.byIcon(Icons.volume_off_outlined), findsOneWidget);
       },
     );
@@ -1767,6 +1908,7 @@ void main() {
     ) async {
       final shown = await _open(tester, window: screenWithSound());
 
+      await openSessionControls(tester);
       expect(off, findsOneWidget);
       expect(shown.session.windowHears, isEmpty);
     });
@@ -1776,18 +1918,25 @@ void main() {
       (tester) async {
         final shown = await _open(tester, window: screenWithSound(id: 4));
 
+        await openSessionControls(tester);
         await tester.tap(off);
         await tester.pumpAndSettle();
+        await openSessionControls(tester);
         expect(asking, findsOneWidget);
+        await openSessionControls(tester);
         expect(find.byIcon(Icons.volume_up_outlined), findsOneWidget);
 
         hearOf(shown, WindowSound.playing);
         await tester.pumpAndSettle();
+        await openSessionControls(tester);
         expect(playing, findsOneWidget);
+        await openSessionControls(tester);
         expect(find.byIcon(Icons.volume_up), findsOneWidget);
 
+        await openSessionControls(tester);
         await tester.tap(playing);
         await tester.pumpAndSettle();
+        await openSessionControls(tester);
         expect(off, findsOneWidget);
 
         expect(shown.session.windowHears, [
@@ -1801,12 +1950,15 @@ void main() {
       'can be stopped while it waits for the other device to answer',
       (tester) async {
         final shown = await _open(tester, window: screenWithSound());
+        await openSessionControls(tester);
         await tester.tap(off);
         await tester.pumpAndSettle();
 
+        await openSessionControls(tester);
         await tester.tap(asking);
         await tester.pumpAndSettle();
 
+        await openSessionControls(tester);
         expect(off, findsOneWidget);
         expect(shown.session.windowHears.last, (session: 1, listen: false));
       },
@@ -1816,11 +1968,13 @@ void main() {
       'says why the other device sends none, and asks again with a tap',
       (tester) async {
         final shown = await _open(tester, window: screenWithSound());
+        await openSessionControls(tester);
         await tester.tap(off);
         await tester.pumpAndSettle();
 
         hearOf(shown, WindowSound.noPermission);
         await tester.pumpAndSettle();
+        await openSessionControls(tester);
         expect(silent, findsOneWidget);
         expect(
           find.text(
@@ -1832,8 +1986,10 @@ void main() {
         );
 
         // The sentence goes as soon as the person asks again, and comes back if it is no better.
+        await openSessionControls(tester);
         await tester.tap(silent);
         await tester.pumpAndSettle();
+        await openSessionControls(tester);
         expect(asking, findsOneWidget);
         expect(find.textContaining('has not let Baton record'), findsNothing);
         hearOf(shown, WindowSound.failed);
@@ -1847,6 +2003,7 @@ void main() {
         );
         hearOf(shown, WindowSound.playing);
         await tester.pumpAndSettle();
+        await openSessionControls(tester);
         expect(playing, findsOneWidget);
         expect(find.textContaining('could not record'), findsNothing);
 
@@ -1862,6 +2019,7 @@ void main() {
       (tester) async {
         final shown = await _open(tester, window: screenWithSound());
         final turnOff = find.text('Turn off the sound');
+        await openSessionControls(tester);
         await tester.tap(off);
         await tester.pumpAndSettle();
         expect(turnOff, findsNothing);
@@ -1876,6 +2034,7 @@ void main() {
         // The line goes with the sound, the speaker is off, and the other device is told.
         expect(turnOff, findsNothing);
         expect(find.textContaining('has not let Baton record'), findsNothing);
+        await openSessionControls(tester);
         expect(off, findsOneWidget);
         expect(shown.session.windowHears, [
           (session: 1, listen: true),
@@ -1883,8 +2042,10 @@ void main() {
         ]);
 
         // Asking again afterwards is asking as at first.
+        await openSessionControls(tester);
         await tester.tap(off);
         await tester.pumpAndSettle();
+        await openSessionControls(tester);
         expect(asking, findsOneWidget);
         hearOf(shown, WindowSound.playing);
         await tester.pumpAndSettle();
@@ -1896,11 +2057,13 @@ void main() {
       'says that the other device does not let this one hear, and asks again with a tap',
       (tester) async {
         final shown = await _open(tester, window: screenWithSound());
+        await openSessionControls(tester);
         await tester.tap(off);
         await tester.pumpAndSettle();
 
         hearOf(shown, WindowSound.notAllowed);
         await tester.pumpAndSettle();
+        await openSessionControls(tester);
         expect(silent, findsOneWidget);
         expect(
           find.textContaining('does not let this device hear'),
@@ -1908,8 +2071,10 @@ void main() {
         );
 
         // The person at the other device allowed it meanwhile: the next tap is taken.
+        await openSessionControls(tester);
         await tester.tap(silent);
         await tester.pumpAndSettle();
+        await openSessionControls(tester);
         expect(asking, findsOneWidget);
         expect(
           find.textContaining('does not let this device hear'),
@@ -1917,6 +2082,7 @@ void main() {
         );
         hearOf(shown, WindowSound.playing);
         await tester.pumpAndSettle();
+        await openSessionControls(tester);
         expect(playing, findsOneWidget);
         expect(shown.session.windowHears, [
           (session: 1, listen: true),
@@ -1929,14 +2095,17 @@ void main() {
       'says that this device could not play the sound, and plays it when the person asks again',
       (tester) async {
         final shown = await _open(tester, window: screenWithSound());
+        await openSessionControls(tester);
         await tester.tap(off);
         await tester.pumpAndSettle();
         hearOf(shown, WindowSound.playing);
         await tester.pumpAndSettle();
+        await openSessionControls(tester);
         expect(playing, findsOneWidget);
 
         hearOf(shown, WindowSound.cannotPlay);
         await tester.pumpAndSettle();
+        await openSessionControls(tester);
         expect(silent, findsOneWidget);
         expect(
           find.text(
@@ -1950,12 +2119,15 @@ void main() {
         expect(find.text('Turn off the sound'), findsNothing);
         expect(find.text('Close'), findsOneWidget);
 
+        await openSessionControls(tester);
         await tester.tap(silent);
         await tester.pumpAndSettle();
+        await openSessionControls(tester);
         expect(asking, findsOneWidget);
         expect(find.textContaining('could not play'), findsNothing);
         hearOf(shown, WindowSound.playing);
         await tester.pumpAndSettle();
+        await openSessionControls(tester);
         expect(playing, findsOneWidget);
         expect(shown.session.windowHears, [
           (session: 1, listen: true),
@@ -1968,6 +2140,7 @@ void main() {
       'puts the line about a sound that this device could not play away with Close alone, and asks nothing',
       (tester) async {
         final shown = await _open(tester, window: screenWithSound());
+        await openSessionControls(tester);
         await tester.tap(off);
         await tester.pumpAndSettle();
         hearOf(shown, WindowSound.cannotPlay);
@@ -1982,6 +2155,7 @@ void main() {
         // this device did that when it could not play.
         expect(line, findsNothing);
         expect(find.text('Close'), findsNothing);
+        await openSessionControls(tester);
         expect(silent, findsOneWidget);
         expect(shown.session.windowHears, [(session: 1, listen: true)]);
       },
@@ -1993,6 +2167,7 @@ void main() {
         final shown = await _open(tester, window: screenWithSound());
         final close = find.text('Close');
         final line = find.textContaining('has not let Baton record');
+        await openSessionControls(tester);
         await tester.tap(off);
         await tester.pumpAndSettle();
         hearOf(shown, WindowSound.noPermission);
@@ -2007,6 +2182,7 @@ void main() {
         expect(line, findsNothing);
         expect(close, findsNothing);
         expect(find.text('Turn off the sound'), findsNothing);
+        await openSessionControls(tester);
         expect(silent, findsOneWidget);
         expect(shown.session.windowHears, [(session: 1, listen: true)]);
 
@@ -2016,6 +2192,7 @@ void main() {
         expect(line, findsNothing);
 
         // A person who asks again and gets the same answer is told it.
+        await openSessionControls(tester);
         await tester.tap(silent);
         await tester.pumpAndSettle();
         expect(line, findsNothing);
@@ -2049,8 +2226,10 @@ void main() {
       'keeps a touch on the line that says why from going through to the window',
       (tester) async {
         final shown = await _open(tester, window: tallScreen());
+        await openSessionControls(tester);
         await tester.tap(find.widgetWithText(FilterChip, 'Control'));
         await tester.pump();
+        await openSessionControls(tester);
         await tester.tap(off);
         await tester.pumpAndSettle();
         hearOf(shown, WindowSound.failed);
@@ -2079,6 +2258,7 @@ void main() {
       'lets a touch on the line about what the other device did not do through to the window',
       (tester) async {
         final shown = await _open(tester, window: tallScreen());
+        await openSessionControls(tester);
         await tester.tap(find.widgetWithText(FilterChip, 'Control'));
         await tester.pump();
         shown.session.emit(
@@ -2108,6 +2288,7 @@ void main() {
       tester,
     ) async {
       final shown = await _open(tester, window: screenWithSound());
+      await openSessionControls(tester);
       await tester.tap(off);
       await tester.pumpAndSettle();
 
@@ -2155,8 +2336,10 @@ void main() {
             sound: true,
           ),
         );
+        await openSessionControls(tester);
         await tester.tap(find.widgetWithText(FilterChip, 'Control'));
         await tester.pump();
+        await openSessionControls(tester);
         await tester.tap(off);
         await tester.pumpAndSettle();
 
@@ -2190,6 +2373,7 @@ void main() {
         final shown = await _open(tester, window: screenWithSound());
 
         shown.session.windowHearTaken = false;
+        await openSessionControls(tester);
         await tester.tap(off);
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 500));
@@ -2198,6 +2382,7 @@ void main() {
           find.text('Baton could not ask Anna’s Mac for its sound. Try again.'),
           findsOneWidget,
         );
+        await openSessionControls(tester);
         expect(off, findsOneWidget);
         // The window goes on.
         expect(shown.controller.sessions, [shown.window]);
@@ -2213,15 +2398,18 @@ void main() {
         );
 
         expect(shown.session.windowHears, [(session: 1, listen: true)]);
+        await openSessionControls(tester);
         expect(asking, findsOneWidget);
         hearOf(shown, WindowSound.playing);
         await tester.pumpAndSettle();
+        await openSessionControls(tester);
         expect(playing, findsOneWidget);
       },
     );
 
     testWidgets('is not offered once the session is over', (tester) async {
       final shown = await _open(tester, window: screenWithSound());
+      await openSessionControls(tester);
       await tester.tap(off);
       await tester.pumpAndSettle();
       hearOf(shown, WindowSound.noPermission);
@@ -2235,9 +2423,16 @@ void main() {
       );
       await tester.pumpAndSettle();
 
+      await openSessionControls(tester);
       expect(anySpeaker, findsNothing);
       // Nor is there a sentence about the sound of a window that is over.
       expect(find.textContaining('has not let Baton record'), findsNothing);
     });
   });
 }
+
+/// The dot on the button for the settings of a session, among what the ball holds.
+final _settingsBadge = find.descendant(
+  of: find.byType(IconButton),
+  matching: find.byType(Badge),
+);
