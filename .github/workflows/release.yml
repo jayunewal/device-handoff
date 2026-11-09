@@ -1,0 +1,115 @@
+name: Release
+
+# When a release is published on GitHub, this builds the Mac app as a .dmg and the iPhone and iPad
+# app as an .ipa from the release's tag, and attaches both to the release. A run started by hand
+# does the same for a release that already exists, given its tag.
+#
+# Neither file is signed by a registered Apple developer, and the Mac app is not notarized: the
+# Mac app has the ad-hoc signature that every Release build of it gets, and the .ipa has none, so
+# whoever installs it signs it with their own Apple ID. "Download a release" in README.md says how
+# to open and install them. To sign them later, add a step after "Build the app" in each job that
+# imports a certificate from a secret and signs (and, for the Mac, notarizes and staples) before
+# the package step; nothing else here has to change.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of the release to build and attach the files to, for example v0.1.0
+        required: true
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag }}
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  mac:
+    name: Mac app (.dmg)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Reads what the runs on main saved, and saves nothing of its own.
+          save-if: false
+          workspaces: ". -> apps/baton/build/cargokit"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.7
+          channel: stable
+          cache: true
+      - name: Fetch the app's packages
+        working-directory: apps/baton
+        run: flutter pub get --enforce-lockfile
+      - name: Build the app
+        working-directory: apps/baton
+        run: flutter build macos --release
+      - name: Check that the signature of the app seals everything in it
+        run: codesign --verify --deep --strict --verbose=2 apps/baton/build/macos/Build/Products/Release/Baton.app
+      - name: Package the app as a .dmg
+        run: |
+          set -eu
+          mkdir dmg
+          ditto apps/baton/build/macos/Build/Products/Release/Baton.app dmg/Baton.app
+          ln -s /Applications dmg/Applications
+          # hdiutil on a GitHub Mac sometimes finds the disk busy for a moment.
+          for attempt in 1 2 3; do
+            hdiutil create -volname Baton -srcfolder dmg -ov -format UDZO "Baton-${TAG#v}.dmg" && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 10
+          done
+      - name: Attach it to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "Baton-${TAG#v}.dmg" --clobber --repo "$GITHUB_REPOSITORY"
+
+  ios:
+    name: iPhone and iPad app (.ipa)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+          workspaces: ". -> apps/baton/build/cargokit"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.7
+          channel: stable
+          cache: true
+      - name: Fetch the app's packages
+        working-directory: apps/baton
+        run: flutter pub get --enforce-lockfile
+      - name: Build the app
+        working-directory: apps/baton
+        run: flutter build ios --release --no-codesign
+      - name: Package the app as an .ipa
+        run: |
+          set -eu
+          mkdir -p ipa/Payload
+          ditto apps/baton/build/ios/iphoneos/Runner.app ipa/Payload/Runner.app
+          (cd ipa && zip -qry "../Baton-${TAG#v}.ipa" Payload)
+      - name: Attach it to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "Baton-${TAG#v}.ipa" --clobber --repo "$GITHUB_REPOSITORY"
