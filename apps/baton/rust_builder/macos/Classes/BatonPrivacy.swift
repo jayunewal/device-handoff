@@ -145,7 +145,17 @@ final class HiddenAccountCurtain: Curtain {
 
   var locked: Bool { mac.locked }
 
-  func lock(attempt: Int) { mac.lock(attempt: attempt) }
+  /// Locks this account. Of the three ways of `MacLock`, taken in turn, the shortcut and the sleep
+  /// of the display reach whoever is on the screen, whichever account does them: they are used only
+  /// once this account is there, and the call of the system is used in their place before.
+  func lock(attempt: Int) {
+    let way = attempt % 3
+    guard way == 0 || watch.place() == .onScreen else {
+      mac.lock(attempt: attempt - way)
+      return
+    }
+    mac.lock(attempt: attempt)
+  }
 
   func raise(alarm: @escaping (PrivacyAlarm) -> Void) throws {
     guard watch.place() == .hidden else {
