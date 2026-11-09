@@ -3,11 +3,13 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../awake.dart';
 import '../backend.dart';
 import '../control_keyboard.dart';
 import '../format.dart';
+import '../theme.dart';
 import '../window_control.dart';
 import '../window_sound.dart';
 import '../windows_controller.dart';
@@ -17,6 +19,10 @@ import 'windows_panel.dart';
 
 /// A window of another device, drawn live. The picture comes from the platform: the session gives
 /// the number of a texture, and the platform draws into it as the pictures arrive.
+///
+/// The picture has the whole screen. What a bar would hold (the name of the window, its sound,
+/// the settings of the session, control and Stop) is in a ball that floats over the picture: the
+/// person drags it where it is not in the way, and opens it with a tap ([_SessionBall]).
 ///
 /// The window is looked at, and zoomed with two fingers. If the other device let this one control
 /// it, the person can turn control on: their fingers and keys then act on the window, and the
@@ -28,7 +34,7 @@ import 'windows_panel.dart';
 ///
 /// A screen that this device controls and that the other device keeps private (dark, with its
 /// keyboard and trackpad out of use) has settings for the session, which the person opens from the
-/// bar: two switches, to show the screen at the other device and to let its keyboard and trackpad
+/// ball: two switches, to show the screen at the other device and to let its keyboard and trackpad
 /// be used, each on and off as often as they like. Both are off when the session starts. The other
 /// device locks itself when the session ends. If it can also be left as it is, leaving the screen
 /// asks "Lock" or "Leave it" instead of the usual question ([endAskingToLock]); only that answer
@@ -39,7 +45,7 @@ import 'windows_panel.dart';
 /// and the other device types its own password ([LockedCard]). The question at the end of the
 /// session is not asked for a device that is locked ([asksToLock]).
 ///
-/// A whole screen whose device can send its sound has a speaker in the bar, which turns the sound
+/// A whole screen whose device can send its sound has a speaker in the ball, which turns the sound
 /// on and off and shows how it stands. When the other device says that it sends none, a line over
 /// the picture says why, until the person tries again with the speaker or turns the sound off with
 /// the button in the line.
@@ -231,6 +237,102 @@ class _WindowScreenState extends State<WindowScreen> {
     Navigator.of(context).pop();
   }
 
+  /// Where the ball is, from the top left of the picture, or null where the person has not moved
+  /// it: then it sits low at the right, under the thumb.
+  Offset? _ball;
+
+  /// Whether what the ball holds is open.
+  bool _panelOpen = false;
+
+  void _openPanel(bool open) => setState(() => _panelOpen = open);
+
+  /// The ball, and what it holds when it is open: the name of the window, its sound, the settings
+  /// for the session, control, and the way to stop.
+  List<Widget> _ballAndPanel(WindowSession session, Size area) {
+    final at = _SessionBall.place(_ball, area);
+    final lifted = session.private
+        ? widget.controller.liftedOf(session)
+        : (screen: false, input: false);
+    final something = lifted.screen || lifted.input;
+    return [
+      if (_panelOpen)
+        Positioned.fill(
+          child: ModalBarrier(
+            color: const Color(0x66000000),
+            onDismiss: () => _openPanel(false),
+            semanticsLabel: 'Close session controls',
+          ),
+        ),
+      if (_panelOpen)
+        _SessionPanel.positioned(
+          ball: at,
+          area: area,
+          child: _SessionPanel(
+            title: _Title(session: session),
+            actions: [
+              if (session.sound)
+                _SoundButton(
+                  controller: widget.controller,
+                  session: session,
+                  onDone: () => _openPanel(false),
+                ),
+              if (session.private)
+                IconButton(
+                  icon: Badge(
+                    isLabelVisible: something,
+                    smallSize: 8,
+                    child: const Icon(Icons.settings_outlined),
+                  ),
+                  tooltip: something
+                      ? 'Settings for this session, something is switched on'
+                      : 'Settings for this session',
+                  onPressed: () {
+                    _openPanel(false);
+                    unawaited(_showSettings());
+                  },
+                ),
+              if (session.control)
+                FilterChip(
+                  avatar: const Icon(Icons.touch_app_outlined),
+                  label: const Text('Control'),
+                  showCheckmark: false,
+                  selected: _control.on,
+                  tooltip: _control.on
+                      ? 'Stop controlling the '
+                            '${windowNoun(display: session.display)}'
+                      : 'Control the '
+                            '${windowNoun(display: session.display)} '
+                            'from this device',
+                  onSelected: (on) {
+                    _openPanel(false);
+                    _setControl(on);
+                  },
+                ),
+            ],
+            onStop: () {
+              _openPanel(false);
+              unawaited(Navigator.of(context).maybePop());
+            },
+          ),
+        ),
+      Positioned(
+        left: at.dx,
+        top: at.dy,
+        child: _SessionBall(
+          open: _panelOpen,
+          badge: something,
+          onTap: () => _openPanel(!_panelOpen),
+          onMoved: (delta) => setState(() {
+            _ball = _SessionBall.clamp(at + delta, area);
+          }),
+          onLetGo: () => setState(() {
+            _ball = _SessionBall.toSide(_SessionBall.place(_ball, area), area);
+          }),
+        ),
+      ),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     return FocusScope.withExternalFocusNode(
@@ -268,169 +370,125 @@ class _WindowScreenState extends State<WindowScreen> {
             final over = widget.controller.over(session);
             if (over != null) widget.controller.dismiss(over);
           },
-          child: Scaffold(
-            backgroundColor: Colors.black,
-            appBar: AppBar(
-              leading: IconButton(
-                icon: const Icon(Icons.close),
-                tooltip: running ? 'Stop showing' : 'Close',
-                onPressed: () => unawaited(Navigator.of(context).maybePop()),
-              ),
-              title: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    windowName(
-                      session.title,
-                      session.app,
-                      display: session.display,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  Text(
-                    'from ${visibleText(session.deviceName)}',
-                    style: Theme.of(context).textTheme.bodySmall,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ],
-              ),
-              actions: [
-                if (running && session.sound)
-                  _SoundButton(controller: widget.controller, session: session),
-                if (running && session.private)
-                  Builder(
-                    builder: (context) {
-                      final lifted = widget.controller.liftedOf(session);
-                      final anything = lifted.screen || lifted.input;
-                      return IconButton(
-                        icon: Badge(
-                          isLabelVisible: anything,
-                          smallSize: 8,
-                          child: const Icon(Icons.settings_outlined),
-                        ),
-                        tooltip: anything
-                            ? 'Settings for this session, '
-                                  'something is switched on'
-                            : 'Settings for this session',
-                        onPressed: () => unawaited(_showSettings()),
-                      );
-                    },
-                  ),
-                if (running && session.control)
-                  ListenableBuilder(
-                    listenable: _control,
-                    builder: (context, _) => Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: FilterChip(
-                        avatar: const Icon(Icons.touch_app_outlined),
-                        label: const Text('Control'),
-                        showCheckmark: false,
-                        selected: _control.on,
-                        tooltip: _control.on
-                            ? 'Stop controlling the '
-                                  '${windowNoun(display: session.display)}'
-                            : 'Control the '
-                                  '${windowNoun(display: session.display)} '
-                                  'from this device',
-                        onSelected: _setControl,
+          // Light icons in the status bar, over the black around the picture. An ended window's
+          // bar sets its own.
+          child: AnnotatedRegion<SystemUiOverlayStyle>(
+            value: SystemUiOverlayStyle.light,
+            child: Scaffold(
+              backgroundColor: Colors.black,
+              // While the window runs, the picture has the whole screen, and what the bar held is
+              // behind a ball that the person moves where it is not in the way ([_SessionBall]).
+              appBar: running
+                  ? null
+                  : AppBar(
+                      leading: IconButton(
+                        icon: const Icon(Icons.close),
+                        tooltip: 'Close',
+                        onPressed: () =>
+                            unawaited(Navigator.of(context).maybePop()),
                       ),
+                      title: _Title(session: session),
                     ),
-                  ),
-              ],
-            ),
-            body: SafeArea(
-              child: running
-                  ? ListenableBuilder(
-                      listenable: Listenable.merge([_control, _keyboard]),
-                      builder: (context, _) => Column(
-                        children: [
-                          Expanded(
-                            child: Stack(
-                              fit: StackFit.expand,
-                              children: [
-                                _Picture(
-                                  session: session,
-                                  size: widget.controller.pictureOf(session),
-                                  control: _control,
-                                  pictureKey: _picture,
-                                ),
-                                if (widget.controller.lockedOf(session))
-                                  Positioned.fill(
-                                    child: LockedCard(
-                                      controller: widget.controller,
+              body: SafeArea(
+                child: running
+                    ? ListenableBuilder(
+                        listenable: Listenable.merge([_control, _keyboard]),
+                        builder: (context, _) => Column(
+                          children: [
+                            Expanded(
+                              child: LayoutBuilder(
+                                builder: (context, area) => Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    _Picture(
                                       session: session,
-                                      onUnlock: _unlock,
+                                      size: widget.controller.pictureOf(
+                                        session,
+                                      ),
+                                      control: _control,
+                                      pictureKey: _picture,
                                     ),
-                                  ),
-                                if (_control.on)
-                                  Positioned(
-                                    left: 0,
-                                    bottom: 0,
-                                    child: SoftKeyboardField(
-                                      focusNode: _keyboard,
-                                      onTyped: _control.type,
-                                    ),
-                                  ),
-                                if (_control.notice != null || silence != null)
-                                  Positioned(
-                                    left: 16,
-                                    right: 16,
-                                    top: 8,
-                                    child: Column(
-                                      mainAxisSize: MainAxisSize.min,
-                                      spacing: 8,
-                                      children: [
-                                        if (_control.notice != null)
-                                          _Notice(text: _control.notice!),
-                                        if (silence != null)
-                                          _Notice(
-                                            text: silence,
-                                            actions: [
-                                              // This device turned the sound off and told the
-                                              // other device when it could not play it, so there
-                                              // is nothing left to turn off.
-                                              if (sound.why !=
-                                                  WindowSound.cannotPlay)
-                                                (
-                                                  label: 'Turn off the sound',
-                                                  onPressed: () =>
-                                                      widget.controller.hear(
-                                                        session,
-                                                        listen: false,
-                                                      ),
-                                                ),
-                                              (
-                                                label: 'Close',
-                                                onPressed: () => widget
-                                                    .controller
-                                                    .closeSilence(session),
+                                    if (widget.controller.lockedOf(session))
+                                      Positioned.fill(
+                                        child: LockedCard(
+                                          controller: widget.controller,
+                                          session: session,
+                                          onUnlock: _unlock,
+                                        ),
+                                      ),
+                                    if (_control.on)
+                                      Positioned(
+                                        left: 0,
+                                        bottom: 0,
+                                        child: SoftKeyboardField(
+                                          focusNode: _keyboard,
+                                          onTyped: _control.type,
+                                        ),
+                                      ),
+                                    if (_control.notice != null ||
+                                        silence != null)
+                                      Positioned(
+                                        left: 16,
+                                        right: 16,
+                                        top: 8,
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          spacing: 8,
+                                          children: [
+                                            if (_control.notice != null)
+                                              _Notice(text: _control.notice!),
+                                            if (silence != null)
+                                              _Notice(
+                                                text: silence,
+                                                actions: [
+                                                  // This device turned the sound off and told the
+                                                  // other device when it could not play it, so there
+                                                  // is nothing left to turn off.
+                                                  if (sound.why !=
+                                                      WindowSound.cannotPlay)
+                                                    (
+                                                      label:
+                                                          'Turn off the sound',
+                                                      onPressed: () => widget
+                                                          .controller
+                                                          .hear(
+                                                            session,
+                                                            listen: false,
+                                                          ),
+                                                    ),
+                                                  (
+                                                    label: 'Close',
+                                                    onPressed: () => widget
+                                                        .controller
+                                                        .closeSilence(session),
+                                                  ),
+                                                ],
                                               ),
-                                            ],
-                                          ),
-                                      ],
-                                    ),
-                                  ),
-                              ],
+                                          ],
+                                        ),
+                                      ),
+                                    ..._ballAndPanel(session, area.biggest),
+                                  ],
+                                ),
+                              ),
                             ),
-                          ),
-                          if (_control.on)
-                            ControlKeys(
-                              chosen: _control.chosen,
-                              onKey: _control.tapKey,
-                              keyboardShown: _keyboard.hasFocus,
-                              onKeyboard: _toggleKeyboard,
-                            ),
-                        ],
+                            if (_control.on)
+                              ControlKeys(
+                                chosen: _control.chosen,
+                                onKey: _control.tapKey,
+                                keyboardShown: _keyboard.hasFocus,
+                                onKeyboard: _toggleKeyboard,
+                              ),
+                          ],
+                        ),
+                      )
+                    : _Over(
+                        session: session,
+                        over: widget.controller.over(session),
+                        onClose: () =>
+                            unawaited(Navigator.of(context).maybePop()),
                       ),
-                    )
-                  : _Over(
-                      session: session,
-                      over: widget.controller.over(session),
-                      onClose: () =>
-                          unawaited(Navigator.of(context).maybePop()),
-                    ),
+              ),
             ),
           ),
         );
@@ -439,13 +497,273 @@ class _WindowScreenState extends State<WindowScreen> {
   }
 }
 
-/// The speaker in the bar of a screen that can be heard: it turns the sound on and off, and shows
+/// The name of the window and the device it comes from.
+class _Title extends StatelessWidget {
+  const _Title({required this.session});
+
+  final WindowSession session;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          windowName(session.title, session.app, display: session.display),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.titleMedium,
+        ),
+        Text(
+          'from ${visibleText(session.deviceName)}',
+          style: Theme.of(context).textTheme.bodySmall,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ],
+    );
+  }
+}
+
+/// A ball that floats over the picture and holds what the bar held, so that the picture has the
+/// whole screen. The person drags it anywhere; let go, it settles at the nearer side, where it is
+/// least in the way. A tap opens what it holds, and closes it again.
+class _SessionBall extends StatelessWidget {
+  const _SessionBall({
+    required this.open,
+    required this.badge,
+    required this.onTap,
+    required this.onMoved,
+    required this.onLetGo,
+  });
+
+  static const size = 52.0;
+
+  /// How far it keeps from the sides of the picture.
+  static const margin = 12.0;
+
+  final bool open;
+
+  /// Whether something of the session's settings is switched on, which the ball shows as the bar
+  /// did.
+  final bool badge;
+  final VoidCallback onTap;
+  final ValueChanged<Offset> onMoved;
+  final VoidCallback onLetGo;
+
+  /// Where the ball is in [area]: where the person put it, or low at the right.
+  static Offset place(Offset? chosen, Size area) => clamp(
+    chosen ?? Offset(area.width, area.height - size - margin * 2),
+    area,
+  );
+
+  /// [at], kept inside [area].
+  static Offset clamp(Offset at, Size area) {
+    final right = area.width - size - margin;
+    final bottom = area.height - size - margin;
+    return Offset(
+      right < margin ? margin : at.dx.clamp(margin, right),
+      bottom < margin ? margin : at.dy.clamp(margin, bottom),
+    );
+  }
+
+  /// [at], moved to the nearer side of [area].
+  static Offset toSide(Offset at, Size area) {
+    final left = at.dx + size / 2 < area.width / 2;
+    return clamp(Offset(left ? 0 : area.width, at.dy), area);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Semantics(
+      button: true,
+      label: 'Session controls',
+      expanded: open,
+      child: Tooltip(
+        message: 'Session controls',
+        excludeFromSemantics: true,
+        child: GestureDetector(
+          onPanUpdate: (details) => onMoved(details.delta),
+          onPanEnd: (_) => onLetGo(),
+          child: Badge(
+            isLabelVisible: badge && !open,
+            smallSize: 10,
+            child: Material(
+              // A light ring keeps it in sight over a dark picture, and the dark fill over a light
+              // one.
+              shape: const CircleBorder(
+                side: BorderSide(color: Colors.white54, width: 1.5),
+              ),
+              color: (open ? scheme.primary : Colors.black).withValues(
+                alpha: open ? 1 : 0.6,
+              ),
+              elevation: 6,
+              shadowColor: Colors.black,
+              child: InkWell(
+                // A keyboard reaches it too: it takes the focus, and Enter or Space opens it.
+                customBorder: const CircleBorder(),
+                onTap: onTap,
+                child: SizedBox.square(
+                  dimension: size,
+                  child: Icon(
+                    open ? Icons.close : Icons.more_horiz,
+                    color: open ? scheme.onPrimary : Colors.white,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// What the ball holds: the name of the window, the controls of the session, and Stop.
+class _SessionPanel extends StatelessWidget {
+  const _SessionPanel({
+    required this.title,
+    required this.actions,
+    required this.onStop,
+  });
+
+  static const width = 340.0;
+
+  final Widget title;
+  final List<Widget> actions;
+  final VoidCallback onStop;
+
+  /// [child] next to the ball at [ball], on the side of the ball that has room: below it when the
+  /// ball is in the top half, above it otherwise, and lined up with the side the ball is at.
+  /// [child] beside the ball at [ball], always whole inside [area] ([_PanelPlace]).
+  static Widget positioned({
+    required Offset ball,
+    required Size area,
+    required Widget child,
+  }) {
+    return Positioned.fill(
+      child: CustomSingleChildLayout(
+        delegate: _PanelPlace(ball: ball),
+        child: child,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Theme.of(context).colorScheme.surfaceContainer,
+      elevation: 8,
+      borderRadius: BorderRadius.circular(BatonTheme.radiusLarge),
+      clipBehavior: Clip.antiAlias,
+      // An area shorter than the panel, such as a phone on its side with the keyboard up, scrolls
+      // it rather than cut it.
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(BatonTheme.gap),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            title,
+            if (actions.isNotEmpty) ...[
+              const SizedBox(height: BatonTheme.gapSmall),
+              Wrap(
+                spacing: BatonTheme.gapSmall,
+                runSpacing: BatonTheme.gapSmall,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: actions,
+              ),
+            ],
+            const SizedBox(height: BatonTheme.gap),
+            Tooltip(
+              message: 'Stop showing',
+              child: FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: Theme.of(context).colorScheme.error,
+                  foregroundColor: Theme.of(context).colorScheme.onError,
+                ),
+                onPressed: onStop,
+                icon: const Icon(Icons.stop_circle_outlined),
+                label: const Text('Stop'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Where the panel of the ball goes: below the ball when it fits there, above it when it fits
+/// there, and otherwise beside it, lined up with the middle of the ball. Wherever it goes, it is
+/// moved whole into the area, and it is never taller or wider than the area allows, so Stop is
+/// always on the screen.
+class _PanelPlace extends SingleChildLayoutDelegate {
+  const _PanelPlace({required this.ball});
+
+  final Offset ball;
+
+  static const _gap = 8.0;
+  static const _margin = _SessionBall.margin;
+
+  @override
+  BoxConstraints getConstraintsForChild(BoxConstraints constraints) {
+    final size = constraints.biggest;
+    return BoxConstraints(
+      minWidth: 0,
+      maxWidth: (size.width - _margin * 2).clamp(0.0, _SessionPanel.width),
+      maxHeight: (size.height - _margin * 2).clamp(0.0, double.infinity),
+    );
+  }
+
+  @override
+  Offset getPositionForChild(Size size, Size child) {
+    const ballSize = _SessionBall.size;
+    final atRight = ball.dx + ballSize / 2 > size.width / 2;
+    double clampX(double x) => x.clamp(
+      _margin,
+      (size.width - child.width - _margin).clamp(_margin, double.infinity),
+    );
+    double clampY(double y) => y.clamp(
+      _margin,
+      (size.height - child.height - _margin).clamp(_margin, double.infinity),
+    );
+    final lined = clampX(atRight ? ball.dx + ballSize - child.width : ball.dx);
+    final below = ball.dy + ballSize + _gap;
+    if (below + child.height <= size.height - _margin) {
+      return Offset(lined, below);
+    }
+    final above = ball.dy - _gap - child.height;
+    if (above >= _margin) return Offset(lined, above);
+    final beside = atRight
+        ? ball.dx - _gap - child.width
+        : ball.dx + ballSize + _gap;
+    return Offset(
+      clampX(beside),
+      clampY(ball.dy + ballSize / 2 - child.height / 2),
+    );
+  }
+
+  @override
+  bool shouldRelayout(_PanelPlace old) => old.ball != ball;
+}
+
+/// The speaker in the ball of a screen that can be heard: it turns the sound on and off, and shows
 /// how the sound stands. When the other device sends none, it asks again.
 class _SoundButton extends StatelessWidget {
-  const _SoundButton({required this.controller, required this.session});
+  const _SoundButton({
+    required this.controller,
+    required this.session,
+    required this.onDone,
+  });
 
   final WindowsController controller;
   final WindowSession session;
+
+  /// Called once the sound was asked for or turned off, or could not be.
+  final VoidCallback onDone;
 
   @override
   Widget build(BuildContext context) {
@@ -471,6 +789,7 @@ class _SoundButton extends StatelessWidget {
         SoundStage.silent => 'No sound from $name, tap to try again',
       },
       onPressed: () {
+        onDone();
         if (controller.hear(session, listen: !wanted)) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
