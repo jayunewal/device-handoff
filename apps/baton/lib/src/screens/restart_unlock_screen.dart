@@ -434,6 +434,7 @@ class _AddMacScreenState extends State<AddMacScreen> {
       _checking = true;
       _problem = null;
       _heard = null;
+      _unchecked = false;
     });
     final address = _address;
     final check = await widget.unlocker.key(address, 22);
@@ -461,6 +462,8 @@ class _AddMacScreenState extends State<AddMacScreen> {
   Future<void> _save({bool check = true}) async {
     final heard = _heard;
     if (heard == null) return;
+    // Read once: the password that was tried is the one that is saved.
+    final password = _password.text;
     final mac = SavedMac(
       id: widget.id,
       host: _address,
@@ -473,7 +476,7 @@ class _AddMacScreenState extends State<AddMacScreen> {
       _unchecked = false;
     });
     if (check) {
-      final outcome = await widget.unlocker.unlock(mac, _password.text);
+      final outcome = await widget.unlocker.unlock(mac, password);
       if (!mounted) return;
       final String? problem;
       switch (outcome) {
@@ -491,8 +494,8 @@ class _AddMacScreenState extends State<AddMacScreen> {
         case SshUnlock_Unreachable():
         case SshUnlock_Failed():
           problem =
-              'The password could not be tried, because the Mac did not answer. You can '
-              'save it without the try.';
+              'The Mac did not say whether the password is right. You can save it '
+              'without the try.';
           _unchecked = true;
       }
       if (problem != null) {
@@ -504,7 +507,7 @@ class _AddMacScreenState extends State<AddMacScreen> {
       }
     }
     try {
-      await widget.keeper.save(mac, password: _password.text);
+      await widget.keeper.save(mac, password: password);
     } on MacPasswordProblem catch (e) {
       if (!mounted) return;
       setState(() {
@@ -535,6 +538,7 @@ class _AddMacScreenState extends State<AddMacScreen> {
               const SizedBox(height: 16),
               TextField(
                 controller: _host,
+                readOnly: _saving,
                 decoration: const InputDecoration(
                   labelText: 'Address of the Mac',
                 ),
@@ -544,12 +548,14 @@ class _AddMacScreenState extends State<AddMacScreen> {
               ),
               TextField(
                 controller: _account,
+                readOnly: _saving,
                 decoration: const InputDecoration(labelText: 'Account name'),
                 autocorrect: false,
                 onChanged: (_) => setState(() {}),
               ),
               TextField(
                 controller: _password,
+                readOnly: _saving,
                 decoration: const InputDecoration(
                   labelText: 'Password of the account',
                 ),
