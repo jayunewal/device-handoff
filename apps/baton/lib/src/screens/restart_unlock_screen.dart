@@ -408,6 +408,12 @@ class _AddMacScreenState extends State<AddMacScreen> {
   /// The address that [_heard] came from. A change of address needs a new check.
   String? _heardFrom;
 
+  /// Whether the password is being tried and saved.
+  bool _saving = false;
+
+  /// Whether the Mac did not answer the try of the password, so that it may be saved without it.
+  bool _unchecked = false;
+
   @override
   void dispose() {
     _host.dispose();
@@ -449,7 +455,10 @@ class _AddMacScreenState extends State<AddMacScreen> {
     });
   }
 
-  Future<void> _save() async {
+  /// Saves the Mac. The password is tried first, while the Mac is running and its key has just
+  /// been compared, so that a typo shows now and not at a Mac that is locked after a restart, where
+  /// it would cost a try. A Mac that does not answer the try can be saved without it.
+  Future<void> _save({bool check = true}) async {
     final heard = _heard;
     if (heard == null) return;
     final mac = SavedMac(
@@ -458,11 +467,50 @@ class _AddMacScreenState extends State<AddMacScreen> {
       account: _account.text.trim(),
       keys: [heard],
     );
+    setState(() {
+      _saving = true;
+      _problem = null;
+      _unchecked = false;
+    });
+    if (check) {
+      final outcome = await widget.unlocker.unlock(mac, _password.text);
+      if (!mounted) return;
+      final String? problem;
+      switch (outcome) {
+        case SshUnlock_Accepted():
+          problem = null;
+        case SshUnlock_Rejected():
+          problem = 'The Mac said the account name or the password is wrong. Nothing was saved.';
+        case SshUnlock_UnknownKey():
+          problem =
+              'The Mac now answers with another key than the one you compared, so it was '
+              'given nothing and nothing was saved. Check the Mac again.';
+          _heard = null;
+        case SshUnlock_NoPassword():
+          problem = 'The Mac does not take a password over SSH. Check that Remote Login is on.';
+        case SshUnlock_Unreachable():
+        case SshUnlock_Failed():
+          problem =
+              'The password could not be tried, because the Mac did not answer. You can '
+              'save it without the try.';
+          _unchecked = true;
+      }
+      if (problem != null) {
+        setState(() {
+          _saving = false;
+          _problem = problem;
+        });
+        return;
+      }
+    }
     try {
       await widget.keeper.save(mac, password: _password.text);
     } on MacPasswordProblem catch (e) {
       if (!mounted) return;
-      setState(() => _problem = e.message);
+      setState(() {
+        _saving = false;
+        _problem = e.message;
+      });
       return;
     }
     if (mounted) Navigator.of(context).pop(true);
@@ -542,9 +590,18 @@ class _AddMacScreenState extends State<AddMacScreen> {
                 ),
                 const SizedBox(height: 16),
                 FilledButton(
-                  onPressed: _filled ? _save : null,
-                  child: const Text('They match. Save'),
+                  onPressed: _filled && !_saving ? _save : null,
+                  child: Text(
+                    _saving ? 'Trying the password…' : 'They match. Save',
+                  ),
                 ),
+                if (_unchecked)
+                  TextButton(
+                    onPressed: _filled && !_saving
+                        ? () => _save(check: false)
+                        : null,
+                    child: const Text('Save without trying'),
+                  ),
               ],
             ],
           ),

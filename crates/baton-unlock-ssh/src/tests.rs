@@ -326,3 +326,24 @@ fn a_certificate_is_not_trusted_even_for_a_trusted_key() {
     };
     assert!(checker.check(&plain));
 }
+
+#[tokio::test]
+async fn a_trusted_fingerprint_may_carry_spaces_around_it() {
+    let fake = start(Asks::Password).await;
+    let trusted = [format!("  {}\n", fake.key)];
+    let outcome = unlock(&mac(fake.port, ACCOUNT), PASSWORD, &trusted).await;
+    assert_eq!(outcome, Outcome::Accepted);
+}
+
+#[test]
+fn a_connection_that_fails_after_a_trusted_key_is_not_an_unknown_key() {
+    let key = fingerprint_of(&host_key(7));
+    let trusted = [key.clone()];
+    let failed = super::refused(&trusted, Some(key), russh::Error::Disconnect);
+    assert!(matches!(failed, Outcome::Failed { .. }), "{failed:?}");
+    let other = fingerprint_of(&host_key(9));
+    let unknown = super::refused(&trusted, Some(other.clone()), russh::Error::UnknownKey);
+    assert_eq!(unknown, Outcome::UnknownKey { fingerprint: other });
+    let nothing = super::refused(&trusted, None, russh::Error::Disconnect);
+    assert!(matches!(nothing, Outcome::Failed { .. }), "{nothing:?}");
+}

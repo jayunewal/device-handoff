@@ -136,7 +136,73 @@ void main() {
       ),
     );
     expect(keeper.passwords['new'], 'secret');
+    expect(unlocker.tries.single.$2, 'secret');
     expect(find.text('Jays-MBP.local'), findsOneWidget);
+  });
+
+  Future<void> fillAndCheck(WidgetTester tester) async {
+    await tester.tap(find.text('Add a Mac'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Address of the Mac'),
+      'mac.local',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Account name'),
+      'jay',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Password of the account'),
+      'typo',
+    );
+    await tester.pump();
+    await tester.tap(find.text('Check the Mac'));
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('a password the running Mac turns down is not saved', (
+    tester,
+  ) async {
+    final keeper = _FakeKeeper();
+    final unlocker = _FakeUnlocker()..outcomes.add(const SshUnlock.rejected());
+    await _show(tester, keeper, unlocker);
+    await fillAndCheck(tester);
+    await tester.tap(find.text('They match. Save'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('wrong. Nothing was saved.'), findsOneWidget);
+    expect(find.text('Save without trying'), findsNothing);
+    expect(keeper.macs, isEmpty);
+  });
+
+  testWidgets('a Mac that does not answer the try can be saved without it', (
+    tester,
+  ) async {
+    final keeper = _FakeKeeper();
+    final unlocker = _FakeUnlocker()
+      ..outcomes.add(const SshUnlock.unreachable(detail: 'gone'));
+    await _show(tester, keeper, unlocker);
+    await fillAndCheck(tester);
+    await tester.tap(find.text('They match. Save'));
+    await tester.pumpAndSettle();
+    expect(keeper.macs, isEmpty);
+    await tester.tap(find.text('Save without trying'));
+    await tester.pumpAndSettle();
+    expect(keeper.passwords['new'], 'typo');
+    expect(unlocker.tries, hasLength(1));
+  });
+
+  testWidgets('a Mac whose key changed since the check is not saved', (
+    tester,
+  ) async {
+    final keeper = _FakeKeeper();
+    final unlocker = _FakeUnlocker()
+      ..outcomes.add(const SshUnlock.unknownKey(fingerprint: _other));
+    await _show(tester, keeper, unlocker);
+    await fillAndCheck(tester);
+    await tester.tap(find.text('They match. Save'));
+    await tester.pumpAndSettle();
+    expect(keeper.macs, isEmpty);
+    expect(find.text('Check the Mac'), findsOneWidget);
   });
 
   testWidgets('a Mac that does not answer is not saved', (tester) async {

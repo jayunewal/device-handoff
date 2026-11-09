@@ -124,14 +124,7 @@ async fn attempt(mac: &Mac, password: &str, trusted: &[String]) -> Outcome {
     };
     let mut session = match connect(&mac.host, mac.port, checker).await {
         Ok(session) => session,
-        Err(e) => {
-            return match heard.take() {
-                Some(fingerprint) if !is_trusted(trusted, &fingerprint) => {
-                    Outcome::UnknownKey { fingerprint }
-                }
-                _ => failure(e),
-            };
-        }
+        Err(e) => return refused(trusted, heard.take(), e),
     };
     let outcome = authenticate(&mut session, &mac.account, password).await;
     // A Mac that has just unlocked closes the connection itself, and a failure to say goodbye to
@@ -224,6 +217,17 @@ async fn connect(
         ..client::Config::default()
     };
     client::connect(Arc::new(config), (host, port), checker).await
+}
+
+/// How a connection that failed before the Mac was given anything ended: the Mac's key was not
+/// trusted, or, with a trusted key or none heard, the connection itself failed.
+fn refused(trusted: &[String], heard: Option<String>, e: russh::Error) -> Outcome {
+    match heard {
+        Some(fingerprint) if !is_trusted(trusted, &fingerprint) => {
+            Outcome::UnknownKey { fingerprint }
+        }
+        _ => failure(e),
+    }
 }
 
 fn failure(e: russh::Error) -> Outcome {
