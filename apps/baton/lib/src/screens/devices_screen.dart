@@ -10,16 +10,14 @@ import '../control_access.dart';
 import '../controller.dart';
 import '../file_chooser.dart';
 import '../format.dart';
-import '../mac_passwords.dart';
 import '../notice_access.dart';
 import '../permissions.dart';
 import '../scanner.dart';
+import '../theme.dart';
 import '../unlock_text.dart';
 import 'add_device_screen.dart';
 import 'content_box.dart';
-import 'diagnostics_screen.dart';
 import 'permissions_screen.dart';
-import 'restart_unlock_screen.dart';
 import 'send_screen.dart';
 import 'start_access_dialog.dart';
 import 'unlock_dialog.dart';
@@ -38,7 +36,6 @@ class DevicesScreen extends StatefulWidget {
     this.controlAccess = const PlatformControlAccess(),
     this.screenAccess = const PlatformScreenAccess(),
     this.notices = const PlatformNoticeKeeper(),
-    this.macPasswords,
     this.platform,
     this.system = const PlatformSystemSettings(),
     super.key,
@@ -85,10 +82,6 @@ class DevicesScreen extends StatefulWidget {
   /// unlocked this one. Tests give it one of their own.
   final NoticeKeeper notices;
 
-  /// Where the Macs to unlock after a restart are kept, or `null` on a device that does not
-  /// unlock them, which then does not offer it.
-  final MacPasswordKeeper? macPasswords;
-
   /// The system this runs on, which says what permissions there are to check. Tests give it one
   /// of their own.
   final TargetPlatform? platform;
@@ -102,8 +95,6 @@ class DevicesScreen extends StatefulWidget {
 }
 
 /// What the menu at the top of the screen offers.
-enum _ScreenAction { permissions, restartUnlock, diagnostics }
-
 class _DevicesScreenState extends State<DevicesScreen>
     with WidgetsBindingObserver {
   late final DevicesController _controller = DevicesController(widget.session);
@@ -322,26 +313,6 @@ class _DevicesScreenState extends State<DevicesScreen>
     );
   }
 
-  void _restartUnlock(MacPasswordKeeper keeper) {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => RestartUnlockScreen(keeper: keeper),
-      ),
-    );
-  }
-
-  void _diagnostics() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => DiagnosticsScreen(
-          recentLog: widget.session.recentLog,
-          session: widget.session,
-          now: widget.now,
-        ),
-      ),
-    );
-  }
-
   void _send(Device device) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
@@ -387,36 +358,7 @@ class _DevicesScreenState extends State<DevicesScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Baton'),
-        actions: [
-          PopupMenuButton<_ScreenAction>(
-            tooltip: 'More',
-            onSelected: (action) => switch (action) {
-              _ScreenAction.restartUnlock => _restartUnlock(
-                widget.macPasswords!,
-              ),
-              _ScreenAction.diagnostics => _diagnostics(),
-              _ScreenAction.permissions => unawaited(_permissions()),
-            },
-            itemBuilder: (context) => [
-              const PopupMenuItem(
-                value: _ScreenAction.permissions,
-                child: Text('Permissions'),
-              ),
-              if (widget.macPasswords != null)
-                const PopupMenuItem(
-                  value: _ScreenAction.restartUnlock,
-                  child: Text('Unlock a Mac after restart'),
-                ),
-              const PopupMenuItem(
-                value: _ScreenAction.diagnostics,
-                child: Text('Diagnostics'),
-              ),
-            ],
-          ),
-        ],
-      ),
+      appBar: AppBar(title: const Text('Devices')),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _add,
         icon: const Icon(Icons.add),
@@ -537,7 +479,8 @@ class _Devices extends StatelessWidget {
   }
 }
 
-/// The card at the top: what this device is called, and whether others can reach it.
+/// The line at the top: what this device is called, and whether others can reach it. Its
+/// fingerprint is in Settings.
 class _ThisDevice extends StatelessWidget {
   const _ThisDevice({required this.me, required this.network});
 
@@ -547,59 +490,60 @@ class _ThisDevice extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     final online = network?.relay != null;
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+    final status = online
+        ? BatonTheme.success(theme.brightness)
+        : scheme.outline;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: scheme.primary.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(BatonTheme.radius - 2),
+            ),
+            child: Icon(platformIcon(me.platform), color: scheme.primary),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(platformIcon(me.platform), size: 40),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(me.name, style: theme.textTheme.titleLarge),
-                      Text(
-                        platformName(me.platform),
-                        style: theme.textTheme.bodyMedium,
+                Text(me.name, style: theme.textTheme.titleMedium),
+                const SizedBox(height: 2),
+                Row(
+                  children: [
+                    Icon(Icons.circle, size: 8, color: status),
+                    const SizedBox(width: 6),
+                    Text(
+                      online ? 'Online' : 'Connecting…',
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: scheme.onSurfaceVariant,
                       ),
-                    ],
-                  ),
+                    ),
+                    Text(
+                      '  ·  ',
+                      style: TextStyle(color: scheme.onSurfaceVariant),
+                    ),
+                    Flexible(
+                      child: Text(
+                        platformName(me.platform),
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Icon(
-                  online
-                      ? Icons.cloud_done_outlined
-                      : Icons.cloud_sync_outlined,
-                  size: 18,
-                  color: online
-                      ? theme.colorScheme.primary
-                      : theme.colorScheme.outline,
-                ),
-                const SizedBox(width: 8),
-                Text(online ? 'Online' : 'Connecting…'),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Text('Fingerprint', style: theme.textTheme.labelMedium),
-            SelectableText(
-              me.fingerprint,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                fontFamily: 'Menlo',
-                fontFamilyFallback: const ['Courier', 'monospace'],
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

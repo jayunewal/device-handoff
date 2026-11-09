@@ -55,8 +55,11 @@ void main() {
       when: 'when no one is pairing',
     );
 
-    // The name went through the library and came back, and so did the fingerprint.
+    // The name went through the library and came back, and so did the fingerprint, which
+    // Settings shows.
     expect(find.text('Test device'), findsOneWidget);
+    await _tap(tester, find.text('Settings').first);
+    await _see(tester, find.textContaining(RegExp(r'^(\w{4}-){4}\w{4}$')));
     expect(
       find.textContaining(RegExp(r'^(\w{4}-){4}\w{4}$')),
       findsOneWidget,
