@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import 'package:baton/src/backend.dart';
+import 'package:baton/src/control_keyboard.dart';
 import 'package:baton/src/screens/window_screen.dart';
 import 'package:baton/src/windows_controller.dart';
 import 'package:flutter/material.dart';
@@ -386,6 +387,49 @@ void main() {
       final stop = tester.getRect(find.byTooltip('Stop showing'));
       expect(stop.left, greaterThanOrEqualTo(0));
       expect(stop.top, greaterThan(after.bottom));
+    });
+
+    testWidgets('opens whole on a phone on its side, with control on', (
+      tester,
+    ) async {
+      // About the size of a large iPhone on its side.
+      await _open(
+        tester,
+        size: const Size(956, 440),
+        window: sampleWindowSession(
+          display: true,
+          title: null,
+          app: null,
+          control: true,
+          private: true,
+          sound: true,
+        ),
+      );
+      await openSessionControls(tester);
+      await tester.tap(find.text('Control'));
+      await tester.pumpAndSettle();
+      final keysTop = tester.getTopLeft(find.byType(ControlKeys)).dy;
+
+      // A third of the way down, where there is room neither below the ball nor above it.
+      for (var top = 20.0; top < 280; top += 20) {
+        final ball = tester.getRect(find.byIcon(Icons.more_horiz));
+        await tester.drag(
+          find.byIcon(Icons.more_horiz),
+          Offset(900 - ball.left, top - ball.top),
+        );
+        await tester.pump();
+        await openSessionControls(tester);
+
+        final stop = tester.getRect(find.byTooltip('Stop showing'));
+        expect(stop.top, greaterThanOrEqualTo(0), reason: 'ball at $top');
+        expect(stop.bottom, lessThanOrEqualTo(keysTop), reason: 'ball at $top');
+        expect(
+          find.text('a screen').hitTestable(),
+          findsOneWidget,
+          reason: 'the title, with the ball at $top',
+        );
+        await closeSessionControls(tester);
+      }
     });
 
     testWidgets('stays on the screen when it is dragged off it', (
