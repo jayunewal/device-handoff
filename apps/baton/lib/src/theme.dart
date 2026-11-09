@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 /// Baton's own look: one signature colour on calm, warm neutrals, soft corners, flat cards, and
@@ -69,7 +68,10 @@ abstract final class BatonTheme {
       brightness: brightness,
       useMaterial3: true,
     );
-    final text = base.textTheme;
+    // A theme's own text styles hold no sizes until Theme.of adds them, so add them here first,
+    // the same way, or every style built from them below would lose its size.
+    final text = Typography.englishLike2021.merge(base.textTheme);
+    final body = text.bodyLarge?.copyWith(fontSize: 17, height: 1.35);
     final cardShape = RoundedRectangleBorder(
       borderRadius: BorderRadius.circular(radiusLarge),
       side: BorderSide(color: scheme.outlineVariant),
@@ -104,24 +106,12 @@ abstract final class BatonTheme {
           letterSpacing: -0.2,
         ),
         titleMedium: text.titleMedium?.copyWith(fontWeight: FontWeight.w600),
-        bodyLarge: text.bodyLarge?.copyWith(fontSize: 17, height: 1.35),
-        bodyMedium: text.bodyMedium?.copyWith(
-          fontSize: 15,
-          height: 1.35,
-          color: scheme.onSurfaceVariant,
-        ),
+        bodyLarge: body,
+        bodyMedium: text.bodyMedium?.copyWith(fontSize: 15, height: 1.35),
         labelMedium: text.labelMedium?.copyWith(
           color: scheme.onSurfaceVariant,
           letterSpacing: 0.2,
         ),
-      ),
-      // The way from one screen to the next is the system's own on Apple devices.
-      pageTransitionsTheme: const PageTransitionsTheme(
-        builders: {
-          TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
-          TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
-          TargetPlatform.android: ZoomPageTransitionsBuilder(),
-        },
       ),
       appBarTheme: AppBarTheme(
         backgroundColor: scheme.surface,
@@ -143,7 +133,7 @@ abstract final class BatonTheme {
       listTileTheme: ListTileThemeData(
         contentPadding: const EdgeInsets.symmetric(horizontal: gap),
         iconColor: scheme.onSurfaceVariant,
-        titleTextStyle: text.bodyLarge?.copyWith(
+        titleTextStyle: body?.copyWith(
           fontWeight: FontWeight.w600,
           color: scheme.onSurface,
         ),
@@ -182,18 +172,19 @@ abstract final class BatonTheme {
         shape: const StadiumBorder(),
         extendedTextStyle: buttonText,
       ),
+      // The filled style's own border keeps a floating label inside the fill.
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: scheme.surfaceContainerHigh,
-        border: OutlineInputBorder(
+        border: UnderlineInputBorder(
           borderRadius: BorderRadius.circular(radius),
           borderSide: BorderSide.none,
         ),
-        enabledBorder: OutlineInputBorder(
+        enabledBorder: UnderlineInputBorder(
           borderRadius: BorderRadius.circular(radius),
           borderSide: BorderSide.none,
         ),
-        focusedBorder: OutlineInputBorder(
+        focusedBorder: UnderlineInputBorder(
           borderRadius: BorderRadius.circular(radius),
           borderSide: BorderSide(color: scheme.primary, width: 2),
         ),
