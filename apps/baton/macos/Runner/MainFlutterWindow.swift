@@ -1,3 +1,4 @@
+import AVFoundation
 import Cocoa
 import FlutterMacOS
 import UserNotifications
@@ -15,6 +16,7 @@ class MainFlutterWindow: NSWindow {
     answerWhereReceivedFilesGo(messenger: flutterViewController.engine.binaryMessenger)
     showReceivedFilesInFinder(messenger: flutterViewController.engine.binaryMessenger)
     answerAboutNotifications(messenger: flutterViewController.engine.binaryMessenger)
+    answerAboutPermissions(messenger: flutterViewController.engine.binaryMessenger)
 
     super.awakeFromNib()
   }
@@ -216,5 +218,68 @@ private func keepBatonFolderOutOfBackups() {
     try folder.setResourceValues(values)
   } catch {
     NSLog("Baton could not keep its folder out of backups: \(error)")
+  }
+}
+
+/// Says whether Baton may use the camera, asks for it, and opens the pane of System Settings where a
+/// permission is turned on. The names of the channel, of the questions and of the panes, and the
+/// words of the answers, must be the ones in lib/src/permissions.dart.
+private func answerAboutPermissions(messenger: FlutterBinaryMessenger) {
+  let channel = FlutterMethodChannel(
+    name: "io.github.jayunewal.baton/permissions", binaryMessenger: messenger)
+  channel.setMethodCallHandler { call, result in
+    switch call.method {
+    case "camera":
+      result(cameraAccess())
+    case "requestCamera":
+      AVCaptureDevice.requestAccess(for: .video) { _ in
+        DispatchQueue.main.async { result(cameraAccess()) }
+      }
+    case "openSettings":
+      guard let pane = call.arguments as? String, let address = settingsAddress(pane),
+        let url = URL(string: address)
+      else {
+        result(false)
+        return
+      }
+      result(NSWorkspace.shared.open(url))
+    default:
+      // A Mac has no Face ID.
+      result(FlutterMethodNotImplemented)
+    }
+  }
+}
+
+/// What this Mac says about letting Baton use the camera, in the words of lib/src/permissions.dart.
+private func cameraAccess() -> String? {
+  switch AVCaptureDevice.authorizationStatus(for: .video) {
+  case .authorized:
+    return "allowed"
+  case .notDetermined:
+    return "needed"
+  case .denied, .restricted:
+    return "denied"
+  @unknown default:
+    return nil
+  }
+}
+
+/// The address of the pane of System Settings where a permission is turned on.
+private func settingsAddress(_ pane: String) -> String? {
+  let privacy = "x-apple.systempreferences:com.apple.preference.security?"
+  switch pane {
+  case "control":
+    return privacy + "Privacy_Accessibility"
+  case "screenRecording":
+    return privacy + "Privacy_ScreenCapture"
+  case "camera":
+    return privacy + "Privacy_Camera"
+  case "localNetwork":
+    return privacy + "Privacy_LocalNetwork"
+  case "notifications":
+    let id = Bundle.main.bundleIdentifier ?? ""
+    return "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(id)"
+  default:
+    return nil
   }
 }

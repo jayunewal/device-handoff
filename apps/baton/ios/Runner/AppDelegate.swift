@@ -1,3 +1,4 @@
+import AVFoundation
 import Flutter
 import LocalAuthentication
 import Security
@@ -22,6 +23,7 @@ import UIKit
     answerWhereTheAppKeepsItsFiles(messenger: engineBridge.applicationRegistrar.messenger())
     showReceivedFilesInTheFilesApp(messenger: engineBridge.applicationRegistrar.messenger())
     keepMacPasswords(messenger: engineBridge.applicationRegistrar.messenger())
+    answerAboutPermissions(messenger: engineBridge.applicationRegistrar.messenger())
   }
 }
 
@@ -385,5 +387,75 @@ private enum MacPasswords {
   private static func failure(_ code: String, _ status: OSStatus) -> FlutterError {
     NSLog("Baton: Mac passwords: keychain status %d", status)
     return FlutterError(code: code, message: "status \(status)", details: nil)
+  }
+}
+
+/// Says whether Baton may use the camera and Face ID, asks for them, and opens Baton's page in
+/// Settings, where each permission it has is turned on. The names of the channel and of the
+/// questions, and the words of the answers, must be the ones in lib/src/permissions.dart.
+private func answerAboutPermissions(messenger: FlutterBinaryMessenger) {
+  let channel = FlutterMethodChannel(
+    name: "io.github.jayunewal.baton/permissions", binaryMessenger: messenger)
+  channel.setMethodCallHandler { call, result in
+    switch call.method {
+    case "camera":
+      result(cameraAccess())
+    case "requestCamera":
+      AVCaptureDevice.requestAccess(for: .video) { _ in
+        DispatchQueue.main.async { result(cameraAccess()) }
+      }
+    case "faceId":
+      result(faceIdAccess())
+    case "requestFaceId":
+      // The system asks the person the first time an app uses Face ID, and only then.
+      LAContext().evaluatePolicy(
+        .deviceOwnerAuthenticationWithBiometrics,
+        localizedReason: "Let Baton use Face ID to unlock your Mac."
+      ) { _, _ in
+        DispatchQueue.main.async { result(faceIdAccess()) }
+      }
+    case "openSettings":
+      guard let url = URL(string: UIApplication.openSettingsURLString) else {
+        result(false)
+        return
+      }
+      UIApplication.shared.open(url) { opened in result(opened) }
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+}
+
+/// What this device says about letting Baton use the camera, in the words of
+/// lib/src/permissions.dart.
+private func cameraAccess() -> String? {
+  switch AVCaptureDevice.authorizationStatus(for: .video) {
+  case .authorized:
+    return "allowed"
+  case .notDetermined:
+    return "needed"
+  case .denied, .restricted:
+    return "denied"
+  @unknown default:
+    return nil
+  }
+}
+
+/// What this device says about letting Baton use Face ID, in the words of
+/// lib/src/permissions.dart. A device with no Face ID answers nothing. The system does not say
+/// whether it has asked the person yet, so a Face ID it lets Baton use is "allowed".
+private func faceIdAccess() -> String? {
+  let context = LAContext()
+  var error: NSError?
+  let usable = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
+  guard context.biometryType == .faceID else { return nil }
+  if usable { return "allowed" }
+  switch (error as? LAError)?.code {
+  case .biometryNotEnrolled:
+    return "notSetUp"
+  case .biometryNotAvailable:
+    return "denied"
+  default:
+    return nil
   }
 }
