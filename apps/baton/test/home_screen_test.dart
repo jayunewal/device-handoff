@@ -159,6 +159,13 @@ const _plan = ReceivedItem.link(
   title: 'The plan',
 );
 
+/// The name of a place, as the bar at the bottom shows it, or as the sidebar of a wide window
+/// gives it to a screen reader.
+Finder _named(String name) => find.byWidgetPredicate(
+  (widget) =>
+      widget is Text && (widget.data == name || widget.semanticsLabel == name),
+);
+
 void main() {
   testWidgets('opens on the devices, with the inbox a tap away', (
     tester,
@@ -188,7 +195,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Anna’s iPhone sent you a link.'), findsOneWidget);
-    expect(find.text('Inbox, 1 new'), findsOneWidget);
+    expect(_named('Inbox, 1 new'), findsOneWidget);
 
     session.arrive(sampleReceived(2));
     await tester.pumpAndSettle();
@@ -199,7 +206,7 @@ void main() {
       findsNothing,
       reason: 'the newest notice replaces the one before it',
     );
-    expect(find.text('Inbox, 2 new'), findsOneWidget);
+    expect(_named('Inbox, 2 new'), findsOneWidget);
   });
 
   testWidgets('a notice never says what came, which can be a password', (
@@ -243,7 +250,7 @@ void main() {
 
     expect(find.text('The plan'), findsOneWidget);
     expect(find.text('Kitchen iPad'), findsNothing);
-    expect(find.text('Inbox, 1 new'), findsNothing);
+    expect(_named('Inbox, 1 new'), findsNothing);
     expect(find.text('Anna’s iPhone sent you a link.'), findsNothing);
   });
 
@@ -287,7 +294,7 @@ void main() {
     session.arrive(sampleReceived(2));
     await tester.pumpAndSettle();
 
-    expect(find.text('Inbox, 1 new'), findsOneWidget);
+    expect(_named('Inbox, 1 new'), findsOneWidget);
     expect(find.text('Anna’s iPhone sent you some text.'), findsOneWidget);
   });
 
@@ -1032,4 +1039,29 @@ void main() {
       expect(find.text('Sharing Budget.numbers with Anna’s Mac'), findsNothing);
     },
   );
+
+  testWidgets('a narrow screen has the places in a bar at the bottom', (
+    tester,
+  ) async {
+    await _show(tester);
+    tester.view.physicalSize = const Size(430, 932);
+    await tester.pumpAndSettle();
+    expect(find.byType(NavigationBar), findsOneWidget);
+    expect(find.text('Baton'), findsNothing, reason: 'no sidebar');
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+    expect(find.text('wxyz-abcd-efgh-ijkl-mnop'), findsOneWidget);
+  });
+
+  testWidgets('a wide screen lists the places in a sidebar', (tester) async {
+    await _show(tester);
+    expect(find.byType(NavigationBar), findsNothing);
+    expect(find.text('Baton'), findsOneWidget);
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+    expect(find.text('wxyz-abcd-efgh-ijkl-mnop'), findsOneWidget);
+    await tester.tap(find.text('Devices').first);
+    await tester.pumpAndSettle();
+    expect(find.text('Kitchen iPad'), findsOneWidget);
+  });
 }
