@@ -262,18 +262,24 @@ struct Checker {
 impl client::Handler for Checker {
     type Error = russh::Error;
 
-    async fn check_server_key(
+    fn check_server_key(
         &mut self,
         key: &PublicKeyOrCertificate,
-    ) -> Result<bool, Self::Error> {
+    ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
+        std::future::ready(Ok(self.check(key)))
+    }
+}
+
+impl Checker {
+    fn check(&self, key: &PublicKeyOrCertificate) -> bool {
         // A Mac answers with a plain key. A certificate would need an authority to trust.
         let PublicKeyOrCertificate::PublicKey { key, .. } = key else {
-            return Ok(false);
+            return false;
         };
         let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
         let trusted = is_trusted(&self.trusted, &fingerprint);
         self.heard.put(fingerprint);
-        Ok(trusted)
+        trusted
     }
 }
 

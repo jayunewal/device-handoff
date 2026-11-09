@@ -39,37 +39,44 @@ struct FakeMac {
 impl server::Handler for FakeMac {
     type Error = russh::Error;
 
-    async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
+    fn auth_password(
+        &mut self,
+        user: &str,
+        password: &str,
+    ) -> impl Future<Output = Result<Auth, Self::Error>> + Send {
         self.given.fetch_add(1, Ordering::SeqCst);
-        if self.asks == Asks::Password && user == ACCOUNT && password == PASSWORD {
-            Ok(Auth::Accept)
-        } else {
-            Ok(Auth::reject())
-        }
+        let right = self.asks == Asks::Password && user == ACCOUNT && password == PASSWORD;
+        std::future::ready(Ok(if right { Auth::Accept } else { Auth::reject() }))
     }
 
-    async fn auth_keyboard_interactive<'a>(
+    fn auth_keyboard_interactive<'a>(
         &'a mut self,
         user: &str,
         _submethods: &str,
         response: Option<Response<'a>>,
-    ) -> Result<Auth, Self::Error> {
+    ) -> impl Future<Output = Result<Auth, Self::Error>> + Send {
+        std::future::ready(Ok(self.answer(user, response)))
+    }
+}
+
+impl FakeMac {
+    fn answer(&mut self, user: &str, response: Option<Response<'_>>) -> Auth {
         if self.asks != Asks::Question {
-            return Ok(Auth::reject());
+            return Auth::reject();
         }
         let Some(response) = response else {
-            return Ok(Auth::Partial {
+            return Auth::Partial {
                 name: Cow::Borrowed(""),
                 instructions: Cow::Borrowed("This system is locked."),
                 prompts: Cow::Owned(vec![(Cow::Borrowed("Password:"), false)]),
-            });
+            };
         };
         self.given.fetch_add(1, Ordering::SeqCst);
         let answers: Vec<Vec<u8>> = response.map(|answer| answer.to_vec()).collect();
         if user == ACCOUNT && answers == [PASSWORD.as_bytes().to_vec()] {
-            Ok(Auth::Accept)
+            Auth::Accept
         } else {
-            Ok(Auth::reject())
+            Auth::reject()
         }
     }
 }
