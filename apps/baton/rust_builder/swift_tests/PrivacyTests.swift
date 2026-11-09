@@ -1150,15 +1150,122 @@ func testTheLedgerSaysHowLongAgoTheAppLastPostedAKey() {
 }
 
 func testWhatTheOtherDeviceIsToldIsAShortSentenceThatSaysTheMacLocks() {
-  let all: [PrivacyAlarm] = [.escape, .foreignKey, .holdLost, .coverLost, .guardLost]
+  let all: [PrivacyAlarm] = [.escape, .foreignKey, .holdLost, .coverLost, .guardLost, .shown]
   var seen = Set<String>()
   for alarm in all {
     let sentence = alarm.sentence
     check(
       !sentence.isEmpty && sentence.utf8.count <= Int(BATON_MESSAGE_MAX),
       "\(alarm): \(sentence.utf8.count) bytes")
-    check(sentence.hasSuffix("the Mac locks."), "\(alarm): \(sentence)")
+    let end = alarm == .shown ? "the account locks." : "the Mac locks."
+    check(sentence.hasSuffix(end), "\(alarm): \(sentence)")
     check(!sentence.contains("\u{2014}"), "\(alarm): a dash in \(sentence)")
     check(seen.insert(sentence).inserted, "\(alarm): the same sentence as another")
+  }
+}
+
+// MARK: - An account behind the Mac's screen
+
+final class LockedAccountWatch: AccountWatch, @unchecked Sendable {
+  private let mutex = NSLock()
+  private var current: AccountPlace
+  init(_ place: AccountPlace) { current = place }
+  var now: AccountPlace {
+    get {
+      mutex.lock()
+      defer { mutex.unlock() }
+      return current
+    }
+    set {
+      mutex.lock()
+      current = newValue
+      mutex.unlock()
+    }
+  }
+  func place() -> AccountPlace { now }
+}
+
+final class CountingLocks: MacLocking, @unchecked Sendable {
+  private let mutex = NSLock()
+  private var tries: [Int] = []
+  var locked: Bool { true }
+  func lock(attempt: Int) {
+    mutex.lock()
+    tries.append(attempt)
+    mutex.unlock()
+  }
+  var attempts: [Int] {
+    mutex.lock()
+    defer { mutex.unlock() }
+    return tries
+  }
+}
+
+func testAHiddenAccountIsWatchedAndEndsWhenItIsBroughtOntoTheScreen() {
+  let watch = LockedAccountWatch(.hidden)
+  let locks = CountingLocks()
+  let awake = Told()
+  let curtain = HiddenAccountCurtain(
+    watch: watch, mac: locks, every: 0.01,
+    keepAwake: {
+      awake.tell("kept")
+      return { awake.tell("let go") }
+    })
+  let told = Told()
+  do { try curtain.raise(alarm: { told.tell($0.sentence) }) } catch {
+    check(false, "an account behind the screen can be made private")
+  }
+  check(curtain.healthy && curtain.darken())
+  check((try? curtain.lift(screen: true, input: true)) != nil, "nothing is lifted")
+  watch.now = .unknown
+  Thread.sleep(forTimeInterval: 0.1)
+  check(told.all.isEmpty, "a place that is not known for a moment ends nothing")
+  watch.now = .onScreen
+  check(told.wait(seconds: 2), "the account showing is seen")
+  Thread.sleep(forTimeInterval: 0.05)
+  check(told.all == [PrivacyAlarm.shown.sentence], "the session ends once when the account shows")
+  curtain.lock(attempt: 1)
+  check(locks.attempts == [1] && curtain.locked, "the account is locked as the Mac would be")
+  check(awake.all == ["kept"], "the app is kept awake while the curtain is raised")
+  curtain.lower()
+  check(!curtain.healthy, "a curtain that is lowered is not looked after")
+  check(awake.all == ["kept", "let go"], "and let go of when it is lowered")
+}
+
+func testAPlaceThatStaysUnknownIsTakenForTheScreen() {
+  let watch = LockedAccountWatch(.hidden)
+  let clock = FakeClock()
+  let curtain = HiddenAccountCurtain(
+    watch: watch, mac: CountingLocks(), every: 0.01, now: clock.now)
+  let told = Told()
+  check((try? curtain.raise(alarm: { told.tell($0.sentence) })) != nil)
+  watch.now = .unknown
+  Thread.sleep(forTimeInterval: 0.05)
+  check(told.all.isEmpty, "a moment of an unknown place ends nothing")
+  clock.sleep(HiddenAccountCurtain.unknownLimit)
+  check(told.wait(seconds: 2), "an unknown place that lasts ends the session")
+  check(told.all == [PrivacyAlarm.shown.sentence])
+  curtain.lower()
+}
+
+func testACurtainWhoseLooksStoppedIsNotHealthy() {
+  let clock = FakeClock()
+  // Looks every hour, so none comes during the test.
+  let curtain = HiddenAccountCurtain(
+    watch: LockedAccountWatch(.hidden), mac: CountingLocks(), every: 3600, now: clock.now)
+  check((try? curtain.raise(alarm: { _ in })) != nil)
+  check(curtain.healthy, "healthy right after it was raised")
+  clock.sleep(HiddenAccountCurtain.grace)
+  check(!curtain.healthy, "not healthy once the last look is too old")
+  curtain.lower()
+}
+
+func testAnAccountOnTheScreenIsNotTakenForAHiddenOne() {
+  let curtain = HiddenAccountCurtain(watch: LockedAccountWatch(.onScreen), mac: CountingLocks())
+  do {
+    try curtain.raise(alarm: { _ in })
+    check(false, "an account on the screen needs the whole curtain")
+  } catch {
+    check(!curtain.healthy, "nothing is left raised")
   }
 }

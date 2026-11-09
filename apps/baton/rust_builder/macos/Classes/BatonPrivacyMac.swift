@@ -587,13 +587,29 @@ final class MacCurtain: Curtain {
 func makePrivateSession(
   ledger: PostLedger, end: @escaping (String) -> Void, placed: @escaping (Bool) -> Void = { _ in }
 ) -> PrivateSession {
-  let curtain = MacCurtain(ledger: ledger)
   // The guard is inside the app, next to its own program. A build without it has no private
   // session.
   let guardian = GuardLink(executable: Bundle.main.url(forAuxiliaryExecutable: "BatonGuard"))
+  let log: (String) -> Void = { privacyLog.notice("Baton: \($0, privacy: .public)") }
+  // An account that is behind the screen is private already: it is watched, and nothing at the
+  // Mac is darkened or held. An account whose place is not known gets the whole curtain.
+  let watch = MacAccountWatch()
+  if watch.place() == .hidden {
+    // The display may sleep: it belongs to the person at the Mac, if anybody is there.
+    let curtain = HiddenAccountCurtain(
+      watch: watch, mac: MacLock(noteKeyDown: { ledger.notedKeyDown() }),
+      keepAwake: {
+        let kept = ProcessInfo.processInfo.beginActivity(
+          options: [.userInitiated, .idleSystemSleepDisabled],
+          reason: "Baton keeps this Mac awake while another device uses this account.")
+        return { ProcessInfo.processInfo.endActivity(kept) }
+      })
+    log("this account is behind the Mac's screen, so nothing at the Mac is darkened or held.")
+    return PrivateSession(curtain: curtain, guardian: guardian, end: end, log: log, placed: placed)
+  }
+  let curtain = MacCurtain(ledger: ledger)
   let session = PrivateSession(
-    curtain: curtain, guardian: guardian, end: end,
-    log: { privacyLog.notice("Baton: \($0, privacy: .public)") }, placed: placed)
+    curtain: curtain, guardian: guardian, end: end, log: log, placed: placed)
   // A quit of the app is an end of the session like any other: `finish` returns when the Mac is
   // locked and the cover is down, and only then does the quit go on and the process end.
   curtain.whenTheAppQuits = { [weak session] in session?.finish(.sessionOver) }
