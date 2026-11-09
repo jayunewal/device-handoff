@@ -38,6 +38,9 @@ class FakeScreenAccess extends ScreenAccessKeeper {
   /// How many times `request` was called.
   int requests = 0;
 
+  /// How many times `requestSound` was called.
+  int soundRequests = 0;
+
   @override
   Future<ScreenAccess> state() async {
     asked++;
@@ -46,4 +49,7 @@ class FakeScreenAccess extends ScreenAccessKeeper {
 
   @override
   Future<void> request() async => requests++;
+
+  @override
+  Future<void> requestSound() async => soundRequests++;
 }

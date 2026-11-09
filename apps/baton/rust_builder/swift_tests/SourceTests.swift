@@ -1665,6 +1665,16 @@ func testTheSentenceForAStoppedCaptureDependsOnWhyItStopped() {
   }
 }
 
+func testTheSentenceForAScreenWithNoPictureFitsAndSaysWhatToDo() {
+  let sentence = noFirstPictureSentence
+  check(sentence.utf8.count <= Int(BATON_MESSAGE_MAX), "\(sentence.utf8.count) bytes")
+  check(sentence.last == ".", sentence)
+  check(sentence.contains("Answer it at the Mac"), sentence)
+  // Long enough for the system to show a first picture, short enough not to leave the person at
+  // the other device looking at nothing.
+  check(firstPictureWait == .seconds(10))
+}
+
 func testACodeOfAnotherDomainIsNeverTakenForOneThatThePersonCaused() {
   // The number that means "the person pressed Stop" means something else in another domain, and an
   // error that is not understood is told: a silent end would leave the person to wonder.

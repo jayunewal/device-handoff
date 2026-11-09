@@ -59,7 +59,6 @@ class _PermissionsScreenState extends State<PermissionsScreen>
   Future<void> _look() async {
     final checks = await checkPermissions(
       platform: widget.platform ?? defaultTargetPlatform,
-      screenAccess: widget.screenAccess,
       notices: widget.notices,
       system: widget.system,
     );
@@ -69,28 +68,36 @@ class _PermissionsScreenState extends State<PermissionsScreen>
   Future<void> _turnOn(PermissionCheck check) async {
     final permission = check.permission;
     switch (permission) {
-      // Asking for Screen Recording opens Settings on its own when the system has said no before.
-      case Permission.screenRecording:
-        await widget.screenAccess.request();
+      // The system asks about the sound the first time it is read, and Settings shows the answer.
+      case Permission.systemAudio:
+        await widget.screenAccess.requestSound();
+        await _openSettings(permission);
       case Permission.notifications
           when check.state == PermissionState.notAsked:
         await widget.notices.request();
       // The Mac asks the person once and opens Settings for any other time.
-      case Permission.accessibility || Permission.inputMonitoring:
+      case Permission.accessibility ||
+          Permission.inputMonitoring ||
+          Permission.screenRecording:
         await widget.system.request(permission);
       case Permission.camera when check.state == PermissionState.notAsked:
         await widget.system.request(permission);
       default:
-        final opened = await widget.system.open(permission);
-        if (!opened && mounted) {
-          ScaffoldMessenger.of(context)
-            ..hideCurrentSnackBar()
-            ..showSnackBar(
-              SnackBar(content: Text(permissionText(permission).where)),
-            );
-        }
+        await _openSettings(permission);
     }
     await _look();
+  }
+
+  /// Opens Settings where [permission] is turned on, or says where that is when it cannot.
+  Future<void> _openSettings(Permission permission) async {
+    final opened = await widget.system.open(permission);
+    if (!opened && mounted) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(content: Text(permissionText(permission).where)),
+        );
+    }
   }
 
   @override
@@ -143,13 +150,25 @@ class _PermissionsScreenState extends State<PermissionsScreen>
     whenOff: null,
   ),
   Permission.screenRecording => (
-    title: 'Screen & System Audio Recording',
+    title: 'Screen Recording',
     why:
         'Lets a device you allow see this Mac’s screen. After you turn it '
         'on, quit Baton and open it again.',
     where:
         'Open System Settings, Privacy & Security, Screen & System Audio '
         'Recording.',
+    whenOff: null,
+  ),
+  Permission.systemAudio => (
+    title: 'System Audio Recording',
+    why:
+        'Lets a device you allow hear this Mac. macOS asks about it once and '
+        'doesn’t tell Baton the answer. The button asks macOS, if it hasn’t '
+        'asked yet, then opens Settings so you can check that Baton is on '
+        'under System Audio Recording Only.',
+    where:
+        'Open System Settings, Privacy & Security, Screen & System Audio '
+        'Recording, System Audio Recording Only.',
     whenOff: null,
   ),
   Permission.notifications => (
@@ -250,6 +269,7 @@ class _PermissionRow extends StatelessWidget {
     Permission.accessibility => Icons.accessibility_new,
     Permission.inputMonitoring => Icons.keyboard_outlined,
     Permission.screenRecording => Icons.screen_share_outlined,
+    Permission.systemAudio => Icons.volume_up_outlined,
     Permission.notifications => Icons.notifications_outlined,
     Permission.camera => Icons.photo_camera_outlined,
     Permission.faceId => Icons.face_outlined,

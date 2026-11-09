@@ -222,8 +222,8 @@ private func keepBatonFolderOutOfBackups() {
 }
 
 /// Says where the permissions that Baton keeps on this channel stand (Accessibility, Input
-/// Monitoring and the camera), asks for them, and opens the pane of System Settings where a
-/// permission is turned on. The names of the channel, of the questions and of the permissions, and
+/// Monitoring, Screen Recording and the camera), asks for them, and opens the pane of System
+/// Settings where a permission is turned on. The names of the channel, of the questions and of the permissions, and
 /// the words of the answers, must be the ones in lib/src/permissions.dart.
 private func answerAboutPermissions(messenger: FlutterBinaryMessenger) {
   let channel = FlutterMethodChannel(
@@ -256,6 +256,10 @@ private func permissionState(_ permission: String) -> String? {
     return CGPreflightPostEventAccess() ? "allowed" : "denied"
   case "inputMonitoring":
     return CGPreflightListenEventAccess() ? "allowed" : "denied"
+  case "screenRecording":
+    // Asked here, and not of the plugin that shares the screen, so that the answer does not
+    // depend on whether the plugin is there.
+    return CGPreflightScreenCaptureAccess() ? "allowed" : "denied"
   case "camera":
     guard AVCaptureDevice.default(for: .video) != nil else { return nil }
     switch AVCaptureDevice.authorizationStatus(for: .video) {
@@ -277,11 +281,15 @@ private func permissionState(_ permission: String) -> String? {
 /// that, so the pane of System Settings where it is turned on is opened when the answer is no.
 private func requestPermission(_ permission: String, then done: @escaping () -> Void) {
   switch permission {
-  case "accessibility", "inputMonitoring":
+  case "accessibility", "inputMonitoring", "screenRecording":
     // Not known to wait for the person, but nothing promises it, and the main thread is not held.
     DispatchQueue.global(qos: .userInitiated).async {
       let allowed =
-        permission == "accessibility" ? CGRequestPostEventAccess() : CGRequestListenEventAccess()
+        switch permission {
+        case "accessibility": CGRequestPostEventAccess()
+        case "inputMonitoring": CGRequestListenEventAccess()
+        default: CGRequestScreenCaptureAccess()
+        }
       DispatchQueue.main.async {
         if !allowed, let address = settingsAddress(permission) {
           _ = openSystemSettings(address)
@@ -314,7 +322,8 @@ private func settingsAddress(_ pane: String) -> String? {
     return privacy + "Privacy_Accessibility"
   case "inputMonitoring":
     return privacy + "Privacy_ListenEvent"
-  case "screenRecording":
+  case "screenRecording", "systemAudio":
+    // One pane holds both: the sound has a list of its own at the foot of it.
     return privacy + "Privacy_ScreenCapture"
   case "camera":
     return privacy + "Privacy_Camera"

@@ -112,6 +112,7 @@ void main() {
     test('are asked through the plugin, with the questions it names', () {
       expect(PlatformScreenAccess.stateQuestion, 'screenAccess');
       expect(PlatformScreenAccess.requestQuestion, 'requestScreenAccess');
+      expect(PlatformScreenAccess.soundQuestion, 'requestSoundAccess');
     });
 
     testWidgets('are read as the plugin says them, on a Mac', (tester) async {
@@ -149,6 +150,16 @@ void main() {
       await access.request();
 
       expect(calls, ['requestScreenAccess']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+    testWidgets('the sound is asked for by the plugin, on a Mac', (
+      tester,
+    ) async {
+      final calls = _listen(tester, (_) => null);
+
+      await access.requestSound();
+
+      expect(calls, ['requestSoundAccess']);
     }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
     testWidgets('are unavailable when the plugin does not answer', (
@@ -211,6 +222,10 @@ void main() {
         expect(
           plugin,
           contains('case "${PlatformScreenAccess.requestQuestion}":'),
+        );
+        expect(
+          plugin,
+          contains('case "${PlatformScreenAccess.soundQuestion}":'),
         );
       });
 

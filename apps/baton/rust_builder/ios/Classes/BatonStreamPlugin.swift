@@ -268,6 +268,8 @@ public class BatonStreamPlugin: NSObject, FlutterPlugin {
     case "requestScreenAccess":
       requestScreenAccess()
       result(nil)
+    case "requestSoundAccess":
+      requestSoundAccess { result(nil) }
     default:
       result(FlutterMethodNotImplemented)
     }
@@ -308,5 +310,30 @@ public class BatonStreamPlugin: NSObject, FlutterPlugin {
     #if os(macOS)
     requestMacScreenAccess()
     #endif
+  }
+
+  /// Reads the sound of the Mac for a moment, so that the system asks the person, while they can
+  /// see it, whether Baton may record the sound. It asks only the first time, and says nothing to
+  /// the app about the answer. Answers when the tap is stopped again, which may be only once the
+  /// person has answered.
+  private func requestSoundAccess(then done: @escaping () -> Void) {
+    #if os(macOS)
+    if #available(macOS 14.2, *) {
+      DispatchQueue.global(qos: .userInitiated).async {
+        let tap = MacSoundTap()
+        do {
+          _ = try tap.start(muted: false) { _ in }
+          // Long enough for the system to see that the sound is read, and to ask.
+          Thread.sleep(forTimeInterval: 1)
+        } catch {
+          NSLog("Baton: the sound of this Mac could not be read (%@).", String(describing: error))
+        }
+        tap.stop()
+        DispatchQueue.main.async { done() }
+      }
+      return
+    }
+    #endif
+    done()
   }
 }
