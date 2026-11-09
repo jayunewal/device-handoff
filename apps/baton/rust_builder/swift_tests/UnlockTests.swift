@@ -858,6 +858,19 @@ func testAScreenThatIsNotLockedIsNotTypedAt() {
   check(unknown.run() == .failed)
   check(unknown.env.typed.isEmpty && !unknown.lines.contains("wake"), "\(unknown.lines)")
   unknown.checkNothingIsLeft("a session that cannot be read")
+
+  let list = UnlockRig()
+  list.env.lockAt = { _ in .lockedAmongAccounts }
+  check(list.run() == .failed)
+  check(list.env.typed.isEmpty && !list.lines.contains("wake"), "\(list.lines)")
+  list.checkNothingIsLeft("a lock screen that lists the accounts")
+
+  // Another account logs in while the password is typed: the next key is not typed.
+  let joined = UnlockRig()
+  joined.env.lockAt = { $0 < 2 ? .locked : .lockedAmongAccounts }
+  check(joined.run() == .failed)
+  check(joined.env.typed.count == 1, "\(joined.env.typed.count) keys were typed")
+  joined.checkNothingIsLeft("an account that logs in during the typing")
 }
 
 func testAScreenWhosePrivacyIsNotInPlaceIsNotWokenOrTypedAt() {

@@ -73,7 +73,9 @@ String describeUnlockEnd(UnlockResult result, String device) {
     UnlockResult.timedOut =>
       '$name waited for this device and gave up. Try again.',
     UnlockResult.failed =>
-      '$name could not unlock itself. Try again, or unlock it at $name.',
+      '$name could not unlock itself. Try again, or unlock it at $name. When '
+          'another account is logged in on $name, its lock screen lists the '
+          'accounts, and Baton types nothing there.',
     UnlockResult.other =>
       '$name answered in a way that this version of Baton does not know. Look '
           'at the screen, and try again if it is still locked.',
