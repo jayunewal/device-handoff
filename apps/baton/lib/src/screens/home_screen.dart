@@ -236,9 +236,15 @@ class _HomeScreenState extends State<HomeScreen> {
   late final MacPasswordKeeper? _macPasswords =
       PlatformMacPasswordKeeper.forThisDevice();
 
+  /// Keeps the three places when the window crosses [sidebarFrom], where they move between the
+  /// bar layout and the sidebar layout. Without it they would be built anew, and a dialog that one
+  /// of them opened would answer a screen that is gone.
+  final _placesKey = GlobalKey();
+
   @override
   Widget build(BuildContext context) {
     final places = IndexedStack(
+      key: _placesKey,
       index: _tab.index,
       children: [
         DevicesScreen(

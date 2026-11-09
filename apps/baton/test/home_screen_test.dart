@@ -4,6 +4,7 @@ import 'package:baton/src/backend.dart';
 import 'package:baton/src/control_access.dart';
 import 'package:baton/src/file_chooser.dart';
 import 'package:baton/src/notice_access.dart';
+import 'package:baton/src/screens/devices_screen.dart';
 import 'package:baton/src/screens/home_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -1063,5 +1064,22 @@ void main() {
     await tester.tap(find.text('Devices').first);
     await tester.pumpAndSettle();
     expect(find.text('Kitchen iPad'), findsOneWidget);
+  });
+
+  testWidgets('the places are kept when the window crosses into the sidebar', (
+    tester,
+  ) async {
+    await _show(tester);
+    tester.view.physicalSize = const Size(430, 932);
+    await tester.pumpAndSettle();
+    final narrow = tester.state(find.byType(DevicesScreen));
+    tester.view.physicalSize = const Size(1200, 900);
+    await tester.pumpAndSettle();
+    expect(find.text('Baton'), findsOneWidget, reason: 'the sidebar');
+    expect(
+      tester.state(find.byType(DevicesScreen)),
+      same(narrow),
+      reason: 'the same Devices screen, not one built anew',
+    );
   });
 }
