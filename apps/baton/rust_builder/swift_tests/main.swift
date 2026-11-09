@@ -523,6 +523,10 @@ var tests: [(String, () -> Void)] = [
     "the sentence for a screen with no picture fits and says what to do",
     testTheSentenceForAScreenWithNoPictureFitsAndSaysWhatToDo
   ),
+  (
+    "a screen with no picture ends only when nothing explains it",
+    testAScreenWithNoPictureEndsOnlyWhenNothingExplainsIt
+  ),
 ]
 
 tests += [

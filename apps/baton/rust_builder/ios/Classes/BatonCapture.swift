@@ -559,7 +559,9 @@ private final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
   /// `watchFirstPicture` says to watch for it: a screen always gives its first picture at once,
   /// unless the system holds it back, such as while it asks the person a question. On a private
   /// screen nobody can see that question, and the person at the other device would look at
-  /// nothing until they gave up. A window is not watched, since it gives none while it is hidden.
+  /// nothing until they gave up. A screen that is locked or asleep gives none either, and is
+  /// paused for it: the time is not counted while it is (`firstPictureVerdict`). A window is not
+  /// watched, since it gives none while it is hidden.
   func begin(filter: SCContentFilter, watchFirstPicture: Bool) throws {
     let configuration = SCStreamConfiguration()
     configuration.width = Int(format.width)
@@ -641,10 +643,16 @@ private final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
   /// No picture arrived in time: the session ends, with a sentence that says what to look at.
   /// It runs on the queue.
   private func noPictureYet() {
-    guard !pictured else { return }
-    NSLog("Baton: the screen gave no picture in time, so the session ends.")
-    pump.stop()
-    session.end(sentence: noFirstPictureSentence)
+    switch firstPictureVerdict(pictured: pictured, paused: pauses.paused != nil) {
+    case .fine:
+      return
+    case .waitAgain:
+      firstLook?.schedule(deadline: .now() + firstPictureWait)
+    case .end:
+      NSLog("Baton: the screen gave no picture in time, so the session ends.")
+      pump.stop()
+      session.end(sentence: noFirstPictureSentence)
+    }
   }
 
   // MARK: - What the system gives

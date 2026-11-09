@@ -1108,6 +1108,23 @@ enum CaptureErrorCode {
 /// question.
 let firstPictureWait = DispatchTimeInterval.seconds(10)
 
+/// What becomes of a session when the wait for the first picture of its screen is over.
+enum FirstPictureVerdict: Equatable {
+  /// A picture came: nothing is to be done.
+  case fine
+  /// The session is paused, such as while the Mac is locked or its display sleeps, which gives no
+  /// picture. The wait begins again: a locked Mac may be unlocked from the other device, and a
+  /// session that stays paused is ended by the rule for long pauses.
+  case waitAgain
+  /// No picture came, and nothing explains it: the session ends.
+  case end
+}
+
+func firstPictureVerdict(pictured: Bool, paused: Bool) -> FirstPictureVerdict {
+  if pictured { return .fine }
+  return paused ? .waitAgain : .end
+}
+
 /// What the person at the other device is told when the screen gave no picture in time. The people
 /// at the Mac may not see the question either, while a private screen keeps it dark: they see it
 /// when the session is over.
