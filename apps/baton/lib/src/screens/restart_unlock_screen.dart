@@ -122,7 +122,7 @@ class _RestartUnlockScreenState extends State<RestartUnlockScreen> {
           offerPassword: true,
         );
       case SshUnlock_UnknownKey(:final fingerprint):
-        await _unknownKey(mac, fingerprint, password);
+        await _unknownKey(mac, fingerprint);
       case SshUnlock_NoPassword():
         await _tell(
           mac,
@@ -144,15 +144,11 @@ class _RestartUnlockScreenState extends State<RestartUnlockScreen> {
     }
   }
 
-  /// The Mac answered with a key that is not saved. Before a Mac's disk is unlocked it may
-  /// answer with another key than once it is running, so the person may trust this one too, but
-  /// only after being told what it means.
-  Future<void> _unknownKey(
-    SavedMac mac,
-    String fingerprint,
-    String password,
-  ) async {
-    final trust = await showDialog<bool>(
+  /// The Mac answered with a key that is not saved, and was given nothing. Nothing here lets the
+  /// person trust it: a Mac that is locked cannot show its key to compare, so whoever answered at
+  /// its address, which any device on the network can do, would get the password.
+  Future<void> _unknownKey(SavedMac mac, String fingerprint) async {
+    await showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('The Mac answered with another key'),
@@ -161,11 +157,9 @@ class _RestartUnlockScreenState extends State<RestartUnlockScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'This is not the key you saved, so the Mac was not given the password. '
-                'A Mac that is still locked after a restart can answer with a key of its own. '
-                'Something else on the network pretending to be your Mac would also look like '
-                'this.',
+              Text(
+                'This is not the key you saved for ${mac.host}, so nothing was sent to it. '
+                'It answered with:',
               ),
               const SizedBox(height: 12),
               SelectableText(
@@ -174,48 +168,19 @@ class _RestartUnlockScreenState extends State<RestartUnlockScreen> {
               ),
               const SizedBox(height: 12),
               const Text(
-                'Trust it only if you are on your own network and expected this Mac to be '
-                'locked.',
+                'Something else on the network may be answering for your Mac, or a Mac that is '
+                'still locked after a restart may answer with a key of its own.',
               ),
             ],
           ),
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
           FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Trust and unlock'),
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
           ),
         ],
       ),
-    );
-    if (!(trust ?? false) || !mounted) return;
-    final trusted = mac.copyWith(keys: [...mac.keys, fingerprint]);
-    try {
-      await widget.keeper.save(trusted);
-    } on MacPasswordProblem catch (e) {
-      await _tell(mac, e.message);
-      return;
-    }
-    await _load();
-    if (!mounted) return;
-    setState(() => _busy = mac.id);
-    final SshUnlock outcome;
-    try {
-      outcome = await widget.unlocker.unlock(trusted, password);
-    } finally {
-      if (mounted) setState(() => _busy = null);
-    }
-    if (!mounted) return;
-    await _tell(
-      trusted,
-      outcome is SshUnlock_Accepted
-          ? 'The Mac took the password. If it was locked, it is starting up now.'
-          : 'The Mac still did not take the password. Try again in a minute.',
-      title: outcome is SshUnlock_Accepted ? 'Unlocked' : null,
     );
   }
 

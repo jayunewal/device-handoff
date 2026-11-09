@@ -104,8 +104,8 @@ pub async fn fingerprint(host: &str, port: u16) -> Result<String, Outcome> {
 /// Gives `password` to the Mac for `mac.account`, if the Mac answers with one of the `trusted`
 /// host keys (fingerprints as [`fingerprint`] gives them).
 ///
-/// The password is offered as a password first, and as the answer to the Mac's question when the
-/// Mac asks for it that way. Nothing more is done once the Mac has answered: the connection is
+/// The password is given once, in one way: as a password when the Mac takes one, otherwise as the
+/// answer to the Mac's question. Nothing more is done once the Mac has answered: the connection is
 /// closed whatever happened.
 pub async fn unlock(mac: &Mac, password: &str, trusted: &[String]) -> Outcome {
     match tokio::time::timeout(DEADLINE, attempt(mac, password, trusted)).await {
@@ -147,23 +147,28 @@ async fn authenticate(
     account: &str,
     password: &str,
 ) -> Outcome {
-    let remaining = match session.authenticate_password(account, password).await {
+    // Asking with no credentials first makes the Mac name the ways it takes, so that the password
+    // is given once, in one way: a wrong password given as a password and again as an answer would
+    // count as two failed tries at a Mac whose disk is locked.
+    let ways = match session.authenticate_none(account).await {
         Ok(AuthResult::Success) => return Outcome::Accepted,
         Ok(AuthResult::Failure {
             remaining_methods, ..
         }) => remaining_methods,
         Err(e) => return failure(e),
     };
-    if remaining.contains(&MethodKind::KeyboardInteractive) {
+    let password_taken = ways.contains(&MethodKind::Password);
+    if !password_taken && ways.contains(&MethodKind::KeyboardInteractive) {
         return answer_questions(session, account, password).await;
     }
-    // A server that turned the password down names what else it would take. OpenSSH names
-    // password again, and some servers name nothing; only a list of other ways means that a
-    // password is not taken at all.
-    if remaining.is_empty() || remaining.contains(&MethodKind::Password) {
-        Outcome::Rejected
-    } else {
-        Outcome::NoPassword
+    // A Mac that names no way at all is given the password, which is what Remote Login takes.
+    if !password_taken && !ways.is_empty() {
+        return Outcome::NoPassword;
+    }
+    match session.authenticate_password(account, password).await {
+        Ok(AuthResult::Success) => Outcome::Accepted,
+        Ok(AuthResult::Failure { .. }) => Outcome::Rejected,
+        Err(e) => failure(e),
     }
 }
 
@@ -178,11 +183,18 @@ async fn answer_questions(
     let mut reply = session
         .authenticate_keyboard_interactive_start(account, None)
         .await;
-    for _ in 0..MAX_ROUNDS {
+    let mut rounds = 0;
+    loop {
         match reply {
             Ok(KeyboardInteractiveAuthResponse::Success) => return Outcome::Accepted,
             Ok(KeyboardInteractiveAuthResponse::Failure { .. }) => return Outcome::Rejected,
             Ok(KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. }) => {
+                if rounds == MAX_ROUNDS {
+                    return Outcome::Failed {
+                        detail: "the Mac kept asking questions".to_owned(),
+                    };
+                }
+                rounds += 1;
                 let answers = prompts
                     .iter()
                     .map(|p| {
@@ -199,9 +211,6 @@ async fn answer_questions(
             }
             Err(e) => return failure(e),
         }
-    }
-    Outcome::Failed {
-        detail: "the Mac kept asking questions".to_owned(),
     }
 }
 

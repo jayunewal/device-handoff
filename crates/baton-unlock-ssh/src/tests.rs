@@ -23,8 +23,12 @@ const PASSWORD: &str = "right horse battery";
 enum Asks {
     /// Takes a password, as Remote Login does.
     Password,
-    /// Asks for the password as a question (keyboard-interactive) and takes nothing else.
-    Question,
+    /// Asks for the password as a question (keyboard-interactive), in this many rounds, and takes
+    /// nothing else. Each round asks for something that is shown as it is typed, and for the
+    /// password.
+    Question(usize),
+    /// Takes a password and asks for it as a question too, as OpenSSH does by default.
+    Both,
     /// Takes keys only.
     NoPassword,
 }
@@ -34,6 +38,8 @@ struct FakeMac {
     asks: Asks,
     /// How many times the server was given a password, in either way.
     given: Arc<AtomicUsize>,
+    /// How many rounds of answers this connection has given.
+    rounds: usize,
 }
 
 impl server::Handler for FakeMac {
@@ -45,7 +51,8 @@ impl server::Handler for FakeMac {
         password: &str,
     ) -> impl Future<Output = Result<Auth, Self::Error>> + Send {
         self.given.fetch_add(1, Ordering::SeqCst);
-        let right = self.asks == Asks::Password && user == ACCOUNT && password == PASSWORD;
+        let takes = matches!(self.asks, Asks::Password | Asks::Both);
+        let right = takes && user == ACCOUNT && password == PASSWORD;
         std::future::ready(Ok(if right { Auth::Accept } else { Auth::reject() }))
     }
 
@@ -61,22 +68,35 @@ impl server::Handler for FakeMac {
 
 impl FakeMac {
     fn answer(&mut self, user: &str, response: Option<Response<'_>>) -> Auth {
-        if self.asks != Asks::Question {
-            return Auth::reject();
-        }
+        let rounds = match self.asks {
+            Asks::Question(rounds) => rounds,
+            Asks::Both => 1,
+            Asks::Password | Asks::NoPassword => return Auth::reject(),
+        };
+        let question = Auth::Partial {
+            name: Cow::Borrowed(""),
+            instructions: Cow::Borrowed("This system is locked."),
+            prompts: Cow::Owned(vec![
+                (Cow::Borrowed("Name:"), true),
+                (Cow::Borrowed("Password:"), false),
+            ]),
+        };
         let Some(response) = response else {
-            return Auth::Partial {
-                name: Cow::Borrowed(""),
-                instructions: Cow::Borrowed("This system is locked."),
-                prompts: Cow::Owned(vec![(Cow::Borrowed("Password:"), false)]),
-            };
+            self.rounds = 0;
+            return question;
         };
         self.given.fetch_add(1, Ordering::SeqCst);
+        self.rounds += 1;
         let answers: Vec<Vec<u8>> = response.map(|answer| answer.to_vec()).collect();
-        if user == ACCOUNT && answers == [PASSWORD.as_bytes().to_vec()] {
-            Auth::Accept
+        // The shown question is answered with nothing, and the hidden one with the password.
+        let right = user == ACCOUNT && answers == [Vec::new(), PASSWORD.as_bytes().to_vec()];
+        if !right {
+            return Auth::reject();
+        }
+        if self.rounds < rounds {
+            question
         } else {
-            Auth::reject()
+            Auth::Accept
         }
     }
 }
@@ -100,7 +120,8 @@ async fn start(asks: Asks) -> Running {
     let key = host_key(7);
     let methods: &[MethodKind] = match asks {
         Asks::Password => &[MethodKind::Password],
-        Asks::Question => &[MethodKind::KeyboardInteractive],
+        Asks::Question(_) => &[MethodKind::KeyboardInteractive],
+        Asks::Both => &[MethodKind::Password, MethodKind::KeyboardInteractive],
         Asks::NoPassword => &[MethodKind::PublicKey],
     };
     let config = Arc::new(server::Config {
@@ -116,6 +137,7 @@ async fn start(asks: Asks) -> Running {
     let mac = FakeMac {
         asks,
         given: given.clone(),
+        rounds: 0,
     };
     tokio::spawn(async move {
         while let Ok((stream, _)) = listener.accept().await {
@@ -214,7 +236,7 @@ async fn a_mac_with_another_key_is_given_nothing() {
 
 #[tokio::test]
 async fn a_mac_that_asks_a_question_gets_the_password_as_the_answer() {
-    let fake = start(Asks::Question).await;
+    let fake = start(Asks::Question(1)).await;
     let trusted = [fake.key.clone()];
     assert_eq!(
         unlock(&mac(fake.port, ACCOUNT), PASSWORD, &trusted).await,
@@ -249,4 +271,58 @@ async fn nothing_listening_is_unreachable() {
         matches!(heard, Err(Outcome::Unreachable { .. })),
         "{heard:?}"
     );
+}
+
+#[tokio::test]
+async fn a_mac_may_ask_up_to_three_rounds_and_no_more() {
+    let fake = start(Asks::Question(3)).await;
+    let outcome = unlock(&mac(fake.port, ACCOUNT), PASSWORD, &[fake.key]).await;
+    assert_eq!(outcome, Outcome::Accepted);
+    let fake = start(Asks::Question(4)).await;
+    let outcome = unlock(&mac(fake.port, ACCOUNT), PASSWORD, &[fake.key]).await;
+    assert!(matches!(outcome, Outcome::Failed { .. }), "{outcome:?}");
+}
+
+#[tokio::test]
+async fn a_mac_that_takes_both_ways_is_given_the_password_once() {
+    let fake = start(Asks::Both).await;
+    let trusted = [fake.key.clone()];
+    assert_eq!(
+        unlock(&mac(fake.port, ACCOUNT), "wrong", &trusted).await,
+        Outcome::Rejected
+    );
+    assert_eq!(fake.given.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        unlock(&mac(fake.port, ACCOUNT), PASSWORD, &trusted).await,
+        Outcome::Accepted
+    );
+    assert_eq!(fake.given.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_certificate_is_not_trusted_even_for_a_trusted_key() {
+    use russh::keys::PublicKeyOrCertificate;
+    use russh::keys::ssh_key::certificate::{Builder, CertType};
+
+    let host = host_key(7);
+    let mut builder = Builder::new(
+        vec![1; 16],
+        host.public_key().key_data().clone(),
+        0,
+        u64::MAX,
+    )
+    .unwrap();
+    builder.cert_type(CertType::Host).unwrap();
+    builder.valid_principal("mac").unwrap();
+    let certificate = builder.sign(&host_key(8)).unwrap();
+    let checker = super::Checker {
+        trusted: vec![fingerprint_of(&host)],
+        heard: super::Heard::default(),
+    };
+    assert!(!checker.check(&PublicKeyOrCertificate::Certificate(certificate)));
+    let plain = PublicKeyOrCertificate::PublicKey {
+        key: host.public_key().clone(),
+        hash_alg: None,
+    };
+    assert!(checker.check(&plain));
 }

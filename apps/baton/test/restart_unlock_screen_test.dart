@@ -213,32 +213,26 @@ void main() {
     expect(keeper.passwords['m1'], 'new');
   });
 
-  testWidgets('another key is trusted only when the person says so', (
-    tester,
-  ) async {
-    final keeper = _FakeKeeper()..macs['m1'] = _mac;
-    keeper.opens = (_) => 'secret';
-    final unlocker = _FakeUnlocker()
-      ..outcomes.add(const SshUnlock.unknownKey(fingerprint: _other));
-    await _show(tester, keeper, unlocker);
+  testWidgets(
+    'a Mac with another key is given nothing and cannot be trusted from here',
+    (tester) async {
+      final keeper = _FakeKeeper()..macs['m1'] = _mac;
+      keeper.opens = (_) => 'secret';
+      final unlocker = _FakeUnlocker()
+        ..outcomes.add(const SshUnlock.unknownKey(fingerprint: _other));
+      await _show(tester, keeper, unlocker);
 
-    await tester.tap(find.text('Unlock'));
-    await tester.pumpAndSettle();
-    expect(find.text(_other), findsOneWidget);
-    await tester.tap(find.text('Cancel'));
-    await tester.pumpAndSettle();
-    expect(keeper.macs['m1']!.keys, [_key]);
-    expect(unlocker.tries, hasLength(1));
-
-    unlocker.outcomes.add(const SshUnlock.unknownKey(fingerprint: _other));
-    await tester.tap(find.text('Unlock'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Trust and unlock'));
-    await tester.pumpAndSettle();
-    expect(keeper.macs['m1']!.keys, [_key, _other]);
-    expect(unlocker.tries.last.$1.keys, [_key, _other]);
-    expect(find.text('Unlocked'), findsOneWidget);
-  });
+      await tester.tap(find.text('Unlock'));
+      await tester.pumpAndSettle();
+      expect(find.text(_other), findsOneWidget);
+      expect(find.textContaining('nothing was sent'), findsOneWidget);
+      expect(find.textContaining('Trust'), findsNothing);
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+      expect(keeper.macs['m1']!.keys, [_key]);
+      expect(unlocker.tries, hasLength(1));
+    },
+  );
 
   testWidgets('a password that the system took away can be entered again', (
     tester,
