@@ -106,19 +106,41 @@ extension Curtain {
 final class HiddenAccountCurtain: Curtain {
   /// How often the place of the account is looked at, in seconds.
   static let look: TimeInterval = 0.25
+  /// How long the last look may be old before the curtain is not healthy any more, in seconds: a
+  /// curtain that nobody looks after ends in the lock of the guard.
+  static let grace: TimeInterval = 1
+  /// How long the place may stay unknown before it is taken for the screen, in seconds. A change of
+  /// account takes less; after it, nothing says that the account is still behind the screen.
+  static let unknownLimit: TimeInterval = 3
 
   private let watch: AccountWatch
   private let mac: MacLocking
   private let every: TimeInterval
+  private let keepAwake: () -> (() -> Void)
+  private let now: () -> TimeInterval
   private let queue = DispatchQueue(label: "io.github.jayunewal.baton.hidden-account")
   private let mutex = NSLock()
   private var timer: DispatchSourceTimer?
+  private var awake: (() -> Void)?
+  private var lastLook: TimeInterval = 0
+  // Used by the queue only.
+  private var unknownSince: TimeInterval?
+  private var told = false
 
-  /// `mac` locks this account, as a session that ends locks the Mac.
-  init(watch: AccountWatch, mac: MacLocking, every: TimeInterval = HiddenAccountCurtain.look) {
+  /// `mac` locks this account, as a session that ends locks the Mac. `keepAwake` keeps the app from
+  /// being slowed down and the Mac from going to sleep while the curtain is raised, and returns
+  /// what lets go of that: an app in an account behind the screen has nothing on show, and one that
+  /// the system slows down (App Nap) would not look in time, nor tell its guard that it is well.
+  init(
+    watch: AccountWatch, mac: MacLocking, every: TimeInterval = HiddenAccountCurtain.look,
+    keepAwake: @escaping () -> (() -> Void) = { {} },
+    now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+  ) {
     self.watch = watch
     self.mac = mac
     self.every = every
+    self.keepAwake = keepAwake
+    self.now = now
   }
 
   var locked: Bool { mac.locked }
@@ -130,20 +152,38 @@ final class HiddenAccountCurtain: Curtain {
       throw SharerFailure(
         sentence: "This account came onto the Mac's screen as the session started. Try again.")
     }
+    let letGo = keepAwake()
     let made = DispatchSource.makeTimerSource(queue: queue)
-    var told = false
     made.schedule(deadline: .now() + every, repeating: every)
-    // An account whose place is not known for a moment is not taken for one on the screen: the
-    // place is not known while the Mac changes accounts, and it is known again after.
-    made.setEventHandler { [watch] in
-      guard !told, watch.place() == .onScreen else { return }
-      told = true
-      alarm(.shown)
-    }
+    made.setEventHandler { [weak self] in self?.look(alarm: alarm) }
     mutex.lock()
     timer = made
+    awake = letGo
+    lastLook = now()
     mutex.unlock()
     made.resume()
+  }
+
+  /// One look at the place of the account, on the queue.
+  private func look(alarm: (PrivacyAlarm) -> Void) {
+    let place = watch.place()
+    let time = now()
+    mutex.lock()
+    lastLook = time
+    mutex.unlock()
+    guard !told else { return }
+    var shown = place == .onScreen
+    // A place that is not known for a moment, as while the Mac changes accounts, ends nothing.
+    if place == .unknown {
+      let since = unknownSince ?? time
+      unknownSince = since
+      shown = time - since >= HiddenAccountCurtain.unknownLimit
+    } else {
+      unknownSince = nil
+    }
+    guard shown else { return }
+    told = true
+    alarm(.shown)
   }
 
   /// Nothing is covered or held, so nothing is lifted or put back.
@@ -152,15 +192,18 @@ final class HiddenAccountCurtain: Curtain {
   func lower() {
     mutex.lock()
     let old = timer
+    let letGo = awake
     timer = nil
+    awake = nil
     mutex.unlock()
     old?.cancel()
+    letGo?()
   }
 
   var healthy: Bool {
     mutex.lock()
     defer { mutex.unlock() }
-    return timer != nil
+    return timer != nil && now() - lastLook < HiddenAccountCurtain.grace
   }
 }
 

@@ -43,6 +43,8 @@ var tests: [(String, () -> Void)] = [
     "an account on the screen is not taken for a hidden one",
     testAnAccountOnTheScreenIsNotTakenForAHiddenOne
   ),
+  ("a place that stays unknown is taken for the screen", testAPlaceThatStaysUnknownIsTakenForTheScreen),
+  ("a curtain whose looks stopped is not healthy", testACurtainWhoseLooksStoppedIsNotHealthy),
   (
     "limits are what the platform says and the room is checked",
     testLimitsAreWhatThePlatformSaysAndTheRoomIsChecked

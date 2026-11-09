@@ -595,8 +595,15 @@ func makePrivateSession(
   // Mac is darkened or held. An account whose place is not known gets the whole curtain.
   let watch = MacAccountWatch()
   if watch.place() == .hidden {
+    // The display may sleep: it belongs to the person at the Mac, if anybody is there.
     let curtain = HiddenAccountCurtain(
-      watch: watch, mac: MacLock(noteKeyDown: { ledger.notedKeyDown() }))
+      watch: watch, mac: MacLock(noteKeyDown: { ledger.notedKeyDown() }),
+      keepAwake: {
+        let kept = ProcessInfo.processInfo.beginActivity(
+          options: [.userInitiated, .idleSystemSleepDisabled],
+          reason: "Baton keeps this Mac awake while another device uses this account.")
+        return { ProcessInfo.processInfo.endActivity(kept) }
+      })
     log("this account is behind the Mac's screen, so nothing at the Mac is darkened or held.")
     return PrivateSession(curtain: curtain, guardian: guardian, end: end, log: log, placed: placed)
   }
