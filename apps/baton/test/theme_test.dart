@@ -103,6 +103,13 @@ void main() {
       }
     });
 
+    test('$name: the colour for what is on reads on every surface', () {
+      final success = BatonTheme.success(theme.brightness);
+      for (final surface in [scheme.surface, scheme.surfaceContainer]) {
+        expect(_contrast(success, surface), greaterThan(4.5));
+      }
+    });
+
     test('$name: the action on a note reads on the note', () {
       expect(
         _contrast(scheme.inversePrimary, scheme.inverseSurface),

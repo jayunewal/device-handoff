@@ -17,6 +17,12 @@ abstract final class BatonTheme {
   /// The ember on dark surfaces: light enough to read on near black, with dark text on top.
   static const _emberDark = Color(0xFFFF8A4C);
 
+  /// The colour that says something is on and well, which the ember (what can be pressed) and red
+  /// (what is wrong) are not. It reads at 4.5:1 or more on the surfaces of its brightness.
+  static Color success(Brightness brightness) => brightness == Brightness.light
+      ? const Color(0xFF1B7A45)
+      : const Color(0xFF5BD58E);
+
   /// Room between things, in steps that every screen uses.
   static const gapSmall = 8.0;
   static const gap = 16.0;

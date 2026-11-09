@@ -2,6 +2,7 @@
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../backend.dart';
@@ -11,11 +12,13 @@ import '../file_chooser.dart';
 import '../format.dart';
 import '../mac_passwords.dart';
 import '../notice_access.dart';
+import '../permissions.dart';
 import '../scanner.dart';
 import '../unlock_text.dart';
 import 'add_device_screen.dart';
 import 'content_box.dart';
 import 'diagnostics_screen.dart';
+import 'permissions_screen.dart';
 import 'restart_unlock_screen.dart';
 import 'send_screen.dart';
 import 'start_access_dialog.dart';
@@ -36,6 +39,8 @@ class DevicesScreen extends StatefulWidget {
     this.screenAccess = const PlatformScreenAccess(),
     this.notices = const PlatformNoticeKeeper(),
     this.macPasswords,
+    this.platform,
+    this.system = const PlatformSystemSettings(),
     super.key,
   });
 
@@ -84,12 +89,20 @@ class DevicesScreen extends StatefulWidget {
   /// unlock them, which then does not offer it.
   final MacPasswordKeeper? macPasswords;
 
+  /// The system this runs on, which says what permissions there are to check. Tests give it one
+  /// of their own.
+  final TargetPlatform? platform;
+
+  /// What the system says about the camera and Face ID, and what opens Settings. Tests give it
+  /// one of their own.
+  final SystemSettingsKeeper system;
+
   @override
   State<DevicesScreen> createState() => _DevicesScreenState();
 }
 
 /// What the menu at the top of the screen offers.
-enum _ScreenAction { restartUnlock, diagnostics }
+enum _ScreenAction { permissions, restartUnlock, diagnostics }
 
 class _DevicesScreenState extends State<DevicesScreen>
     with WidgetsBindingObserver {
@@ -105,6 +118,7 @@ class _DevicesScreenState extends State<DevicesScreen>
     WidgetsBinding.instance.addObserver(this);
     unawaited(_controller.start());
     unawaited(_askAccess());
+    unawaited(_checkPermissions());
   }
 
   @override
@@ -117,7 +131,40 @@ class _DevicesScreenState extends State<DevicesScreen>
   /// The person may have said yes in the settings of the system, which they leave the app for.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) unawaited(_askAccess());
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_askAccess());
+      unawaited(_checkPermissions());
+    }
+  }
+
+  /// How many permissions need the person, which a card at the top of the list says.
+  int _permissionsOff = 0;
+
+  Future<void> _checkPermissions() async {
+    final checks = await checkPermissions(
+      platform: widget.platform ?? defaultTargetPlatform,
+      screenAccess: widget.screenAccess,
+      notices: widget.notices,
+      system: widget.system,
+    );
+    final off = checks.where((check) => check.needsAttention).length;
+    if (mounted && off != _permissionsOff) {
+      setState(() => _permissionsOff = off);
+    }
+  }
+
+  Future<void> _permissions() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => PermissionsScreen(
+          platform: widget.platform,
+          screenAccess: widget.screenAccess,
+          notices: widget.notices,
+          system: widget.system,
+        ),
+      ),
+    );
+    await _checkPermissions();
   }
 
   Future<void> _askAccess() async {
@@ -351,8 +398,13 @@ class _DevicesScreenState extends State<DevicesScreen>
                 widget.macPasswords!,
               ),
               _ScreenAction.diagnostics => _diagnostics(),
+              _ScreenAction.permissions => unawaited(_permissions()),
             },
             itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: _ScreenAction.permissions,
+                child: Text('Permissions'),
+              ),
               if (widget.macPasswords != null)
                 const PopupMenuItem(
                   value: _ScreenAction.restartUnlock,
@@ -385,6 +437,8 @@ class _DevicesScreenState extends State<DevicesScreen>
               onAllowScreen: widget.canGiveScreen ? _allowScreen : null,
               onUnlock: widget.canBeUnlocked ? _unlock : null,
               onForget: _forget,
+              permissionsOff: _permissionsOff,
+              onPermissions: () => unawaited(_permissions()),
             ),
           ),
         ),
@@ -404,6 +458,8 @@ class _Devices extends StatelessWidget {
     required this.onAllowScreen,
     required this.onUnlock,
     required this.onForget,
+    required this.permissionsOff,
+    required this.onPermissions,
   });
 
   final DevicesController controller;
@@ -424,6 +480,8 @@ class _Devices extends StatelessWidget {
   /// device that cannot be unlocked. Only a device that unlocks with its face has the entry.
   final void Function(Device device)? onUnlock;
   final void Function(Device device) onForget;
+  final int permissionsOff;
+  final VoidCallback onPermissions;
 
   @override
   Widget build(BuildContext context) {
@@ -432,6 +490,10 @@ class _Devices extends StatelessWidget {
       // Room under the last device for the button that floats above it.
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
       children: [
+        if (permissionsOff > 0) ...[
+          _PermissionsCard(off: permissionsOff, onReview: onPermissions),
+          const SizedBox(height: 16),
+        ],
         _ThisDevice(me: controller.me, network: controller.network),
         const SizedBox(height: 24),
         Padding(
@@ -539,6 +601,40 @@ class _ThisDevice extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Says that permissions are off, with the way to them.
+class _PermissionsCard extends StatelessWidget {
+  const _PermissionsCard({required this.off, required this.onReview});
+
+  final int off;
+  final VoidCallback onReview;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Card(
+      margin: EdgeInsets.zero,
+      color: scheme.errorContainer,
+      child: ListTile(
+        leading: Icon(Icons.shield_outlined, color: scheme.onErrorContainer),
+        title: Text(
+          off == 1 ? '1 permission needs you' : '$off permissions need you',
+          style: TextStyle(color: scheme.onErrorContainer),
+        ),
+        subtitle: Text(
+          'Some things Baton does won’t work until you turn them on.',
+          style: TextStyle(color: scheme.onErrorContainer),
+        ),
+        trailing: TextButton(
+          onPressed: onReview,
+          style: TextButton.styleFrom(foregroundColor: scheme.onErrorContainer),
+          child: const Text('Review'),
+        ),
+        onTap: onReview,
       ),
     );
   }

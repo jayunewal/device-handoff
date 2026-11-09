@@ -1,3 +1,4 @@
+import AVFoundation
 import Cocoa
 import FlutterMacOS
 import UserNotifications
@@ -15,6 +16,7 @@ class MainFlutterWindow: NSWindow {
     answerWhereReceivedFilesGo(messenger: flutterViewController.engine.binaryMessenger)
     showReceivedFilesInFinder(messenger: flutterViewController.engine.binaryMessenger)
     answerAboutNotifications(messenger: flutterViewController.engine.binaryMessenger)
+    answerAboutPermissions(messenger: flutterViewController.engine.binaryMessenger)
 
     super.awakeFromNib()
   }
@@ -216,5 +218,112 @@ private func keepBatonFolderOutOfBackups() {
     try folder.setResourceValues(values)
   } catch {
     NSLog("Baton could not keep its folder out of backups: \(error)")
+  }
+}
+
+/// Says where the permissions that Baton keeps on this channel stand (Accessibility, Input
+/// Monitoring and the camera), asks for them, and opens the pane of System Settings where a
+/// permission is turned on. The names of the channel, of the questions and of the permissions, and
+/// the words of the answers, must be the ones in lib/src/permissions.dart.
+private func answerAboutPermissions(messenger: FlutterBinaryMessenger) {
+  let channel = FlutterMethodChannel(
+    name: "io.github.jayunewal.baton/permissions", binaryMessenger: messenger)
+  channel.setMethodCallHandler { call, result in
+    let permission = call.arguments as? String ?? ""
+    switch call.method {
+    case "state":
+      result(permissionState(permission))
+    case "request":
+      requestPermission(permission) { result(permissionState(permission)) }
+    case "openSettings":
+      guard let address = settingsAddress(permission) else {
+        result(false)
+        return
+      }
+      result(openSystemSettings(address))
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+}
+
+/// Where a permission stands, in the words of lib/src/permissions.dart, or nothing for one that
+/// this Mac cannot have, such as the camera of a Mac with none.
+private func permissionState(_ permission: String) -> String? {
+  switch permission {
+  case "accessibility":
+    // The same consent that lets the app hand input to other apps and hold the Mac's own.
+    return CGPreflightPostEventAccess() ? "allowed" : "denied"
+  case "inputMonitoring":
+    return CGPreflightListenEventAccess() ? "allowed" : "denied"
+  case "camera":
+    guard AVCaptureDevice.default(for: .video) != nil else { return nil }
+    switch AVCaptureDevice.authorizationStatus(for: .video) {
+    case .authorized:
+      return "allowed"
+    case .notDetermined:
+      return "needed"
+    case .denied, .restricted:
+      return "denied"
+    @unknown default:
+      return nil
+    }
+  default:
+    return nil
+  }
+}
+
+/// Asks the system for a permission. It asks the person once and says no without asking after
+/// that, so the pane of System Settings where it is turned on is opened when the answer is no.
+private func requestPermission(_ permission: String, then done: @escaping () -> Void) {
+  switch permission {
+  case "accessibility", "inputMonitoring":
+    // Not known to wait for the person, but nothing promises it, and the main thread is not held.
+    DispatchQueue.global(qos: .userInitiated).async {
+      let allowed =
+        permission == "accessibility" ? CGRequestPostEventAccess() : CGRequestListenEventAccess()
+      DispatchQueue.main.async {
+        if !allowed, let address = settingsAddress(permission) {
+          _ = openSystemSettings(address)
+        }
+        done()
+      }
+    }
+  case "camera":
+    AVCaptureDevice.requestAccess(for: .video) { _ in DispatchQueue.main.async { done() } }
+  default:
+    done()
+  }
+}
+
+/// Opens a pane of System Settings, and nothing else: an address that is not one of System
+/// Settings is refused. This is the only place the Mac app asks the system to open anything; the
+/// files that other devices send are only ever shown in Finder.
+private func openSystemSettings(_ address: String) -> Bool {
+  guard let url = URL(string: address), url.scheme == "x-apple.systempreferences" else {
+    return false
+  }
+  return NSWorkspace.shared.open(url)
+}
+
+/// The address of the pane of System Settings where a permission is turned on.
+private func settingsAddress(_ pane: String) -> String? {
+  let privacy = "x-apple.systempreferences:com.apple.preference.security?"
+  switch pane {
+  case "accessibility":
+    return privacy + "Privacy_Accessibility"
+  case "inputMonitoring":
+    return privacy + "Privacy_ListenEvent"
+  case "screenRecording":
+    return privacy + "Privacy_ScreenCapture"
+  case "camera":
+    return privacy + "Privacy_Camera"
+  case "localNetwork":
+    return privacy + "Privacy_LocalNetwork"
+  case "notifications":
+    let id = Bundle.main.bundleIdentifier ?? ""
+    return "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(id)"
+  default:
+    return nil
   }
 }

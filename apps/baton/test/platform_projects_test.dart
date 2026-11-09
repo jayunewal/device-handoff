@@ -291,8 +291,30 @@ void main() {
     // to open a folder. Neither is asked to open a file.
     final mac = _read('macos/Runner/MainFlutterWindow.swift');
     expect(mac, contains('NSWorkspace.shared.activateFileViewerSelecting('));
+    // The one thing it opens is a pane of System Settings, for a permission, and the one place
+    // that opens it refuses any other address.
+    expect('NSWorkspace.shared.open('.allMatches(mac), hasLength(1));
+    final settings = mac.indexOf('func openSystemSettings(');
+    expect(settings, isNonNegative);
+    final scheme = mac.indexOf(
+      'url.scheme == "x-apple.systempreferences"',
+      settings,
+    );
+    expect(scheme, isNonNegative);
+    expect(
+      mac.indexOf('NSWorkspace.shared.open(', settings),
+      greaterThan(scheme),
+      reason: 'the address is checked before it is opened',
+    );
+    expect(
+      mac.substring(
+        mac.indexOf('NSWorkspace.shared.open(') - 400,
+        mac.indexOf('NSWorkspace.shared.open('),
+      ),
+      contains('func openSystemSettings('),
+      reason: 'it opens only in the place that checks the address',
+    );
     for (final opening in [
-      'NSWorkspace.shared.open',
       'NSWorkspace.shared.openFile',
       'NSWorkspace.shared.openApplication',
       'NSWorkspace.shared.launchApplication',
@@ -301,6 +323,11 @@ void main() {
     }
     final ios = _read('ios/Runner/AppDelegate.swift');
     expect(ios, contains('address.scheme = "shareddocuments"'));
+    // Besides the Files app, the iPhone opens only Baton's own page in Settings, for a permission.
+    expect(
+      'URL(string: UIApplication.openSettingsURLString)'.allMatches(ios),
+      hasLength(1),
+    );
     expect(
       ios,
       contains('item.deletingLastPathComponent()'),
