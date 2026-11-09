@@ -191,6 +191,47 @@ void main() {
     expect(unlocker.tries, hasLength(1));
   });
 
+  testWidgets(
+    'a refusal after an earlier no-answer is not saved without trying',
+    (tester) async {
+      final keeper = _FakeKeeper();
+      final unlocker = _FakeUnlocker()
+        ..outcomes.add(const SshUnlock.unreachable(detail: 'gone'))
+        ..outcomes.add(const SshUnlock.rejected());
+      await _show(tester, keeper, unlocker);
+      await fillAndCheck(tester);
+      await tester.tap(find.text('They match. Save'));
+      await tester.pumpAndSettle();
+      expect(find.text('Save without trying'), findsOneWidget);
+      await tester.tap(find.text('They match. Save'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('wrong. Nothing was saved.'), findsOneWidget);
+      expect(find.text('Save without trying'), findsNothing);
+      expect(keeper.macs, isEmpty);
+    },
+  );
+
+  testWidgets('a new check takes away the offer to save without trying', (
+    tester,
+  ) async {
+    final keeper = _FakeKeeper();
+    final unlocker = _FakeUnlocker()
+      ..outcomes.add(const SshUnlock.unreachable(detail: 'gone'));
+    await _show(tester, keeper, unlocker);
+    await fillAndCheck(tester);
+    await tester.tap(find.text('They match. Save'));
+    await tester.pumpAndSettle();
+    expect(find.text('Save without trying'), findsOneWidget);
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Address of the Mac'),
+      'other.local',
+    );
+    await tester.pump();
+    await tester.tap(find.text('Check the Mac'));
+    await tester.pumpAndSettle();
+    expect(find.text('Save without trying'), findsNothing);
+  });
+
   testWidgets('a Mac whose key changed since the check is not saved', (
     tester,
   ) async {
