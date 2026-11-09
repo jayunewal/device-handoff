@@ -1042,8 +1042,16 @@ enum InputRoute: Equatable {
 }
 
 /// Picks the route of each event from where the account is. When the place changes, events are
-/// held for a moment, until the change of account is over.
+/// held for a moment, until the change of account is over. A key or a button that is released goes
+/// the way that it was pressed, and is never held: a release that went another way would leave the
+/// key down in the account that had the press (docs/adr/0009-window-streaming.md).
 final class InputRouter {
+  /// A key or a button that goes down and comes up.
+  private enum Press: Hashable {
+    case key(UInt16)
+    case button(PointerButton)
+  }
+
   /// How long events are held after the place of the account changed, in seconds.
   static let settle: TimeInterval = 1.0
 
@@ -1051,6 +1059,8 @@ final class InputRouter {
   private let now: () -> TimeInterval
   private var last: AccountPlace?
   private var changedAt: TimeInterval?
+  /// The route by which each key or button that is down was pressed.
+  private var pressed: [Press: InputRoute] = [:]
 
   init(
     watch: AccountWatch,
@@ -1058,6 +1068,39 @@ final class InputRouter {
   ) {
     self.watch = watch
     self.now = now
+  }
+
+  /// The route of this event: the route of its press for a release, and otherwise the route of
+  /// now.
+  func route(for event: SyntheticEvent) -> InputRoute {
+    if case let (press, down)? = InputRouter.press(in: event), !down, let took = pressed[press] {
+      return took
+    }
+    return route()
+  }
+
+  /// Called once the event was handed over by `route`, so that its release follows it.
+  func handed(_ event: SyntheticEvent, by route: InputRoute) {
+    guard case let (press, down)? = InputRouter.press(in: event) else { return }
+    if !down {
+      pressed[press] = nil
+    } else if pressed[press] == nil {
+      // A key that repeats is down already, and its release goes the way of the first press.
+      pressed[press] = route
+    }
+  }
+
+  private static func press(in event: SyntheticEvent) -> (Press, down: Bool)? {
+    switch event {
+    case .key(let key): return (.key(key.virtualKey), key.down)
+    case .mouse(let mouse):
+      switch mouse.kind {
+      case .down: return (.button(mouse.button), true)
+      case .up: return (.button(mouse.button), false)
+      case .moved, .dragged: return nil
+      }
+    case .scroll: return nil
+    }
   }
 
   func route() -> InputRoute {

@@ -28,6 +28,10 @@ var tests: [(String, () -> Void)] = [
     testEventsAreHeldForAMomentAfterTheMacChangesAccounts
   ),
   (
+    "a release goes the way of its press and is never held",
+    testAReleaseGoesTheWayOfItsPressAndIsNeverHeld
+  ),
+  (
     "limits are what the platform says and the room is checked",
     testLimitsAreWhatThePlatformSaysAndTheRoomIsChecked
   ),

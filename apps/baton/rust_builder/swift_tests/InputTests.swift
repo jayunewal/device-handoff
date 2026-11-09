@@ -2260,6 +2260,8 @@ func testEventsGoAsTheMacsOwnOnlyFromTheAccountOnTheScreen() {
   check(router.route() == .held, "a change of account holds the events")
   watch.now = .unknown
   time += 5
+  check(router.route() == .held)
+  time += 5
   check(router.route() == .held, "an account whose place is not known posts nothing")
 }
 
@@ -2279,4 +2281,32 @@ func testEventsAreHeldForAMomentAfterTheMacChangesAccounts() {
   check(router.route() == .held, "held again when the account comes back to the screen")
   time += InputRouter.settle
   check(router.route() == .hardware)
+}
+
+func testAReleaseGoesTheWayOfItsPressAndIsNeverHeld() {
+  let watch = FakeAccountWatch()
+  var time: TimeInterval = 100
+  let router = InputRouter(watch: watch, now: { time })
+  let mods = InputModifiers()
+  func key(_ down: Bool) -> SyntheticEvent {
+    .key(SyntheticKey(virtualKey: 0, down: down, autorepeat: false, modifiers: mods))
+  }
+  func button(_ kind: MouseKind) -> SyntheticEvent {
+    .mouse(
+      SyntheticMouse(
+        kind: kind, button: .left, at: ScreenPoint(x: 1, y: 1), clickCount: 1, pressure: 1,
+        modifiers: mods))
+  }
+  for down in [key(true), button(.down)] {
+    check(router.route(for: down) == .hardware)
+    router.handed(down, by: .hardware)
+  }
+  watch.now = .hidden
+  check(router.route(for: button(.dragged)) == .held, "a drag is held while the account changes")
+  check(router.route(for: key(false)) == .hardware, "the key comes up where it went down")
+  router.handed(key(false), by: .hardware)
+  check(router.route(for: button(.up)) == .hardware, "the button comes up where it went down")
+  router.handed(button(.up), by: .hardware)
+  time += InputRouter.settle * 2
+  check(router.route(for: key(false)) == .account, "a release with no press takes the route of now")
 }

@@ -105,8 +105,19 @@ final class MacDisplayListing: DisplayListing {
 
 /// What the system says of the Mac, and the way to bring an application to the front.
 final class MacActivityReader: MacActivity {
+  /// Whether the Mac is locked for this account. An account that is behind the screen, while
+  /// another account or the login window is on it, goes on running and is steered as it is
+  /// (InputRouter): the lock screen and the display belong to the account on the screen. The guard
+  /// of a private session asks the session itself (macSessionLocked), where an account that leaves
+  /// the screen counts as locked.
   var locked: Bool {
-    macSessionLocked() || CGDisplayIsAsleep(CGMainDisplayID()) != 0
+    let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+    // The key for the lock screen is not documented (BatonLock.swift).
+    if (session?["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue == true { return true }
+    if (session?[kCGSessionOnConsoleKey as String] as? NSNumber)?.boolValue == false {
+      return false
+    }
+    return CGDisplayIsAsleep(CGMainDisplayID()) != 0
   }
 
   var frontmostProcess: Int32? {
@@ -287,7 +298,7 @@ final class MacEventPoster: EventPoster {
   }
 
   func post(_ event: SyntheticEvent) -> Bool {
-    let route = router.route()
+    let route = router.route(for: event)
     note(route)
     guard route != .held else { return false }
     guard consentGiven() else { return false }
@@ -302,8 +313,10 @@ final class MacEventPoster: EventPoster {
       made = cgEvent(for: event, source)
     }
     guard let made else { return false }
-    if case .key(let key) = event, key.down { ledger?.notedKeyDown() }
+    // Only a key handed over as the Mac's own is counted by the system as one of the Mac's.
+    if route == .hardware, case .key(let key) = event, key.down { ledger?.notedKeyDown() }
     made.post(tap: route == .account ? .cgSessionEventTap : .cghidEventTap)
+    router.handed(event, by: route)
     if !posted {
       posted = true
       controlLog.notice("Baton: the first input event was handed to the system.")
