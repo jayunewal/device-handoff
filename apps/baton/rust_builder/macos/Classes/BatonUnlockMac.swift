@@ -24,6 +24,7 @@ import Foundation
 import IOKit.pwr_mgt
 import OpenDirectory
 import Security
+import SystemConfiguration
 import os
 
 /// The log of the system. The lines are public so that `log show` has them whole.
@@ -258,7 +259,38 @@ final class MacUnlockEnvironment: UnlockEnvironment {
     // The key for the lock screen is not documented, and has been there as long as the lock screen
     // has (BatonLock.swift).
     let locked = (dictionary["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue == true
-    return locked ? .locked : .unlocked
+    guard locked else { return .unlocked }
+    switch otherAccountLoggedIn() {
+    case true?:
+      unlockLog.notice(
+        "Baton: another account is logged in, so the lock screen lists the accounts to pick from.")
+      return .lockedAmongAccounts
+    case false?:
+      return .locked
+    case nil:
+      // The store has listed the sessions for as long as there has been more than one: one that
+      // cannot be read is taken as this account alone, as it was before anything asked.
+      unlockLog.error("Baton: the accounts that are logged in could not be read.")
+      return .locked
+    }
+  }
+
+  /// Whether an account other than this one is logged in, from the sessions of the window server
+  /// that the dynamic store of the system lists. nil if they cannot be read. The accounts of the
+  /// system itself (an id under 500, the login window among them) are not people's accounts.
+  private func otherAccountLoggedIn() -> Bool? {
+    guard let store = SCDynamicStoreCreate(nil, "Baton" as CFString, nil, nil),
+      let user = SCDynamicStoreCopyValue(store, "State:/Users/ConsoleUser" as CFString)
+        as? [String: Any],
+      let sessions = user["SessionInfo"] as? [[String: Any]]
+    else { return nil }
+    let me = getuid()
+    return sessions.contains { session in
+      guard let id = (session[kCGSessionUserIDKey as String] as? NSNumber)?.uint32Value else {
+        return false
+      }
+      return id != me && id >= 500
+    }
   }
 
   func privacyInPlace() -> Bool {

@@ -503,6 +503,10 @@ enum PasswordText {
 enum ScreenLock: Equatable {
   case locked
   case unlocked
+  /// Locked, and another account is logged in too, so the lock screen lists the accounts for the
+  /// person to pick one. Keys typed there go to the list, which takes them as the start of the name
+  /// of an account, and not to a password field: nothing may be typed.
+  case lockedAmongAccounts
   /// The session cannot be read, or is not the one at the console: neither a yes nor a no.
   case unknown
 }
@@ -622,7 +626,9 @@ struct UnlockTiming {
 ///    and both are kept. The key that was just used opens nothing from then on. If any of it fails
 ///    nothing is typed. The keys are wiped as soon as both are kept.
 /// 4. The screen must be locked, and the privacy in place (nothing else may type at it, and
-///    nobody at the Mac may see it): else `notLocked` or `notPrivate`.
+///    nobody at the Mac may see it): else `notLocked` or `notPrivate`. A lock screen that lists
+///    the accounts to pick from, because another account is logged in, is `failed`: the keys
+///    would land in the list.
 /// 5. The displays are woken, and the cover is verified again, then the password is typed one key
 ///    at a time and Return. Before each key, Return included, the attempt must be live and the
 ///    screen locked, and the first key that fails either ends the attempt.
@@ -664,7 +670,7 @@ func runUnlock(
   switch env.screenLock() {
   case .locked: break
   case .unlocked: return .notLocked
-  case .unknown: return .failed
+  case .lockedAmongAccounts, .unknown: return .failed
   }
   guard env.privacyInPlace(), env.coverIsDark() else { return .notPrivate }
 
