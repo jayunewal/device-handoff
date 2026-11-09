@@ -35,6 +35,9 @@ enum PrivacyAlarm: Error, Equatable {
   /// The guard went away, or locked the Mac, while the session was on: nothing would lock the Mac
   /// if this app went away as well.
   case guardLost
+  /// The account of the session, which was behind the Mac's screen, was brought onto it: the
+  /// people at the Mac would see the session.
+  case shown
 
   /// What the person at the other device is told.
   var sentence: String {
@@ -50,6 +53,9 @@ enum PrivacyAlarm: Error, Equatable {
       return "The Mac could not keep its screens dark. The session ended, and the Mac locks."
     case .guardLost:
       return "The Mac lost its guard. The session ended, and the Mac locks."
+    case .shown:
+      return "This account was brought onto the Mac's screen. The session ended, and the account "
+        + "locks."
     }
   }
 }
@@ -89,6 +95,73 @@ protocol Curtain: MacLocking {
 
 extension Curtain {
   func darken() -> Bool { healthy }
+}
+
+/// The curtain of a session in an account that is behind the Mac's screen, while another account
+/// or the login window is on it. Nobody at the Mac sees such an account or can type into it, so it
+/// covers nothing and holds nothing: a cover or a hold would darken the screen, and take the
+/// keyboard, of the person who uses the Mac in their own account. What it keeps is the promise of a
+/// private session, that nobody at the Mac sees it: when the account is brought onto the screen,
+/// the session ends and the account is locked.
+final class HiddenAccountCurtain: Curtain {
+  /// How often the place of the account is looked at, in seconds.
+  static let look: TimeInterval = 0.25
+
+  private let watch: AccountWatch
+  private let mac: MacLocking
+  private let every: TimeInterval
+  private let queue = DispatchQueue(label: "io.github.jayunewal.baton.hidden-account")
+  private let mutex = NSLock()
+  private var timer: DispatchSourceTimer?
+
+  /// `mac` locks this account, as a session that ends locks the Mac.
+  init(watch: AccountWatch, mac: MacLocking, every: TimeInterval = HiddenAccountCurtain.look) {
+    self.watch = watch
+    self.mac = mac
+    self.every = every
+  }
+
+  var locked: Bool { mac.locked }
+
+  func lock(attempt: Int) { mac.lock(attempt: attempt) }
+
+  func raise(alarm: @escaping (PrivacyAlarm) -> Void) throws {
+    guard watch.place() == .hidden else {
+      throw SharerFailure(
+        sentence: "This account came onto the Mac's screen as the session started. Try again.")
+    }
+    let made = DispatchSource.makeTimerSource(queue: queue)
+    var told = false
+    made.schedule(deadline: .now() + every, repeating: every)
+    // An account whose place is not known for a moment is not taken for one on the screen: the
+    // place is not known while the Mac changes accounts, and it is known again after.
+    made.setEventHandler { [watch] in
+      guard !told, watch.place() == .onScreen else { return }
+      told = true
+      alarm(.shown)
+    }
+    mutex.lock()
+    timer = made
+    mutex.unlock()
+    made.resume()
+  }
+
+  /// Nothing is covered or held, so nothing is lifted or put back.
+  func lift(screen: Bool, input: Bool) throws {}
+
+  func lower() {
+    mutex.lock()
+    let old = timer
+    timer = nil
+    mutex.unlock()
+    old?.cancel()
+  }
+
+  var healthy: Bool {
+    mutex.lock()
+    defer { mutex.unlock() }
+    return timer != nil
+  }
 }
 
 // MARK: - The rules

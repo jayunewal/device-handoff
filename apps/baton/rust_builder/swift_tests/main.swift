@@ -32,6 +32,18 @@ var tests: [(String, () -> Void)] = [
     testAReleaseGoesTheWayOfItsPressAndIsNeverHeld
   ),
   (
+    "a key that repeats across a change of account is released the way it was first pressed",
+    testAKeyThatRepeatsAcrossAChangeOfAccountIsReleasedTheWayItWasFirstPressed
+  ),
+  (
+    "a hidden account is watched and ends when it is brought onto the screen",
+    testAHiddenAccountIsWatchedAndEndsWhenItIsBroughtOntoTheScreen
+  ),
+  (
+    "an account on the screen is not taken for a hidden one",
+    testAnAccountOnTheScreenIsNotTakenForAHiddenOne
+  ),
+  (
     "limits are what the platform says and the room is checked",
     testLimitsAreWhatThePlatformSaysAndTheRoomIsChecked
   ),

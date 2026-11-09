@@ -2310,3 +2310,22 @@ func testAReleaseGoesTheWayOfItsPressAndIsNeverHeld() {
   time += InputRouter.settle * 2
   check(router.route(for: key(false)) == .account, "a release with no press takes the route of now")
 }
+
+func testAKeyThatRepeatsAcrossAChangeOfAccountIsReleasedTheWayItWasFirstPressed() {
+  let watch = FakeAccountWatch()
+  var time: TimeInterval = 100
+  let router = InputRouter(watch: watch, now: { time })
+  func key(down: Bool, repeats: Bool = false) -> SyntheticEvent {
+    .key(
+      SyntheticKey(virtualKey: 4, down: down, autorepeat: repeats, modifiers: InputModifiers()))
+  }
+  check(router.route(for: key(down: true)) == .hardware)
+  router.handed(key(down: true), by: .hardware)
+  watch.now = .hidden
+  check(router.route() == .held)
+  time += InputRouter.settle * 2
+  let again = key(down: true, repeats: true)
+  check(router.route(for: again) == .account, "a repeat takes the route of now")
+  router.handed(again, by: .account)
+  check(router.route(for: key(down: false)) == .hardware, "the release follows the first press")
+}

@@ -1043,8 +1043,11 @@ enum InputRoute: Equatable {
 
 /// Picks the route of each event from where the account is. When the place changes, events are
 /// held for a moment, until the change of account is over. A key or a button that is released goes
-/// the way that it was pressed, and is never held: a release that went another way would leave the
-/// key down in the account that had the press (docs/adr/0009-window-streaming.md).
+/// the way that it was pressed, and is never held (docs/adr/0009-window-streaming.md). What that
+/// keeps right is the Mac's own keyboard and mouse: a press handed over as theirs is let go of as
+/// theirs, so nothing stays down for whoever is at the Mac after a change of account. That release
+/// reaches the account on the screen now, so the account that had the press, behind it, is not
+/// told; a drag there may stay open until its next press.
 final class InputRouter {
   /// A key or a button that goes down and comes up.
   private enum Press: Hashable {
