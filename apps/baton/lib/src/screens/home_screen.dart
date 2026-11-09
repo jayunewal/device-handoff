@@ -20,6 +20,7 @@ import '../unlock_notices.dart';
 import '../windows_controller.dart';
 import 'devices_screen.dart';
 import 'inbox_screen.dart';
+import 'settings_screen.dart';
 import 'transfers_panel.dart';
 import 'window_screen.dart';
 import 'windows_panel.dart';
@@ -79,7 +80,11 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-enum _Tab { devices, inbox }
+enum _Tab { devices, inbox, settings }
+
+/// From this width on, the places are listed in a sidebar beside the one shown, as on an iPad or a
+/// Mac, and not in a bar at the bottom.
+const sidebarFrom = 700.0;
 
 class _HomeScreenState extends State<HomeScreen> {
   late final InboxController _inbox = InboxController(widget.session);
@@ -227,46 +232,89 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  /// Keeps the Macs to unlock after a restart. Only an iPhone or iPad has one.
+  late final MacPasswordKeeper? _macPasswords =
+      PlatformMacPasswordKeeper.forThisDevice();
+
+  /// Keeps the three places when the window crosses [sidebarFrom], where they move between the
+  /// bar layout and the sidebar layout. Without it they would be built anew, and a dialog that one
+  /// of them opened would answer a screen that is gone.
+  final _placesKey = GlobalKey();
+
   @override
   Widget build(BuildContext context) {
+    final places = IndexedStack(
+      key: _placesKey,
+      index: _tab.index,
+      children: [
+        DevicesScreen(
+          session: widget.session,
+          now: widget.now,
+          scanner: widget.scanner,
+          chooser: widget.chooser,
+          controlAccess: widget.controlAccess,
+          screenAccess: widget.screenAccess,
+          notices: widget.notices,
+          onShareWindow: _windows.abilities.canShare
+              ? (device, {required control}) =>
+                    unawaited(_windows.share(device, control: control))
+              : null,
+          onStartScreen: _windows.abilities.canShow
+              ? (device, {required control}) =>
+                    unawaited(_windows.startScreen(device, control: control))
+              : null,
+          canGiveScreen: _windows.abilities.canGiveScreen,
+          canBeUnlocked: _windows.abilities.canBeUnlocked,
+        ),
+        InboxScreen(
+          controller: _inbox,
+          now: widget.now,
+          openLink: widget.openLink,
+        ),
+        SettingsScreen(
+          session: widget.session,
+          now: widget.now,
+          screenAccess: widget.screenAccess,
+          notices: widget.notices,
+          macPasswords: _macPasswords,
+        ),
+      ],
+    );
+    final panels = [
+      WindowsPanel(controller: _windows, onOpen: _showWindow),
+      TransfersPanel(controller: _transfers),
+    ];
+    if (MediaQuery.sizeOf(context).width >= sidebarFrom) {
+      return Scaffold(
+        body: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            ListenableBuilder(
+              listenable: _inbox,
+              builder: (context, _) => _Sidebar(
+                selected: _tab,
+                unseen: _inbox.unseen,
+                onSelected: _show,
+              ),
+            ),
+            const VerticalDivider(width: 1),
+            Expanded(
+              child: Column(
+                children: [
+                  Expanded(child: places),
+                  ...panels,
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
     return Scaffold(
-      body: IndexedStack(
-        index: _tab.index,
-        children: [
-          DevicesScreen(
-            session: widget.session,
-            now: widget.now,
-            scanner: widget.scanner,
-            chooser: widget.chooser,
-            controlAccess: widget.controlAccess,
-            screenAccess: widget.screenAccess,
-            notices: widget.notices,
-            onShareWindow: _windows.abilities.canShare
-                ? (device, {required control}) =>
-                      unawaited(_windows.share(device, control: control))
-                : null,
-            onStartScreen: _windows.abilities.canShow
-                ? (device, {required control}) =>
-                      unawaited(_windows.startScreen(device, control: control))
-                : null,
-            canGiveScreen: _windows.abilities.canGiveScreen,
-            canBeUnlocked: _windows.abilities.canBeUnlocked,
-            macPasswords: PlatformMacPasswordKeeper.forThisDevice(),
-          ),
-          InboxScreen(
-            controller: _inbox,
-            now: widget.now,
-            openLink: widget.openLink,
-          ),
-        ],
-      ),
+      body: places,
       bottomNavigationBar: Column(
         mainAxisSize: MainAxisSize.min,
-        children: [
-          WindowsPanel(controller: _windows, onOpen: _showWindow),
-          TransfersPanel(controller: _transfers),
-          _navigation(),
-        ],
+        children: [...panels, _navigation()],
       ),
     );
   }
@@ -274,31 +322,170 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _navigation() {
     return ListenableBuilder(
       listenable: _inbox,
-      builder: (context, _) {
-        Widget inbox(IconData icon) => Badge(
-          isLabelVisible: _inbox.unseen > 0,
-          label: Text('${_inbox.unseen}'),
-          child: Icon(icon),
-        );
-        return NavigationBar(
-          selectedIndex: _tab.index,
-          onDestinationSelected: (index) => _show(_Tab.values[index]),
-          destinations: [
-            const NavigationDestination(
-              icon: Icon(Icons.devices_outlined),
-              selectedIcon: Icon(Icons.devices),
-              label: 'Devices',
-            ),
+      builder: (context, _) => NavigationBar(
+        selectedIndex: _tab.index,
+        onDestinationSelected: (index) => _show(_Tab.values[index]),
+        destinations: [
+          for (final place in _Tab.values)
             NavigationDestination(
-              icon: inbox(Icons.inbox_outlined),
-              selectedIcon: inbox(Icons.inbox),
-              label: _inbox.unseen > 0
-                  ? 'Inbox, ${_inbox.unseen} new'
-                  : 'Inbox',
+              icon: _icon(place, unseen: _inbox.unseen, selected: false),
+              selectedIcon: _icon(place, unseen: _inbox.unseen, selected: true),
+              label: _label(place, unseen: _inbox.unseen),
             ),
-          ],
-        );
-      },
+        ],
+      ),
+    );
+  }
+}
+
+/// What a place is called. The inbox says how many things in it are new, which a screen reader
+/// reads out with the name.
+String _label(_Tab place, {required int unseen}) => switch (place) {
+  _Tab.devices => 'Devices',
+  _Tab.inbox => unseen > 0 ? 'Inbox, $unseen new' : 'Inbox',
+  _Tab.settings => 'Settings',
+};
+
+Widget _icon(_Tab place, {required int unseen, required bool selected}) {
+  final icon = Icon(switch (place) {
+    _Tab.devices => selected ? Icons.devices : Icons.devices_outlined,
+    _Tab.inbox => selected ? Icons.inbox : Icons.inbox_outlined,
+    _Tab.settings => selected ? Icons.settings : Icons.settings_outlined,
+  });
+  if (place != _Tab.inbox) return icon;
+  return Badge(isLabelVisible: unseen > 0, label: Text('$unseen'), child: icon);
+}
+
+/// The places, listed down the side of a wide window: the name of the app at the top, then one
+/// row for each place, the one shown marked in the signature colour.
+class _Sidebar extends StatelessWidget {
+  const _Sidebar({
+    required this.selected,
+    required this.unseen,
+    required this.onSelected,
+  });
+
+  final _Tab selected;
+  final int unseen;
+  final void Function(_Tab place) onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Material(
+      color: scheme.surfaceContainerLow,
+      child: SafeArea(
+        right: false,
+        child: SizedBox(
+          width: 232,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 20, 12, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 20),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 10,
+                        height: 10,
+                        decoration: BoxDecoration(
+                          color: scheme.primary,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Text('Baton', style: theme.textTheme.headlineSmall),
+                    ],
+                  ),
+                ),
+                for (final place in _Tab.values)
+                  _SidebarRow(
+                    icon: _icon(
+                      place,
+                      unseen: unseen,
+                      selected: place == selected,
+                    ),
+                    label: place == _Tab.inbox
+                        ? 'Inbox'
+                        : _label(place, unseen: unseen),
+                    semanticsLabel: _label(place, unseen: unseen),
+                    selected: place == selected,
+                    onTap: () => onSelected(place),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SidebarRow extends StatelessWidget {
+  const _SidebarRow({
+    required this.icon,
+    required this.label,
+    required this.semanticsLabel,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final Widget icon;
+  final String label;
+
+  /// What a screen reader says: the name, and for the inbox how many things in it are new.
+  final String semanticsLabel;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final color = selected ? scheme.primary : scheme.onSurface;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: Semantics(
+        selected: selected,
+        button: true,
+        child: Material(
+          color: selected
+              ? scheme.primary.withValues(alpha: 0.12)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(10),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(10),
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              child: Row(
+                children: [
+                  IconTheme(
+                    data: IconThemeData(color: color, size: 22),
+                    child: icon,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      label,
+                      semanticsLabel: semanticsLabel,
+                      style: theme.textTheme.bodyLarge?.copyWith(
+                        color: color,
+                        fontWeight: selected
+                            ? FontWeight.w600
+                            : FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

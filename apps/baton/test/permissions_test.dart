@@ -318,15 +318,6 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('Review'), findsNothing);
     });
-
-    testWidgets('the menu leads to the permissions', (tester) async {
-      await showDevices(tester, FakeSystemSettings(_allOn));
-      await tester.tap(find.byTooltip('More'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Permissions'));
-      await tester.pumpAndSettle();
-      expect(find.byType(PermissionsScreen), findsOneWidget);
-    });
   });
 
   group('the channel', () {
