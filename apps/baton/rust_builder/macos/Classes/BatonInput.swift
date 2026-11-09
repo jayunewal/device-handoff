@@ -1012,6 +1012,112 @@ protocol EventPoster: AnyObject {
   func post(_ event: SyntheticEvent) -> Bool
 }
 
+/// Where the account that this app runs in is, on a Mac where several people are logged in.
+enum AccountPlace: Equatable {
+  /// On the Mac's screen: the account of whoever sits at the Mac, or of nobody.
+  case onScreen
+  /// Logged in but not on the screen: another account, or the login window, is on the screen.
+  case hidden
+  /// The system did not say.
+  case unknown
+}
+
+/// Says where the account that this app runs in is (BatonControl.swift has the one of a Mac).
+protocol AccountWatch: AnyObject {
+  func place() -> AccountPlace
+}
+
+/// How an event is handed to the system.
+enum InputRoute: Equatable {
+  /// As if it came from the keyboard and the mouse of the Mac. Only the account on the screen may
+  /// use it: the system gives such an event to whichever account is on the screen, so an account
+  /// that is not would type and click in somebody else's (tried on a Mac, macOS 27.2).
+  case hardware
+  /// Into the account that this app runs in, and no other. It works while the account is not on
+  /// the screen, and nothing reaches the account that is.
+  case account
+  /// Not at all: the Mac is changing which account is on the screen, and while it does an event
+  /// can land in the login window or in the account that is coming.
+  case held
+}
+
+/// Picks the route of each event from where the account is. When the place changes, events are
+/// held for a moment, until the change of account is over. A key or a button that is released goes
+/// the way that it was pressed, and is never held: a release that went another way would leave the
+/// key down in the account that had the press (docs/adr/0009-window-streaming.md).
+final class InputRouter {
+  /// A key or a button that goes down and comes up.
+  private enum Press: Hashable {
+    case key(UInt16)
+    case button(PointerButton)
+  }
+
+  /// How long events are held after the place of the account changed, in seconds.
+  static let settle: TimeInterval = 1.0
+
+  private let watch: AccountWatch
+  private let now: () -> TimeInterval
+  private var last: AccountPlace?
+  private var changedAt: TimeInterval?
+  /// The route by which each key or button that is down was pressed.
+  private var pressed: [Press: InputRoute] = [:]
+
+  init(
+    watch: AccountWatch,
+    now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+  ) {
+    self.watch = watch
+    self.now = now
+  }
+
+  /// The route of this event: the route of its press for a release, and otherwise the route of
+  /// now.
+  func route(for event: SyntheticEvent) -> InputRoute {
+    if case let (press, down)? = InputRouter.press(in: event), !down, let took = pressed[press] {
+      return took
+    }
+    return route()
+  }
+
+  /// Called once the event was handed over by `route`, so that its release follows it.
+  func handed(_ event: SyntheticEvent, by route: InputRoute) {
+    guard case let (press, down)? = InputRouter.press(in: event) else { return }
+    if !down {
+      pressed[press] = nil
+    } else if pressed[press] == nil {
+      // A key that repeats is down already, and its release goes the way of the first press.
+      pressed[press] = route
+    }
+  }
+
+  private static func press(in event: SyntheticEvent) -> (Press, down: Bool)? {
+    switch event {
+    case .key(let key): return (.key(key.virtualKey), key.down)
+    case .mouse(let mouse):
+      switch mouse.kind {
+      case .down: return (.button(mouse.button), true)
+      case .up: return (.button(mouse.button), false)
+      case .moved, .dragged: return nil
+      }
+    case .scroll: return nil
+    }
+  }
+
+  func route() -> InputRoute {
+    let place = watch.place()
+    let time = now()
+    if let last, last != place { changedAt = time }
+    last = place
+    if let changedAt, time >= changedAt, time - changedAt < InputRouter.settle { return .held }
+    switch place {
+    case .onScreen: return .hardware
+    case .hidden: return .account
+    // Without knowing where the account is, the hardware route could reach somebody else's.
+    case .unknown: return .held
+    }
+  }
+}
+
 /// What the Rust side asks of a window, or a whole display, that is shared with control: its
 /// surroundings, and to have something that the person did put to it.
 final class WindowControl {

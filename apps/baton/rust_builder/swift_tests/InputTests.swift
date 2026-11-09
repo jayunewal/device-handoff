@@ -2240,3 +2240,73 @@ func testTwoRectanglesOverlapOnlyWhenTheyShareSomeArea() {
   check(overlap(150, 250, 10, 10) == false, "in the same columns and not in the same rows")
   check(overlap(250, 150, 10, 10) == false, "in the same rows and not in the same columns")
 }
+
+// MARK: - The route of events on a Mac with several accounts
+
+final class FakeAccountWatch: AccountWatch {
+  var now: AccountPlace = .onScreen
+  func place() -> AccountPlace { now }
+}
+
+func testEventsGoAsTheMacsOwnOnlyFromTheAccountOnTheScreen() {
+  let watch = FakeAccountWatch()
+  var time: TimeInterval = 100
+  let router = InputRouter(watch: watch, now: { time })
+  check(router.route() == .hardware, "the account on the screen uses the keyboard and mouse")
+  watch.now = .hidden
+  let hiddenFromTheStart = InputRouter(watch: watch, now: { time })
+  check(hiddenFromTheStart.route() == .account, "an account behind the screen keeps to itself")
+  time += 5
+  check(router.route() == .held, "a change of account holds the events")
+  watch.now = .unknown
+  time += 5
+  check(router.route() == .held)
+  time += 5
+  check(router.route() == .held, "an account whose place is not known posts nothing")
+}
+
+func testEventsAreHeldForAMomentAfterTheMacChangesAccounts() {
+  let watch = FakeAccountWatch()
+  var time: TimeInterval = 100
+  let router = InputRouter(watch: watch, now: { time })
+  check(router.route() == .hardware)
+  watch.now = .hidden
+  check(router.route() == .held, "held as soon as the change is seen")
+  time += InputRouter.settle / 2
+  check(router.route() == .held, "still held while the change goes on")
+  time += InputRouter.settle
+  check(router.route() == .account, "handed into the account once the change is over")
+  watch.now = .onScreen
+  time += 0.01
+  check(router.route() == .held, "held again when the account comes back to the screen")
+  time += InputRouter.settle
+  check(router.route() == .hardware)
+}
+
+func testAReleaseGoesTheWayOfItsPressAndIsNeverHeld() {
+  let watch = FakeAccountWatch()
+  var time: TimeInterval = 100
+  let router = InputRouter(watch: watch, now: { time })
+  let mods = InputModifiers()
+  func key(_ down: Bool) -> SyntheticEvent {
+    .key(SyntheticKey(virtualKey: 0, down: down, autorepeat: false, modifiers: mods))
+  }
+  func button(_ kind: MouseKind) -> SyntheticEvent {
+    .mouse(
+      SyntheticMouse(
+        kind: kind, button: .left, at: ScreenPoint(x: 1, y: 1), clickCount: 1, pressure: 1,
+        modifiers: mods))
+  }
+  for down in [key(true), button(.down)] {
+    check(router.route(for: down) == .hardware)
+    router.handed(down, by: .hardware)
+  }
+  watch.now = .hidden
+  check(router.route(for: button(.dragged)) == .held, "a drag is held while the account changes")
+  check(router.route(for: key(false)) == .hardware, "the key comes up where it went down")
+  router.handed(key(false), by: .hardware)
+  check(router.route(for: button(.up)) == .hardware, "the button comes up where it went down")
+  router.handed(button(.up), by: .hardware)
+  time += InputRouter.settle * 2
+  check(router.route(for: key(false)) == .account, "a release with no press takes the route of now")
+}
