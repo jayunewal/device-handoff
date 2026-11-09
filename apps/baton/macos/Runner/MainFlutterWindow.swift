@@ -221,44 +221,78 @@ private func keepBatonFolderOutOfBackups() {
   }
 }
 
-/// Says whether Baton may use the camera, asks for it, and opens the pane of System Settings where a
-/// permission is turned on. The names of the channel, of the questions and of the panes, and the
-/// words of the answers, must be the ones in lib/src/permissions.dart.
+/// Says where the permissions that Baton keeps on this channel stand (Accessibility, Input
+/// Monitoring and the camera), asks for them, and opens the pane of System Settings where a
+/// permission is turned on. The names of the channel, of the questions and of the permissions, and
+/// the words of the answers, must be the ones in lib/src/permissions.dart.
 private func answerAboutPermissions(messenger: FlutterBinaryMessenger) {
   let channel = FlutterMethodChannel(
     name: "io.github.jayunewal.baton/permissions", binaryMessenger: messenger)
   channel.setMethodCallHandler { call, result in
+    let permission = call.arguments as? String ?? ""
     switch call.method {
-    case "camera":
-      result(cameraAccess())
-    case "requestCamera":
-      AVCaptureDevice.requestAccess(for: .video) { _ in
-        DispatchQueue.main.async { result(cameraAccess()) }
-      }
+    case "state":
+      result(permissionState(permission))
+    case "request":
+      requestPermission(permission) { result(permissionState(permission)) }
     case "openSettings":
-      guard let pane = call.arguments as? String, let address = settingsAddress(pane) else {
+      guard let address = settingsAddress(permission) else {
         result(false)
         return
       }
       result(openSystemSettings(address))
     default:
-      // A Mac has no Face ID.
       result(FlutterMethodNotImplemented)
     }
   }
 }
 
-/// What this Mac says about letting Baton use the camera, in the words of lib/src/permissions.dart.
-private func cameraAccess() -> String? {
-  switch AVCaptureDevice.authorizationStatus(for: .video) {
-  case .authorized:
-    return "allowed"
-  case .notDetermined:
-    return "needed"
-  case .denied, .restricted:
-    return "denied"
-  @unknown default:
+/// Where a permission stands, in the words of lib/src/permissions.dart, or nothing for one that
+/// this Mac cannot have, such as the camera of a Mac with none.
+private func permissionState(_ permission: String) -> String? {
+  switch permission {
+  case "accessibility":
+    // The same consent that lets the app hand input to other apps and hold the Mac's own.
+    return CGPreflightPostEventAccess() ? "allowed" : "denied"
+  case "inputMonitoring":
+    return CGPreflightListenEventAccess() ? "allowed" : "denied"
+  case "camera":
+    guard AVCaptureDevice.default(for: .video) != nil else { return nil }
+    switch AVCaptureDevice.authorizationStatus(for: .video) {
+    case .authorized:
+      return "allowed"
+    case .notDetermined:
+      return "needed"
+    case .denied, .restricted:
+      return "denied"
+    @unknown default:
+      return nil
+    }
+  default:
     return nil
+  }
+}
+
+/// Asks the system for a permission. It asks the person once and says no without asking after
+/// that, so the pane of System Settings where it is turned on is opened when the answer is no.
+private func requestPermission(_ permission: String, then done: @escaping () -> Void) {
+  switch permission {
+  case "accessibility", "inputMonitoring":
+    // Not known to wait for the person, but nothing promises it, and the main thread is not held.
+    DispatchQueue.global(qos: .userInitiated).async {
+      let allowed =
+        permission == "accessibility" ? CGRequestPostEventAccess() : CGRequestListenEventAccess()
+      DispatchQueue.main.async {
+        if !allowed, let address = settingsAddress(permission) {
+          _ = openSystemSettings(address)
+        }
+        done()
+      }
+    }
+  case "camera":
+    AVCaptureDevice.requestAccess(for: .video) { _ in DispatchQueue.main.async { done() } }
+  default:
+    done()
   }
 }
 
@@ -276,8 +310,10 @@ private func openSystemSettings(_ address: String) -> Bool {
 private func settingsAddress(_ pane: String) -> String? {
   let privacy = "x-apple.systempreferences:com.apple.preference.security?"
   switch pane {
-  case "control":
+  case "accessibility":
     return privacy + "Privacy_Accessibility"
+  case "inputMonitoring":
+    return privacy + "Privacy_ListenEvent"
   case "screenRecording":
     return privacy + "Privacy_ScreenCapture"
   case "camera":

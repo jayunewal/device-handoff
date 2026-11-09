@@ -17,7 +17,6 @@ import 'content_box.dart';
 class PermissionsScreen extends StatefulWidget {
   const PermissionsScreen({
     this.platform,
-    this.controlAccess = const PlatformControlAccess(),
     this.screenAccess = const PlatformScreenAccess(),
     this.notices = const PlatformNoticeKeeper(),
     this.system = const PlatformSystemSettings(),
@@ -27,7 +26,6 @@ class PermissionsScreen extends StatefulWidget {
   /// The system this runs on. Tests give it one of their own.
   final TargetPlatform? platform;
 
-  final ControlAccessKeeper controlAccess;
   final ScreenAccessKeeper screenAccess;
   final NoticeKeeper notices;
   final SystemSettingsKeeper system;
@@ -61,7 +59,6 @@ class _PermissionsScreenState extends State<PermissionsScreen>
   Future<void> _look() async {
     final checks = await checkPermissions(
       platform: widget.platform ?? defaultTargetPlatform,
-      controlAccess: widget.controlAccess,
       screenAccess: widget.screenAccess,
       notices: widget.notices,
       system: widget.system,
@@ -72,18 +69,17 @@ class _PermissionsScreenState extends State<PermissionsScreen>
   Future<void> _turnOn(PermissionCheck check) async {
     final permission = check.permission;
     switch (permission) {
-      // Asking for these opens Settings on its own when the system has said no before.
-      case Permission.control:
-        await widget.controlAccess.request();
+      // Asking for Screen Recording opens Settings on its own when the system has said no before.
       case Permission.screenRecording:
         await widget.screenAccess.request();
       case Permission.notifications
           when check.state == PermissionState.notAsked:
         await widget.notices.request();
+      // The Mac asks the person once and opens Settings for any other time.
+      case Permission.accessibility || Permission.inputMonitoring:
+        await widget.system.request(permission);
       case Permission.camera when check.state == PermissionState.notAsked:
-        await widget.system.requestCamera();
-      case Permission.faceId when check.state == PermissionState.notAsked:
-        await widget.system.requestFaceId();
+        await widget.system.request(permission);
       default:
         final opened = await widget.system.open(permission);
         if (!opened && mounted) {
@@ -129,19 +125,28 @@ class _PermissionsScreenState extends State<PermissionsScreen>
 ({String title, String why, String where, String? whenOff}) permissionText(
   Permission permission,
 ) => switch (permission) {
-  Permission.control => (
+  Permission.accessibility => (
     title: 'Accessibility',
     why:
-        'Lets a device you allow control this Mac with its touch, keyboard '
-        'and trackpad.',
+        'Keeps this Mac’s own keyboard and trackpad still during a private '
+        'screen, and lets a device you allow control this Mac.',
     where: 'Open System Settings, Privacy & Security, Accessibility.',
     whenOff: 'If Baton is in the list already, take it out and add it again.',
+  ),
+  Permission.inputMonitoring => (
+    title: 'Input Monitoring',
+    why:
+        'Keeps this Mac’s own keyboard and trackpad still during a private '
+        'screen. A private screen can’t start without it. After you turn it '
+        'on, quit Baton and open it again.',
+    where: 'Open System Settings, Privacy & Security, Input Monitoring.',
+    whenOff: null,
   ),
   Permission.screenRecording => (
     title: 'Screen & System Audio Recording',
     why:
-        'Lets a device you allow see this Mac’s screen and hear its sound. '
-        'After you turn it on, quit Baton and open it again.',
+        'Lets a device you allow see this Mac’s screen. After you turn it '
+        'on, quit Baton and open it again.',
     where:
         'Open System Settings, Privacy & Security, Screen & System Audio '
         'Recording.',
@@ -242,7 +247,8 @@ class _PermissionRow extends StatelessWidget {
   final VoidCallback onTurnOn;
 
   static IconData _icon(Permission permission) => switch (permission) {
-    Permission.control => Icons.mouse_outlined,
+    Permission.accessibility => Icons.accessibility_new,
+    Permission.inputMonitoring => Icons.keyboard_outlined,
     Permission.screenRecording => Icons.screen_share_outlined,
     Permission.notifications => Icons.notifications_outlined,
     Permission.camera => Icons.photo_camera_outlined,
@@ -267,10 +273,7 @@ class _PermissionRow extends StatelessWidget {
     };
     final button = switch (check.state) {
       PermissionState.on => null,
-      PermissionState.notAsked
-          when check.permission != Permission.control &&
-              check.permission != Permission.screenRecording =>
-        'Turn On',
+      PermissionState.notAsked => 'Turn On',
       _ => 'Open Settings',
     };
     return Card(

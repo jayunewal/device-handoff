@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import 'dart:io';
+
 import 'package:baton/src/backend.dart';
 import 'package:baton/src/control_access.dart';
 import 'package:baton/src/notice_access.dart';
@@ -14,42 +16,44 @@ import 'fake_control_access.dart';
 import 'fake_notices.dart';
 import 'fake_system_settings.dart';
 
+const _allOn = {
+  Permission.accessibility: PermissionState.on,
+  Permission.inputMonitoring: PermissionState.on,
+  Permission.camera: PermissionState.on,
+  Permission.faceId: PermissionState.on,
+};
+
+Map<Permission, PermissionState> _with(
+  Map<Permission, PermissionState> changes,
+) => {..._allOn, ...changes};
+
 Future<List<PermissionCheck>> _check(
   TargetPlatform platform, {
-  ControlAccess control = ControlAccess.allowed,
   ScreenAccess screen = ScreenAccess.allowed,
   NoticeAccess notices = NoticeAccess.allowed,
-  FakeSystemSettings? system,
+  Map<Permission, PermissionState> states = _allOn,
 }) => checkPermissions(
   platform: platform,
-  controlAccess: FakeControlAccess(control),
   screenAccess: FakeScreenAccess(screen),
   notices: FakeNotices(notices),
-  system:
-      system ??
-      FakeSystemSettings(
-        cameraState: PermissionState.on,
-        faceIdState: PermissionState.on,
-      ),
+  system: FakeSystemSettings(states),
 );
 
 Future<void> _showPermissions(
   WidgetTester tester, {
   TargetPlatform platform = TargetPlatform.macOS,
-  FakeControlAccess? control,
   FakeScreenAccess? screen,
   FakeNotices? notices,
   required FakeSystemSettings system,
 }) async {
   tester.view
-    ..physicalSize = const Size(600, 1600)
+    ..physicalSize = const Size(600, 2000)
     ..devicePixelRatio = 1;
   addTearDown(tester.view.reset);
   await tester.pumpWidget(
     MaterialApp(
       home: PermissionsScreen(
         platform: platform,
-        controlAccess: control ?? FakeControlAccess(),
         screenAccess: screen ?? FakeScreenAccess(),
         notices: notices ?? FakeNotices(),
         system: system,
@@ -59,13 +63,21 @@ Future<void> _showPermissions(
   await tester.pumpAndSettle();
 }
 
+/// The body of the Swift function that starts with [start], up to the brace that closes it.
+String _body(String swift, String start) {
+  final from = swift.indexOf(start);
+  expect(from, isNonNegative, reason: start);
+  return swift.substring(from, swift.indexOf('\n}\n', from));
+}
+
 void main() {
   group('what is checked', () {
     test(
-      'a Mac checks control, recording, notices, camera and network',
+      'a Mac checks what a private screen and control need, and more',
       () async {
         expect(await _check(TargetPlatform.macOS), const [
-          PermissionCheck(Permission.control, PermissionState.on),
+          PermissionCheck(Permission.accessibility, PermissionState.on),
+          PermissionCheck(Permission.inputMonitoring, PermissionState.on),
           PermissionCheck(Permission.screenRecording, PermissionState.on),
           PermissionCheck(Permission.notifications, PermissionState.on),
           PermissionCheck(Permission.camera, PermissionState.on),
@@ -77,27 +89,30 @@ void main() {
     test('a Mac says what is off, and what was never asked', () async {
       final checks = await _check(
         TargetPlatform.macOS,
-        control: ControlAccess.needed,
         screen: ScreenAccess.needed,
         notices: NoticeAccess.needed,
-        system: FakeSystemSettings(cameraState: PermissionState.off),
+        states: _with({
+          Permission.accessibility: PermissionState.off,
+          Permission.inputMonitoring: PermissionState.off,
+          Permission.camera: PermissionState.off,
+        }),
       );
-      expect(checks.take(4), const [
-        PermissionCheck(Permission.control, PermissionState.off),
+      expect(checks.take(5), const [
+        PermissionCheck(Permission.accessibility, PermissionState.off),
+        PermissionCheck(Permission.inputMonitoring, PermissionState.off),
         PermissionCheck(Permission.screenRecording, PermissionState.off),
         PermissionCheck(Permission.notifications, PermissionState.notAsked),
         PermissionCheck(Permission.camera, PermissionState.off),
       ]);
-      expect(checks.where((check) => check.needsAttention), hasLength(4));
+      expect(checks.where((check) => check.needsAttention), hasLength(5));
     });
 
-    test('what a Mac cannot do has no row', () async {
+    test('what a Mac cannot have has no row', () async {
       final checks = await _check(
         TargetPlatform.macOS,
-        control: ControlAccess.unavailable,
         screen: ScreenAccess.unavailable,
         notices: NoticeAccess.unavailable,
-        system: FakeSystemSettings(),
+        states: const {},
       );
       expect(checks, const [
         PermissionCheck(Permission.localNetwork, PermissionState.cannotCheck),
@@ -129,29 +144,30 @@ void main() {
 
   group('the permissions screen', () {
     testWidgets('says all is on when it is', (tester) async {
-      await _showPermissions(
-        tester,
-        system: FakeSystemSettings(cameraState: PermissionState.on),
-      );
+      await _showPermissions(tester, system: FakeSystemSettings(_allOn));
       expect(find.text('Everything Baton can check is on'), findsOneWidget);
-      expect(find.text('On'), findsNWidgets(4));
+      expect(find.text('On'), findsNWidgets(5));
       // Only the network, which Baton cannot check, has a button.
       expect(find.text('Open Settings'), findsOneWidget);
     });
 
     testWidgets('asks for what was never asked, in one tap', (tester) async {
-      final system = FakeSystemSettings(cameraState: PermissionState.notAsked);
+      final system = FakeSystemSettings(
+        _with({Permission.camera: PermissionState.notAsked}),
+      );
       await _showPermissions(tester, system: system);
       expect(find.text('1 permission needs you'), findsOneWidget);
       await tester.tap(find.text('Turn On'));
       await tester.pumpAndSettle();
-      expect(system.cameraRequests, 1);
+      expect(system.requested, [Permission.camera]);
       expect(system.opened, isEmpty);
       expect(find.text('Everything Baton can check is on'), findsOneWidget);
     });
 
     testWidgets('opens Settings for what was turned off', (tester) async {
-      final system = FakeSystemSettings(cameraState: PermissionState.off);
+      final system = FakeSystemSettings(
+        _with({Permission.camera: PermissionState.off}),
+      );
       final notices = FakeNotices(NoticeAccess.denied);
       await _showPermissions(tester, notices: notices, system: system);
       expect(find.text('2 permissions need you'), findsOneWidget);
@@ -162,33 +178,43 @@ void main() {
       await tester.pumpAndSettle();
       expect(system.opened, [Permission.camera, Permission.notifications]);
       expect(notices.requests, 0);
+      expect(system.requested, isEmpty);
     });
 
-    testWidgets('control and recording ask the Mac, which opens Settings', (
-      tester,
-    ) async {
-      final control = FakeControlAccess(ControlAccess.needed);
+    testWidgets('what a private screen needs is asked of the Mac, which opens '
+        'Settings', (tester) async {
       final screen = FakeScreenAccess(ScreenAccess.needed);
-      final system = FakeSystemSettings(cameraState: PermissionState.on);
-      await _showPermissions(
-        tester,
-        control: control,
-        screen: screen,
-        system: system,
+      final system = FakeSystemSettings(
+        _with({
+          Permission.accessibility: PermissionState.off,
+          Permission.inputMonitoring: PermissionState.off,
+        }),
       );
+      await _showPermissions(tester, screen: screen, system: system);
+      expect(find.text('3 permissions need you'), findsOneWidget);
+      expect(find.text('Input Monitoring'), findsOneWidget);
       await tester.tap(find.bySemanticsLabel('Open Settings, Accessibility'));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.bySemanticsLabel('Open Settings, Input Monitoring'),
+      );
+      await tester.pumpAndSettle();
       await tester.tap(
         find.bySemanticsLabel('Open Settings, Screen & System Audio Recording'),
       );
       await tester.pumpAndSettle();
-      expect(control.requests, 1);
+      expect(system.requested, [
+        Permission.accessibility,
+        Permission.inputMonitoring,
+      ]);
       expect(screen.requests, 1);
       expect(system.opened, isEmpty);
     });
 
     testWidgets('says where to go when Settings does not open', (tester) async {
-      final system = FakeSystemSettings(cameraState: PermissionState.off)
-        ..opens = false;
+      final system = FakeSystemSettings(
+        _with({Permission.camera: PermissionState.off}),
+      )..opens = false;
       await _showPermissions(tester, system: system);
       await tester.tap(find.bySemanticsLabel('Open Settings, Camera'));
       await tester.pump();
@@ -199,11 +225,13 @@ void main() {
     }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
     testWidgets('looks again when the person comes back', (tester) async {
-      final system = FakeSystemSettings(cameraState: PermissionState.off);
+      final system = FakeSystemSettings(
+        _with({Permission.camera: PermissionState.off}),
+      );
       await _showPermissions(tester, system: system);
       expect(find.text('1 permission needs you'), findsOneWidget);
-      system.cameraState = PermissionState.on;
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      system.states[Permission.camera] = PermissionState.on;
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await tester.pumpAndSettle();
       expect(find.text('Everything Baton can check is on'), findsOneWidget);
@@ -211,8 +239,7 @@ void main() {
 
     testWidgets('shows Face ID on an iPhone', (tester) async {
       final system = FakeSystemSettings(
-        cameraState: PermissionState.on,
-        faceIdState: PermissionState.notSetUp,
+        _with({Permission.faceId: PermissionState.notSetUp}),
       );
       await _showPermissions(
         tester,
@@ -264,7 +291,9 @@ void main() {
     ) async {
       await showDevices(
         tester,
-        FakeSystemSettings(cameraState: PermissionState.off),
+        FakeSystemSettings(
+          _with({Permission.inputMonitoring: PermissionState.off}),
+        ),
       );
       expect(find.text('1 permission needs you'), findsOneWidget);
       await tester.tap(find.text('Review'));
@@ -273,23 +302,88 @@ void main() {
     });
 
     testWidgets('says nothing when all is on', (tester) async {
-      await showDevices(
-        tester,
-        FakeSystemSettings(cameraState: PermissionState.on),
+      await showDevices(tester, FakeSystemSettings(_allOn));
+      expect(find.text('Review'), findsNothing);
+    });
+
+    testWidgets('looks again when the person comes back', (tester) async {
+      final system = FakeSystemSettings(
+        _with({Permission.camera: PermissionState.off}),
       );
+      await showDevices(tester, system);
+      expect(find.text('Review'), findsOneWidget);
+      system.states[Permission.camera] = PermissionState.on;
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
       expect(find.text('Review'), findsNothing);
     });
 
     testWidgets('the menu leads to the permissions', (tester) async {
-      await showDevices(
-        tester,
-        FakeSystemSettings(cameraState: PermissionState.on),
-      );
+      await showDevices(tester, FakeSystemSettings(_allOn));
       await tester.tap(find.byTooltip('More'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('Permissions'));
       await tester.pumpAndSettle();
       expect(find.byType(PermissionsScreen), findsOneWidget);
+    });
+  });
+
+  group('the channel', () {
+    final mac = File('macos/Runner/MainFlutterWindow.swift').readAsStringSync();
+    final ios = File('ios/Runner/AppDelegate.swift').readAsStringSync();
+
+    test('both apps answer on the channel, with the same questions', () {
+      for (final swift in [mac, ios]) {
+        expect(swift, contains('"${PlatformSystemSettings.channelName}"'));
+        for (final question in [
+          PlatformSystemSettings.stateQuestion,
+          PlatformSystemSettings.requestQuestion,
+          PlatformSystemSettings.openQuestion,
+        ]) {
+          expect(swift, contains('case "$question":'), reason: question);
+        }
+        for (final answer in PlatformSystemSettings.answers.keys) {
+          if (answer == 'notSetUp' && swift == mac) continue;
+          expect(swift, contains('"$answer"'), reason: answer);
+        }
+      }
+    });
+
+    test('the Mac knows each permission that it keeps by name', () {
+      final states = _body(mac, 'func permissionState(');
+      for (final permission in [
+        Permission.accessibility,
+        Permission.inputMonitoring,
+        Permission.camera,
+      ]) {
+        expect(
+          states,
+          contains('case "${permission.name}":'),
+          reason: permission.name,
+        );
+      }
+      final requests = _body(mac, 'func requestPermission(');
+      expect(requests, contains('case "accessibility", "inputMonitoring":'));
+      expect(requests, contains('case "camera":'));
+      // And has a pane of System Settings for each permission that has a button there.
+      final panes = _body(mac, 'func settingsAddress(');
+      for (final permission in Permission.values.where(
+        (permission) => permission != Permission.faceId,
+      )) {
+        expect(
+          panes,
+          contains('case "${permission.name}":'),
+          reason: 'the pane for ${permission.name}',
+        );
+      }
+      expect(panes, contains('Privacy_ListenEvent'));
+    });
+
+    test('the iPhone knows the camera and Face ID by name', () {
+      final states = _body(ios, 'func permissionState(');
+      expect(states, contains('case "${Permission.camera.name}":'));
+      expect(states, contains('case "${Permission.faceId.name}":'));
     });
   });
 }

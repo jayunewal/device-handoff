@@ -2,12 +2,12 @@
 
 import 'package:baton/src/permissions.dart';
 
-/// Says what it is told about the camera and Face ID, and keeps what it was asked to open.
+/// Says what it is told about each permission, and keeps what it was asked for and to open.
 class FakeSystemSettings extends SystemSettingsKeeper {
-  FakeSystemSettings({this.cameraState, this.faceIdState});
+  FakeSystemSettings([Map<Permission, PermissionState>? states])
+    : states = {...?states};
 
-  PermissionState? cameraState;
-  PermissionState? faceIdState;
+  final Map<Permission, PermissionState> states;
 
   /// What a request turns a permission that was not asked yet into.
   PermissionState answer = PermissionState.on;
@@ -15,28 +15,20 @@ class FakeSystemSettings extends SystemSettingsKeeper {
   /// Whether Settings opens.
   bool opens = true;
 
+  final List<Permission> requested = [];
   final List<Permission> opened = [];
-  int cameraRequests = 0;
-  int faceIdRequests = 0;
 
   @override
-  Future<PermissionState?> camera() async => cameraState;
+  Future<PermissionState?> state(Permission permission) async =>
+      states[permission];
 
   @override
-  Future<PermissionState?> requestCamera() async {
-    cameraRequests++;
-    if (cameraState == PermissionState.notAsked) cameraState = answer;
-    return cameraState;
-  }
-
-  @override
-  Future<PermissionState?> faceId() async => faceIdState;
-
-  @override
-  Future<PermissionState?> requestFaceId() async {
-    faceIdRequests++;
-    if (faceIdState == PermissionState.notAsked) faceIdState = answer;
-    return faceIdState;
+  Future<PermissionState?> request(Permission permission) async {
+    requested.add(permission);
+    if (states[permission] == PermissionState.notAsked) {
+      states[permission] = answer;
+    }
+    return states[permission];
   }
 
   @override

@@ -8,8 +8,13 @@ import 'notice_access.dart';
 
 /// What Baton can ask the system to allow, one row each on the permissions screen.
 enum Permission {
-  /// Accessibility, on a Mac: a device that is let control this Mac moves its pointer and types.
-  control,
+  /// Accessibility, on a Mac: a private screen holds the Mac's own keys and pointer still, and a
+  /// device that is let control this Mac moves its pointer and types.
+  accessibility,
+
+  /// Input Monitoring, on a Mac: a private screen, the default for a session that a phone starts,
+  /// cannot start without it, since it holds the Mac's own keys and pointer.
+  inputMonitoring,
 
   /// Screen and System Audio Recording, on a Mac: a device that is let look sees and hears it.
   screenRecording,
@@ -71,22 +76,20 @@ class PermissionCheck {
   String toString() => '${permission.name}: ${state.name}';
 }
 
-/// What the system says about the camera and Face ID, and what takes the person to the screen of
-/// Settings where a permission is turned on. Tests give it one of their own.
+/// What the system says about the permissions it keeps on a channel of Baton's own (all but
+/// Screen Recording and Notifications, which have channels of their own), and what takes the
+/// person to the screen of Settings where a permission is turned on. Tests give it one of their
+/// own.
 abstract class SystemSettingsKeeper {
   const SystemSettingsKeeper();
 
-  /// Where the camera stands, or null when the device has none or the system does not say.
-  Future<PermissionState?> camera();
+  /// Where [permission] stands, or null when the device cannot do it, such as a Mac with no camera
+  /// or a device with no Face ID, or the system does not say.
+  Future<PermissionState?> state(Permission permission);
 
-  /// Asks the person to let Baton use the camera, and says where it then stands.
-  Future<PermissionState?> requestCamera();
-
-  /// Where Face ID stands, or null when the device has no Face ID or this is not an iPhone or iPad.
-  Future<PermissionState?> faceId();
-
-  /// Asks the person to let Baton use Face ID, and says where it then stands.
-  Future<PermissionState?> requestFaceId();
+  /// Asks the system for [permission]: the system asks the person once, and Baton opens Settings
+  /// for any other time. Says where it then stands.
+  Future<PermissionState?> request(Permission permission);
 
   /// Opens Settings where [permission] is turned on. Says whether it opened.
   Future<bool> open(Permission permission);
@@ -95,45 +98,41 @@ abstract class SystemSettingsKeeper {
 class PlatformSystemSettings extends SystemSettingsKeeper {
   const PlatformSystemSettings();
 
+  /// The names of the channel and of the questions, the names of the permissions and the words of
+  /// the answers must be the ones in macos/Runner/MainFlutterWindow.swift and
+  /// ios/Runner/AppDelegate.swift.
   static const channelName = 'io.github.jayunewal.baton/permissions';
+  static const stateQuestion = 'state';
+  static const requestQuestion = 'request';
+  static const openQuestion = 'openSettings';
+  static const answers = {
+    'allowed': PermissionState.on,
+    'denied': PermissionState.off,
+    'needed': PermissionState.notAsked,
+    'notSetUp': PermissionState.notSetUp,
+  };
 
   static const _channel = MethodChannel(channelName);
 
   @override
-  Future<PermissionState?> camera() async => _state(await _ask('camera'));
+  Future<PermissionState?> state(Permission permission) async =>
+      answers[await _ask(stateQuestion, permission)];
 
   @override
-  Future<PermissionState?> requestCamera() async =>
-      _state(await _ask('requestCamera'));
-
-  @override
-  Future<PermissionState?> faceId() async => _state(await _ask('faceId'));
-
-  @override
-  Future<PermissionState?> requestFaceId() async =>
-      _state(await _ask('requestFaceId'));
+  Future<PermissionState?> request(Permission permission) async =>
+      answers[await _ask(requestQuestion, permission)];
 
   @override
   Future<bool> open(Permission permission) async =>
-      await _ask('openSettings', permission.name) == true;
+      await _ask(openQuestion, permission) == true;
 
-  /// The words of the answers must be the ones in macos/Runner/MainFlutterWindow.swift and
-  /// ios/Runner/AppDelegate.swift.
-  static PermissionState? _state(Object? answer) => switch (answer) {
-    'allowed' => PermissionState.on,
-    'denied' => PermissionState.off,
-    'needed' => PermissionState.notAsked,
-    'notSetUp' => PermissionState.notSetUp,
-    _ => null,
-  };
-
-  Future<Object?> _ask(String question, [Object? argument]) async {
+  Future<Object?> _ask(String question, Permission permission) async {
     if (defaultTargetPlatform != TargetPlatform.macOS &&
         defaultTargetPlatform != TargetPlatform.iOS) {
       return null;
     }
     try {
-      return await _channel.invokeMethod<Object>(question, argument);
+      return await _channel.invokeMethod<Object>(question, permission.name);
     } on PlatformException catch (e) {
       debugPrint('Baton: permissions: $question: $e');
     } on MissingPluginException catch (e) {
@@ -148,58 +147,41 @@ class PlatformSystemSettings extends SystemSettingsKeeper {
 /// controlled has no row for Accessibility, and an iPad with no Face ID none for Face ID.
 Future<List<PermissionCheck>> checkPermissions({
   required TargetPlatform platform,
-  required ControlAccessKeeper controlAccess,
   required ScreenAccessKeeper screenAccess,
   required NoticeKeeper notices,
   required SystemSettingsKeeper system,
 }) async {
   final checks = <PermissionCheck>[];
+  Future<void> add(Permission permission, PermissionState? state) async {
+    if (state != null) checks.add(PermissionCheck(permission, state));
+  }
+
   switch (platform) {
     case TargetPlatform.macOS:
-      final control = await controlAccess.state();
-      if (control != ControlAccess.unavailable) {
-        checks.add(
-          PermissionCheck(
-            Permission.control,
-            control == ControlAccess.allowed
-                ? PermissionState.on
-                : PermissionState.off,
-          ),
-        );
-      }
-      final screen = await screenAccess.state();
-      if (screen != ScreenAccess.unavailable) {
-        checks.add(
-          PermissionCheck(
-            Permission.screenRecording,
-            screen == ScreenAccess.allowed
-                ? PermissionState.on
-                : PermissionState.off,
-          ),
-        );
-      }
-      final notice = switch (await notices.state()) {
+      await add(
+        Permission.accessibility,
+        await system.state(Permission.accessibility),
+      );
+      await add(
+        Permission.inputMonitoring,
+        await system.state(Permission.inputMonitoring),
+      );
+      await add(Permission.screenRecording, switch (await screenAccess
+          .state()) {
+        ScreenAccess.allowed => PermissionState.on,
+        ScreenAccess.needed => PermissionState.off,
+        ScreenAccess.unavailable => null,
+      });
+      await add(Permission.notifications, switch (await notices.state()) {
         NoticeAccess.allowed => PermissionState.on,
         NoticeAccess.needed => PermissionState.notAsked,
         NoticeAccess.denied => PermissionState.off,
         NoticeAccess.unavailable => null,
-      };
-      if (notice != null) {
-        checks.add(PermissionCheck(Permission.notifications, notice));
-      }
-      final camera = await system.camera();
-      if (camera != null) {
-        checks.add(PermissionCheck(Permission.camera, camera));
-      }
+      });
+      await add(Permission.camera, await system.state(Permission.camera));
     case TargetPlatform.iOS:
-      final faceId = await system.faceId();
-      if (faceId != null) {
-        checks.add(PermissionCheck(Permission.faceId, faceId));
-      }
-      final camera = await system.camera();
-      if (camera != null) {
-        checks.add(PermissionCheck(Permission.camera, camera));
-      }
+      await add(Permission.faceId, await system.state(Permission.faceId));
+      await add(Permission.camera, await system.state(Permission.camera));
     default:
       return checks;
   }

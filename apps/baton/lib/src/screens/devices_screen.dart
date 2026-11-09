@@ -143,7 +143,6 @@ class _DevicesScreenState extends State<DevicesScreen>
   Future<void> _checkPermissions() async {
     final checks = await checkPermissions(
       platform: widget.platform ?? defaultTargetPlatform,
-      controlAccess: widget.controlAccess,
       screenAccess: widget.screenAccess,
       notices: widget.notices,
       system: widget.system,
@@ -159,7 +158,6 @@ class _DevicesScreenState extends State<DevicesScreen>
       MaterialPageRoute<void>(
         builder: (_) => PermissionsScreen(
           platform: widget.platform,
-          controlAccess: widget.controlAccess,
           screenAccess: widget.screenAccess,
           notices: widget.notices,
           system: widget.system,
