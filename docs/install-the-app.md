@@ -181,12 +181,12 @@ To have what you send arrive at once, keep Baton open and the phone in your hand
 If the other device cannot be reached, the link or the text is not lost. It waits on the device that you sent from, and Baton sends it as soon as the other device can be reached, for up to a day. The send screen says so, and lists what waits for that device under **Waiting to be sent**: what each item is, such as **A link (example.com)** or **Some text (23 characters)**, and never what it says, because it can be a password; how long ago you sent it; when Baton gives up; and a **Cancel** button. At the bottom of the screen, whichever screen you are on, Baton says how each item ended: **Sent a link (example.com) to Kitchen iPad.**, or that the device did not take it and why, or that it could not be reached for a day and Baton gave up. Cancelling says nothing more than that it will not be sent.
 
 - A Mac keeps trying while Baton runs, also with its window closed (see **The Mac app**), unless the Mac is asleep. An iPhone or an iPad tries only while Baton is open on the screen, so what waits on a phone is sent the next time you open Baton there.
-- A device that comes back is sent what waits within about half a minute, and not at the very moment.
+- A device that comes back is sent what waits within about half a minute, and not at the very moment. If you send it something first and it takes that, what waits goes right after it.
 - At most 50 items wait, and 20 for one device. When they are full, Baton says so and takes no more: cancel some.
 - What waits is kept in a file that only you can read, on the device you sent from, until it is sent, cancelled or a day old, and it goes to the device you chose and no other. **Forget this device** cancels what waits for it, without a word.
 - Files do not wait. The other device is asked before anything is kept, so it has to be open, with someone there to say yes.
 - A Mac whose window is closed does not tell you how an item ended: the sentence shows in the window.
-- If Baton closes at the very moment that the other device takes an item, the item can be sent again the next time Baton runs, and arrive twice.
+- An item can arrive twice, though rarely. If Baton closes at the very moment that the other device takes an item, the item is sent again the next time Baton runs. And if the other device takes an item and its answer is lost on the way, for example because the connection drops, Baton cannot know that it was taken, and sends it again.
 - This has been built and tested without real devices, and has not been tried on a Mac and a phone yet.
 
 ### From the share sheet

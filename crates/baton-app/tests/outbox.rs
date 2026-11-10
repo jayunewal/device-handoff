@@ -119,7 +119,12 @@ async fn pair(offerer: &Dev, joiner: &Dev) {
 
 /// A sender, and a device that it cannot reach: the device is paired with it, and then forgets it.
 async fn sender_and_a_device_that_is_away() -> (Dev, Dev) {
-    let sender = Dev::start("Studio Mac").await;
+    sender_with_settings_and_a_device_that_is_away("").await
+}
+
+/// The same, with `more` added to the settings of the sender.
+async fn sender_with_settings_and_a_device_that_is_away(more: &str) -> (Dev, Dev) {
+    let sender = Dev::start_with("Studio Mac", more).await;
     let away = Dev::start("Pocket Phone").await;
     pair(&sender, &away).await;
     away.app.unpair(&sender.id()).unwrap();
@@ -375,6 +380,34 @@ async fn a_device_that_answers_is_told_so_and_what_it_will_not_take_does_not_wai
     );
     assert_eq!(sender.app.outbox(), Vec::new());
     assert_eq!(device.app.inbox().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn text_that_is_more_than_the_settings_of_this_device_allow_is_told_and_does_not_wait() {
+    // The limit is the sender's own, and it is held before anything is dialed: that the device is
+    // away changes nothing about what is wrong with the text, and waiting would not either.
+    let (sender, away) =
+        sender_with_settings_and_a_device_that_is_away("[handoff]\nmax_clipboard_bytes = 1024\n")
+            .await;
+
+    let error = sender
+        .app
+        .send_text(&away.id(), &"x".repeat(2_000))
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::BadItem, "{error}");
+    assert_eq!(sender.app.outbox(), Vec::new());
+
+    // Within the limit it waits, as for any device that is away: the size is what told them apart.
+    assert_eq!(
+        sender
+            .app
+            .send_text(&away.id(), &"x".repeat(1_000))
+            .await
+            .unwrap(),
+        SendResult::Waiting
+    );
+    assert_eq!(sender.app.outbox().len(), 1);
 }
 
 #[tokio::test]
