@@ -66,6 +66,7 @@ impl From<app::Device> for Device {
             fingerprint,
             paired_at,
             last_seen_at,
+            local_addresses,
         } = device;
         Self {
             id,
@@ -74,6 +75,7 @@ impl From<app::Device> for Device {
             fingerprint,
             paired_at: signed(paired_at),
             last_seen_at: last_seen_at.map(signed),
+            local_addresses,
         }
     }
 }

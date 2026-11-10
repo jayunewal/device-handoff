@@ -3,6 +3,8 @@
 //! The plain values the app receives. They mirror `baton_app::model`, with one difference:
 //! numbers are signed 64-bit (`i64`), which is the integer a Dart program has.
 
+use flutter_rust_bridge::frb;
+
 use super::error::BatonError;
 
 /// The operating system a device runs.
@@ -39,6 +41,8 @@ pub struct Me {
 }
 
 /// A device that is paired with this one.
+// The bare `frb` lets the attribute on the field below through the compiler.
+#[frb]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {
     /// The device's id. Pass it to the calls that act on a device.
@@ -54,6 +58,13 @@ pub struct Device {
     pub paired_at: i64,
     /// When this device last heard from it, in seconds since the Unix epoch.
     pub last_seen_at: Option<i64>,
+    /// The addresses on a home or office network at which it was last reached, such as
+    /// `192.168.1.20`, each once and without a port. Only private IPv4 addresses are kept. They
+    /// are hints: an address is right once something has answered at it.
+    ///
+    /// A test that builds a device in Dart without one is given the empty list.
+    #[frb(default = [])]
+    pub local_addresses: Vec<String>,
 }
 
 /// How traffic to a device gets there.

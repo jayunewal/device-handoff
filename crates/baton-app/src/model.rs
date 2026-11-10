@@ -7,7 +7,11 @@
 //! as long as it likes. Ids are text (64 hexadecimal characters) so that they can be kept
 //! in a widget, a route or a test as they are.
 
-use std::{fmt, path::PathBuf};
+use std::{
+    fmt,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    path::PathBuf,
+};
 
 use baton_core::{
     ContinueOutcome as CoreContinueOutcome, InboxEntry, InboxItem, PairedDevice, StartPolicy,
@@ -94,6 +98,13 @@ pub struct Device {
     pub paired_at: u64,
     /// When this device last heard from it, in seconds since the Unix epoch.
     pub last_seen_at: Option<u64>,
+    /// The addresses on a home or office network at which it was last reached, such as
+    /// `192.168.1.20`, each once and without a port, in a fixed order. Only private IPv4 addresses
+    /// are kept: they are the kind that a person can give another program, such as an SSH client,
+    /// as the address of a device at home. They are hints. The device may have another address by
+    /// now, or never have been reached over a local network, and then the list is empty. An
+    /// address is only known to be right once something has answered at it.
+    pub local_addresses: Vec<String>,
 }
 
 impl From<&PairedDevice> for Device {
@@ -105,8 +116,29 @@ impl From<&PairedDevice> for Device {
             fingerprint: device.id.fingerprint().to_string(),
             paired_at: device.added_at,
             last_seen_at: device.last_seen_at,
+            local_addresses: local_addresses(&device.addrs),
         }
     }
+}
+
+/// The addresses from `addrs`, the ones that a device was last reached at, that belong to a private
+/// network and that a person can give another program: the private IPv4 ones, each once, without
+/// its port, in the order they come in.
+///
+/// An address of the internet is left out, because it names the network and not a place in it, and
+/// so is one that is shared by a whole provider (`100.64.0.0/10`, which Tailscale uses too), one
+/// that means something only on one cable (link-local) and one of this machine (loopback). IPv6 is
+/// left out as well: a private network has an IPv6 address that changes, or one that is not
+/// private, and the guide tells a person to use the number address of the Mac.
+fn local_addresses(addrs: &[SocketAddr]) -> Vec<String> {
+    let mut found: Vec<Ipv4Addr> = Vec::new();
+    for addr in addrs {
+        let IpAddr::V4(ip) = addr.ip() else { continue };
+        if ip.is_private() && !found.contains(&ip) {
+            found.push(ip);
+        }
+    }
+    found.iter().map(ToString::to_string).collect()
 }
 
 /// A page that is in front in the browser of a device, as it is read for a device that asks.
@@ -1879,5 +1911,108 @@ mod tests {
         ] {
             assert!(!result.notifies(), "{result:?}");
         }
+    }
+
+    /// A paired Mac that was last reached at `addrs`.
+    fn reached_at(addrs: &[&str]) -> PairedDevice {
+        PairedDevice {
+            id: DeviceId::from_bytes([7; 32]),
+            name: "Jay's MacBook Pro".to_owned(),
+            local_name: None,
+            name_changed: false,
+            platform: ProtoPlatform::MacOs,
+            added_at: 100,
+            provenance: baton_core::Provenance::Paired,
+            last_seen_at: Some(200),
+            relay: None,
+            addrs: addrs
+                .iter()
+                .map(|addr| addr.parse().expect("an address in a test"))
+                .collect(),
+            policy: baton_core::DevicePolicy::default(),
+            unlock: None,
+        }
+    }
+
+    #[test]
+    fn a_device_is_shown_with_the_private_addresses_it_was_last_reached_at() {
+        // The same address with two ports is one address, and the order of the list is kept.
+        let device = Device::from(&reached_at(&[
+            "10.0.0.7:4001",
+            "10.0.0.7:4002",
+            "172.16.4.9:5000",
+            "192.168.73.20:5000",
+        ]));
+        assert_eq!(
+            device.local_addresses,
+            ["10.0.0.7", "172.16.4.9", "192.168.73.20"]
+        );
+        // The rest of the record is what it was.
+        assert_eq!(device.name, "Jay's MacBook Pro");
+        assert_eq!(device.platform, Platform::MacOs);
+        assert_eq!(device.paired_at, 100);
+        assert_eq!(device.last_seen_at, Some(200));
+    }
+
+    #[test]
+    fn a_device_that_was_never_reached_over_a_local_network_has_no_address() {
+        assert_eq!(
+            Device::from(&reached_at(&[])).local_addresses,
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn the_edges_of_the_private_ranges_are_kept() {
+        let device = Device::from(&reached_at(&[
+            "10.0.0.0:1",
+            "10.255.255.255:1",
+            "172.16.0.0:1",
+            "172.31.255.255:1",
+            "192.168.0.0:1",
+            "192.168.255.255:1",
+        ]));
+        assert_eq!(
+            device.local_addresses,
+            [
+                "10.0.0.0",
+                "10.255.255.255",
+                "172.16.0.0",
+                "172.31.255.255",
+                "192.168.0.0",
+                "192.168.255.255",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_address_that_a_person_cannot_give_to_another_program_is_left_out() {
+        for left_out in [
+            // The internet, and the addresses just outside each private range.
+            "8.8.8.8:1",
+            "9.255.255.255:1",
+            "11.0.0.0:1",
+            "172.15.255.255:1",
+            "172.32.0.0:1",
+            "192.167.255.255:1",
+            "192.169.0.0:1",
+            // A provider's shared range, which Tailscale uses as well.
+            "100.64.0.1:1",
+            "100.127.255.254:1",
+            // One cable, and this machine.
+            "169.254.1.2:1",
+            "127.0.0.1:1",
+            // IPv6 in all its kinds.
+            "[fd00::5]:1",
+            "[2606:4700::1111]:1",
+            "[fe80::1]:1",
+            "[::1]:1",
+        ] {
+            let device = Device::from(&reached_at(&[left_out]));
+            assert!(device.local_addresses.is_empty(), "{left_out}");
+        }
+        // Among others, the one that a person can use is the one that is kept.
+        let device = Device::from(&reached_at(&["8.8.8.8:1", "192.168.1.20:1", "[fd00::5]:1"]));
+        assert_eq!(device.local_addresses, ["192.168.1.20"]);
     }
 }

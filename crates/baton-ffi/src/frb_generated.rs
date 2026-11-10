@@ -3097,6 +3097,7 @@ impl SseDecode for crate::api::model::Device {
         let mut var_fingerprint = <String>::sse_decode(deserializer);
         let mut var_pairedAt = <i64>::sse_decode(deserializer);
         let mut var_lastSeenAt = <Option<i64>>::sse_decode(deserializer);
+        let mut var_localAddresses = <Vec<String>>::sse_decode(deserializer);
         return crate::api::model::Device {
             id: var_id,
             name: var_name,
@@ -3104,6 +3105,7 @@ impl SseDecode for crate::api::model::Device {
             fingerprint: var_fingerprint,
             paired_at: var_pairedAt,
             last_seen_at: var_lastSeenAt,
+            local_addresses: var_localAddresses,
         };
     }
 }
@@ -4634,6 +4636,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::model::Device {
             self.fingerprint.into_into_dart().into_dart(),
             self.paired_at.into_into_dart().into_dart(),
             self.last_seen_at.into_into_dart().into_dart(),
+            self.local_addresses.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -6029,6 +6032,7 @@ impl SseEncode for crate::api::model::Device {
         <String>::sse_encode(self.fingerprint, serializer);
         <i64>::sse_encode(self.paired_at, serializer);
         <Option<i64>>::sse_encode(self.last_seen_at, serializer);
+        <Vec<String>>::sse_encode(self.local_addresses, serializer);
     }
 }
 

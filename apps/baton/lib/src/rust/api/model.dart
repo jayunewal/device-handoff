@@ -108,6 +108,13 @@ class Device {
   /// When this device last heard from it, in seconds since the Unix epoch.
   final PlatformInt64? lastSeenAt;
 
+  /// The addresses on a home or office network at which it was last reached, such as
+  /// `192.168.1.20`, each once and without a port. Only private IPv4 addresses are kept. They
+  /// are hints: an address is right once something has answered at it.
+  ///
+  /// A test that builds a device in Dart without one is given the empty list.
+  final List<String> localAddresses;
+
   const Device({
     required this.id,
     required this.name,
@@ -115,6 +122,7 @@ class Device {
     required this.fingerprint,
     required this.pairedAt,
     this.lastSeenAt,
+    this.localAddresses = const [],
   });
 
   @override
@@ -124,7 +132,8 @@ class Device {
       platform.hashCode ^
       fingerprint.hashCode ^
       pairedAt.hashCode ^
-      lastSeenAt.hashCode;
+      lastSeenAt.hashCode ^
+      localAddresses.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -136,7 +145,8 @@ class Device {
           platform == other.platform &&
           fingerprint == other.fingerprint &&
           pairedAt == other.pairedAt &&
-          lastSeenAt == other.lastSeenAt;
+          lastSeenAt == other.lastSeenAt &&
+          localAddresses == other.localAddresses;
 }
 
 @freezed

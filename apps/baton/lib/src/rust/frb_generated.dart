@@ -2575,8 +2575,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Device dco_decode_device(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
     return Device(
       id: dco_decode_String(arr[0]),
       name: dco_decode_String(arr[1]),
@@ -2584,6 +2584,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       fingerprint: dco_decode_String(arr[3]),
       pairedAt: dco_decode_i_64(arr[4]),
       lastSeenAt: dco_decode_opt_box_autoadd_i_64(arr[5]),
+      localAddresses: dco_decode_list_String(arr[6]),
     );
   }
 
@@ -3728,6 +3729,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_fingerprint = sse_decode_String(deserializer);
     var var_pairedAt = sse_decode_i_64(deserializer);
     var var_lastSeenAt = sse_decode_opt_box_autoadd_i_64(deserializer);
+    var var_localAddresses = sse_decode_list_String(deserializer);
     return Device(
       id: var_id,
       name: var_name,
@@ -3735,6 +3737,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       fingerprint: var_fingerprint,
       pairedAt: var_pairedAt,
       lastSeenAt: var_lastSeenAt,
+      localAddresses: var_localAddresses,
     );
   }
 
@@ -5097,6 +5100,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.fingerprint, serializer);
     sse_encode_i_64(self.pairedAt, serializer);
     sse_encode_opt_box_autoadd_i_64(self.lastSeenAt, serializer);
+    sse_encode_list_String(self.localAddresses, serializer);
   }
 
   @protected
