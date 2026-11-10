@@ -55,6 +55,13 @@ abstract class AlwaysOnKeeper {
   /// Says that the first screen of the running app is up. A Baton that a login item opened keeps
   /// its window out of sight until then, and hides it after.
   Future<void> ready();
+
+  /// Whether the person can see Baton now: it is the app in front, and its window is on the screen
+  /// and not covered. What came for the person is told by a notification of the system to one who
+  /// cannot see Baton, because the window that would show it is hidden, behind another app or
+  /// gone. Where there is no window to hide, which is anywhere but a Mac, the person is taken to be
+  /// looking.
+  Future<bool> looking();
 }
 
 /// Asks the operating system, through the code of the Mac app in macos/Runner/AppDelegate.swift
@@ -70,6 +77,7 @@ class PlatformAlwaysOnKeeper extends AlwaysOnKeeper {
   static const setSignInQuestion = 'setSignIn';
   static const openSignInSettingsQuestion = 'openSignInSettings';
   static const readyQuestion = 'ready';
+  static const lookingQuestion = 'looking';
 
   static const _channel = MethodChannel(channelName);
 
@@ -100,6 +108,15 @@ class PlatformAlwaysOnKeeper extends AlwaysOnKeeper {
   @override
   Future<void> ready() async {
     await _ask(readyQuestion);
+  }
+
+  @override
+  Future<bool> looking() async {
+    // Only a Mac has a window that goes out of sight, and only a Mac shows these notifications.
+    if (defaultTargetPlatform != TargetPlatform.macOS) return true;
+    // A Mac app that does not answer is taken as one that cannot be seen: a notification that
+    // was not needed is better than none that was.
+    return await _ask(lookingQuestion) == true;
   }
 
   SignInOpening _opening(Object? answer) => switch (answer) {

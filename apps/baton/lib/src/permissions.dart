@@ -22,7 +22,8 @@ enum Permission {
   /// person once, the first time Baton reads the sound, and does not tell Baton the answer.
   systemAudio,
 
-  /// Notifications, on a Mac: the person is told when a device unlocked it.
+  /// Notifications, on a Mac: the person is told when a device unlocked it, and when a device
+  /// sends something or asks to while Baton has no window in front.
   notifications,
 
   /// The camera, to read the code that another device shows when the two pair.

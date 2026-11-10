@@ -39,7 +39,8 @@ class _ContinueAccessDialogState extends State<ContinueAccessDialog> {
   @override
   Widget build(BuildContext context) {
     final name = visibleText(widget.device.name);
-    final computer = 'this ${platformName(widget.thisDevice)}';
+    final machine = platformName(widget.thisDevice);
+    final computer = 'this $machine';
     final theme = Theme.of(context);
     return AlertDialog(
       scrollable: true,
@@ -61,7 +62,7 @@ class _ContinueAccessDialogState extends State<ContinueAccessDialog> {
           ),
           const SizedBox(height: 12),
           Text(
-            '$computer gives nothing while it is locked or its screen is '
+            'This $machine gives nothing while it is locked or its screen is '
             'off, and never gives text that a password manager marked as '
             'secret. Baton leaves out the private windows of Chrome. It cannot '
             'promise that for Safari, so turn this off if you keep private '

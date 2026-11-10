@@ -27,6 +27,13 @@ class FakeAlwaysOn extends AlwaysOnKeeper {
   /// How many times the app said that it is up.
   int readies = 0;
 
+  /// What `looking` gives: whether the person can see Baton.
+  bool seen = true;
+
+  /// What `ready` runs when the app says that it is up, to see what the screen shows at that
+  /// moment.
+  void Function()? onReady;
+
   @override
   Future<SignInOpening> signIn() async => opening;
 
@@ -49,5 +56,11 @@ class FakeAlwaysOn extends AlwaysOnKeeper {
   }
 
   @override
-  Future<void> ready() async => readies++;
+  Future<void> ready() async {
+    readies++;
+    onReady?.call();
+  }
+
+  @override
+  Future<bool> looking() async => seen;
 }

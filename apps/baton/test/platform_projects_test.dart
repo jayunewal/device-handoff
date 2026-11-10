@@ -17,6 +17,27 @@ import 'package:flutter_test/flutter_test.dart';
 
 String _read(String path) => File(path).readAsStringSync();
 
+/// The text of the Swift function that begins with [signature], up to the brace that closes it at
+/// the start of a line.
+String _swiftFunction(String swift, String signature) {
+  final start = swift.indexOf(signature);
+  expect(start, isNonNegative, reason: signature);
+  final end = swift.indexOf('\n}\n', start);
+  expect(end, isNonNegative, reason: 'the end of $signature');
+  return swift.substring(start, end + 2);
+}
+
+/// What a Swift function does, a line at a time: without its comments, its blank lines and the
+/// indentation. The Swift of the apps runs only on an Apple computer, so what a line of it does
+/// with what it reads is held by the text of the whole line, and not by the names that it uses.
+List<String> _swiftCode(String function) => [
+  for (final line in function.split('\n'))
+    if (line.trim().isNotEmpty && !line.trim().startsWith('//')) line.trim(),
+];
+
+/// Lines of Swift, one after the other, as [_swiftCode] gives them.
+String _inOrder(List<String> lines) => lines.join('\n');
+
 void main() {
   test('both apps are called Baton and have the same identifier', () {
     final ios = _read('ios/Runner.xcodeproj/project.pbxproj');
@@ -373,6 +394,179 @@ void main() {
     expect(delegate, contains('if !visible || windowWaitsToHide {'));
   });
 
+  test('a Baton that nobody opened at sign-in never hides its window', () {
+    // A window that hid by mistake would leave the person with an app that does not open: no
+    // window, and an item in the menu bar. Only the event that a login item sends hides it, and
+    // the app's saying that it is up changes nothing for a window that was not waiting.
+    final delegate = _read('macos/Runner/AppDelegate.swift');
+    final launch = delegate.indexOf(
+      'override func applicationDidFinishLaunching(',
+    );
+    expect(launch, isNonNegative);
+    final launchBody = delegate.substring(
+      launch,
+      delegate.indexOf('\n  }\n', launch),
+    );
+    expect(
+      launchBody,
+      contains('if wasOpenedAtSignIn() {\n      startHidden()'),
+    );
+    expect(
+      'startHidden()'.allMatches(delegate),
+      hasLength(2),
+      reason: 'the call at launch, and the definition',
+    );
+
+    final opened = delegate.indexOf('private func wasOpenedAtSignIn()');
+    expect(opened, isNonNegative);
+    final openedBody = delegate.substring(
+      opened,
+      delegate.indexOf('\n  }\n', opened),
+    );
+    // Both: the event that opens the app, and the flag that says a login item sent it.
+    expect(
+      openedBody,
+      contains('UInt32(event.eventID) == UInt32(kAEOpenApplication)'),
+    );
+    expect(
+      openedBody,
+      contains('launchedBy == OSType(keyAELaunchedAsLogInItem)'),
+    );
+    expect(openedBody, contains('return opensApp && launchedBy =='));
+    expect(
+      openedBody,
+      contains('else { return false }'),
+      reason: 'no event, no hiding',
+    );
+
+    final up = delegate.indexOf('func interfaceIsUp()');
+    final upBody = delegate.substring(up, delegate.indexOf('\n  }\n', up));
+    expect(upBody, contains('guard windowWaitsToHide'));
+    expect(
+      upBody.indexOf('guard windowWaitsToHide'),
+      lessThan(upBody.indexOf('orderOut')),
+      reason: 'a window that was not waiting is left alone',
+    );
+
+    // What the app's saying that it is up reaches.
+    final swift = _read('macos/Runner/MainFlutterWindow.swift');
+    expect(
+      swift,
+      contains(
+        'case "ready":\n'
+        '      (NSApp.delegate as? AppDelegate)?.interfaceIsUp()',
+      ),
+    );
+
+    // And a window that is brought back is whole, whatever state it was left in.
+    final show = delegate.indexOf('func showBaton()');
+    expect(show, isNonNegative);
+    final showBody = delegate.substring(
+      show,
+      delegate.indexOf('\n  }\n', show),
+    );
+    for (final line in [
+      'windowWaitsToHide = false',
+      'window.alphaValue = 1',
+      'window.ignoresMouseEvents = false',
+      'window.deminiaturize(nil)',
+      'window.makeKeyAndOrderFront(nil)',
+    ]) {
+      expect(showBody, contains(line), reason: line);
+    }
+  });
+
+  test('Command-W and the close button hide the window the same way', () {
+    // The Close item of the Window menu sends performClose to the window in front, which the
+    // window answers by hiding (MainFlutterWindow.performClose), so the claim that Command-W hides
+    // Baton and leaves it running holds.
+    final menu = _read('macos/Runner/Base.lproj/MainMenu.xib');
+    final close = RegExp(
+      r'<menuItem title="Close" keyEquivalent="w" id="[^"]+">\s*'
+      r'<connections>\s*'
+      r'<action selector="performClose:" target="-1" id="[^"]+"/>',
+    );
+    expect(close.hasMatch(menu), isTrue);
+    expect(
+      'keyEquivalent="w"'.allMatches(menu),
+      hasLength(1),
+      reason: 'one item answers Command-W',
+    );
+    // The ids of the items that Interface Builder reads are each used once.
+    final ids = RegExp(r'\sid="([^"]+)"').allMatches(menu).map((m) => m[1]!);
+    expect(ids.toSet(), hasLength(ids.length));
+  });
+
+  test('closing a window in full screen leaves full screen and hides it', () {
+    // One click on the close button does both. Leaving full screen takes a moment, and the window
+    // is hidden when the system says it has left, not before: hiding one in full screen would
+    // leave its space empty.
+    final window = _read('macos/Runner/MainFlutterWindow.swift');
+    final close = window.indexOf('override func performClose(');
+    final closeBody = window.substring(close, window.indexOf('\n  }\n', close));
+    expect(
+      closeBody.indexOf('hideWhenOutOfFullScreen()'),
+      lessThan(closeBody.indexOf('toggleFullScreen(sender)')),
+      reason: 'the wait is set before the window starts to leave',
+    );
+    final wait = window.indexOf('private func hideWhenOutOfFullScreen()');
+    expect(wait, isNonNegative);
+    final waitBody = window.substring(wait, window.indexOf('\n  }\n', wait));
+    expect(waitBody, contains('NSWindow.didExitFullScreenNotification'));
+    expect(waitBody, contains('object: self'));
+    expect(waitBody, contains('self.orderOut(nil)'));
+    expect(
+      waitBody,
+      contains('removeObserver(waiting)'),
+      reason: 'a wait is over once the window has been hidden',
+    );
+    expect(waitBody, contains('guard fullScreenExit == nil else { return }'));
+  });
+
+  test('the Mac app tells whether the person can see the window, and opens it '
+      'for a click on a notification', () {
+    // What came for the person is told by a notification when they cannot see Baton, and not when
+    // they can (lib/src/arrival_notices.dart). They cannot while the window is hidden,
+    // minimized, waiting to hide, behind another window or while another app is in front.
+    final swift = _read('macos/Runner/MainFlutterWindow.swift');
+    final looking = swift.indexOf('private func personCanSeeBaton()');
+    expect(looking, isNonNegative);
+    final lookingBody = swift.substring(
+      looking,
+      swift.indexOf('\n}\n', looking),
+    );
+    for (final check in [
+      'NSApp.isActive',
+      'window.isVisible',
+      '!window.isMiniaturized',
+      'window.alphaValue > 0',
+      'window.occlusionState.contains(.visible)',
+    ]) {
+      expect(lookingBody, contains(check), reason: check);
+    }
+    expect(
+      lookingBody,
+      contains('return false'),
+      reason: 'no window, no seeing',
+    );
+
+    // A click on a notification, and only a click, brings the window forward.
+    final click = swift.indexOf('didReceive response: UNNotificationResponse');
+    expect(click, isNonNegative);
+    final clickBody = swift.substring(click, swift.indexOf('\n  }\n', click));
+    expect(
+      clickBody,
+      contains(
+        'response.actionIdentifier == UNNotificationDefaultActionIdentifier',
+      ),
+    );
+    expect(
+      clickBody,
+      contains('(NSApp.delegate as? AppDelegate)?.showBaton()'),
+    );
+    expect(clickBody, contains('completionHandler()'));
+  });
+
   test('the Mac app answers what Baton asks about opening at sign-in', () {
     // The channel, its questions and the words of its answers are named in
     // lib/src/always_on.dart and in the app. If they differ, the switch in the settings cannot
@@ -384,6 +578,7 @@ void main() {
       PlatformAlwaysOnKeeper.setSignInQuestion,
       PlatformAlwaysOnKeeper.openSignInSettingsQuestion,
       PlatformAlwaysOnKeeper.readyQuestion,
+      PlatformAlwaysOnKeeper.lookingQuestion,
     ]) {
       expect(swift, contains('case "$question":'), reason: question);
     }
@@ -464,15 +659,6 @@ void main() {
     ]) {
       expect(swift, contains('case "$question":'), reason: question);
     }
-    for (final word in [
-      'allowed',
-      'needed',
-      'denied',
-      'notOpen',
-      'unavailable',
-    ]) {
-      expect(swift, contains('return "$word"'), reason: word);
-    }
     for (final part in ['pageUrl', 'pageTitle', 'clipboard']) {
       expect(swift, contains('found["$part"] = '), reason: part);
     }
@@ -485,6 +671,14 @@ void main() {
         '    answerAboutContinuing(messenger: flutterViewController.engine.binaryMessenger)',
       ),
     );
+    // A Mac starts the library able to continue, and no other system does, because only a Mac has
+    // this code. Without it every question from a phone is turned away as not supported.
+    final backend = _read('lib/src/rust_backend.dart');
+    expect(
+      backend,
+      contains('serveContinue: io.Platform.isMacOS ? true : null,'),
+    );
+    expect('serveContinue:'.allMatches(backend), hasLength(1));
   });
 
   test('the Mac app reads only the page in front in the two browsers, and '
@@ -547,23 +741,139 @@ void main() {
   test('the Mac app gives nothing while nobody is using the Mac, and nothing '
       'that was marked as secret', () {
     final swift = _read('macos/Runner/MainFlutterWindow.swift');
-    // Locked, with the screen off, or with another account in front: nothing is read at all.
-    expect(swift, contains('if macIsNotInUse() {'));
-    expect(swift, contains('session["CGSSessionScreenIsLocked"]'));
-    expect(swift, contains('session["kCGSSessionOnConsoleKey"]'));
-    expect(swift, contains('CGDisplayIsAsleep(CGMainDisplayID())'));
-    final read = swift.indexOf('private func readWhatThePersonIsWorkingOn(');
-    expect(read, isNonNegative);
-    expect(
-      swift.indexOf('if macIsNotInUse() {', read),
-      lessThan(swift.indexOf('clipboardText()', read)),
-      reason: 'the check comes before anything is read',
+    // Locked, with the screen off, or with another account in front: nothing is read at all, and
+    // a session that cannot be read is taken as one that nobody uses. The keys alone would pass
+    // with each answer turned round, so every line is held whole.
+    expect(_swiftCode(_swiftFunction(swift, 'private func macIsNotInUse()')), [
+      'private func macIsNotInUse() -> Bool {',
+      'guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return true }',
+      'if session["CGSSessionScreenIsLocked"] as? Bool == true { return true }',
+      'if session["kCGSSessionOnConsoleKey"] as? Bool == false { return true }',
+      'return CGDisplayIsAsleep(CGMainDisplayID()) != 0',
+      '}',
+    ]);
+    final read = _swiftCode(
+      _swiftFunction(swift, 'private func readWhatThePersonIsWorkingOn('),
     );
-    // Text that the app that copied it marked as secret, or as one-time, is not read.
-    expect(swift, contains('org.nspasteboard.ConcealedType'));
-    expect(swift, contains('org.nspasteboard.TransientType'));
-    // What the protocol carries of text is a mebibyte (crates/baton-proto/src/limits.rs).
-    expect(swift, contains('text.utf8.count <= 1024 * 1024'));
+    expect(read.take(5), [
+      'private func readWhatThePersonIsWorkingOn(_ result: @escaping FlutterResult) {',
+      'if macIsNotInUse() {',
+      'result([String: Any]())',
+      'return',
+      '}',
+    ], reason: 'the check comes first, and gives an empty answer');
+    // A browser that cannot be read is told as a failure only when there is nothing else to give,
+    // and is never told as nothing.
+    expect(
+      read.join('\n'),
+      contains(
+        _inOrder([
+          'case .failed:',
+          'if found.isEmpty {',
+          'result(',
+          'FlutterError(',
+          'code: "unreadable", message: "The browser did not answer.", details: nil))',
+          '} else {',
+          'result(found)',
+          '}',
+        ]),
+      ),
+    );
+    // Text that the app that copied it marked as secret, or as one-time, is not read, and neither
+    // is text that is blank or more than the protocol carries, which is a mebibyte
+    // (crates/baton-proto/src/limits.rs).
+    expect(_swiftCode(_swiftFunction(swift, 'private func clipboardText()')), [
+      'private func clipboardText() -> String? {',
+      'let pasteboard = NSPasteboard.general',
+      'let marks = ["org.nspasteboard.ConcealedType", "org.nspasteboard.TransientType"]',
+      'if (pasteboard.types ?? []).contains(where: { marks.contains(\$0.rawValue) }) {',
+      'return nil',
+      '}',
+      'guard let text = pasteboard.string(forType: .string),',
+      '!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,',
+      'text.utf8.count <= 1024 * 1024',
+      'else {',
+      'return nil',
+      '}',
+      'return text',
+      '}',
+    ]);
+  });
+
+  test('the Mac app says where the consent of a browser stands, and asks the '
+      'person only when it is told to', () {
+    final swift = _read('macos/Runner/MainFlutterWindow.swift');
+    // The five words of the answer are also the words about notifications and about the camera,
+    // so only the body of this function says that they are said of the browsers, and for which
+    // answer of the system.
+    final access = _swiftCode(
+      _swiftFunction(swift, 'private func browserAccess('),
+    ).join('\n');
+    expect(
+      access,
+      contains(
+        _inOrder([
+          'switch status {',
+          'case 0:',
+          'return "allowed"',
+          'case -1744:',
+          'return "needed"',
+          'case -1743:',
+          'return "denied"',
+          'case -600:',
+          'return "notOpen"',
+          'default:',
+          'return "unavailable"',
+          '}',
+        ]),
+      ),
+    );
+    // A browser that is not on this Mac, and one that is not open, are told before the system is
+    // asked, because asking about one that is closed would start it.
+    expect(
+      access,
+      contains(
+        _inOrder([
+          'guard',
+          'NSWorkspace.shared.urlForApplication(withBundleIdentifier: browser.bundleIdentifier) != nil',
+          'else {',
+          'return "unavailable"',
+          '}',
+          'guard',
+          '!NSRunningApplication.runningApplications(withBundleIdentifier: browser.bundleIdentifier)',
+          '.isEmpty',
+          'else {',
+          'return "notOpen"',
+          '}',
+        ]),
+      ),
+    );
+    // The system puts its question to the person only when the question from the app said to ask.
+    expect(
+      access,
+      contains(
+        _inOrder([
+          'ask',
+          '? AEDeterminePermissionToAutomateTarget(address, anyEvent, anyEvent, true)',
+          ': AEDeterminePermissionToAutomateTarget(address, anyEvent, anyEvent, false)',
+        ]),
+      ),
+    );
+    final handler = _swiftCode(
+      _swiftFunction(swift, 'private func answerAboutContinuing('),
+    ).join('\n');
+    expect(
+      handler,
+      contains(
+        _inOrder([
+          'let ask = arguments["ask"] as? Bool ?? false',
+          'continueQueue.async {',
+          'let answer = browserAccess(browser, ask: ask)',
+          'DispatchQueue.main.async { result(answer) }',
+          '}',
+        ]),
+      ),
+    );
   });
 
   test('the apps show the files that arrived and never open them', () {
