@@ -95,6 +95,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool dco_decode_box_autoadd_bool(dynamic raw);
 
   @protected
+  ContinueItems dco_decode_box_autoadd_continue_items(dynamic raw);
+
+  @protected
+  ContinuePage dco_decode_box_autoadd_continue_page(dynamic raw);
+
+  @protected
   Device dco_decode_box_autoadd_device(dynamic raw);
 
   @protected
@@ -138,6 +144,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   WindowUnlock dco_decode_box_autoadd_window_unlock(dynamic raw);
+
+  @protected
+  ContinueItems dco_decode_continue_items(dynamic raw);
+
+  @protected
+  ContinueOutcome dco_decode_continue_outcome(dynamic raw);
+
+  @protected
+  ContinuePage dco_decode_continue_page(dynamic raw);
 
   @protected
   Device dco_decode_device(dynamic raw);
@@ -201,6 +216,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool? dco_decode_opt_box_autoadd_bool(dynamic raw);
+
+  @protected
+  ContinueItems? dco_decode_opt_box_autoadd_continue_items(dynamic raw);
+
+  @protected
+  ContinuePage? dco_decode_opt_box_autoadd_continue_page(dynamic raw);
 
   @protected
   PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
@@ -384,6 +405,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   bool sse_decode_box_autoadd_bool(SseDeserializer deserializer);
 
   @protected
+  ContinueItems sse_decode_box_autoadd_continue_items(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ContinuePage sse_decode_box_autoadd_continue_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   Device sse_decode_box_autoadd_device(SseDeserializer deserializer);
 
   @protected
@@ -443,6 +474,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   WindowUnlock sse_decode_box_autoadd_window_unlock(
     SseDeserializer deserializer,
   );
+
+  @protected
+  ContinueItems sse_decode_continue_items(SseDeserializer deserializer);
+
+  @protected
+  ContinueOutcome sse_decode_continue_outcome(SseDeserializer deserializer);
+
+  @protected
+  ContinuePage sse_decode_continue_page(SseDeserializer deserializer);
 
   @protected
   Device sse_decode_device(SseDeserializer deserializer);
@@ -506,6 +546,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   bool? sse_decode_opt_box_autoadd_bool(SseDeserializer deserializer);
+
+  @protected
+  ContinueItems? sse_decode_opt_box_autoadd_continue_items(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  ContinuePage? sse_decode_opt_box_autoadd_continue_page(
+    SseDeserializer deserializer,
+  );
 
   @protected
   PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer);
@@ -705,6 +755,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_box_autoadd_bool(bool self, SseSerializer serializer);
 
   @protected
+  void sse_encode_box_autoadd_continue_items(
+    ContinueItems self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_continue_page(
+    ContinuePage self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_device(Device self, SseSerializer serializer);
 
   @protected
@@ -789,6 +851,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_continue_items(ContinueItems self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_continue_outcome(
+    ContinueOutcome self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_continue_page(ContinuePage self, SseSerializer serializer);
+
+  @protected
   void sse_encode_device(Device self, SseSerializer serializer);
 
   @protected
@@ -859,6 +933,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_box_autoadd_bool(bool? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_continue_items(
+    ContinueItems? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_continue_page(
+    ContinuePage? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_opt_box_autoadd_i_64(

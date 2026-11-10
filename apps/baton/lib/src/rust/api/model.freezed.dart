@@ -13,6 +13,381 @@ part of 'model.dart';
 // dart format off
 T _$identity<T>(T value) => value;
 /// @nodoc
+mixin _$ContinueOutcome {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is ContinueOutcome);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'ContinueOutcome()';
+}
+
+
+}
+
+/// @nodoc
+class $ContinueOutcomeCopyWith<$Res>  {
+$ContinueOutcomeCopyWith(ContinueOutcome _, $Res Function(ContinueOutcome) __);
+}
+
+
+/// Adds pattern-matching-related methods to [ContinueOutcome].
+extension ContinueOutcomePatterns on ContinueOutcome {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( ContinueOutcome_Items value)?  items,TResult Function( ContinueOutcome_NotAllowed value)?  notAllowed,TResult Function( ContinueOutcome_Busy value)?  busy,TResult Function( ContinueOutcome_Unavailable value)?  unavailable,TResult Function( ContinueOutcome_Unsupported value)?  unsupported,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case ContinueOutcome_Items() when items != null:
+return items(_that);case ContinueOutcome_NotAllowed() when notAllowed != null:
+return notAllowed(_that);case ContinueOutcome_Busy() when busy != null:
+return busy(_that);case ContinueOutcome_Unavailable() when unavailable != null:
+return unavailable(_that);case ContinueOutcome_Unsupported() when unsupported != null:
+return unsupported(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( ContinueOutcome_Items value)  items,required TResult Function( ContinueOutcome_NotAllowed value)  notAllowed,required TResult Function( ContinueOutcome_Busy value)  busy,required TResult Function( ContinueOutcome_Unavailable value)  unavailable,required TResult Function( ContinueOutcome_Unsupported value)  unsupported,}){
+final _that = this;
+switch (_that) {
+case ContinueOutcome_Items():
+return items(_that);case ContinueOutcome_NotAllowed():
+return notAllowed(_that);case ContinueOutcome_Busy():
+return busy(_that);case ContinueOutcome_Unavailable():
+return unavailable(_that);case ContinueOutcome_Unsupported():
+return unsupported(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( ContinueOutcome_Items value)?  items,TResult? Function( ContinueOutcome_NotAllowed value)?  notAllowed,TResult? Function( ContinueOutcome_Busy value)?  busy,TResult? Function( ContinueOutcome_Unavailable value)?  unavailable,TResult? Function( ContinueOutcome_Unsupported value)?  unsupported,}){
+final _that = this;
+switch (_that) {
+case ContinueOutcome_Items() when items != null:
+return items(_that);case ContinueOutcome_NotAllowed() when notAllowed != null:
+return notAllowed(_that);case ContinueOutcome_Busy() when busy != null:
+return busy(_that);case ContinueOutcome_Unavailable() when unavailable != null:
+return unavailable(_that);case ContinueOutcome_Unsupported() when unsupported != null:
+return unsupported(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( ContinueItems items)?  items,TResult Function()?  notAllowed,TResult Function()?  busy,TResult Function()?  unavailable,TResult Function()?  unsupported,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case ContinueOutcome_Items() when items != null:
+return items(_that.items);case ContinueOutcome_NotAllowed() when notAllowed != null:
+return notAllowed();case ContinueOutcome_Busy() when busy != null:
+return busy();case ContinueOutcome_Unavailable() when unavailable != null:
+return unavailable();case ContinueOutcome_Unsupported() when unsupported != null:
+return unsupported();case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( ContinueItems items)  items,required TResult Function()  notAllowed,required TResult Function()  busy,required TResult Function()  unavailable,required TResult Function()  unsupported,}) {final _that = this;
+switch (_that) {
+case ContinueOutcome_Items():
+return items(_that.items);case ContinueOutcome_NotAllowed():
+return notAllowed();case ContinueOutcome_Busy():
+return busy();case ContinueOutcome_Unavailable():
+return unavailable();case ContinueOutcome_Unsupported():
+return unsupported();}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( ContinueItems items)?  items,TResult? Function()?  notAllowed,TResult? Function()?  busy,TResult? Function()?  unavailable,TResult? Function()?  unsupported,}) {final _that = this;
+switch (_that) {
+case ContinueOutcome_Items() when items != null:
+return items(_that.items);case ContinueOutcome_NotAllowed() when notAllowed != null:
+return notAllowed();case ContinueOutcome_Busy() when busy != null:
+return busy();case ContinueOutcome_Unavailable() when unavailable != null:
+return unavailable();case ContinueOutcome_Unsupported() when unsupported != null:
+return unsupported();case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class ContinueOutcome_Items extends ContinueOutcome {
+  const ContinueOutcome_Items({required this.items}): super._();
+  
+
+/// What was read just then.
+ final  ContinueItems items;
+
+/// Create a copy of ContinueOutcome
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$ContinueOutcome_ItemsCopyWith<ContinueOutcome_Items> get copyWith => _$ContinueOutcome_ItemsCopyWithImpl<ContinueOutcome_Items>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is ContinueOutcome_Items&&(identical(other.items, items) || other.items == items));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,items);
+}
+
+@override
+String toString() {
+    return 'ContinueOutcome.items(items: $items)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $ContinueOutcome_ItemsCopyWith<$Res> implements $ContinueOutcomeCopyWith<$Res> {
+  factory $ContinueOutcome_ItemsCopyWith(ContinueOutcome_Items value, $Res Function(ContinueOutcome_Items) _then) = _$ContinueOutcome_ItemsCopyWithImpl;
+@useResult
+$Res call({
+ ContinueItems items
+});
+
+
+
+
+}
+/// @nodoc
+class _$ContinueOutcome_ItemsCopyWithImpl<$Res>
+    implements $ContinueOutcome_ItemsCopyWith<$Res> {
+  _$ContinueOutcome_ItemsCopyWithImpl(this._self, this._then);
+
+  final ContinueOutcome_Items _self;
+  final $Res Function(ContinueOutcome_Items) _then;
+
+/// Create a copy of ContinueOutcome
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? items = null,}) {
+  return _then(ContinueOutcome_Items(
+items: null == items ? _self.items : items // ignore: cast_nullable_to_non_nullable
+as ContinueItems,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class ContinueOutcome_NotAllowed extends ContinueOutcome {
+  const ContinueOutcome_NotAllowed(): super._();
+  
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is ContinueOutcome_NotAllowed);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'ContinueOutcome.notAllowed()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class ContinueOutcome_Busy extends ContinueOutcome {
+  const ContinueOutcome_Busy(): super._();
+  
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is ContinueOutcome_Busy);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'ContinueOutcome.busy()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class ContinueOutcome_Unavailable extends ContinueOutcome {
+  const ContinueOutcome_Unavailable(): super._();
+  
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is ContinueOutcome_Unavailable);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'ContinueOutcome.unavailable()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class ContinueOutcome_Unsupported extends ContinueOutcome {
+  const ContinueOutcome_Unsupported(): super._();
+  
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is ContinueOutcome_Unsupported);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'ContinueOutcome.unsupported()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
 mixin _$Event {
 
 
@@ -56,7 +431,7 @@ extension EventPatterns on Event {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( Event_Received value)?  received,TResult Function( Event_DevicesChanged value)?  devicesChanged,TResult Function( Event_PairingRequested value)?  pairingRequested,TResult Function( Event_PairingRequestEnded value)?  pairingRequestEnded,TResult Function( Event_OfferEnded value)?  offerEnded,TResult Function( Event_TransferRequested value)?  transferRequested,TResult Function( Event_TransferRequestEnded value)?  transferRequestEnded,TResult Function( Event_TransferEnded value)?  transferEnded,TResult Function( Event_WindowRequested value)?  windowRequested,TResult Function( Event_WindowRequestEnded value)?  windowRequestEnded,TResult Function( Event_WindowStarted value)?  windowStarted,TResult Function( Event_WindowPicture value)?  windowPicture,TResult Function( Event_WindowNotice value)?  windowNotice,TResult Function( Event_WindowSound value)?  windowSound,TResult Function( Event_WindowLocked value)?  windowLocked,TResult Function( Event_WindowUnlock value)?  windowUnlock,TResult Function( Event_UnlockAttempted value)?  unlockAttempted,TResult Function( Event_WindowEnded value)?  windowEnded,TResult Function( Event_Resync value)?  resync,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( Event_Received value)?  received,TResult Function( Event_DevicesChanged value)?  devicesChanged,TResult Function( Event_PairingRequested value)?  pairingRequested,TResult Function( Event_PairingRequestEnded value)?  pairingRequestEnded,TResult Function( Event_OfferEnded value)?  offerEnded,TResult Function( Event_TransferRequested value)?  transferRequested,TResult Function( Event_TransferRequestEnded value)?  transferRequestEnded,TResult Function( Event_TransferEnded value)?  transferEnded,TResult Function( Event_WindowRequested value)?  windowRequested,TResult Function( Event_WindowRequestEnded value)?  windowRequestEnded,TResult Function( Event_WindowStarted value)?  windowStarted,TResult Function( Event_WindowPicture value)?  windowPicture,TResult Function( Event_WindowNotice value)?  windowNotice,TResult Function( Event_WindowSound value)?  windowSound,TResult Function( Event_WindowLocked value)?  windowLocked,TResult Function( Event_WindowUnlock value)?  windowUnlock,TResult Function( Event_UnlockAttempted value)?  unlockAttempted,TResult Function( Event_ContinueAsked value)?  continueAsked,TResult Function( Event_WindowEnded value)?  windowEnded,TResult Function( Event_Resync value)?  resync,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case Event_Received() when received != null:
@@ -76,7 +451,8 @@ return windowNotice(_that);case Event_WindowSound() when windowSound != null:
 return windowSound(_that);case Event_WindowLocked() when windowLocked != null:
 return windowLocked(_that);case Event_WindowUnlock() when windowUnlock != null:
 return windowUnlock(_that);case Event_UnlockAttempted() when unlockAttempted != null:
-return unlockAttempted(_that);case Event_WindowEnded() when windowEnded != null:
+return unlockAttempted(_that);case Event_ContinueAsked() when continueAsked != null:
+return continueAsked(_that);case Event_WindowEnded() when windowEnded != null:
 return windowEnded(_that);case Event_Resync() when resync != null:
 return resync(_that);case _:
   return orElse();
@@ -96,7 +472,7 @@ return resync(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( Event_Received value)  received,required TResult Function( Event_DevicesChanged value)  devicesChanged,required TResult Function( Event_PairingRequested value)  pairingRequested,required TResult Function( Event_PairingRequestEnded value)  pairingRequestEnded,required TResult Function( Event_OfferEnded value)  offerEnded,required TResult Function( Event_TransferRequested value)  transferRequested,required TResult Function( Event_TransferRequestEnded value)  transferRequestEnded,required TResult Function( Event_TransferEnded value)  transferEnded,required TResult Function( Event_WindowRequested value)  windowRequested,required TResult Function( Event_WindowRequestEnded value)  windowRequestEnded,required TResult Function( Event_WindowStarted value)  windowStarted,required TResult Function( Event_WindowPicture value)  windowPicture,required TResult Function( Event_WindowNotice value)  windowNotice,required TResult Function( Event_WindowSound value)  windowSound,required TResult Function( Event_WindowLocked value)  windowLocked,required TResult Function( Event_WindowUnlock value)  windowUnlock,required TResult Function( Event_UnlockAttempted value)  unlockAttempted,required TResult Function( Event_WindowEnded value)  windowEnded,required TResult Function( Event_Resync value)  resync,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( Event_Received value)  received,required TResult Function( Event_DevicesChanged value)  devicesChanged,required TResult Function( Event_PairingRequested value)  pairingRequested,required TResult Function( Event_PairingRequestEnded value)  pairingRequestEnded,required TResult Function( Event_OfferEnded value)  offerEnded,required TResult Function( Event_TransferRequested value)  transferRequested,required TResult Function( Event_TransferRequestEnded value)  transferRequestEnded,required TResult Function( Event_TransferEnded value)  transferEnded,required TResult Function( Event_WindowRequested value)  windowRequested,required TResult Function( Event_WindowRequestEnded value)  windowRequestEnded,required TResult Function( Event_WindowStarted value)  windowStarted,required TResult Function( Event_WindowPicture value)  windowPicture,required TResult Function( Event_WindowNotice value)  windowNotice,required TResult Function( Event_WindowSound value)  windowSound,required TResult Function( Event_WindowLocked value)  windowLocked,required TResult Function( Event_WindowUnlock value)  windowUnlock,required TResult Function( Event_UnlockAttempted value)  unlockAttempted,required TResult Function( Event_ContinueAsked value)  continueAsked,required TResult Function( Event_WindowEnded value)  windowEnded,required TResult Function( Event_Resync value)  resync,}){
 final _that = this;
 switch (_that) {
 case Event_Received():
@@ -116,7 +492,8 @@ return windowNotice(_that);case Event_WindowSound():
 return windowSound(_that);case Event_WindowLocked():
 return windowLocked(_that);case Event_WindowUnlock():
 return windowUnlock(_that);case Event_UnlockAttempted():
-return unlockAttempted(_that);case Event_WindowEnded():
+return unlockAttempted(_that);case Event_ContinueAsked():
+return continueAsked(_that);case Event_WindowEnded():
 return windowEnded(_that);case Event_Resync():
 return resync(_that);}
 }
@@ -132,7 +509,7 @@ return resync(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( Event_Received value)?  received,TResult? Function( Event_DevicesChanged value)?  devicesChanged,TResult? Function( Event_PairingRequested value)?  pairingRequested,TResult? Function( Event_PairingRequestEnded value)?  pairingRequestEnded,TResult? Function( Event_OfferEnded value)?  offerEnded,TResult? Function( Event_TransferRequested value)?  transferRequested,TResult? Function( Event_TransferRequestEnded value)?  transferRequestEnded,TResult? Function( Event_TransferEnded value)?  transferEnded,TResult? Function( Event_WindowRequested value)?  windowRequested,TResult? Function( Event_WindowRequestEnded value)?  windowRequestEnded,TResult? Function( Event_WindowStarted value)?  windowStarted,TResult? Function( Event_WindowPicture value)?  windowPicture,TResult? Function( Event_WindowNotice value)?  windowNotice,TResult? Function( Event_WindowSound value)?  windowSound,TResult? Function( Event_WindowLocked value)?  windowLocked,TResult? Function( Event_WindowUnlock value)?  windowUnlock,TResult? Function( Event_UnlockAttempted value)?  unlockAttempted,TResult? Function( Event_WindowEnded value)?  windowEnded,TResult? Function( Event_Resync value)?  resync,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( Event_Received value)?  received,TResult? Function( Event_DevicesChanged value)?  devicesChanged,TResult? Function( Event_PairingRequested value)?  pairingRequested,TResult? Function( Event_PairingRequestEnded value)?  pairingRequestEnded,TResult? Function( Event_OfferEnded value)?  offerEnded,TResult? Function( Event_TransferRequested value)?  transferRequested,TResult? Function( Event_TransferRequestEnded value)?  transferRequestEnded,TResult? Function( Event_TransferEnded value)?  transferEnded,TResult? Function( Event_WindowRequested value)?  windowRequested,TResult? Function( Event_WindowRequestEnded value)?  windowRequestEnded,TResult? Function( Event_WindowStarted value)?  windowStarted,TResult? Function( Event_WindowPicture value)?  windowPicture,TResult? Function( Event_WindowNotice value)?  windowNotice,TResult? Function( Event_WindowSound value)?  windowSound,TResult? Function( Event_WindowLocked value)?  windowLocked,TResult? Function( Event_WindowUnlock value)?  windowUnlock,TResult? Function( Event_UnlockAttempted value)?  unlockAttempted,TResult? Function( Event_ContinueAsked value)?  continueAsked,TResult? Function( Event_WindowEnded value)?  windowEnded,TResult? Function( Event_Resync value)?  resync,}){
 final _that = this;
 switch (_that) {
 case Event_Received() when received != null:
@@ -152,7 +529,8 @@ return windowNotice(_that);case Event_WindowSound() when windowSound != null:
 return windowSound(_that);case Event_WindowLocked() when windowLocked != null:
 return windowLocked(_that);case Event_WindowUnlock() when windowUnlock != null:
 return windowUnlock(_that);case Event_UnlockAttempted() when unlockAttempted != null:
-return unlockAttempted(_that);case Event_WindowEnded() when windowEnded != null:
+return unlockAttempted(_that);case Event_ContinueAsked() when continueAsked != null:
+return continueAsked(_that);case Event_WindowEnded() when windowEnded != null:
 return windowEnded(_that);case Event_Resync() when resync != null:
 return resync(_that);case _:
   return null;
@@ -171,7 +549,7 @@ return resync(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( Received received)?  received,TResult Function()?  devicesChanged,TResult Function( PairingRequest request)?  pairingRequested,TResult Function( PlatformInt64 id)?  pairingRequestEnded,TResult Function( OfferOutcome outcome)?  offerEnded,TResult Function( TransferRequest request)?  transferRequested,TResult Function( PlatformInt64 id)?  transferRequestEnded,TResult Function( TransferEnd end)?  transferEnded,TResult Function( WindowRequest request)?  windowRequested,TResult Function( PlatformInt64 id,  String? failure)?  windowRequestEnded,TResult Function( WindowSession session)?  windowStarted,TResult Function( PlatformInt64 id,  int width,  int height)?  windowPicture,TResult Function( PlatformInt64 id,  WindowNoticeReason reason,  int count)?  windowNotice,TResult Function( PlatformInt64 id,  WindowSound sound)?  windowSound,TResult Function( PlatformInt64 id,  bool locked)?  windowLocked,TResult Function( PlatformInt64 id,  WindowUnlock step)?  windowUnlock,TResult Function( UnlockEntry entry)?  unlockAttempted,TResult Function( PlatformInt64 id,  WindowEnd end)?  windowEnded,TResult Function()?  resync,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( Received received)?  received,TResult Function()?  devicesChanged,TResult Function( PairingRequest request)?  pairingRequested,TResult Function( PlatformInt64 id)?  pairingRequestEnded,TResult Function( OfferOutcome outcome)?  offerEnded,TResult Function( TransferRequest request)?  transferRequested,TResult Function( PlatformInt64 id)?  transferRequestEnded,TResult Function( TransferEnd end)?  transferEnded,TResult Function( WindowRequest request)?  windowRequested,TResult Function( PlatformInt64 id,  String? failure)?  windowRequestEnded,TResult Function( WindowSession session)?  windowStarted,TResult Function( PlatformInt64 id,  int width,  int height)?  windowPicture,TResult Function( PlatformInt64 id,  WindowNoticeReason reason,  int count)?  windowNotice,TResult Function( PlatformInt64 id,  WindowSound sound)?  windowSound,TResult Function( PlatformInt64 id,  bool locked)?  windowLocked,TResult Function( PlatformInt64 id,  WindowUnlock step)?  windowUnlock,TResult Function( UnlockEntry entry)?  unlockAttempted,TResult Function( PlatformInt64 id,  String from)?  continueAsked,TResult Function( PlatformInt64 id,  WindowEnd end)?  windowEnded,TResult Function()?  resync,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case Event_Received() when received != null:
 return received(_that.received);case Event_DevicesChanged() when devicesChanged != null:
@@ -190,7 +568,8 @@ return windowNotice(_that.id,_that.reason,_that.count);case Event_WindowSound() 
 return windowSound(_that.id,_that.sound);case Event_WindowLocked() when windowLocked != null:
 return windowLocked(_that.id,_that.locked);case Event_WindowUnlock() when windowUnlock != null:
 return windowUnlock(_that.id,_that.step);case Event_UnlockAttempted() when unlockAttempted != null:
-return unlockAttempted(_that.entry);case Event_WindowEnded() when windowEnded != null:
+return unlockAttempted(_that.entry);case Event_ContinueAsked() when continueAsked != null:
+return continueAsked(_that.id,_that.from);case Event_WindowEnded() when windowEnded != null:
 return windowEnded(_that.id,_that.end);case Event_Resync() when resync != null:
 return resync();case _:
   return orElse();
@@ -210,7 +589,7 @@ return resync();case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( Received received)  received,required TResult Function()  devicesChanged,required TResult Function( PairingRequest request)  pairingRequested,required TResult Function( PlatformInt64 id)  pairingRequestEnded,required TResult Function( OfferOutcome outcome)  offerEnded,required TResult Function( TransferRequest request)  transferRequested,required TResult Function( PlatformInt64 id)  transferRequestEnded,required TResult Function( TransferEnd end)  transferEnded,required TResult Function( WindowRequest request)  windowRequested,required TResult Function( PlatformInt64 id,  String? failure)  windowRequestEnded,required TResult Function( WindowSession session)  windowStarted,required TResult Function( PlatformInt64 id,  int width,  int height)  windowPicture,required TResult Function( PlatformInt64 id,  WindowNoticeReason reason,  int count)  windowNotice,required TResult Function( PlatformInt64 id,  WindowSound sound)  windowSound,required TResult Function( PlatformInt64 id,  bool locked)  windowLocked,required TResult Function( PlatformInt64 id,  WindowUnlock step)  windowUnlock,required TResult Function( UnlockEntry entry)  unlockAttempted,required TResult Function( PlatformInt64 id,  WindowEnd end)  windowEnded,required TResult Function()  resync,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( Received received)  received,required TResult Function()  devicesChanged,required TResult Function( PairingRequest request)  pairingRequested,required TResult Function( PlatformInt64 id)  pairingRequestEnded,required TResult Function( OfferOutcome outcome)  offerEnded,required TResult Function( TransferRequest request)  transferRequested,required TResult Function( PlatformInt64 id)  transferRequestEnded,required TResult Function( TransferEnd end)  transferEnded,required TResult Function( WindowRequest request)  windowRequested,required TResult Function( PlatformInt64 id,  String? failure)  windowRequestEnded,required TResult Function( WindowSession session)  windowStarted,required TResult Function( PlatformInt64 id,  int width,  int height)  windowPicture,required TResult Function( PlatformInt64 id,  WindowNoticeReason reason,  int count)  windowNotice,required TResult Function( PlatformInt64 id,  WindowSound sound)  windowSound,required TResult Function( PlatformInt64 id,  bool locked)  windowLocked,required TResult Function( PlatformInt64 id,  WindowUnlock step)  windowUnlock,required TResult Function( UnlockEntry entry)  unlockAttempted,required TResult Function( PlatformInt64 id,  String from)  continueAsked,required TResult Function( PlatformInt64 id,  WindowEnd end)  windowEnded,required TResult Function()  resync,}) {final _that = this;
 switch (_that) {
 case Event_Received():
 return received(_that.received);case Event_DevicesChanged():
@@ -229,7 +608,8 @@ return windowNotice(_that.id,_that.reason,_that.count);case Event_WindowSound():
 return windowSound(_that.id,_that.sound);case Event_WindowLocked():
 return windowLocked(_that.id,_that.locked);case Event_WindowUnlock():
 return windowUnlock(_that.id,_that.step);case Event_UnlockAttempted():
-return unlockAttempted(_that.entry);case Event_WindowEnded():
+return unlockAttempted(_that.entry);case Event_ContinueAsked():
+return continueAsked(_that.id,_that.from);case Event_WindowEnded():
 return windowEnded(_that.id,_that.end);case Event_Resync():
 return resync();}
 }
@@ -245,7 +625,7 @@ return resync();}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( Received received)?  received,TResult? Function()?  devicesChanged,TResult? Function( PairingRequest request)?  pairingRequested,TResult? Function( PlatformInt64 id)?  pairingRequestEnded,TResult? Function( OfferOutcome outcome)?  offerEnded,TResult? Function( TransferRequest request)?  transferRequested,TResult? Function( PlatformInt64 id)?  transferRequestEnded,TResult? Function( TransferEnd end)?  transferEnded,TResult? Function( WindowRequest request)?  windowRequested,TResult? Function( PlatformInt64 id,  String? failure)?  windowRequestEnded,TResult? Function( WindowSession session)?  windowStarted,TResult? Function( PlatformInt64 id,  int width,  int height)?  windowPicture,TResult? Function( PlatformInt64 id,  WindowNoticeReason reason,  int count)?  windowNotice,TResult? Function( PlatformInt64 id,  WindowSound sound)?  windowSound,TResult? Function( PlatformInt64 id,  bool locked)?  windowLocked,TResult? Function( PlatformInt64 id,  WindowUnlock step)?  windowUnlock,TResult? Function( UnlockEntry entry)?  unlockAttempted,TResult? Function( PlatformInt64 id,  WindowEnd end)?  windowEnded,TResult? Function()?  resync,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( Received received)?  received,TResult? Function()?  devicesChanged,TResult? Function( PairingRequest request)?  pairingRequested,TResult? Function( PlatformInt64 id)?  pairingRequestEnded,TResult? Function( OfferOutcome outcome)?  offerEnded,TResult? Function( TransferRequest request)?  transferRequested,TResult? Function( PlatformInt64 id)?  transferRequestEnded,TResult? Function( TransferEnd end)?  transferEnded,TResult? Function( WindowRequest request)?  windowRequested,TResult? Function( PlatformInt64 id,  String? failure)?  windowRequestEnded,TResult? Function( WindowSession session)?  windowStarted,TResult? Function( PlatformInt64 id,  int width,  int height)?  windowPicture,TResult? Function( PlatformInt64 id,  WindowNoticeReason reason,  int count)?  windowNotice,TResult? Function( PlatformInt64 id,  WindowSound sound)?  windowSound,TResult? Function( PlatformInt64 id,  bool locked)?  windowLocked,TResult? Function( PlatformInt64 id,  WindowUnlock step)?  windowUnlock,TResult? Function( UnlockEntry entry)?  unlockAttempted,TResult? Function( PlatformInt64 id,  String from)?  continueAsked,TResult? Function( PlatformInt64 id,  WindowEnd end)?  windowEnded,TResult? Function()?  resync,}) {final _that = this;
 switch (_that) {
 case Event_Received() when received != null:
 return received(_that.received);case Event_DevicesChanged() when devicesChanged != null:
@@ -264,7 +644,8 @@ return windowNotice(_that.id,_that.reason,_that.count);case Event_WindowSound() 
 return windowSound(_that.id,_that.sound);case Event_WindowLocked() when windowLocked != null:
 return windowLocked(_that.id,_that.locked);case Event_WindowUnlock() when windowUnlock != null:
 return windowUnlock(_that.id,_that.step);case Event_UnlockAttempted() when unlockAttempted != null:
-return unlockAttempted(_that.entry);case Event_WindowEnded() when windowEnded != null:
+return unlockAttempted(_that.entry);case Event_ContinueAsked() when continueAsked != null:
+return continueAsked(_that.id,_that.from);case Event_WindowEnded() when windowEnded != null:
 return windowEnded(_that.id,_that.end);case Event_Resync() when resync != null:
 return resync();case _:
   return null;
@@ -1447,6 +1828,78 @@ class _$Event_UnlockAttemptedCopyWithImpl<$Res>
   return _then(Event_UnlockAttempted(
 entry: null == entry ? _self.entry : entry // ignore: cast_nullable_to_non_nullable
 as UnlockEntry,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class Event_ContinueAsked extends Event {
+  const Event_ContinueAsked({required this.id, required this.from}): super._();
+  
+
+/// Pass it to `Baton.answerContinue`.
+ final  PlatformInt64 id;
+/// The name of the device that asks, as it is shown for it.
+ final  String from;
+
+/// Create a copy of Event
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$Event_ContinueAskedCopyWith<Event_ContinueAsked> get copyWith => _$Event_ContinueAskedCopyWithImpl<Event_ContinueAsked>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is Event_ContinueAsked&&(identical(other.id, id) || other.id == id)&&(identical(other.from, from) || other.from == from));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,id,from);
+}
+
+@override
+String toString() {
+    return 'Event.continueAsked(id: $id, from: $from)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $Event_ContinueAskedCopyWith<$Res> implements $EventCopyWith<$Res> {
+  factory $Event_ContinueAskedCopyWith(Event_ContinueAsked value, $Res Function(Event_ContinueAsked) _then) = _$Event_ContinueAskedCopyWithImpl;
+@useResult
+$Res call({
+ PlatformInt64 id, String from
+});
+
+
+
+
+}
+/// @nodoc
+class _$Event_ContinueAskedCopyWithImpl<$Res>
+    implements $Event_ContinueAskedCopyWith<$Res> {
+  _$Event_ContinueAskedCopyWithImpl(this._self, this._then);
+
+  final Event_ContinueAsked _self;
+  final $Res Function(Event_ContinueAsked) _then;
+
+/// Create a copy of Event
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? id = null,Object? from = null,}) {
+  return _then(Event_ContinueAsked(
+id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
+as PlatformInt64,from: null == from ? _self.from : from // ignore: cast_nullable_to_non_nullable
+as String,
   ));
 }
 

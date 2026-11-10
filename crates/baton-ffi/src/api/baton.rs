@@ -17,9 +17,9 @@ use flutter_rust_bridge::{frb, spawn};
 use super::{
     error::BatonError,
     model::{
-        Device, Event, FileProgress, FilesSent, JoinProgress, Me, Network, Offer, Reach, Received,
-        Receiving, ScreenStarted, StartAccess, UnlockEntry, UnlockSetUp, UnlockStatus,
-        WindowAbilities, WindowInput, WindowShared,
+        ContinueItems, ContinueOutcome, Device, Event, FileProgress, FilesSent, JoinProgress, Me,
+        Network, Offer, Reach, Received, Receiving, ScreenStarted, StartAccess, UnlockEntry,
+        UnlockSetUp, UnlockStatus, WindowAbilities, WindowInput, WindowShared,
     },
 };
 use crate::convert::signed;
@@ -48,16 +48,25 @@ impl Baton {
     /// exist and be one the app may write to. `None` leaves this device taking no files. If
     /// Baton cannot use the folder it still starts, and `receiving` says why it takes no
     /// files.
+    ///
+    /// `serve_continue` says that the app can read what its person is working on, the page that is
+    /// in front in the browser and the text on the clipboard, when `Event.continueAsked` says so,
+    /// and answer with `answerContinue`: pass `true` only where the platform code does that. `null`
+    /// and `false` are the same: a device that is started without it does not say that it can, and
+    /// a device that asks it is told so (`ContinueOutcome.unsupported`). Even then, nothing is read
+    /// until a paired device asks that the person allowed (`setContinueAccess`).
     pub async fn start(
         data_dir: String,
         lan_discovery: Option<bool>,
         port_mapping: Option<bool>,
         receive_dir: Option<String>,
+        serve_continue: Option<bool>,
     ) -> Result<Baton, BatonError> {
         let mut options = Options::new(data_dir);
         options.lan_discovery = lan_discovery;
         options.port_mapping = port_mapping;
         options.receive_dir = receive_dir.map(PathBuf::from);
+        options.serve_continue = serve_continue.unwrap_or(false);
         // The device shows the windows that other devices share if the platform code of the app
         // registered a viewer for them before this call, and takes none otherwise.
         let windows = baton_stream_abi::registered_windows();
@@ -239,6 +248,45 @@ impl Baton {
     /// `ErrorKind.notPaired`, and `ErrorKind.storage` if the setting could not be kept.
     pub fn set_start_access(&self, id: String, access: StartAccess) -> Result<(), BatonError> {
         Ok(self.app.set_start_access(&id, access.into())?)
+    }
+
+    /// Whether the paired device `id` may ask this device what its person is working on, to
+    /// continue it there: the page that is in front in the browser, and the text on the clipboard.
+    /// `false` for a device that was just paired. Throws `ErrorKind.notPaired`.
+    #[frb(sync)]
+    pub fn continue_access(&self, id: String) -> Result<bool, BatonError> {
+        Ok(self.app.continue_access(&id)?)
+    }
+
+    /// Lets the paired device `id` ask this device what its person is working on, or does not. Only
+    /// the person at this device can say so: nothing a paired device sends changes it. Nothing is
+    /// read until the device asks, and a device that is turned away is not read for. Throws
+    /// `ErrorKind.notPaired`, and `ErrorKind.storage` if the setting could not be kept.
+    pub fn set_continue_access(&self, id: String, allowed: bool) -> Result<(), BatonError> {
+        Ok(self.app.set_continue_access(&id, allowed)?)
+    }
+
+    /// Gives what the platform read for a paired device that asked (`Event.continueAsked`): the
+    /// page that is in front in the browser and the text on the clipboard, each `null` when there
+    /// is none, so that an empty `ContinueItems` says that there is nothing to continue. `null`
+    /// says that it could not be read, and the device that asked is told so. Returns whether the
+    /// answer was passed on, which it is not for a request that is not waiting any more: it was
+    /// answered already, the few seconds that there are ran out, or the app stopped. Nothing of
+    /// what was read is kept.
+    #[frb(sync)]
+    pub fn answer_continue(&self, request: i64, items: Option<ContinueItems>) -> bool {
+        u64::try_from(request)
+            .is_ok_and(|request| self.app.answer_continue(request, items.map(Into::into)))
+    }
+
+    /// Asks the paired device `id` what its person is working on, to continue it here: the page
+    /// that is in front in its browser, and the text on its clipboard. Nobody there is asked: the
+    /// person allowed this device beforehand (`setContinueAccess` there), or the answer is
+    /// `ContinueOutcome.notAllowed`. What comes back is as old as the asking. Throws
+    /// `ErrorKind.notPaired`, and `ErrorKind.unreachable` if the device cannot be reached or does
+    /// not answer in time.
+    pub async fn continue_from(&self, id: String) -> Result<ContinueOutcome, BatonError> {
+        Ok(self.app.continue_from(&id).await?.into())
     }
 
     /// What the person at this device said of the paired device `id` hearing the sound of this

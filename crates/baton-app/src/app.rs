@@ -25,7 +25,7 @@ use baton_core::{
 };
 use baton_proto::{
     DeviceId, Platform as ProtoPlatform,
-    message::{ClipboardText, Item, Link, Outcome},
+    message::{ClipboardText, ContinueItems as CoreContinueItems, Item, Link, Outcome},
     ticket::{PREFIX, PairTicket},
 };
 use tokio::sync::{broadcast, broadcast::error::RecvError, oneshot};
@@ -33,12 +33,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     Error, ErrorKind, Event, Events, FileSend, Result,
+    continuing::Readings,
     error::unusable_folder,
     files::Files,
     model::{
-        Device, Me, Network, Offer, OfferOutcome, PairingRequest, Reach, Received, Receiving,
-        ScreenStarted, StartAccess, TransferRequest, UnlockEntry, UnlockSetUp, UnlockStatus,
-        WindowAbilities, WindowInput, WindowRequest, WindowShared,
+        ContinueItems, ContinueOutcome, Device, Me, Network, Offer, OfferOutcome, PairingRequest,
+        Reach, Received, Receiving, ScreenStarted, StartAccess, TransferRequest, UnlockEntry,
+        UnlockSetUp, UnlockStatus, WindowAbilities, WindowInput, WindowRequest, WindowShared,
     },
     sessions::{Handler, Sessions},
     starts::Starts,
@@ -83,6 +84,16 @@ pub struct Options {
     /// The app has to be allowed to write to the folder. If Baton cannot use it, the app still
     /// starts and [`App::receiving`] says why this device takes no files.
     pub receive_dir: Option<PathBuf>,
+    /// Whether this device can read what its person is working on, the page that is in front in the
+    /// browser and the text on the clipboard, for a paired device that asks to continue it there
+    /// (`docs/adr/0015-continue-from-another-device.md`). It is for a platform whose screen reads
+    /// that when [`Event::ContinueAsked`] says so and answers with [`App::answer_continue`]; a
+    /// device that is not started with it does not say that it can, and a device that asks it is
+    /// told so.
+    ///
+    /// Even then, nothing is read until a paired device asks that the person at this device
+    /// allowed ([`App::set_continue_access`]), and it is not kept.
+    pub serve_continue: bool,
 }
 
 impl Options {
@@ -93,6 +104,7 @@ impl Options {
             lan_discovery: None,
             port_mapping: None,
             receive_dir: None,
+            serve_continue: false,
         }
     }
 
@@ -141,8 +153,9 @@ struct Open {
 /// was dropped while a question was showing would stay running, with its folder locked,
 /// until the question was over.
 ///
-/// Pairing requests, requests for files and requests for windows are numbered from the same
-/// count, but they wait in tables of their own, so an answer to one kind cannot reach another.
+/// Pairing requests, requests for files, requests for windows and requests to read what the person
+/// is working on are numbered from the same count, but they wait in tables of their own, so an
+/// answer to one kind cannot reach another.
 pub(crate) struct Questions {
     /// Pairing requests that are waiting for the person's answer.
     waiting: Mutex<HashMap<u64, oneshot::Sender<bool>>>,
@@ -150,6 +163,8 @@ pub(crate) struct Questions {
     transfers: Mutex<HashMap<u64, oneshot::Sender<bool>>>,
     /// Requests to show a window that are waiting for the person's answer.
     windows: Mutex<HashMap<u64, oneshot::Sender<bool>>>,
+    /// Requests for what the person is working on that are waiting for the platform to read it.
+    readings: Mutex<HashMap<u64, oneshot::Sender<Option<CoreContinueItems>>>>,
     next: AtomicU64,
     events: broadcast::Sender<Event>,
 }
@@ -241,6 +256,11 @@ impl App {
             .handoff_handler(InboxHandler::new(inbox.clone()))
             .holds(Holds::open(dir.holds_file()));
         let mut builder = with_windows(builder, &sessions);
+        // A device whose platform reads what its person works on gives it to the devices that the
+        // person allowed, when they ask; a device that cannot says nothing of the kind.
+        if options.serve_continue {
+            builder = builder.serve_continue(Readings::new(Arc::clone(&questions)));
+        }
         // A device that can give its screen without the person picking it lets the devices it is
         // paired with ask for it, if the person allowed them to; a device that cannot says nothing
         // of the kind.
@@ -623,6 +643,78 @@ impl App {
             Ok(())
         } else {
             Err(Error::not_paired())
+        }
+    }
+
+    /// Whether the paired device `id` may ask this device what its person is working on, to continue
+    /// it there (`docs/adr/0015-continue-from-another-device.md`): the page that is in front in the
+    /// browser, and the text on the clipboard. `false` for a device that was just paired.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::NotPaired`] if `id` is not a paired device.
+    pub fn continue_access(&self, id: &str) -> Result<bool> {
+        let (peer, _) = self.paired(id)?;
+        let device = self.inner.trust.get(&peer).ok_or_else(Error::not_paired)?;
+        Ok(device.policy.continuing)
+    }
+
+    /// Lets the paired device `id` ask this device what its person is working on, or does not.
+    /// Only the person at this device can say so: nothing a paired device sends changes it.
+    ///
+    /// Nothing is read until the device asks, and a device that is turned away is not read for. The
+    /// setting is kept all the same if this device was not started to read it
+    /// ([`Options::serve_continue`]), and counts the next time the app is.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::NotPaired`] if `id` is not a paired device, and [`ErrorKind::Storage`] if the
+    /// setting could not be kept.
+    pub fn set_continue_access(&self, id: &str, allowed: bool) -> Result<()> {
+        let (peer, _) = self.paired(id)?;
+        let kept = self
+            .inner
+            .trust
+            .update(&peer, |device| device.policy.continuing = allowed)
+            .map_err(|e| Error::local(&e))?;
+        if kept {
+            Ok(())
+        } else {
+            Err(Error::not_paired())
+        }
+    }
+
+    /// Gives what the platform read for a paired device that asked ([`Event::ContinueAsked`]): the
+    /// page that is in front in the browser and the text on the clipboard, each left out when there
+    /// is none, so an empty [`ContinueItems`] says that there is nothing to continue. `None` says
+    /// that it could not be read, and the device that asked is told so.
+    ///
+    /// Returns whether the answer was passed on. It is not for a request that is not waiting any
+    /// more, because it was answered already, the few seconds that there are ran out, or the app
+    /// stopped. Nothing of what was read is kept.
+    pub fn answer_continue(&self, request: u64, items: Option<ContinueItems>) -> bool {
+        let waiting = locked(&self.inner.questions.readings).remove(&request);
+        waiting.is_some_and(|answer| answer.send(items.map(CoreContinueItems::from)).is_ok())
+    }
+
+    /// Asks the paired device `id` what its person is working on, to continue it here: the page
+    /// that is in front in its browser, and the text on its clipboard. Nobody there is asked: the
+    /// person allowed this device beforehand, in the settings for it
+    /// ([`set_continue_access`](Self::set_continue_access)), or the answer is that they did not
+    /// ([`ContinueOutcome::NotAllowed`]). What comes back is as old as the asking.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::NotPaired`], and [`ErrorKind::Unreachable`] if the device cannot be reached or
+    /// does not answer in time. A device that does not know how to be asked is
+    /// [`ContinueOutcome::Unsupported`].
+    pub async fn continue_from(&self, id: &str) -> Result<ContinueOutcome> {
+        let node = self.running()?;
+        let (peer, name) = self.paired(id)?;
+        match node.continue_from(&peer).await {
+            Ok(outcome) => Ok(outcome.into()),
+            Err(Core::Unsupported(_)) => Ok(ContinueOutcome::Unsupported),
+            Err(e) => Err(Error::reaching(&e, &name)),
         }
     }
 
@@ -1062,12 +1154,14 @@ impl Inner {
         if let Some(open) = locked(&self.join).take() {
             open.cancel.cancel();
         }
-        // Questions that are open become a no. All three tables are cleared, so that a yes to a
+        // Questions that are open become a no. The tables are cleared, so that a yes to a
         // request for files or for a window that comes during the shutdown finds nothing and is
         // refused, and the platform is not asked to open a screen for a window that cannot start.
         locked(&self.questions.waiting).clear();
         locked(&self.questions.transfers).clear();
         locked(&self.questions.windows).clear();
+        // A platform that is reading for a device that asked is not waited for: the node goes down.
+        locked(&self.questions.readings).clear();
         self.node.shutdown().await;
         // Released only now that nothing is using the folder.
         locked(&self.lock).take();
@@ -1103,6 +1197,7 @@ impl Questions {
             waiting: Mutex::new(HashMap::new()),
             transfers: Mutex::new(HashMap::new()),
             windows: Mutex::new(HashMap::new()),
+            readings: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
             events,
         })
@@ -1175,6 +1270,36 @@ impl Questions {
         (answered.await.unwrap_or(false), id)
     }
 
+    /// Tells the platform that a paired device called `from` asks what the person here is working
+    /// on, and waits for what it read. Nothing comes back if the platform could not read it, nobody
+    /// is listening to be told, or the application stopped; and a platform that is too slow is not
+    /// waited for: the node gives up on it, which drops this future, and the answer that comes
+    /// later finds nothing waiting.
+    pub(crate) async fn ask_reading(self: &Arc<Self>, from: &str) -> Option<CoreContinueItems> {
+        // A screen that is not there cannot read it, and the device that asked has no use for
+        // waiting out the time that it would have.
+        if self.events.receiver_count() == 0 {
+            tracing::debug!("what the person works on was asked for, and nobody is listening");
+            return None;
+        }
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let (answer, answered) = oneshot::channel();
+        locked(&self.readings).insert(id, answer);
+        let _unread = Unread {
+            questions: Arc::clone(self),
+            id,
+        };
+        tracing::debug!(
+            request = id,
+            "a paired device asks what the person works on"
+        );
+        self.emit(Event::ContinueAsked {
+            id,
+            from: from.to_owned(),
+        });
+        answered.await.ok().flatten()
+    }
+
     /// Tells the screens something. Nobody listening is fine.
     pub(crate) fn emit(&self, event: Event) {
         let _ = self.events.send(event);
@@ -1218,6 +1343,19 @@ impl Drop for Unanswered {
         if locked(table).remove(&self.id).is_some() {
             self.questions.emit(ended);
         }
+    }
+}
+
+/// Takes a request to read what the person works on out of its table when the wait for the answer
+/// is over, however it ended, so that an answer that comes later finds nothing and is turned away.
+struct Unread {
+    questions: Arc<Questions>,
+    id: u64,
+}
+
+impl Drop for Unread {
+    fn drop(&mut self) {
+        locked(&self.questions.readings).remove(&self.id);
     }
 }
 
@@ -1387,6 +1525,7 @@ mod tests {
             waiting: Mutex::new(HashMap::new()),
             transfers: Mutex::new(HashMap::new()),
             windows: Mutex::new(HashMap::new()),
+            readings: Mutex::new(HashMap::new()),
             next: AtomicU64::new(1),
             events,
         });
@@ -1447,5 +1586,77 @@ mod tests {
             Ok(Event::TransferRequestEnded { id: 2 })
         ));
         assert!(locked(&questions.transfers).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_reading_that_is_given_up_on_leaves_nothing_for_a_late_answer_to_find() {
+        let (questions, mut seen) = questions();
+        let asked = tokio::spawn({
+            let questions = Arc::clone(&questions);
+            async move { questions.ask_reading("Pocket Phone").await }
+        });
+        // The platform is told which device asks.
+        assert!(matches!(
+            seen.recv().await,
+            Ok(Event::ContinueAsked { id: 1, from }) if from == "Pocket Phone"
+        ));
+
+        // The node gives up on a platform that is too slow: whoever waits for it is dropped.
+        asked.abort();
+        let _ = asked.await;
+        assert!(locked(&questions.readings).is_empty());
+        // Nobody tells the platform that it is too late: it finds nothing waiting when it answers.
+        assert!(seen.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_reading_that_is_answered_gives_what_was_read_and_one_nobody_can_make_gives_nothing()
+    {
+        let (questions, mut seen) = questions();
+        let asked = tokio::spawn({
+            let questions = Arc::clone(&questions);
+            async move { questions.ask_reading("Pocket Phone").await }
+        });
+        assert!(matches!(
+            seen.recv().await,
+            Ok(Event::ContinueAsked { id: 1, .. })
+        ));
+        let answer = locked(&questions.readings).remove(&1).unwrap();
+        let read = CoreContinueItems::default();
+        answer.send(Some(read.clone())).unwrap();
+        assert_eq!(asked.await.unwrap(), Some(read));
+
+        // A platform that says it could not read it, and an application that stops meanwhile.
+        let asked = tokio::spawn({
+            let questions = Arc::clone(&questions);
+            async move { questions.ask_reading("Pocket Phone").await }
+        });
+        assert!(matches!(
+            seen.recv().await,
+            Ok(Event::ContinueAsked { id: 2, .. })
+        ));
+        let answer = locked(&questions.readings).remove(&2).unwrap();
+        answer.send(None).unwrap();
+        assert_eq!(asked.await.unwrap(), None);
+
+        let asked = tokio::spawn({
+            let questions = Arc::clone(&questions);
+            async move { questions.ask_reading("Pocket Phone").await }
+        });
+        assert!(matches!(
+            seen.recv().await,
+            Ok(Event::ContinueAsked { id: 3, .. })
+        ));
+        // What stopping the app does to the requests that are open.
+        locked(&questions.readings).clear();
+        assert_eq!(asked.await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_reading_with_nobody_to_tell_is_nothing_at_once_and_waits_for_no_one() {
+        let (questions, seen) = questions();
+        drop(seen);
+        assert_eq!(questions.ask_reading("Pocket Phone").await, None);
+        assert!(locked(&questions.readings).is_empty());
     }
 }
