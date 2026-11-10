@@ -532,10 +532,21 @@ private final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
   private let layout: CaptureLayout?
   /// Pauses the session while the window cannot be seen, and resumes it when it can.
   private let pauses: PauseWatch
+  /// Whether this app's account is behind the screen, while another account or the login window
+  /// is on it.
+  private let hidden: () -> Bool
 
   /// Set by `begin` and `stop`, which the Rust side calls one after the other.
   private var stream: SCStream?
+  private var filter: SCContentFilter?
+  private var configuration: SCStreamConfiguration?
   private var clock: DispatchSourceTimer?
+  /// Takes still images while the account is hidden (`still`).
+  private var stills: DispatchSourceTimer?
+  /// Whether a still image is being taken. Read and written on `queue` only.
+  private var stillInFlight = false
+  /// Whether the account was hidden at the last look. Read and written on `queue` only.
+  private var wasHidden = false
   private var watch: DispatchSourceTimer?
   /// Ends the session if no picture arrives in time, for a screen (`begin`).
   private var firstLook: DispatchSourceTimer?
@@ -545,8 +556,10 @@ private final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
   /// `look` says whether the window can be seen, and is asked about once a second.
   init(
     session: SourceSession, encoder: H264Encoder, format: PictureFormat, layout: CaptureLayout?,
-    look: @escaping () -> WatchedState?
+    look: @escaping () -> WatchedState?,
+    hidden: @escaping () -> Bool = { MacAccountWatch().place() == .hidden }
   ) {
+    self.hidden = hidden
     self.session = session
     self.pump = FramePump(session: session, encoder: encoder)
     self.format = format
@@ -581,6 +594,8 @@ private final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
     let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
     try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
     self.stream = stream
+    self.filter = filter
+    self.configuration = configuration
 
     // The frame clock: while the window does not change, nothing arrives from the capture, and the
     // pump is asked on this clock whether a picture is wanted all the same.
@@ -597,6 +612,17 @@ private final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
     watcher.setEventHandler { [pauses] in pauses.poll() }
     watch = watcher
     watcher.resume()
+
+    // While the account is behind the screen, the stream gives its first image and then none: the
+    // window server does not draw that account's screen for a stream. A still image of it is drawn
+    // all the same, so stills are taken in its place, at most `stillRate` a second.
+    let stillInterval = DispatchTimeInterval.nanoseconds(
+      Int(1_000_000_000 / max(min(format.fps, Capture.stillRate), 1)))
+    let stiller = DispatchSource.makeTimerSource(queue: queue)
+    stiller.schedule(deadline: .now() + stillInterval, repeating: stillInterval)
+    stiller.setEventHandler { [weak self] in self?.still() }
+    stills = stiller
+    stiller.resume()
 
     if watchFirstPicture {
       let looker = DispatchSource.makeTimerSource(queue: queue)
@@ -616,6 +642,8 @@ private final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
   func stop() {
     clock?.cancel()
     clock = nil
+    stills?.cancel()
+    stills = nil
     watch?.cancel()
     watch = nil
     firstLook?.cancel()
@@ -625,7 +653,42 @@ private final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
       stream.stopCapture { _ in }
     }
     stream = nil
-    queue.sync { pump.stop() }
+    queue.sync {
+      filter = nil
+      configuration = nil
+      pump.stop()
+    }
+  }
+
+  /// How many still images a second are taken at most while the account is hidden.
+  static let stillRate: UInt32 = 10
+
+  /// Takes a still image of the screen while the account is hidden, one at a time, and hands it
+  /// over as the stream would. It runs on the queue.
+  private func still() {
+    let isHidden = hidden()
+    if isHidden != wasHidden {
+      wasHidden = isHidden
+      NSLog(
+        isHidden
+          ? "Baton: this account is behind the screen, so still images are taken."
+          : "Baton: this account is on the screen, so the stream gives the images.")
+    }
+    guard isHidden, !stillInFlight, let filter, let configuration else { return }
+    stillInFlight = true
+    SCScreenshotManager.captureSampleBuffer(contentFilter: filter, configuration: configuration) {
+      [weak self] sample, _ in
+      guard let self else { return }
+      self.queue.async {
+        self.stillInFlight = false
+        // A capture that stopped in the meantime has no use for it.
+        guard self.filter != nil, let sample, sample.isValid,
+          let image = CMSampleBufferGetImageBuffer(sample)
+        else { return }
+        self.pictured = true
+        self.pump.captured(image, geometry: self.geometry(of: image, [:]))
+      }
+    }
   }
 
   /// The capture did not begin, or stopped: the session ends, with a sentence for the person if
@@ -661,7 +724,8 @@ private final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
     _ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
     of type: SCStreamOutputType
   ) {
-    guard type == .screen, sampleBuffer.isValid else { return }
+    // While the account is hidden the still images are the pictures (`still`).
+    guard type == .screen, sampleBuffer.isValid, !wasHidden else { return }
     // A frame of a window that did not change has no picture, and the status says so.
     guard
       let attachments = CMSampleBufferGetSampleAttachmentsArray(
