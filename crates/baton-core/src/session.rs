@@ -22,8 +22,8 @@ use baton_proto::{
     ALPN_SESSION, DeviceId, ItemId, PROTOCOL_MINOR, close_code,
     device::sanitize_display_name,
     message::{
-        DeclineReason, ErrorCode, ErrorReply, Handoff, HandoffReply, Hello, Item, Outcome, Request,
-        Response, capability,
+        ContinueReply, DeclineReason, ErrorCode, ErrorReply, Handoff, HandoffReply, Hello, Item,
+        Outcome, Request, Response, capability,
     },
     transfer::{Cancelled, Declined, TransferReply, TransferRequest},
 };
@@ -138,6 +138,11 @@ pub(crate) fn our_hello(shared: &Shared) -> Hello {
     // so, as one that unlocks others with the face of its person does.
     if shared.streaming.lets_unlock() {
         capabilities.push(capability::UNLOCK_TARGET.to_owned());
+    }
+    // A device that was given a way to read what its person works on gives it to a paired device
+    // that asks, when its person allowed that device.
+    if shared.continuing.is_some() {
+        capabilities.push(capability::CONTINUE_SERVE.to_owned());
     }
     if shared.streaming.approves_unlock() {
         capabilities.push(capability::UNLOCK_APPROVE.to_owned());
@@ -441,6 +446,16 @@ async fn serve_stream(
         Request::Unlock(request) => {
             Response::Unlock(shared.streaming.answer_unlock(&paired, request).await)
         }
+        // A device that was given no way to read what its person works on declines every request
+        // for it as unsupported (section 3, Continue).
+        Request::Continue(request) => Response::Continue(match &shared.continuing {
+            Some(continuing) => {
+                continuing
+                    .answer(&paired, request, shared.intake.item_charge())
+                    .await
+            }
+            None => ContinueReply::Declined(DeclineReason::Unsupported),
+        }),
     };
     respond(&mut send, &response).await;
 }

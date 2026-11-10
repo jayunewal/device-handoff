@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     clock::Clock,
+    continuing::Continuing,
     gate::ConnectionRegistry,
     node::Tuning,
     pairing::Offers,
@@ -42,6 +43,10 @@ pub(crate) struct Shared {
     pub(crate) incoming: Option<Incoming>,
     /// The window streaming sessions, and the offers of windows that other devices make.
     pub(crate) streaming: Arc<Streaming>,
+    /// What gives a paired device what the person here is working on. `None` when the
+    /// application gave the node nothing to read it with, and then every request for it is
+    /// declined as unsupported.
+    pub(crate) continuing: Option<Continuing>,
     /// What takes the unidirectional streams of session connections.
     pub(crate) uni: Arc<Uni>,
 }

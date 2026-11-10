@@ -94,6 +94,15 @@ pub struct DevicePolicy {
     /// Not kept at all while nobody has said, so that a file stays as an older version wrote it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hear: Option<bool>,
+    /// Whether this device may ask that one what its person is working on, to continue it there:
+    /// the page that is in front in the browser, and the text on the clipboard
+    /// (`docs/adr/0015-continue-from-another-device.md`).
+    ///
+    /// Off by default, because it lets the paired device read what the person is looking at and
+    /// has copied, without anyone here being asked each time. Only the person here can change it.
+    /// Not kept at all while it is off, so that a file stays as an older version wrote it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub continuing: bool,
 }
 
 impl DevicePolicy {
@@ -127,6 +136,8 @@ mod tests {
         assert!(!policy.sync_clipboard_to);
         assert_eq!(policy.start, StartPolicy::Off);
         assert_eq!(policy.hear, None);
+        // A device just paired cannot ask what the person is working on.
+        assert!(!policy.continuing);
         // Nothing is said of a device just paired: it does not hear where it can only look.
         assert!(!policy.may_hear(false));
     }
@@ -179,6 +190,25 @@ mod tests {
         assert!(!policy.may_hear(false));
         // A value that is not a yes or a no is an error, not a guess at what was meant.
         assert!(serde_json::from_str::<DevicePolicy>(r#"{"hear":"yes"}"#).is_err());
+    }
+
+    #[test]
+    fn continuing_is_kept_only_while_it_is_on_and_an_old_file_without_it_means_off() {
+        // Off is not written, so an older version reads the file as it wrote it.
+        let json = serde_json::to_string(&DevicePolicy::default()).unwrap();
+        assert!(!json.contains("continuing"), "{json}");
+        let on = DevicePolicy {
+            continuing: true,
+            ..DevicePolicy::default()
+        };
+        let json = serde_json::to_string(&on).unwrap();
+        assert!(json.contains("\"continuing\":true"), "{json}");
+        assert_eq!(serde_json::from_str::<DevicePolicy>(&json).unwrap(), on);
+        // A file written before the setting existed has none, and nothing is given.
+        let old: DevicePolicy = serde_json::from_str(r#"{"links":"open"}"#).unwrap();
+        assert!(!old.continuing);
+        // A value that is not a yes or a no is an error, not a guess at what was meant.
+        assert!(serde_json::from_str::<DevicePolicy>(r#"{"continuing":"yes"}"#).is_err());
     }
 
     #[test]
