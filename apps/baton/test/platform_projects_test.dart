@@ -13,6 +13,7 @@ import 'package:baton/src/file_shower.dart';
 import 'package:baton/src/notice_access.dart';
 import 'package:baton/src/rust_backend.dart';
 import 'package:baton/src/shares.dart';
+import 'package:baton/src/stay_awake.dart';
 import 'package:baton/src/support_folder.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -858,6 +859,78 @@ void main() {
     expect(swift, isNot(contains('SMAppService.daemon')));
     expect(swift, isNot(contains('SMAppService.loginItem')));
   });
+
+  test(
+    'the Mac app answers what Baton asks about staying awake while plugged in',
+    () {
+      // The channel, its questions and the words of its answers are named in lib/src/stay_awake.dart
+      // and in the plugin of the app. If they differ, the switch in the settings cannot be shown, or
+      // does nothing, and a Mac that the person asked to stay reachable goes to sleep with nobody told.
+      final plugin = _read(
+        'rust_builder/macos/Classes/BatonStreamPlugin.swift',
+      );
+      expect(
+        plugin,
+        contains('name: "${PlatformStayAwakeKeeper.channelName}"'),
+      );
+      final handler = _swiftCode(
+        _swiftFunction(plugin, 'private func answerAboutStayingAwake('),
+      ).join('\n');
+      for (final question in [
+        PlatformStayAwakeKeeper.stateQuestion,
+        PlatformStayAwakeKeeper.setQuestion,
+      ]) {
+        expect(handler, contains('case "$question":'), reason: question);
+      }
+      // The app follows the power of the Mac from the moment the plugin is registered, which is
+      // before any screen is up, and a Mac that the person asked for is held from then.
+      expect(
+        handler,
+        contains(
+          _inOrder([
+            'let keeper = MacStayAwake.shared',
+            'keeper.start()',
+            'let channel = FlutterMethodChannel(',
+          ]),
+        ),
+      );
+      expect(handler, contains('result(keeper.state.rawValue)'));
+      expect(handler, contains('keeper.ask(on)'));
+      expect(
+        _swiftCode(
+          _swiftMethod(
+            plugin,
+            '  public static func register(with registrar: FlutterPluginRegistrar) {',
+          ),
+        ).join('\n'),
+        contains(
+          _inOrder([
+            '#if os(macOS)',
+            'answerAboutStayingAwake(messenger: messenger)',
+            '#endif',
+          ]),
+        ),
+      );
+      // The words are the cases of the state, and the app knows no others.
+      final states = _read('rust_builder/macos/Classes/BatonStayAwake.swift');
+      for (final word in ['off', 'holding', 'waiting', 'refused']) {
+        expect(states, contains('  case $word\n'), reason: word);
+      }
+      // The hold is against the sleep that the system starts for want of use, and for nothing else: not
+      // the sleep of the display, which belongs to the person, and not the lighting of a dark
+      // screen.
+      final mac = _read('rust_builder/macos/Classes/BatonStayAwakeMac.swift');
+      expect(mac, contains('"PreventUserIdleSystemSleep" as CFString'));
+      expect(mac, isNot(contains('DisplaySleep')));
+      expect(mac, isNot(contains('IOPMAssertionDeclareUserActivity')));
+      expect(
+        mac,
+        contains('Baton keeps this Mac awake while it is plugged in'),
+      );
+      // The choice is kept by the app, so that it holds from the start.
+      expect(mac, contains('static let choiceKey = "stayAwakeWhilePluggedIn"'));
+    },
+  );
 
   test(
     'the Mac app says why it reads the page in front in Safari and Chrome',

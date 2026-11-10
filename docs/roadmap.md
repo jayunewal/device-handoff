@@ -59,4 +59,4 @@ Where it stands: built for the Mac with the iPhone and iPad as viewers. The Mac 
 - Who hosts the default relay and account server, and how that is paid for.
 - Short typed pairing codes (a password-authenticated key exchange) for devices that cannot scan a QR code.
 - Which of the things a person might continue (current tabs, the clipboard) a locked device may serve to a paired device, and under which policy.
-- How long a hand-off may keep a device awake. The sleep tests in [locked-devices.md](locked-devices.md) should settle the bound.
+- How long a hand-off may keep a device awake. The sleep tests in [locked-devices.md](locked-devices.md) should settle the bound. A Mac that the person chose to keep awake while it is plugged in is a separate case, decided in [ADR 0018](adr/0018-stay-awake-while-plugged-in.md).

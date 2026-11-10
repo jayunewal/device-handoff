@@ -19,6 +19,7 @@ import 'package:baton/src/awake.dart';
 import 'package:baton/src/backend.dart';
 import 'package:baton/src/file_shower.dart';
 import 'package:baton/src/rust_backend.dart';
+import 'package:baton/src/stay_awake.dart';
 import 'package:baton/src/support_folder.dart';
 import 'package:flutter/foundation.dart' show defaultTargetPlatform;
 import 'package:flutter/material.dart';
@@ -123,6 +124,39 @@ void main() {
             .invokeMethod<Object>(PlatformAlwaysOnKeeper.lookingQuestion),
         isA<bool>(),
       );
+    },
+    skip: defaultTargetPlatform != TargetPlatform.macOS,
+  );
+
+  testWidgets(
+    'asks the Mac app to stay awake while plugged in, and is answered',
+    (tester) async {
+      // The Mac app answers on a channel of its own (rust_builder/macos/Classes/BatonStreamPlugin.swift)
+      // and keeps the choice in its defaults, so the test puts it back as it found it, and the
+      // machine that runs it is left as it was. What the Mac does of it is checked by the Swift
+      // tests, which look at the assertions of the system, and this checks that the sandboxed app
+      // can ask the system at all: where the power comes from, and for the hold.
+      const keeper = PlatformStayAwakeKeeper();
+      final before = await keeper.state();
+      expect(
+        before,
+        isNot(StayAwake.unavailable),
+        reason: 'the Mac app answered the question and understood it',
+      );
+      addTearDown(() => keeper.set(before != StayAwake.off));
+
+      final asked = await keeper.set(true);
+      expect(
+        asked,
+        anyOf(StayAwake.holding, StayAwake.waiting),
+        reason:
+            'the app held the Mac, or said that it runs on its battery. '
+            '"refused" is a sandbox that does not let it read the power or take the hold',
+      );
+      expect(await keeper.state(), asked);
+
+      expect(await keeper.set(false), StayAwake.off);
+      expect(await keeper.state(), StayAwake.off);
     },
     skip: defaultTargetPlatform != TargetPlatform.macOS,
   );
