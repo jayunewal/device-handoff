@@ -268,6 +268,104 @@ void main() {
       expect(_typed(tester), 'from the share sheet');
     });
 
+    testWidgets(
+      'is taken when the app is told of it, with no change in the app to show it',
+      (tester) async {
+        final shares = FakeShares();
+        await _show(tester, _session([_kitchenIpad]), shares);
+        expect(find.byType(SendScreen), findsNothing);
+
+        // The action ran while Baton was in front, as on an iPad beside Safari: the app did not
+        // leave the screen, so it did not come back to it either.
+        shares.handAndTell('from the share sheet');
+        await tester.pumpAndSettle();
+
+        expect(shares.asked, 2);
+        expect(_sendingTo(tester), 'Kitchen iPad');
+        expect(_typed(tester), 'from the share sheet');
+      },
+    );
+
+    testWidgets('that the app is told of while one is open waits its turn', (
+      tester,
+    ) async {
+      final shares = FakeShares(['first']);
+      await _show(tester, _session([_kitchenIpad]), shares);
+      expect(_typed(tester), 'first');
+
+      shares.handAndTell('later');
+      await tester.pumpAndSettle();
+      expect(
+        _typed(tester),
+        'first',
+        reason: 'the person is not taken away from what they are doing',
+      );
+
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(_typed(tester), 'later');
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(find.byType(SendScreen), findsNothing);
+    });
+
+    testWidgets('that the app is told of twice at once comes once each', (
+      tester,
+    ) async {
+      final shares = FakeShares();
+      await _show(tester, _session([_kitchenIpad]), shares);
+
+      shares
+        ..handAndTell('one')
+        ..handAndTell('two');
+      await tester.pumpAndSettle();
+      expect(_typed(tester), 'one');
+
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(_typed(tester), 'two');
+
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(find.byType(SendScreen), findsNothing);
+    });
+
+    testWidgets('is not lost when the app is told while a read is under way', (
+      tester,
+    ) async {
+      final shares = FakeShares(['first'])..hold();
+      await _show(tester, _session([_kitchenIpad]), shares);
+
+      shares.handAndTell('second');
+      shares.release();
+      await tester.pumpAndSettle();
+      expect(_typed(tester), 'first');
+
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(_typed(tester), 'second');
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(find.byType(SendScreen), findsNothing);
+    });
+
+    testWidgets('is no longer listened for once the screen is closed', (
+      tester,
+    ) async {
+      final shares = FakeShares();
+      final session = _session([_kitchenIpad]);
+      await _show(tester, session, shares);
+      expect(shares.listening, isTrue);
+
+      await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+      expect(shares.listening, isFalse);
+
+      shares.handAndTell('too late');
+      await tester.pumpAndSettle();
+      expect(find.byType(SendScreen), findsNothing);
+      expect(shares.asked, 1);
+    });
+
     testWidgets('is not taken while the app is only passing through', (
       tester,
     ) async {

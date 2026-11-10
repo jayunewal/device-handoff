@@ -138,6 +138,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   StreamSubscription<TransferRequest>? _requests;
   StreamSubscription<WindowRequest>? _windowRequests;
   StreamSubscription<WindowSession>? _windowsStarted;
+  StreamSubscription<void>? _handed;
   _Tab _tab = _Tab.devices;
 
   /// What was handed to Baton and has not been put in front of the person yet, oldest first.
@@ -164,6 +165,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     unawaited(_windows.start());
     unawaited(_unlockNotices.start());
     unawaited(_continueServer.start());
+    // A shortcut can hand Baton something while it is already on the screen, which changes nothing
+    // in the app, so the app is told. This is listened to before the first take below, so that
+    // nothing that is handed over from here on falls between the two.
+    _handed = widget.shares.handed.listen((_) => unawaited(_takeShares()));
     // Something may have been handed to Baton, such as by a shortcut, before it was on the screen.
     WidgetsBinding.instance.addPostFrameCallback(
       (_) => unawaited(_takeShares()),
@@ -182,6 +187,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     unawaited(_requests?.cancel());
     unawaited(_windowRequests?.cancel());
     unawaited(_windowsStarted?.cancel());
+    unawaited(_handed?.cancel());
     _arrivalNotices.dispose();
     _inbox.dispose();
     _transfers.dispose();

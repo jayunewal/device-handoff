@@ -6,8 +6,9 @@ import Foundation
 
 /// The links and texts that a shortcut handed to Baton and that the app has not shown yet, oldest
 /// first. They live in memory only: nothing is written down, and what nobody took before the app
-/// was closed is gone with it. The app takes them when it is on the screen, puts each in front of
-/// the person, and sends it only when the person taps Send (lib/src/shares.dart).
+/// was closed is gone with it. The app takes them when its first screen is up, when it comes back
+/// to the screen, and when it is told that something came, puts each in front of the person, and
+/// sends it only when the person taps Send (lib/src/shares.dart).
 final class HandedToBaton {
   static let shared = HandedToBaton()
 
@@ -17,14 +18,27 @@ final class HandedToBaton {
 
   private let lock = NSLock()
   private var texts: [String] = []
+  private var tellTheApp: (() -> Void)?
+
+  /// Sets what tells the app that something was added, from now on. The action can run while the
+  /// app is already in front, and then nothing else in the app changes to say that something came.
+  /// A call takes the place of the one before.
+  func onAdd(_ tell: @escaping () -> Void) {
+    lock.lock()
+    defer { lock.unlock() }
+    tellTheApp = tell
+  }
 
   func add(_ text: String) {
     lock.lock()
-    defer { lock.unlock() }
     texts.append(text)
     if texts.count > HandedToBaton.most {
       texts.removeFirst(texts.count - HandedToBaton.most)
     }
+    let tell = tellTheApp
+    lock.unlock()
+    // Once the text is held, and outside the lock, which the app takes in its turn to take it.
+    tell?()
   }
 
   /// What was handed over since the last call, oldest first. It is forgotten once it is given.
@@ -60,8 +74,8 @@ struct SendWithBatonIntent: AppIntent {
   }
 }
 
-/// Gives the app what a shortcut handed over. The names of the channel and of the question must be
-/// the ones in lib/src/shares.dart.
+/// Gives the app what a shortcut handed over, and tells it when something was. The names of the
+/// channel, of the question and of the news must be the ones in lib/src/shares.dart.
 func answerAboutShares(messenger: FlutterBinaryMessenger) {
   let channel = FlutterMethodChannel(
     name: "io.github.jayunewal.baton/shares", binaryMessenger: messenger)
@@ -71,6 +85,15 @@ func answerAboutShares(messenger: FlutterBinaryMessenger) {
       result(HandedToBaton.shared.take())
     default:
       result(FlutterMethodNotImplemented)
+    }
+  }
+  // The action can run while the app is already in front, with no resume to show that something
+  // came, so the app is told. It is told on the main queue, which is where the channel is used,
+  // and it asks for what came. An app that is not listening yet takes what waits when its first
+  // screen is up. The closure holds the channel for as long as the app runs.
+  HandedToBaton.shared.onAdd {
+    DispatchQueue.main.async {
+      channel.invokeMethod("handed", arguments: nil)
     }
   }
 }
