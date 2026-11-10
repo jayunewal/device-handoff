@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import 'dart:async';
+
 import 'package:baton/src/mac_passwords.dart';
 import 'package:baton/src/rust/api/mac_unlock.dart';
 import 'package:baton/src/screens/restart_unlock_screen.dart';
@@ -46,8 +48,17 @@ class _FakeUnlocker extends SshUnlocker {
   final outcomes = <SshUnlock>[];
   final tries = <(SavedMac, String)>[];
 
+  /// The addresses that were asked for their key, with the port.
+  final asked = <(String, int)>[];
+
+  /// When set, [key] answers only when this does.
+  Completer<SshKeyCheck>? hold;
+
   @override
-  Future<SshKeyCheck> key(String host, int port) async => heard;
+  Future<SshKeyCheck> key(String host, int port) async {
+    asked.add((host, port));
+    return hold?.future ?? heard;
+  }
 
   @override
   Future<SshUnlock> unlock(SavedMac mac, String password) async {
@@ -63,11 +74,24 @@ const _mac = SavedMac(
   keys: [_key],
 );
 
+/// A clock that is read twice by a check of the way, and that says the second time that [took]
+/// has gone by.
+class _Clock {
+  _Clock(this.took);
+
+  final Duration took;
+  var _reads = 0;
+
+  DateTime call() =>
+      DateTime.utc(2026, 11, 10).add(_reads++ == 0 ? Duration.zero : took);
+}
+
 Future<void> _show(
   WidgetTester tester,
   _FakeKeeper keeper,
-  _FakeUnlocker unlocker,
-) async {
+  _FakeUnlocker unlocker, {
+  DateTime Function()? now,
+}) async {
   // Tall enough that the whole form of a new Mac is on the screen.
   tester.view.physicalSize = const Size(1200, 2400);
   tester.view.devicePixelRatio = 1;
@@ -78,6 +102,7 @@ Future<void> _show(
         keeper: keeper,
         unlocker: unlocker,
         newId: () => 'new',
+        now: now ?? DateTime.now,
       ),
     ),
   );
@@ -370,5 +395,226 @@ void main() {
     expect(keeper.macs, isEmpty);
     expect(keeper.passwords, isEmpty);
     expect(find.text('No Mac saved yet.'), findsOneWidget);
+  });
+
+  testWidgets(
+    'a running Mac that takes keys only can be saved without the try',
+    (tester) async {
+      final keeper = _FakeKeeper();
+      final unlocker = _FakeUnlocker()
+        ..outcomes.add(const SshUnlock.noPassword());
+      await _show(tester, keeper, unlocker);
+      await fillAndCheck(tester);
+      await tester.tap(find.text('They match. Save'));
+      await tester.pumpAndSettle();
+      expect(
+        find.textContaining('does not take a password over SSH while it runs'),
+        findsOneWidget,
+      );
+      expect(keeper.macs, isEmpty);
+
+      await tester.tap(find.text('Save without trying'));
+      await tester.pumpAndSettle();
+      expect(
+        keeper.macs['new'],
+        const SavedMac(
+          id: 'new',
+          host: 'mac.local',
+          account: 'jay',
+          keys: [_key],
+        ),
+      );
+      expect(keeper.passwords['new'], 'typo');
+      expect(unlocker.tries, hasLength(1));
+    },
+  );
+
+  testWidgets('a Mac that does not answer an unlock is pointed to the check', (
+    tester,
+  ) async {
+    final keeper = _FakeKeeper()..macs['m1'] = _mac;
+    keeper.opens = (_) => 'secret';
+    final unlocker = _FakeUnlocker()
+      ..outcomes.add(const SshUnlock.unreachable(detail: 'gone'));
+    await _show(tester, keeper, unlocker);
+    await tester.tap(find.text('Unlock'));
+    await tester.pumpAndSettle();
+    expect(find.text('Could not unlock Jays-MBP.local'), findsOneWidget);
+    expect(
+      find.textContaining(
+        '"Check the way" in the menu of the Mac says whether it can be '
+        'reached from here.',
+      ),
+      findsOneWidget,
+    );
+  });
+
+  group('the check of the way', () {
+    Future<void> checkWay(WidgetTester tester) async {
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Check the way'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('says that the way is open, and sends nothing', (tester) async {
+      final keeper = _FakeKeeper()..macs['m1'] = _mac;
+      final unlocker = _FakeUnlocker();
+      await _show(
+        tester,
+        keeper,
+        unlocker,
+        now: _Clock(const Duration(milliseconds: 340)).call,
+      );
+      await checkWay(tester);
+
+      expect(find.text('The way is open'), findsOneWidget);
+      expect(
+        find.textContaining('Reached Jays-MBP.local in 340 ms.'),
+        findsOneWidget,
+      );
+      expect(unlocker.asked, [('Jays-MBP.local', 22)]);
+      // The face was not asked for, and no password was given.
+      expect(keeper.reasons, isEmpty);
+      expect(unlocker.tries, isEmpty);
+    });
+
+    for (final (milliseconds, said) in [
+      (0, '0 ms'),
+      (999, '999 ms'),
+      (1000, '1.0 s'),
+      (1432, '1.4 s'),
+      (12040, '12.0 s'),
+    ]) {
+      testWidgets('tells $milliseconds ms as $said', (tester) async {
+        final keeper = _FakeKeeper()..macs['m1'] = _mac;
+        await _show(
+          tester,
+          keeper,
+          _FakeUnlocker(),
+          now: _Clock(Duration(milliseconds: milliseconds)).call,
+        );
+        await checkWay(tester);
+        expect(
+          find.textContaining('Reached Jays-MBP.local in $said.'),
+          findsOneWidget,
+        );
+      });
+    }
+
+    testWidgets(
+      'shows a key that was not saved, and offers no way to trust it',
+      (tester) async {
+        final keeper = _FakeKeeper()..macs['m1'] = _mac;
+        final unlocker = _FakeUnlocker()
+          ..heard = const SshKeyCheck.heard(fingerprint: _other);
+        await _show(tester, keeper, unlocker);
+        await checkWay(tester);
+
+        expect(find.text('The Mac answered with another key'), findsOneWidget);
+        expect(find.text(_other), findsOneWidget);
+        expect(find.text('The way is open'), findsNothing);
+        expect(find.textContaining('Trust'), findsNothing);
+        await tester.tap(find.text('OK'));
+        await tester.pumpAndSettle();
+        expect(keeper.macs['m1']!.keys, [_key]);
+        expect(unlocker.tries, isEmpty);
+      },
+    );
+
+    testWidgets('knows a saved key by its text, whatever surrounds it', (
+      tester,
+    ) async {
+      final keeper = _FakeKeeper()
+        ..macs['m1'] = _mac.copyWith(keys: [_other, ' $_key\n']);
+      await _show(tester, keeper, _FakeUnlocker());
+      await checkWay(tester);
+      expect(find.text('The way is open'), findsOneWidget);
+    });
+
+    testWidgets('names what to look at when nothing answers', (tester) async {
+      final keeper = _FakeKeeper()..macs['m1'] = _mac;
+      final unlocker = _FakeUnlocker()
+        ..heard = const SshKeyCheck.unreachable(detail: 'gone');
+      await _show(tester, keeper, unlocker);
+      await checkWay(tester);
+
+      expect(find.text('No answer'), findsOneWidget);
+      expect(
+        find.textContaining('Nothing answered at Jays-MBP.local.'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Away from home, check that your private network'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('shows what another device said, and the address, plainly', (
+      tester,
+    ) async {
+      final keeper = _FakeKeeper()
+        ..macs['m1'] = _mac.copyWith(host: 'evil\u202Ehost');
+      final unlocker = _FakeUnlocker()
+        ..heard = const SshKeyCheck.failed(detail: 'not ssh\u202E');
+      await _show(tester, keeper, unlocker);
+      await checkWay(tester);
+
+      expect(find.text('Not a Mac with Remote Login'), findsOneWidget);
+      expect(
+        find.textContaining(
+          'Something answered at evil\u{FFFD}host, but not as a Mac with '
+          'Remote Login does (not ssh\u{FFFD}).',
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('shows nothing when the screen was closed meanwhile', (
+      tester,
+    ) async {
+      final keeper = _FakeKeeper()..macs['m1'] = _mac;
+      final unlocker = _FakeUnlocker()..hold = Completer<SshKeyCheck>();
+      await _show(tester, keeper, unlocker);
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Check the way'));
+      await tester.pump(const Duration(milliseconds: 500));
+
+      await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+      unlocker.hold!.complete(const SshKeyCheck.heard(fingerprint: _key));
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('holds the Mac while it waits, and lets it go after', (
+      tester,
+    ) async {
+      final keeper = _FakeKeeper()..macs['m1'] = _mac;
+      final unlocker = _FakeUnlocker()..hold = Completer<SshKeyCheck>();
+      await _show(tester, keeper, unlocker);
+
+      await tester.tap(find.byTooltip('More'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Check the way'));
+      // Long enough for the menu that was tapped to be gone.
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+      expect(find.text('Unlock'), findsNothing);
+      // The menu does not open while the Mac is being asked.
+      await tester.tap(find.byTooltip('More'));
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.text('Check the way'), findsNothing);
+      expect(unlocker.asked, hasLength(1));
+
+      unlocker.hold!.complete(const SshKeyCheck.heard(fingerprint: _key));
+      await tester.pumpAndSettle();
+      expect(find.text('The way is open'), findsOneWidget);
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      expect(find.text('Unlock'), findsOneWidget);
+    });
   });
 }

@@ -5,6 +5,7 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 
+import '../format.dart';
 import '../mac_passwords.dart';
 import '../rust/api/mac_unlock.dart';
 import 'content_box.dart';
@@ -25,6 +26,7 @@ class RestartUnlockScreen extends StatefulWidget {
     required this.keeper,
     this.unlocker = const RustSshUnlocker(),
     this.newId = _randomId,
+    this.now = DateTime.now,
     super.key,
   });
 
@@ -33,6 +35,9 @@ class RestartUnlockScreen extends StatefulWidget {
 
   /// Makes the id of a Mac that is being saved. Tests give one that they know.
   final String Function() newId;
+
+  /// The time, to say how long a Mac took to answer. Tests give a clock that they set.
+  final DateTime Function() now;
 
   @override
   State<RestartUnlockScreen> createState() => _RestartUnlockScreenState();
@@ -50,7 +55,7 @@ class _RestartUnlockScreenState extends State<RestartUnlockScreen> {
   List<SavedMac>? _macs;
   String? _problem;
 
-  /// The Mac that is being unlocked, while it is.
+  /// The Mac that is being unlocked, or whose way is being checked, while it is.
   String? _busy;
 
   @override
@@ -133,8 +138,9 @@ class _RestartUnlockScreenState extends State<RestartUnlockScreen> {
         await _tell(
           mac,
           'The Mac did not answer. Check that this device is on the same network as the Mac, '
-          'and that Remote Login is on. A Mac that has just restarted may take a minute to '
-          'join the network.',
+          'or on the private network that leads to it, and that Remote Login is on. A Mac that '
+          'has just restarted may take a minute to join the network. "Check the way" in the '
+          'menu of the Mac says whether it can be reached from here.',
         );
       case SshUnlock_Failed(:final detail):
         await _tell(
@@ -182,6 +188,94 @@ class _RestartUnlockScreenState extends State<RestartUnlockScreen> {
         ],
       ),
     );
+  }
+
+  /// Asks the Mac for its key at the saved address and says what came of it. The password is not
+  /// sent, and the face is not asked for: the check can be made on any network, as often as the
+  /// person likes, with a Mac that runs and with one that waits for its disk password. It shows
+  /// from where the person is whether an unlock would reach the Mac.
+  Future<void> _checkWay(SavedMac mac) async {
+    setState(() => _busy = mac.id);
+    final started = widget.now();
+    final SshKeyCheck heard;
+    final Duration took;
+    try {
+      heard = await widget.unlocker.key(mac.host, mac.port);
+      took = widget.now().difference(started);
+    } finally {
+      if (mounted) setState(() => _busy = null);
+    }
+    if (!mounted) return;
+    final host = visibleText(mac.host);
+    final (title, message, shown) = switch (heard) {
+      SshKeyCheck_Heard(:final fingerprint) when _isSaved(mac, fingerprint) => (
+        'The way is open',
+        'Reached $host in ${_took(took)}. It answered with the key that you saved, so an '
+            'unlock from here would reach your Mac. Nothing was sent to it, not even the '
+            'password.',
+        null,
+      ),
+      SshKeyCheck_Heard(:final fingerprint) => (
+        'The Mac answered with another key',
+        'Reached $host in ${_took(took)}, but with another key than the one you saved, so an '
+            'unlock from here would send it nothing. It answered with:',
+        fingerprint,
+      ),
+      SshKeyCheck_Unreachable() => (
+        'No answer',
+        'Nothing answered at $host. At home, check that Remote Login is on, that the Mac is '
+            'awake and that its address has not changed. Away from home, check that your private '
+            'network is on, and that the device at home that carries it is on too. A Mac that '
+            'has just restarted may take a minute to join the network.',
+        null,
+      ),
+      SshKeyCheck_Failed(:final detail) => (
+        'Not a Mac with Remote Login',
+        'Something answered at $host, but not as a Mac with Remote Login does '
+            '(${visibleText(detail)}).',
+        null,
+      ),
+    };
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(message),
+              if (shown != null) ...[
+                const SizedBox(height: 12),
+                SelectableText(
+                  shown,
+                  style: const TextStyle(fontFamily: 'monospace'),
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Whether `fingerprint` is one of the keys that `mac` was saved with.
+  bool _isSaved(SavedMac mac, String fingerprint) =>
+      mac.keys.any((key) => key.trim() == fingerprint);
+
+  /// How long a Mac took, for a sentence: "340 ms", or "1.4 s" from a second.
+  String _took(Duration time) {
+    final milliseconds = time.inMilliseconds;
+    return milliseconds < 1000
+        ? '$milliseconds ms'
+        : '${(milliseconds / 1000).toStringAsFixed(1)} s';
   }
 
   Future<void> _tell(
@@ -306,11 +400,17 @@ class _RestartUnlockScreenState extends State<RestartUnlockScreen> {
                           ),
                         PopupMenuButton<_MacAction>(
                           tooltip: 'More',
+                          enabled: _busy == null,
                           onSelected: (action) => switch (action) {
+                            _MacAction.check => _checkWay(mac),
                             _MacAction.password => _changePassword(mac),
                             _MacAction.forget => _forget(mac),
                           },
                           itemBuilder: (context) => const [
+                            PopupMenuItem(
+                              value: _MacAction.check,
+                              child: Text('Check the way'),
+                            ),
                             PopupMenuItem(
                               value: _MacAction.password,
                               child: Text('Change password'),
@@ -332,7 +432,7 @@ class _RestartUnlockScreenState extends State<RestartUnlockScreen> {
   }
 }
 
-enum _MacAction { password, forget }
+enum _MacAction { check, password, forget }
 
 class _PasswordDialog extends StatefulWidget {
   const _PasswordDialog({required this.account});
@@ -411,7 +511,8 @@ class _AddMacScreenState extends State<AddMacScreen> {
   /// Whether the password is being tried and saved.
   bool _saving = false;
 
-  /// Whether the Mac did not answer the try of the password, so that it may be saved without it.
+  /// Whether the password could not be tried, because the Mac did not answer or does not take a
+  /// password while it runs, so that it may be saved without the try.
   bool _unchecked = false;
 
   @override
@@ -447,8 +548,9 @@ class _AddMacScreenState extends State<AddMacScreen> {
           _heardFrom = address;
         case SshKeyCheck_Unreachable():
           _problem =
-              'The Mac did not answer. Check the address, that this device is on the same '
-              'network, and that Remote Login is on.';
+              'The Mac did not answer. Check the address, that Remote Login is on, and that '
+              'this device is on the same network as the Mac or on the private network that '
+              'leads to it.';
         case SshKeyCheck_Failed(:final detail):
           _problem =
               'Something answered, but not as a Mac with Remote Login does ($detail).';
@@ -490,7 +592,14 @@ class _AddMacScreenState extends State<AddMacScreen> {
               'given nothing and nothing was saved. Check the Mac again.';
           _heard = null;
         case SshUnlock_NoPassword():
-          problem = 'The Mac does not take a password over SSH. Check that Remote Login is on.';
+          // The Mac that runs takes keys only. The SSH server that answers before the disk is
+          // unlocked is another one, and it is not known to read that setting, so the Mac may
+          // still take a password after a restart. The person decides.
+          problem =
+              'This Mac does not take a password over SSH while it runs, so the password could '
+              'not be tried. A Mac that waits for its disk password after a restart may still '
+              'take one. You can save it without the try.';
+          _unchecked = true;
         case SshUnlock_Unreachable():
         case SshUnlock_Failed():
           problem =
@@ -533,7 +642,10 @@ class _AddMacScreenState extends State<AddMacScreen> {
                 'On the Mac, open System Settings > General > Sharing and turn on Remote Login. '
                 'Click the info button next to it to see the address, such as '
                 'ssh jay@Jays-MBP.local: the part after @ is the address, and the part before '
-                'it is the account.',
+                'it is the account. If you can, use the Mac\'s number address, such as '
+                '192.168.73.20, and not its name: a name may not work from outside your home '
+                'network, and a Mac that waits for its disk password may not announce one. The '
+                'guide "Reach your Mac from away" says how to give the Mac a fixed address.',
               ),
               const SizedBox(height: 16),
               TextField(
