@@ -73,6 +73,10 @@ pub mod capability {
     /// `UnlockDone`, and sends `Unlock`, `UnlockOpened` and `UnlockCancelled` (section 9 of
     /// `docs/protocol.md`). Only a device that advertises [`STREAM_VIEW`] advertises it.
     pub const UNLOCK_APPROVE: &str = "unlock.approve";
+    /// Gives a paired device what its person is working on, when that device asks and the person
+    /// allowed it: the page that is in front in a browser, and the text on the clipboard. Accepts
+    /// [`Request::Continue`](super::Request::Continue) (section 3 of `docs/protocol.md`).
+    pub const CONTINUE_SERVE: &str = "continue.serve";
 }
 
 /// A message with a defined maximum size and field limits.
@@ -107,6 +111,9 @@ pub enum Request {
     /// Ask a paired device for the key that an unlock is sealed to. Only to a peer that
     /// advertised [`capability::UNLOCK_APPROVE`].
     Unlock(UnlockRequest),
+    /// Ask a paired device what its person is working on, to continue it here. Only to a peer
+    /// that advertised [`capability::CONTINUE_SERVE`].
+    Continue(ContinueRequest),
 }
 
 /// A response to a [`Request`].
@@ -124,6 +131,8 @@ pub enum Response {
     Stream(StreamReply),
     /// Answers [`Request::Unlock`].
     Unlock(UnlockReply),
+    /// Answers [`Request::Continue`].
+    Continue(ContinueReply),
     /// The request could not be handled at all.
     Error(ErrorReply),
 }
@@ -312,6 +321,51 @@ pub enum DeclineReason {
     Other,
 }
 
+/// What a device asks of a paired device to continue its person's work on itself (`docs/protocol.md`,
+/// section 3, Continue).
+///
+/// A request is not extensible: a device asks only what the capabilities say is understood, so a
+/// kind that this version does not know is an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContinueRequest {
+    /// Ask what the person there is working on: the page that is in front in the browser, and the
+    /// text on the clipboard.
+    Ask(ContinueAsk),
+}
+
+/// The question of [`ContinueRequest::Ask`].
+///
+/// It has no fields yet. It is a struct, and not a unit, so that a later version can add some
+/// that an older device ignores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ContinueAsk {}
+
+/// A device's answer to a [`ContinueAsk`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ContinueReply {
+    /// What its person has ready. It may be nothing: the device is locked, or there is no page
+    /// and no text.
+    Items(ContinueItems),
+    /// The device gave nothing, and says why: [`DeclineReason::Blocked`] where its person has not
+    /// allowed the asking device, [`DeclineReason::Unsupported`] where it cannot read what its
+    /// person works on, [`DeclineReason::RateLimited`] where the asking device asks too often,
+    /// and [`DeclineReason::Other`] where it could not read it just now.
+    Declined(DeclineReason),
+}
+
+/// What the person at a device has ready to continue somewhere else.
+///
+/// A field that is missing is something that there is none of, and says nothing of why.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ContinueItems {
+    /// The page that is in front in the browser.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<Link>,
+    /// The text on the clipboard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clipboard: Option<ClipboardText>,
+}
+
 /// A request that could not be handled at all.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorReply {
@@ -361,18 +415,53 @@ impl Hello {
     }
 }
 
+impl Link {
+    /// Checks the address and the title against the protocol's limits: what a link may be, whether
+    /// it is handed over or given back.
+    ///
+    /// # Errors
+    ///
+    /// The address is empty or too long, or the title is too long.
+    pub fn validate(&self) -> Result<(), LimitError> {
+        check_non_empty_len("link url", &self.url, MAX_URL_BYTES)?;
+        self.title
+            .as_deref()
+            .map_or(Ok(()), |t| check_len("link title", t, MAX_TITLE_BYTES))
+    }
+}
+
+impl ClipboardText {
+    /// Checks the text against the protocol's limit: what clipboard text may be, whether it is
+    /// handed over or given back.
+    ///
+    /// # Errors
+    ///
+    /// The text is empty or too long.
+    pub fn validate(&self) -> Result<(), LimitError> {
+        check_non_empty_len("clipboard text", &self.text, MAX_CLIPBOARD_TEXT_BYTES)
+    }
+}
+
 impl Item {
     fn validate(&self) -> Result<(), LimitError> {
         match self {
-            Self::Link(link) => {
-                check_non_empty_len("link url", &link.url, MAX_URL_BYTES)?;
-                link.title
-                    .as_deref()
-                    .map_or(Ok(()), |t| check_len("link title", t, MAX_TITLE_BYTES))
+            Self::Link(link) => link.validate(),
+            Self::ClipboardText(clip) => clip.validate(),
+        }
+    }
+}
+
+impl ContinueReply {
+    fn validate(&self) -> Result<(), LimitError> {
+        match self {
+            Self::Items(items) => {
+                items.page.as_ref().map_or(Ok(()), Link::validate)?;
+                items
+                    .clipboard
+                    .as_ref()
+                    .map_or(Ok(()), ClipboardText::validate)
             }
-            Self::ClipboardText(clip) => {
-                check_non_empty_len("clipboard text", &clip.text, MAX_CLIPBOARD_TEXT_BYTES)
-            }
+            Self::Declined(_) => Ok(()),
         }
     }
 }
@@ -383,7 +472,7 @@ impl Message for Request {
     fn validate(&self) -> Result<(), LimitError> {
         match self {
             Self::Hello(hello) => hello.validate(),
-            Self::Ping(_) | Self::Unlock(_) => Ok(()),
+            Self::Ping(_) | Self::Unlock(_) | Self::Continue(_) => Ok(()),
             Self::Handoff(handoff) => handoff.item.validate(),
             Self::Transfer(request) => request.validate(),
             Self::Stream(request) => request.validate(),
@@ -401,6 +490,7 @@ impl Message for Response {
             Self::Transfer(reply) => reply.validate(),
             Self::Stream(reply) => reply.validate(),
             Self::Unlock(reply) => reply.validate(),
+            Self::Continue(reply) => reply.validate(),
             Self::Error(error) => {
                 check_len("error message", &error.message, MAX_ERROR_MESSAGE_BYTES)
             }
@@ -547,6 +637,180 @@ mod tests {
             !shown.contains("hunter2") && !shown.contains("s3cr3t"),
             "{shown}"
         );
+    }
+
+    fn ready(page: Option<Link>, clipboard: Option<ClipboardText>) -> Response {
+        Response::Continue(ContinueReply::Items(ContinueItems { page, clipboard }))
+    }
+
+    fn page(url: &str, title: Option<&str>) -> Link {
+        Link {
+            url: url.into(),
+            title: title.map(Into::into),
+        }
+    }
+
+    fn text_of(text: &str) -> ClipboardText {
+        ClipboardText { text: text.into() }
+    }
+
+    /// Checks that a message is written as exactly the CBOR that `expected` says, built by hand,
+    /// key by key, and that the frame it makes is `frame` in hexadecimal.
+    fn assert_wire<M: Message>(message: &M, expected: &ciborium::Value, frame: &str) {
+        let mut cbor = Vec::new();
+        ciborium::into_writer(expected, &mut cbor).unwrap();
+        let written = crate::frame::encode(message).unwrap();
+        assert_eq!(written[crate::frame::HEADER_LEN..], cbor);
+        assert_eq!(data_encoding::HEXLOWER.encode(&written), frame);
+    }
+
+    #[test]
+    fn the_messages_of_continuing_have_known_wire_encodings() {
+        use ciborium::cbor;
+        // The exact CBOR is the protocol. It is built here by hand so that a change in the order
+        // of the fields, or in how a part that is not there is left out, shows up.
+        assert_wire(
+            &Request::Continue(ContinueRequest::Ask(ContinueAsk {})),
+            &cbor!({ "Continue" => { "Ask" => {} } }).unwrap(),
+            "00000010a168436f6e74696e7565a16341736ba0",
+        );
+        assert_wire(
+            &ready(
+                Some(page("https://example.com/report", Some("The report"))),
+                Some(text_of("hello")),
+            ),
+            &cbor!({
+                "Continue" => {
+                    "Items" => {
+                        "page" => { "url" => "https://example.com/report", "title" => "The report" },
+                        "clipboard" => { "text" => "hello" },
+                    },
+                },
+            })
+            .unwrap(),
+            "0000005fa168436f6e74696e7565a1654974656d73a26470616765a26375726c781a68747470733a2f2f6578616d706c652e636f6d2f7265706f7274657469746c656a546865207265706f727469636c6970626f617264a164746578746568656c6c6f",
+        );
+        // Nothing at all is an empty map: a part that is not there is not written.
+        assert_wire(
+            &ready(None, None),
+            &cbor!({ "Continue" => { "Items" => {} } }).unwrap(),
+            "00000012a168436f6e74696e7565a1654974656d73a0",
+        );
+        assert_wire(
+            &Response::Continue(ContinueReply::Declined(DeclineReason::Blocked)),
+            &cbor!({ "Continue" => { "Declined" => "Blocked" } }).unwrap(),
+            "0000001ca168436f6e74696e7565a1684465636c696e656467426c6f636b6564",
+        );
+    }
+
+    #[test]
+    fn a_device_that_gives_what_its_person_works_on_names_the_capability_for_it() {
+        assert_eq!(capability::CONTINUE_SERVE, "continue.serve");
+    }
+
+    #[test]
+    fn what_a_device_has_ready_may_be_nothing_a_page_text_or_both() {
+        assert!(ready(None, None).validate().is_ok());
+        assert!(
+            ready(Some(page("https://example.com", None)), None)
+                .validate()
+                .is_ok()
+        );
+        assert!(ready(None, Some(text_of("hello"))).validate().is_ok());
+        assert!(
+            ready(
+                Some(page("https://example.com", Some("Example"))),
+                Some(text_of("hello"))
+            )
+            .validate()
+            .is_ok()
+        );
+        // A refusal carries nothing to check, and a request nothing at all.
+        for reason in [
+            DeclineReason::Blocked,
+            DeclineReason::Unsupported,
+            DeclineReason::RateLimited,
+            DeclineReason::Other,
+        ] {
+            assert!(
+                Response::Continue(ContinueReply::Declined(reason))
+                    .validate()
+                    .is_ok()
+            );
+        }
+        assert!(
+            Request::Continue(ContinueRequest::Ask(ContinueAsk {}))
+                .validate()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn what_a_device_has_ready_follows_the_limits_of_a_link_and_of_text() {
+        // The page is a link and the text is clipboard text, so they are held to the same limits as
+        // when they are handed over.
+        assert!(ready(Some(page("", None)), None).validate().is_err());
+        assert!(
+            ready(Some(page(&"x".repeat(MAX_URL_BYTES), None)), None)
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            ready(Some(page(&"x".repeat(MAX_URL_BYTES + 1), None)), None)
+                .validate()
+                .is_err()
+        );
+        let title = |n: usize| {
+            ready(
+                Some(page("https://example.com", Some(&"t".repeat(n)))),
+                None,
+            )
+        };
+        assert!(title(MAX_TITLE_BYTES).validate().is_ok());
+        assert!(title(MAX_TITLE_BYTES + 1).validate().is_err());
+        assert!(ready(None, Some(text_of(""))).validate().is_err());
+        assert!(
+            ready(None, Some(text_of(&"x".repeat(MAX_CLIPBOARD_TEXT_BYTES))))
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            ready(
+                None,
+                Some(text_of(&"x".repeat(MAX_CLIPBOARD_TEXT_BYTES + 1)))
+            )
+            .validate()
+            .is_err()
+        );
+        // A good page does not make up for text that is too long.
+        assert!(
+            ready(
+                Some(page("https://example.com", None)),
+                Some(text_of(&"x".repeat(MAX_CLIPBOARD_TEXT_BYTES + 1)))
+            )
+            .validate()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn what_a_device_has_ready_stays_out_of_a_log() {
+        let shown = format!(
+            "{:?}",
+            ready(
+                Some(page(
+                    "https://user:hunter2@Example.com/reset/abc123?token=s3cr3t",
+                    Some("Reset the password for Jay"),
+                )),
+                Some(text_of("correct horse battery staple")),
+            )
+        );
+        assert!(shown.contains("https://example.com"), "{shown}");
+        for secret in [
+            "user", "hunter2", "reset", "abc123", "s3cr3t", "Jay", "horse",
+        ] {
+            assert!(!shown.contains(secret), "{secret} leaked in {shown}");
+        }
     }
 
     #[test]

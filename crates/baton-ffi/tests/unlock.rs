@@ -24,6 +24,7 @@ async fn start() -> (Baton, TempDir) {
         Some(false),
         Some(false),
         None,
+        None,
     )
     .await
     .unwrap();

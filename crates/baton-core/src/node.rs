@@ -48,7 +48,10 @@ use std::{
 use baton_proto::{
     ALPN_PAIR, ALPN_SESSION, DeviceId, DeviceInfo, ItemId, Platform, TransferId, close_code,
     id::SessionId,
-    message::{Handoff, Item, Message, Outcome, Ping, Request, Response, capability},
+    message::{
+        ContinueAsk, ContinueRequest, Handoff, Item, Message, Outcome, Ping, Request, Response,
+        capability,
+    },
     pair::{ConfirmationCode, PairSecret},
     stream::{Start, StreamReply, StreamRequest},
     ticket::{MAX_ADDRS, MAX_RELAY_BYTES, PairTicket},
@@ -71,6 +74,7 @@ use crate::uni::Sink;
 use crate::{
     clock::{Clock, SystemClock},
     config::{self, Config, NetworkConfig},
+    continuing::{ContinueHandler, ContinueOutcome, Continuing},
     error::{Error, OfferEnd, Result},
     gate::{Admission, ConnectionRegistry, Gate},
     identity::Identity,
@@ -105,6 +109,15 @@ const MDNS_SERVICE: &str = "baton";
 
 /// How long to wait for the relay before making a ticket without it.
 const RELAY_WAIT: Duration = Duration::from_secs(3);
+
+/// What this device tells the others about itself in its `Hello`.
+fn device_info(config: &Config) -> DeviceInfo {
+    DeviceInfo {
+        name: config.device_name(),
+        platform: Platform::current(),
+        app_version: env!("CARGO_PKG_VERSION").to_owned(),
+    }
+}
 
 /// The table of the transfers that other devices offer, when the application takes transfers. Its
 /// waits are the tuning's, so that a test can shorten them.
@@ -202,6 +215,10 @@ pub struct Tuning {
     /// How long a transfer that is being received may move no byte before its attempt is
     /// stopped (section 8, Time). The sender may try again, and the files that were received stay.
     pub stall: Duration,
+    /// How long a device that was asked what its person is working on has to read it before it
+    /// must answer. The device that asked waits this long and then the time that the network
+    /// needs, so that it is not left waiting on a device that gave up.
+    pub continue_prepare: Duration,
 }
 
 impl Default for Tuning {
@@ -217,6 +234,7 @@ impl Default for Tuning {
             idle_connection: Duration::from_mins(2),
             finish_wait: FINISH_WAIT,
             stall: STALL,
+            continue_prepare: Duration::from_secs(5),
         }
     }
 }
@@ -270,6 +288,9 @@ pub struct NodeBuilder {
     /// What the application does when a paired device asks this one to start a session, if it
     /// starts them.
     starts: Option<Arc<dyn StartHandler>>,
+    /// What gives a paired device what the person here is working on, when it asks, if this device
+    /// can read that.
+    continues: Option<Arc<dyn ContinueHandler>>,
     /// What other devices may be holding for this one, if the application keeps it.
     holds: Option<Holds>,
     clock: Arc<dyn Clock>,
@@ -307,6 +328,7 @@ impl NodeBuilder {
             leaves: false,
             approver: None,
             starts: None,
+            continues: None,
             holds: None,
             clock: Arc::new(SystemClock),
             tuning: Tuning::default(),
@@ -463,6 +485,20 @@ impl NodeBuilder {
         self
     }
 
+    /// Has this device give what its person is working on, the page that is in front in the
+    /// browser and the text on the clipboard, to a paired device that asks for it and that the
+    /// person here allowed ([`DevicePolicy::continuing`](crate::DevicePolicy::continuing)), asking
+    /// `handler` to read it each time. Nothing is read until a device asks, and no question is put
+    /// to the person here: they decided when they allowed the device.
+    ///
+    /// Without a handler, a device gives nothing and says nothing about it. With one, it
+    /// advertises `continue.serve`.
+    #[must_use]
+    pub fn serve_continue(mut self, handler: impl ContinueHandler) -> Self {
+        self.continues = Some(Arc::new(handler));
+        self
+    }
+
     /// Has this device remember the transfers of files that it offers to other devices, in `holds`,
     /// so that a device that is left holding one is told to let go of it, also by a run of the
     /// program that starts later. A transfer that is not ended properly, because the program is
@@ -575,6 +611,7 @@ impl NodeBuilder {
             leaves,
             approver,
             starts,
+            continues,
             holds,
             clock,
             tuning,
@@ -617,13 +654,10 @@ impl NodeBuilder {
             &tuning,
         );
         let uni = Arc::new(Uni::new(sinks, &trust, &stop, tuning.request_deadline));
+        let continuing = continues.map(|handler| Continuing::new(handler, tuning.continue_prepare));
         let shared = Arc::new(Shared {
             id,
-            info: DeviceInfo {
-                name: config.device_name(),
-                platform: Platform::current(),
-                app_version: env!("CARGO_PKG_VERSION").to_owned(),
-            },
+            info: device_info(&config),
             trust: trust.clone(),
             clock,
             tuning,
@@ -636,6 +670,7 @@ impl NodeBuilder {
             intake,
             incoming,
             streaming,
+            continuing,
             uni: Arc::clone(&uni),
         });
 
@@ -1432,6 +1467,32 @@ impl Node {
             )
             .await?;
         KeyOutcome::of(exchange.response)
+    }
+
+    /// Asks a paired device what its person is working on, to continue it here: the page that is in
+    /// front in its browser, and the text on its clipboard. The device answers only if its person
+    /// allowed this one, and gives what it reads when it is asked, so what comes back is as old as
+    /// the request.
+    ///
+    /// A device that is reached but gives nothing is not an error: the [`ContinueOutcome`] says
+    /// why, and that includes a device whose person has not allowed this one.
+    ///
+    /// # Errors
+    ///
+    /// If the device is not paired, cannot be reached, does not advertise `continue.serve` (it may
+    /// be an older version, and the error says so: [`Error::Unsupported`]) or breaks the protocol.
+    pub async fn continue_from(&self, peer: &DeviceId) -> Result<ContinueOutcome> {
+        let request = Request::Continue(ContinueRequest::Ask(ContinueAsk {}));
+        let exchange = self
+            .exchange_within(
+                peer,
+                &request,
+                Some(capability::CONTINUE_SERVE),
+                self.shared.tuning.continue_prepare + Duration::from_secs(10),
+                false,
+            )
+            .await?;
+        ContinueOutcome::of(exchange.response)
     }
 
     /// What a failure while a device was asked really was. This node stopping and the device being

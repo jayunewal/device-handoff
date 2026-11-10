@@ -152,6 +152,22 @@ pub enum Event {
     /// the person here, when they are next at this device, if
     /// [`UnlockResult::notifies`](crate::model::UnlockResult::notifies) says so.
     UnlockAttempted(UnlockEntry),
+    /// A paired device that the person here allowed asks what they are working on, to continue it
+    /// there. Read the page that is in front in the browser and the text on the clipboard, if the
+    /// person is at the device and it is not locked, and answer with
+    /// [`App::answer_continue`](crate::App::answer_continue) within a few seconds: no answer, or
+    /// one that comes later, is a failure to read, which the other device is told.
+    ///
+    /// The person is not asked: they decided when they allowed that device. Nothing is read
+    /// before this event, and what is read is not kept. It is sent only by a device that was
+    /// started to serve this ([`Options::serve_continue`](crate::Options::serve_continue)).
+    ContinueAsked {
+        /// Pass it to [`App::answer_continue`](crate::App::answer_continue).
+        id: u64,
+        /// The name of the device that asks, as it is shown for it, for a notice that says
+        /// that it was given what the person works on.
+        from: String,
+    },
     /// A window that was shown or shared is over.
     WindowEnded {
         /// The [`WindowSession::id`] that ended.

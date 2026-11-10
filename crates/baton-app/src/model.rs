@@ -10,13 +10,19 @@
 use std::{fmt, path::PathBuf};
 
 use baton_core::{
-    InboxEntry, InboxItem, PairedDevice, StartPolicy,
+    ContinueOutcome as CoreContinueOutcome, InboxEntry, InboxItem, PairedDevice, StartPolicy,
     link::PathKind,
     node::{NodeStatus, PingReport},
     streaming::{CancelReason, Settled, UnlockFinish, UnlockOutcome},
     transfer::send::{Progress, Stage},
 };
-use baton_proto::{DeviceId, Platform as ProtoPlatform};
+use baton_proto::{
+    DeviceId, Platform as ProtoPlatform,
+    message::{
+        ClipboardText as ProtoClipboardText, ContinueItems as CoreContinueItems, DeclineReason,
+        Link as ProtoLink,
+    },
+};
 use baton_stream::{
     control::SilentReason,
     gate::Reason,
@@ -99,6 +105,106 @@ impl From<&PairedDevice> for Device {
             fingerprint: device.id.fingerprint().to_string(),
             paired_at: device.added_at,
             last_seen_at: device.last_seen_at,
+        }
+    }
+}
+
+/// A page that is in front in the browser of a device, as it is read for a device that asks.
+///
+/// The address and the title belong to what the person is reading, and may carry a sign-in token
+/// or the name of a document, so only their sizes are printed.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ContinuePage {
+    /// The address of the page.
+    pub url: String,
+    /// Its title, if the browser gave one.
+    pub title: Option<String>,
+}
+
+impl fmt::Debug for ContinuePage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContinuePage")
+            .field("url_bytes", &self.url.len())
+            .field("title_bytes", &self.title.as_ref().map(String::len))
+            .finish()
+    }
+}
+
+/// What the person at a device has ready to continue on another: the page that is in front in
+/// the browser, and the text on the clipboard (`docs/adr/0015-continue-from-another-device.md`).
+/// A part that is missing is something that there is none of.
+///
+/// It is read when a device asks, and is as old as the asking: nothing is kept.
+#[derive(Clone, PartialEq, Eq, Default)]
+pub struct ContinueItems {
+    /// The page that is in front in the browser.
+    pub page: Option<ContinuePage>,
+    /// The text on the clipboard.
+    pub clipboard: Option<String>,
+}
+
+// The text may be a password, so only its size is printed.
+impl fmt::Debug for ContinueItems {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContinueItems")
+            .field("page", &self.page)
+            .field("clipboard_bytes", &self.clipboard.as_ref().map(String::len))
+            .finish()
+    }
+}
+
+impl From<ContinueItems> for CoreContinueItems {
+    fn from(items: ContinueItems) -> Self {
+        Self {
+            page: items.page.map(|page| ProtoLink {
+                url: page.url,
+                title: page.title,
+            }),
+            clipboard: items.clipboard.map(|text| ProtoClipboardText { text }),
+        }
+    }
+}
+
+impl From<CoreContinueItems> for ContinueItems {
+    fn from(items: CoreContinueItems) -> Self {
+        Self {
+            page: items.page.map(|link| ContinuePage {
+                url: link.url,
+                title: link.title,
+            }),
+            clipboard: items.clipboard.map(|clipboard| clipboard.text),
+        }
+    }
+}
+
+/// What came of asking a paired device what its person is working on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContinueOutcome {
+    /// What the person there has ready. It may be nothing at all: the device is locked, or has no
+    /// page and no text to give.
+    Items(ContinueItems),
+    /// The person there has not allowed this device to ask. Only they can: it is a switch for
+    /// this device on that one.
+    NotAllowed,
+    /// The device is busy answering, or was asked too often. Try again in a moment.
+    Busy,
+    /// The device is reached but could not read what its person works on just now.
+    Unavailable,
+    /// The device cannot give this at all: it is not a device that can read it, or it runs a
+    /// version of Baton from before it could.
+    Unsupported,
+}
+
+impl From<CoreContinueOutcome> for ContinueOutcome {
+    fn from(outcome: CoreContinueOutcome) -> Self {
+        match outcome {
+            CoreContinueOutcome::Items(items) => Self::Items(items.into()),
+            CoreContinueOutcome::Declined(DeclineReason::Blocked) => Self::NotAllowed,
+            CoreContinueOutcome::Declined(DeclineReason::RateLimited) => Self::Busy,
+            CoreContinueOutcome::Declined(DeclineReason::Unsupported) => Self::Unsupported,
+            // Any other reason, and an answer that only a newer version knows, is a device that
+            // could not give it just now.
+            _ => Self::Unavailable,
         }
     }
 }

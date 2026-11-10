@@ -41,6 +41,15 @@ Future<void> setDeviceName({required String dataDir, required String name}) =>
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Baton>>
 abstract class Baton implements RustOpaqueInterface {
+  /// Gives what the platform read for a paired device that asked (`Event.continueAsked`): the
+  /// page that is in front in the browser and the text on the clipboard, each `null` when there
+  /// is none, so that an empty `ContinueItems` says that there is nothing to continue. `null`
+  /// says that it could not be read, and the device that asked is told so. Returns whether the
+  /// answer was passed on, which it is not for a request that is not waiting any more: it was
+  /// answered already, the few seconds that there are ran out, or the app stopped. Nothing of
+  /// what was read is kept.
+  bool answerContinue({required PlatformInt64 request, ContinueItems? items});
+
   /// Answers a `PairingRequest`. Returns `false` if it is not waiting any more, because it
   /// was answered already or the offer ended.
   bool answerPairing({required PlatformInt64 request, required bool accept});
@@ -63,6 +72,19 @@ abstract class Baton implements RustOpaqueInterface {
 
   /// Removes everything from the inbox. Returns how many items it held.
   Future<PlatformInt64> clearInbox();
+
+  /// Whether the paired device `id` may ask this device what its person is working on, to
+  /// continue it there: the page that is in front in the browser, and the text on the clipboard.
+  /// `false` for a device that was just paired. Throws `ErrorKind.notPaired`.
+  bool continueAccess({required String id});
+
+  /// Asks the paired device `id` what its person is working on, to continue it here: the page
+  /// that is in front in its browser, and the text on its clipboard. Nobody there is asked: the
+  /// person allowed this device beforehand (`setContinueAccess` there), or the answer is
+  /// `ContinueOutcome.notAllowed`. What comes back is as old as the asking. Throws
+  /// `ErrorKind.notPaired`, and `ErrorKind.unreachable` if the device cannot be reached or does
+  /// not answer in time.
+  Future<ContinueOutcome> continueFrom({required String id});
 
   /// The devices paired with this one.
   Future<List<Device>> devices();
@@ -162,6 +184,12 @@ abstract class Baton implements RustOpaqueInterface {
   /// Sends text, such as what was on the clipboard, to a paired device.
   Future<void> sendText({required String id, required String text});
 
+  /// Lets the paired device `id` ask this device what its person is working on, or does not. Only
+  /// the person at this device can say so: nothing a paired device sends changes it. Nothing is
+  /// read until the device asks, and a device that is turned away is not read for. Throws
+  /// `ErrorKind.notPaired`, and `ErrorKind.storage` if the setting could not be kept.
+  Future<void> setContinueAccess({required String id, required bool allowed});
+
   /// Says whether the paired device `id` may hear the sound of this device's screen, or takes
   /// what was said back with `null`. Only the person at this device can say so: nothing a paired
   /// device sends changes it. It counts the next time the device asks to hear, also in a session
@@ -227,16 +255,25 @@ abstract class Baton implements RustOpaqueInterface {
   /// exist and be one the app may write to. `None` leaves this device taking no files. If
   /// Baton cannot use the folder it still starts, and `receiving` says why it takes no
   /// files.
+  ///
+  /// `serve_continue` says that the app can read what its person is working on, the page that is
+  /// in front in the browser and the text on the clipboard, when `Event.continueAsked` says so,
+  /// and answer with `answerContinue`: pass `true` only where the platform code does that. `null`
+  /// and `false` are the same: a device that is started without it does not say that it can, and
+  /// a device that asks it is told so (`ContinueOutcome.unsupported`). Even then, nothing is read
+  /// until a paired device asks that the person allowed (`setContinueAccess`).
   static Future<Baton> start({
     required String dataDir,
     bool? lanDiscovery,
     bool? portMapping,
     String? receiveDir,
+    bool? serveContinue,
   }) => RustLib.instance.api.crateApiBatonBatonStart(
     dataDir: dataDir,
     lanDiscovery: lanDiscovery,
     portMapping: portMapping,
     receiveDir: receiveDir,
+    serveContinue: serveContinue,
   );
 
   /// What the paired device `id` may do at this device without a person here being asked: ask

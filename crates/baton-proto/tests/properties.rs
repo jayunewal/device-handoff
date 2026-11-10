@@ -17,8 +17,9 @@ use baton_proto::{
         MAX_SEALING_KEY_BYTES, MAX_WINDOW_EDGE,
     },
     message::{
-        ClipboardText, DeclineReason, ErrorCode, ErrorReply, Handoff, HandoffReply, Hello, Item,
-        Link, Outcome, Ping, Request, Response,
+        ClipboardText, ContinueAsk, ContinueItems, ContinueReply, ContinueRequest, DeclineReason,
+        ErrorCode, ErrorReply, Handoff, HandoffReply, Hello, Item, Link, Outcome, Ping, Request,
+        Response,
     },
     pair::{PairProof, PairRejection, PairRequest, PairResponse, PairSecret},
     stream::{self, Codec, SourceKind, StopReason, StreamReply, StreamRequest, Wanted, WhyNot},
@@ -108,6 +109,7 @@ fn request() -> impl Strategy<Value = Request> {
         transfer_request().prop_map(Request::Transfer),
         stream_request().prop_map(Request::Stream),
         any::<bool>().prop_map(|renew| Request::Unlock(UnlockRequest::Key(KeyRequest { renew }))),
+        Just(Request::Continue(ContinueRequest::Ask(ContinueAsk {}))),
     ]
 }
 
@@ -137,6 +139,21 @@ fn response() -> impl Strategy<Value = Response> {
         transfer_reply().prop_map(Response::Transfer),
         stream_reply().prop_map(Response::Stream),
         unlock_reply().prop_map(Response::Unlock),
+        continue_reply().prop_map(Response::Continue),
+    ]
+}
+
+fn continue_reply() -> impl Strategy<Value = ContinueReply> {
+    prop_oneof![
+        (
+            proptest::option::of(
+                (non_empty_text(200), proptest::option::of(text(100)))
+                    .prop_map(|(url, title)| Link { url, title })
+            ),
+            proptest::option::of(non_empty_text(2000).prop_map(|text| ClipboardText { text })),
+        )
+            .prop_map(|(page, clipboard)| ContinueReply::Items(ContinueItems { page, clipboard })),
+        decline_reason().prop_map(ContinueReply::Declined),
     ]
 }
 

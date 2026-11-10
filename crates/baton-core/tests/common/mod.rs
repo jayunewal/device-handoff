@@ -22,8 +22,9 @@ use std::{
 };
 
 use baton_core::{
-    Config, ConfirmationCode, HandoffHandler, Identity, Node, PairApprovalRequest, PairedDevice,
-    TransferHandler, TrustStore, Tuning, clock::ManualClock, config::RelayMode, util::BoxFuture,
+    Config, ConfirmationCode, ContinueHandler, HandoffHandler, Identity, Node, PairApprovalRequest,
+    PairedDevice, TransferHandler, TrustStore, Tuning, clock::ManualClock, config::RelayMode,
+    util::BoxFuture,
 };
 use baton_proto::{
     DeviceId, DeviceInfo, Platform,
@@ -119,6 +120,9 @@ pub struct Spec {
     handler: Option<Box<dyn HandoffHandler>>,
     /// What takes the files that other devices send. A device without it takes none.
     transfers: Option<Arc<dyn TransferHandler>>,
+    /// What gives paired devices what the person here is working on. A device without it gives
+    /// nothing.
+    continuing: Option<Arc<dyn ContinueHandler>>,
 }
 
 impl Spec {
@@ -147,6 +151,7 @@ impl Spec {
             before_registering: None,
             handler: None,
             transfers: None,
+            continuing: None,
         }
     }
 
@@ -159,6 +164,13 @@ impl Spec {
     /// Has the device take the files that other devices send, as `handler` decides.
     pub fn with_transfers(mut self, handler: Arc<dyn TransferHandler>) -> Self {
         self.transfers = Some(handler);
+        self
+    }
+
+    /// Has the device give what its person is working on to a paired device that asks and is
+    /// allowed, as `handler` reads it.
+    pub fn with_continue(mut self, handler: Arc<dyn ContinueHandler>) -> Self {
+        self.continuing = Some(handler);
         self
     }
 
@@ -198,6 +210,9 @@ impl Spec {
         }
         if let Some(transfers) = self.transfers {
             builder = builder.transfer_handler(transfers);
+        }
+        if let Some(continuing) = self.continuing {
+            builder = builder.serve_continue(continuing);
         }
         let node = builder
             .customize_endpoint(move |builder| {

@@ -10,7 +10,82 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'model.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+
+/// What the person at a device has ready to continue on another: the page that is in front in the
+/// browser, and the text on the clipboard. A part that is `null` is something that there is none
+/// of: a device that is locked, or has nothing open, gives neither. It is read when a device asks
+/// and kept nowhere.
+class ContinueItems {
+  /// The page that is in front in the browser.
+  final ContinuePage? page;
+
+  /// The text on the clipboard.
+  final String? clipboard;
+
+  const ContinueItems({this.page, this.clipboard});
+
+  @override
+  int get hashCode => page.hashCode ^ clipboard.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ContinueItems &&
+          runtimeType == other.runtimeType &&
+          page == other.page &&
+          clipboard == other.clipboard;
+}
+
+@freezed
+sealed class ContinueOutcome with _$ContinueOutcome {
+  const ContinueOutcome._();
+
+  /// What the person there has ready. It may be nothing at all: the device is locked, or has no
+  /// page and no text, so say that there is nothing to continue, and do not call it a failure.
+  const factory ContinueOutcome.items({
+    /// What was read just then.
+    required ContinueItems items,
+  }) = ContinueOutcome_Items;
+
+  /// The person there has not allowed this device to ask. Only they can, in the settings for this
+  /// device on that one, and nothing here can say so for them.
+  const factory ContinueOutcome.notAllowed() = ContinueOutcome_NotAllowed;
+
+  /// The device is answering another question, or was asked too often. Try again in a moment.
+  const factory ContinueOutcome.busy() = ContinueOutcome_Busy;
+
+  /// The device is reached but could not read what its person works on just now.
+  const factory ContinueOutcome.unavailable() = ContinueOutcome_Unavailable;
+
+  /// The device cannot give this at all: it does not read it, or runs a version of Baton from
+  /// before it could.
+  const factory ContinueOutcome.unsupported() = ContinueOutcome_Unsupported;
+}
+
+/// A page that is in front in the browser of a device, as it was when that device was asked what
+/// its person is working on.
+class ContinuePage {
+  /// The address of the page. Another device chose it: open it only when `webAddress` says that
+  /// it is a web address, and open what that returns, as for a link that was received.
+  final String url;
+
+  /// The title of the page, if the browser gave one.
+  final String? title;
+
+  const ContinuePage({required this.url, this.title});
+
+  @override
+  int get hashCode => url.hashCode ^ title.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ContinuePage &&
+          runtimeType == other.runtimeType &&
+          url == other.url &&
+          title == other.title;
+}
 
 /// A device that is paired with this one.
 class Device {
@@ -235,6 +310,21 @@ sealed class Event with _$Event {
     /// The attempt.
     required UnlockEntry entry,
   }) = Event_UnlockAttempted;
+
+  /// A paired device that the person here allowed asks what they are working on, to continue it
+  /// there. Read the page that is in front in the browser and the text on the clipboard, if the
+  /// person is at the device and it is not locked, and answer with `Baton.answerContinue`
+  /// within a few seconds: no answer, or one that comes later, is a failure to read, which the
+  /// other device is told. Nobody is asked: the person decided when they allowed that device. It
+  /// comes only for a device that was started to serve this (`Baton.start`), and what is read is
+  /// kept nowhere.
+  const factory Event.continueAsked({
+    /// Pass it to `Baton.answerContinue`.
+    required PlatformInt64 id,
+
+    /// The name of the device that asks, as it is shown for it.
+    required String from,
+  }) = Event_ContinueAsked;
 
   /// A window that was shown or shared is over.
   const factory Event.windowEnded({

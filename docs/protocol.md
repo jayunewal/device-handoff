@@ -91,6 +91,7 @@ Capabilities defined so far:
 | `stream.private` | Keeps its own screen private while a paired device controls it, dark and with its keys and pointer out of use, until the viewer asks otherwise: sets `private` in an offer and takes `Lift` on the control stream of that session (section 9). Only a device that advertises `stream.control` advertises it |
 | `unlock.target` | Can be unlocked from a paired device that the person at it set up for that, after the face of the person at that device: sets `unlock` in an offer, asks the viewer for a key with `Key`, writes `UnlockSealed` and `UnlockDone`, and takes `Unlock`, `UnlockOpened` and `UnlockCancelled` on the control stream of that session (section 9). Only a device that advertises `stream.private` advertises it |
 | `unlock.approve` | Unlocks a paired device with the face of its person, as the viewer: answers `Key`, takes `UnlockSealed` and `UnlockDone`, and writes `Unlock`, `UnlockOpened` and `UnlockCancelled` on the control stream of the session (section 9). Only a device that advertises `stream.view` advertises it |
+| `continue.serve` | Gives a paired device what its person is working on, the page that is in front in the browser and the text on the clipboard, when that device asks and the person allowed it: accepts `Continue` (see Continue, below) |
 
 A sender MUST NOT send an item whose capability the receiver did not advertise. A receiver that gets one anyway answers `Declined(Unsupported)`. A kind of item the receiver does not know at all cannot be decoded, and is answered with `Error { code: Malformed }`: the capability exchange is how new kinds are introduced, not an unannounced request.
 
@@ -118,6 +119,24 @@ The item id is chosen at random by the sender and reused when it retries, for ex
 A receiver SHOULD check an item in this order: whether it supports the kind of item, whether it is within the size limit, whether it is a repeat, and only then the rate limit. A repeat is answered from memory and is not counted against the rate limit, so a sender that retries after a lost reply is never turned away for an item that was in fact taken. Refusals made before the item reaches the application (`Unsupported`, `TooLarge`, `RateLimited`) are not remembered, so a sender that has fixed the problem can try the same item again.
 
 Links are untrusted strings. The protocol does not restrict the scheme; receivers decide what they will open (the reference implementation opens only `http` and `https`). A link can carry a secret in its query or path, so implementations SHOULD log no more of one than its scheme and host.
+
+### Continue
+
+A device that can read what its person is working on advertises `continue.serve`. A paired device asks it with one request and is given the page that is in front in its browser and the text on its clipboard, as they are when it asks: nothing is staged and nothing is kept ([ADR 0015](adr/0015-continue-from-another-device.md)).
+
+```
+Request  {"Continue": {"Ask": {}}}
+Response {"Continue": {"Items": {"page": {"url": "https://example.com/report", "title": "The report"},
+                                 "clipboard": {"text": "hello"}}}}
+Response {"Continue": {"Items": {}}}
+Response {"Continue": {"Declined": "Blocked"}}
+```
+
+`Ask` is a case of an enum and has no fields yet; a receiver ignores a key that it does not know, so a later version can add some. A case that a receiver does not know is a request that it cannot read, and the rule of section 5 applies to it. `Items` has two parts, `page`, a link as `Handoff` carries it, and `clipboard`, clipboard text as `Handoff` carries it. A part that there is none of is left out, and says nothing of why: an `Items` with neither part is the answer of a device that is locked, of one whose display is off, and of one with nothing open, and a device MUST NOT give what it last held for what it holds now. A device MUST NOT read clipboard text that its source marked as concealed, and MUST NOT give a page that is in a private window of its browser where it can tell. Both parts are held to the limits of section 6 for a link and for clipboard text: the sender leaves out a part that breaks them, and a reply with a part that breaks them is not accepted.
+
+`Declined` carries a reason of those of `Handoff`, with these meanings: `Blocked`, the person at the device has not allowed the asking device; `Unsupported`, the device cannot read what its person works on; `RateLimited`, the asking device asks too often, or a question is being read already; and `Other`, the device could not read it just now, which includes the time that it has having run out. A reason that a version does not know reads as `Other`.
+
+A sender MUST NOT send `Continue` to a device that did not advertise `continue.serve`. A device whose application gave it no way to read answers `Declined(Unsupported)`, and one of a version before this subsection cannot read the request and answers `Error { code: Malformed }` (section 3), so a sender that ignored the capability is told. A device answers a paired device only, like every request, and only one that its person allowed: that setting is made at the device, is off by default, is not on the wire, and nothing that a paired device sends changes it. A device that is not allowed is not read for, and its request does not count against the limit for items. One that is allowed counts once for each request against the same limit as an item of `Handoff` (the reference implementation allows 30 a minute), and a request that is refused for coming too often is not read for either. A device answers one request at a time. The reference implementation gives its platform 5 seconds to read, and a device that asked waits for those and 10 seconds more.
 
 ### Errors
 
@@ -379,6 +398,17 @@ These are checked by the test suite and were reproduced independently with the r
 | The same ticket with the critical extension type `80`, value `aabb` | the bytes above up to `…0050`, then `8002aabb`, then `2a0dfea9`; refused: needs a newer version |
 | The same ticket with flags `10` (critical) | as the ticket above with `0110` at the start and checksum `bcbeeb70`; refused: needs a newer version |
 | The text form of the ticket above, with `BATON2:` in place of `BATON1:` | refused: needs a newer version, whatever follows the colon |
+
+### Continue
+
+The frames of the messages of Continue (section 3), each with its length in the first four bytes. The tests build the CBOR of each by hand, key by key, and compare it with what the library writes.
+
+| Message | Frame |
+| --- | --- |
+| `Continue(Ask)` | `00000010a168436f6e74696e7565a16341736ba0` |
+| `Continue(Items)` with the page `https://example.com/report` titled `The report` and the clipboard text `hello` | `0000005fa168436f6e74696e7565a1654974656d73a26470616765a26375726c781a68747470733a2f2f6578616d706c652e636f6d2f7265706f7274657469746c656a546865207265706f727469636c6970626f617264a164746578746568656c6c6f` |
+| `Continue(Items)` with neither part | `00000012a168436f6e74696e7565a1654974656d73a0` |
+| `Continue(Declined(Blocked))` | `0000001ca168436f6e74696e7565a1684465636c696e656467426c6f636b6564` |
 
 ### File transfer
 
@@ -969,6 +999,6 @@ With the key the source opens the box. If the key does not open it, nothing is t
 
 Nothing in this section is part of the protocol yet. It is written down so that the rules above leave room for it, and so that the reasons are on record before any of it is built.
 
-- **Pull.** Besides pushing an item to a device, a device can ask a paired device what it has ready to continue (`ListActivities`) and fetch one of them (`Fetch`). That lets a device that was asleep or locked when something was sent catch up when it wakes, and lets a phone pick up what was on a laptop without the laptop pushing it. Both requests are guarded by a capability, so older peers never see them. A device answers them while it is locked with the items that were sent to the asking device, and with staged items only if the person has turned that on for the asking device, which is off by default. See [Locked devices](architecture.md#locked-devices).
+- **Pull.** Besides pushing an item to a device, a device can ask a paired device what it has ready to continue. `Continue` does that for the page that is in front in a browser and the text on the clipboard, by asking at the time and keeping nothing (section 3, Continue; [ADR 0015](adr/0015-continue-from-another-device.md)). What stays planned is a list of what a device has staged (`ListActivities`) and a fetch of one of the items (`Fetch`). That lets a device that was asleep or locked when something was sent catch up when it wakes, and lets a phone pick up what was on a laptop without the laptop pushing it. Both requests are guarded by a capability, so older peers never see them. A device answers them while it is locked with the items that were sent to the asking device, and with staged items only if the person has turned that on for the asking device, which is off by default. See [Locked devices](architecture.md#locked-devices).
 - **A short code that a person types**, for pairing devices that can neither show nor scan a QR code. As explained in section 4, that needs a password-authenticated key exchange and a new ALPN.
 - **Window streaming** (milestone 5). A Mac offers one window to a paired iPhone or iPad with a single request that the viewer answers once, and the picture then moves as one unidirectional stream for each frame of video, at a priority between requests and the lanes of a file transfer. Two small control streams stay open, one in each direction, and carry the viewer's reports, when the person at the Mac granted control with the offer, its input and, when the Mac keeps its screen private, what the people at the Mac may do. A frame that is late is reset and replaced, and never sent again. Every unidirectional stream begins with a byte that says what it is, which also tells a lane from a frame. It is guarded by the capabilities `stream.share`, `stream.view`, `stream.control`, `stream.start` and `stream.private`, and, for the unlocking of a locked screen, `unlock.target` and `unlock.approve`. [ADR 0009](adr/0009-window-streaming.md) records the design, [ADR 0010](adr/0010-sessions-that-the-viewer-starts.md) the way in which a viewer asks a source to start a session, and [ADR 0013](adr/0013-unlock-from-a-phone.md) the unlock. Section 9 specifies the offer, that asking, the end of a session, the start of a stream, the header of a frame and the messages on the control streams so far, and the rest of this becomes a specification there, with the rules for the receiver, when the code that applies them is added.

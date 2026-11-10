@@ -901,6 +901,73 @@ pub enum WindowShared {
     },
 }
 
+/// A page that is in front in the browser of a device, as it was when that device was asked what
+/// its person is working on.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ContinuePage {
+    /// The address of the page. Another device chose it: open it only when `webAddress` says that
+    /// it is a web address, and open what that returns, as for a link that was received.
+    pub url: String,
+    /// The title of the page, if the browser gave one.
+    pub title: Option<String>,
+}
+
+// The address and the title belong to what the person was reading, and may carry a sign-in token
+// or the name of a document, and values like this one end up in logs. Only sizes are printed. That
+// does not carry over to Dart, where the generated class prints them: see "The bridge" in
+// docs/architecture.md.
+impl std::fmt::Debug for ContinuePage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContinuePage")
+            .field("url_bytes", &self.url.len())
+            .field("title_bytes", &self.title.as_ref().map(String::len))
+            .finish()
+    }
+}
+
+/// What the person at a device has ready to continue on another: the page that is in front in the
+/// browser, and the text on the clipboard. A part that is `null` is something that there is none
+/// of: a device that is locked, or has nothing open, gives neither. It is read when a device asks
+/// and kept nowhere.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ContinueItems {
+    /// The page that is in front in the browser.
+    pub page: Option<ContinuePage>,
+    /// The text on the clipboard.
+    pub clipboard: Option<String>,
+}
+
+// The text may be a password, so only its size is printed (see `ContinuePage`).
+impl std::fmt::Debug for ContinueItems {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContinueItems")
+            .field("page", &self.page)
+            .field("clipboard_bytes", &self.clipboard.as_ref().map(String::len))
+            .finish()
+    }
+}
+
+/// What came of asking a paired device what its person is working on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContinueOutcome {
+    /// What the person there has ready. It may be nothing at all: the device is locked, or has no
+    /// page and no text, so say that there is nothing to continue, and do not call it a failure.
+    Items {
+        /// What was read just then.
+        items: ContinueItems,
+    },
+    /// The person there has not allowed this device to ask. Only they can, in the settings for this
+    /// device on that one, and nothing here can say so for them.
+    NotAllowed,
+    /// The device is answering another question, or was asked too often. Try again in a moment.
+    Busy,
+    /// The device is reached but could not read what its person works on just now.
+    Unavailable,
+    /// The device cannot give this at all: it does not read it, or runs a version of Baton from
+    /// before it could.
+    Unsupported,
+}
+
 /// Something a screen may want to react to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
@@ -1046,6 +1113,19 @@ pub enum Event {
     UnlockAttempted {
         /// The attempt.
         entry: UnlockEntry,
+    },
+    /// A paired device that the person here allowed asks what they are working on, to continue it
+    /// there. Read the page that is in front in the browser and the text on the clipboard, if the
+    /// person is at the device and it is not locked, and answer with `Baton.answerContinue`
+    /// within a few seconds: no answer, or one that comes later, is a failure to read, which the
+    /// other device is told. Nobody is asked: the person decided when they allowed that device. It
+    /// comes only for a device that was started to serve this (`Baton.start`), and what is read is
+    /// kept nowhere.
+    ContinueAsked {
+        /// Pass it to `Baton.answerContinue`.
+        id: i64,
+        /// The name of the device that asks, as it is shown for it.
+        from: String,
     },
     /// A window that was shown or shared is over.
     WindowEnded {

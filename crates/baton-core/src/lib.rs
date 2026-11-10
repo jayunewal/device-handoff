@@ -40,6 +40,7 @@
 
 pub mod clock;
 pub mod config;
+pub mod continuing;
 pub mod error;
 pub mod identity;
 pub mod inbox;
@@ -70,6 +71,7 @@ mod wire;
 
 pub use baton_proto::pair::ConfirmationCode;
 pub use config::Config;
+pub use continuing::{ContinueHandler, ContinueOutcome};
 pub use error::{Error, Result};
 pub use identity::Identity;
 pub use inbox::{Added, Inbox, InboxEntry, InboxHandler, InboxItem};

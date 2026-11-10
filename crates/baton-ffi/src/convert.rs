@@ -11,12 +11,13 @@ use baton_app as app;
 use crate::api::{
     error::{BatonError, ErrorKind},
     model::{
-        Device, Event, FileProgress, FilesSent, Me, Network, Offer, OfferOutcome, PairingRequest,
-        Platform, PreviewName, Reach, Received, ReceivedItem, Receiving, Route, ScreenStarted,
-        SendStage, StartAccess, TransferEnd, TransferRequest, TransferResult, UnlockEntry,
-        UnlockResult, UnlockSetUp, UnlockStatus, WindowAbilities, WindowButton, WindowEnd,
-        WindowInput, WindowModifiers, WindowNoticeReason, WindowPointer, WindowRequest, WindowRole,
-        WindowSession, WindowShared, WindowSound, WindowUnlock,
+        ContinueItems, ContinueOutcome, ContinuePage, Device, Event, FileProgress, FilesSent, Me,
+        Network, Offer, OfferOutcome, PairingRequest, Platform, PreviewName, Reach, Received,
+        ReceivedItem, Receiving, Route, ScreenStarted, SendStage, StartAccess, TransferEnd,
+        TransferRequest, TransferResult, UnlockEntry, UnlockResult, UnlockSetUp, UnlockStatus,
+        WindowAbilities, WindowButton, WindowEnd, WindowInput, WindowModifiers, WindowNoticeReason,
+        WindowPointer, WindowRequest, WindowRole, WindowSession, WindowShared, WindowSound,
+        WindowUnlock,
     },
 };
 
@@ -641,6 +642,54 @@ impl From<app::WindowNoticeReason> for WindowNoticeReason {
     }
 }
 
+impl From<app::ContinuePage> for ContinuePage {
+    fn from(page: app::ContinuePage) -> Self {
+        let app::ContinuePage { url, title } = page;
+        Self { url, title }
+    }
+}
+
+impl From<ContinuePage> for app::ContinuePage {
+    fn from(page: ContinuePage) -> Self {
+        let ContinuePage { url, title } = page;
+        Self { url, title }
+    }
+}
+
+impl From<app::ContinueItems> for ContinueItems {
+    fn from(items: app::ContinueItems) -> Self {
+        let app::ContinueItems { page, clipboard } = items;
+        Self {
+            page: page.map(ContinuePage::from),
+            clipboard,
+        }
+    }
+}
+
+impl From<ContinueItems> for app::ContinueItems {
+    fn from(items: ContinueItems) -> Self {
+        let ContinueItems { page, clipboard } = items;
+        Self {
+            page: page.map(app::ContinuePage::from),
+            clipboard,
+        }
+    }
+}
+
+impl From<app::ContinueOutcome> for ContinueOutcome {
+    fn from(outcome: app::ContinueOutcome) -> Self {
+        match outcome {
+            app::ContinueOutcome::Items(items) => Self::Items {
+                items: items.into(),
+            },
+            app::ContinueOutcome::NotAllowed => Self::NotAllowed,
+            app::ContinueOutcome::Busy => Self::Busy,
+            app::ContinueOutcome::Unavailable => Self::Unavailable,
+            app::ContinueOutcome::Unsupported => Self::Unsupported,
+        }
+    }
+}
+
 impl From<app::ScreenStarted> for ScreenStarted {
     fn from(started: app::ScreenStarted) -> Self {
         match started {
@@ -719,6 +768,10 @@ impl From<app::Event> for Event {
             },
             app::Event::UnlockAttempted(entry) => Self::UnlockAttempted {
                 entry: entry.into(),
+            },
+            app::Event::ContinueAsked { id, from } => Self::ContinueAsked {
+                id: signed(id),
+                from,
             },
             app::Event::WindowEnded { id, end } => Self::WindowEnded {
                 id: signed(id),
@@ -1183,6 +1236,99 @@ mod tests {
             assert_eq!(StartAccess::from(access), shown);
             assert_eq!(app::StartAccess::from(shown), access);
         }
+    }
+
+    #[test]
+    fn what_a_device_gave_is_carried_over_whole_and_each_part_may_be_missing() {
+        let read = app::ContinueItems {
+            page: Some(app::ContinuePage {
+                url: "https://example.com/report".to_owned(),
+                title: Some("The report".to_owned()),
+            }),
+            clipboard: Some("a line".to_owned()),
+        };
+        let shown = ContinueItems::from(read.clone());
+        assert_eq!(
+            shown,
+            ContinueItems {
+                page: Some(ContinuePage {
+                    url: "https://example.com/report".to_owned(),
+                    title: Some("The report".to_owned()),
+                }),
+                clipboard: Some("a line".to_owned()),
+            }
+        );
+        assert_eq!(app::ContinueItems::from(shown), read);
+
+        let nothing = app::ContinueItems::default();
+        let shown = ContinueItems::from(nothing.clone());
+        assert_eq!((&shown.page, &shown.clipboard), (&None, &None));
+        assert_eq!(app::ContinueItems::from(shown), nothing);
+    }
+
+    #[test]
+    fn every_way_that_asking_what_a_person_works_on_can_end_is_told_as_itself() {
+        let items = app::ContinueItems {
+            page: None,
+            clipboard: Some("a line".to_owned()),
+        };
+        assert_eq!(
+            ContinueOutcome::from(app::ContinueOutcome::Items(items)),
+            ContinueOutcome::Items {
+                items: ContinueItems {
+                    page: None,
+                    clipboard: Some("a line".to_owned()),
+                }
+            }
+        );
+        for (outcome, shown) in [
+            (
+                app::ContinueOutcome::NotAllowed,
+                ContinueOutcome::NotAllowed,
+            ),
+            (app::ContinueOutcome::Busy, ContinueOutcome::Busy),
+            (
+                app::ContinueOutcome::Unavailable,
+                ContinueOutcome::Unavailable,
+            ),
+            (
+                app::ContinueOutcome::Unsupported,
+                ContinueOutcome::Unsupported,
+            ),
+        ] {
+            assert_eq!(ContinueOutcome::from(outcome), shown);
+        }
+        assert_eq!(
+            Event::from(app::Event::ContinueAsked {
+                id: 7,
+                from: "Pocket Phone".to_owned()
+            }),
+            Event::ContinueAsked {
+                id: 7,
+                from: "Pocket Phone".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn what_a_device_gave_is_not_printed_on_the_rust_side() {
+        let items = ContinueItems {
+            page: Some(ContinuePage {
+                url: "https://example.com/?token=SECRET".to_owned(),
+                title: Some("A private title".to_owned()),
+            }),
+            clipboard: Some("hunter2".to_owned()),
+        };
+        let shown = format!(
+            "{items:?} {:?}",
+            ContinueOutcome::Items {
+                items: items.clone()
+            }
+        );
+        for secret in ["SECRET", "private", "hunter2", "example.com"] {
+            assert!(!shown.contains(secret), "{shown}");
+        }
+        assert!(shown.contains("clipboard_bytes"), "{shown}");
     }
 
     #[test]

@@ -862,6 +862,109 @@ fn a_kind_of_unlock_request_this_version_does_not_know_is_an_error() {
     assert!(frame::decode_payload::<Response>(&key).is_err());
 }
 
+#[test]
+fn unknown_keys_are_ignored_in_the_messages_about_continuing() {
+    use baton_proto::message::{ContinueAsk, ContinueItems, ContinueReply, ContinueRequest};
+
+    // The question has no fields yet, and a later version may add some.
+    let ask = encode(
+        &cbor!({ "Continue" => { "Ask" => { "later" => [1, 2], "x" => { "y" => null } } } })
+            .unwrap(),
+    );
+    assert_eq!(
+        frame::decode_payload::<Request>(&ask).unwrap(),
+        Request::Continue(ContinueRequest::Ask(ContinueAsk {}))
+    );
+    // A request is not extensible: a kind that this version does not know is an error.
+    let later = encode(&cbor!({ "Continue" => { "List" => {} } }).unwrap());
+    assert!(frame::decode_payload::<Request>(&later).is_err());
+
+    // The answer, with keys from a later version next to the ones that are read, and with the
+    // page and the text each missing, which says that there is none.
+    let items = encode(
+        &cbor!({
+            "Continue" => {
+                "Items" => {
+                    "later" => { "x" => 1 },
+                    "page" => { "url" => "https://example.com/", "later" => true },
+                    "clipboard" => { "text" => "hello", "later" => [] },
+                },
+            },
+        })
+        .unwrap(),
+    );
+    let Response::Continue(ContinueReply::Items(ContinueItems {
+        page: Some(page),
+        clipboard: Some(clipboard),
+    })) = frame::decode_payload::<Response>(&items).unwrap()
+    else {
+        panic!("not a page and text");
+    };
+    assert_eq!(page.url, "https://example.com/");
+    assert_eq!(page.title, None);
+    assert_eq!(clipboard.text, "hello");
+
+    let nothing = encode(&cbor!({ "Continue" => { "Items" => {} } }).unwrap());
+    assert_eq!(
+        frame::decode_payload::<Response>(&nothing).unwrap(),
+        Response::Continue(ContinueReply::Items(ContinueItems::default()))
+    );
+}
+
+#[test]
+fn a_device_that_gives_what_its_person_works_on_is_refused_in_the_words_of_any_request() {
+    use baton_proto::message::ContinueReply;
+
+    let declined =
+        |reason: Value| encode(&cbor!({ "Continue" => { "Declined" => reason } }).unwrap());
+    for (word, reason) in [
+        ("Blocked", DeclineReason::Blocked),
+        ("Unsupported", DeclineReason::Unsupported),
+        ("RateLimited", DeclineReason::RateLimited),
+        // One that a later version made up is still a no.
+        ("SomethingNew", DeclineReason::Other),
+    ] {
+        assert_eq!(
+            frame::decode_payload::<Response>(&declined(Value::Text(word.into()))).unwrap(),
+            Response::Continue(ContinueReply::Declined(reason)),
+            "{word}"
+        );
+    }
+    // One that carries data cannot be read at all, which is why new ones must not.
+    assert!(
+        frame::decode_payload::<Response>(&declined(cbor!({ "Lattice" => { "n" => 1 } }).unwrap()))
+            .is_err()
+    );
+}
+
+#[test]
+fn what_a_device_gives_must_still_be_a_link_and_text_that_may_be_handed_over() {
+    // A page with no address, and text with nothing in it, are errors on the wire as they are in
+    // a handoff, and so is a field of the wrong kind.
+    for bad in [
+        cbor!({ "Continue" => { "Items" => { "page" => { "url" => "" } } } }).unwrap(),
+        cbor!({ "Continue" => { "Items" => { "clipboard" => { "text" => "" } } } }).unwrap(),
+        cbor!({ "Continue" => { "Items" => { "page" => "https://example.com/" } } }).unwrap(),
+        cbor!({ "Continue" => { "Items" => { "clipboard" => 7 } } }).unwrap(),
+        cbor!({ "Continue" => { "Items" => [] } }).unwrap(),
+    ] {
+        assert!(
+            frame::decode_payload::<Response>(&encode(&bad)).is_err(),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn the_two_directions_of_continuing_do_not_read_each_others_messages() {
+    let ask = encode(&cbor!({ "Continue" => { "Ask" => {} } }).unwrap());
+    assert!(frame::decode_payload::<Request>(&ask).is_ok());
+    assert!(frame::decode_payload::<Response>(&ask).is_err());
+    let items = encode(&cbor!({ "Continue" => { "Items" => {} } }).unwrap());
+    assert!(frame::decode_payload::<Response>(&items).is_ok());
+    assert!(frame::decode_payload::<Request>(&items).is_err());
+}
+
 // The fuzz targets start from the seeds in `fuzz/seeds/decode_payload`, and a seed that is no
 // longer a message (a rule was added that it breaks, a field was renamed) quietly stops the
 // fuzzer from starting deep inside the decoders. The name of a seed says what it must be.
