@@ -345,11 +345,19 @@ void main() {
     // ran away handed over, or not knowing that something came while it was in front, and
     // nothing else fails.
     final swift = _read('ios/Runner/SendWithBaton.swift');
-    expect(swift, contains('private static let most = 20'));
+    expect(
+      _swiftCode(swift),
+      containsAll([
+        'private static let most = 20',
+        'private static let mostBytes = 1024 * 1024',
+      ]),
+      reason: 'the whole lines, so that 20_000 is not taken for 20',
+    );
     expect(
       _swiftCode(_swiftMethod(swift, '  func add(_ text: String) {')),
       [
         'func add(_ text: String) {',
+        'guard text.utf8.count <= HandedToBaton.mostBytes else { return }',
         'lock.lock()',
         'texts.append(text)',
         'if texts.count > HandedToBaton.most {',
@@ -361,8 +369,9 @@ void main() {
         '}',
       ],
       reason:
-          'the oldest go first, once there are more than the most, and the '
-          'app is told once the text is held and the lock is let go',
+          'a text that is more than can be sent is left out before anything is '
+          'held, the oldest go first, once there are more than the most, and '
+          'the app is told once the text is held and the lock is let go',
     );
     expect(_swiftCode(_swiftMethod(swift, '  func onAdd(')), [
       'func onAdd(_ tell: @escaping () -> Void) {',

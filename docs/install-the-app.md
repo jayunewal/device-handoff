@@ -185,7 +185,7 @@ An iPhone or iPad with iOS or iPadOS 16 or newer can send what it is showing, su
 3. Name the shortcut, for example **Send to my Mac**. In its details (the **i** button), turn on **Show in Share Sheet**, and keep at least **Text** and **URLs** among the kinds that it accepts.
 4. In Safari, or any app with a **Share** button, tap **Share** and then **Send to my Mac**. Baton opens at the send screen with the link or the text in the box. **Nothing is sent yet**: check it, and tap **Send link** or **Send text**. With more than one paired device, Baton first asks which one.
 
-The text a shortcut hands to Baton is kept in memory only, until Baton is on the screen and shows it, and is written nowhere. If Baton has no paired device, it says so and sends nothing. A normal share extension would put Baton in the share sheet by itself, but it needs an App Group to hand what it was given to the app, and a free Apple ID cannot have one.
+The text a shortcut hands to Baton is kept in memory only, until Baton is on the screen and shows it, and is written nowhere. A text of more than a mebibyte is not handed over, because Baton cannot send so much. If Baton has no paired device, it says so and sends nothing. A normal share extension would put Baton in the share sheet by itself, but it needs an App Group to hand what it was given to the app, and a free Apple ID cannot have one.
 
 ## Send files
 
