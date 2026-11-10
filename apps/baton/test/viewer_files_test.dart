@@ -35,6 +35,8 @@ const _files = [
   'BatonSoundMac.swift',
   'BatonSource.swift',
   'BatonSpeaker.swift',
+  'BatonStayAwake.swift',
+  'BatonStayAwakeMac.swift',
   'BatonStreamPlugin.swift',
   'BatonUnlock.swift',
   'BatonUnlockMac.swift',

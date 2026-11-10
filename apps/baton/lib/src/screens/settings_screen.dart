@@ -13,6 +13,7 @@ import '../format.dart';
 import '../mac_passwords.dart';
 import '../notice_access.dart';
 import '../permissions.dart';
+import '../stay_awake.dart';
 import '../theme.dart';
 import 'content_box.dart';
 import 'diagnostics_screen.dart';
@@ -21,7 +22,8 @@ import 'restart_unlock_screen.dart';
 
 /// What is about this device rather than another one: its name, whether others can reach it and
 /// its fingerprint, what the system lets Baton do, whether a Mac opens Baton when its person signs
-/// in, unlocking a Mac after it restarts (on an iPhone or iPad), and the diagnostics.
+/// in and whether it stays awake while plugged in, unlocking a Mac after it restarts (on an iPhone
+/// or iPad), and the diagnostics.
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
     required this.session,
@@ -31,6 +33,7 @@ class SettingsScreen extends StatefulWidget {
     this.notices = const PlatformNoticeKeeper(),
     this.system = const PlatformSystemSettings(),
     this.alwaysOn = const PlatformAlwaysOnKeeper(),
+    this.stayAwake = const PlatformStayAwakeKeeper(),
     this.macPasswords,
     super.key,
   });
@@ -51,6 +54,10 @@ class SettingsScreen extends StatefulWidget {
   /// Says whether a Mac opens Baton when its person signs in, and changes it. Tests give it one of
   /// their own.
   final AlwaysOnKeeper alwaysOn;
+
+  /// Says whether a Mac stays awake while it is plugged in, and changes it. Tests give it one of
+  /// their own.
+  final StayAwakeKeeper stayAwake;
 
   /// Keeps the Macs to unlock after a restart, and their passwords. Only an iPhone or iPad has one,
   /// and only then is there a way in to it.
@@ -73,6 +80,12 @@ class _SettingsScreenState extends State<SettingsScreen>
   /// Whether a change of that is on its way to the system.
   bool _changingSignIn = false;
 
+  /// Whether this Mac stays awake while it is plugged in, or null before it was looked at.
+  StayAwake? _stayAwake;
+
+  /// Whether a change of that is on its way to the Mac app.
+  bool _changingStayAwake = false;
+
   @override
   void initState() {
     super.initState();
@@ -80,6 +93,7 @@ class _SettingsScreenState extends State<SettingsScreen>
     unawaited(_controller.start());
     unawaited(_checkPermissions());
     unawaited(_checkSignIn());
+    unawaited(_checkStayAwake());
   }
 
   @override
@@ -94,6 +108,7 @@ class _SettingsScreenState extends State<SettingsScreen>
     if (state == AppLifecycleState.resumed) {
       unawaited(_checkPermissions());
       unawaited(_checkSignIn());
+      unawaited(_checkStayAwake());
     }
   }
 
@@ -130,6 +145,24 @@ class _SettingsScreenState extends State<SettingsScreen>
     }
   }
 
+  Future<void> _checkStayAwake() async {
+    final stay = await widget.stayAwake.state();
+    if (mounted) setState(() => _stayAwake = stay);
+  }
+
+  /// Asks the Mac to stay awake while it is plugged in, or to sleep as it was set. The Mac says
+  /// where that stands: on its battery it waits, and a system that refuses is told.
+  Future<void> _setStayAwake(bool on) async {
+    if (_changingStayAwake) return;
+    setState(() => _changingStayAwake = true);
+    try {
+      final stay = await widget.stayAwake.set(on);
+      if (mounted) setState(() => _stayAwake = stay);
+    } finally {
+      if (mounted) setState(() => _changingStayAwake = false);
+    }
+  }
+
   Future<void> _checkPermissions() async {
     final checks = await checkPermissions(
       platform: widget.platform ?? defaultTargetPlatform,
@@ -151,6 +184,7 @@ class _SettingsScreenState extends State<SettingsScreen>
     final keeper = widget.macPasswords;
     final off = _permissionsOff;
     final signIn = _signIn;
+    final stay = _stayAwake;
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: SafeArea(
@@ -199,6 +233,30 @@ class _SettingsScreenState extends State<SettingsScreen>
                                 'devices can reach this Mac.',
                       value: signIn == SignInOpening.on,
                       onChanged: _changingSignIn ? null : _setSignIn,
+                    ),
+                  if (stay != null && stay != StayAwake.unavailable)
+                    _SwitchRow(
+                      icon: Icons.power_outlined,
+                      title: 'Stay awake while plugged in',
+                      subtitle: switch (stay) {
+                        StayAwake.holding =>
+                          'This Mac stays awake while it is plugged in. The screen '
+                              'can still turn off, and a laptop with its lid shut '
+                              'can still sleep.',
+                        StayAwake.waiting =>
+                          'This Mac is running on its battery, so it can sleep. '
+                              'It stays awake again once it is plugged in.',
+                        StayAwake.refused =>
+                          'Baton could not keep this Mac awake, because the '
+                              'system would not let it. Turn this off and on to '
+                              'try again.',
+                        StayAwake.off || StayAwake.unavailable =>
+                          'Keeps this Mac from sleeping while it is plugged in, so '
+                              'that your other devices can reach it. The screen '
+                              'can still turn off.',
+                      },
+                      value: stay != StayAwake.off,
+                      onChanged: _changingStayAwake ? null : _setStayAwake,
                     ),
                   if (keeper != null)
                     _Row(

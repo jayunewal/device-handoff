@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import 'dart:async';
+
 import 'package:baton/src/always_on.dart';
 import 'package:baton/src/backend.dart';
 import 'package:baton/src/control_access.dart';
@@ -9,6 +11,7 @@ import 'package:baton/src/permissions.dart';
 import 'package:baton/src/screens/permissions_screen.dart';
 import 'package:baton/src/screens/restart_unlock_screen.dart';
 import 'package:baton/src/screens/settings_screen.dart';
+import 'package:baton/src/stay_awake.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -16,6 +19,7 @@ import 'fake_always_on.dart';
 import 'fake_backend.dart';
 import 'fake_control_access.dart';
 import 'fake_notices.dart';
+import 'fake_stay_awake.dart';
 import 'fake_system_settings.dart';
 
 final _now = DateTime.fromMillisecondsSinceEpoch(1760529600 * 1000);
@@ -49,6 +53,7 @@ Future<void> _show(
   FakeSession session, {
   FakeSystemSettings? system,
   FakeAlwaysOn? alwaysOn,
+  FakeStayAwake? stayAwake,
   MacPasswordKeeper? macPasswords,
 }) async {
   tester.view
@@ -69,6 +74,7 @@ Future<void> _show(
               Permission.accessibility: PermissionState.on,
             }),
         alwaysOn: alwaysOn ?? FakeAlwaysOn(SignInOpening.unavailable),
+        stayAwake: stayAwake ?? FakeStayAwake(StayAwake.unavailable),
         macPasswords: macPasswords,
       ),
     ),
@@ -259,6 +265,209 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+    });
+  });
+
+  group('staying awake while plugged in', () {
+    const title = 'Stay awake while plugged in';
+    const offText =
+        'Keeps this Mac from sleeping while it is plugged in, so that your '
+        'other devices can reach it. The screen can still turn off.';
+    const holdingText =
+        'This Mac stays awake while it is plugged in. The screen can still '
+        'turn off, and a laptop with its lid shut can still sleep.';
+    const waitingText =
+        'This Mac is running on its battery, so it can sleep. It stays awake '
+        'again once it is plugged in.';
+    const refusedText =
+        'Baton could not keep this Mac awake, because the system would not '
+        'let it. Turn this off and on to try again.';
+
+    testWidgets('has no switch where the Mac cannot be asked to', (
+      tester,
+    ) async {
+      await _show(tester, _session());
+      expect(find.text(title), findsNothing);
+      expect(find.byType(Switch), findsNothing);
+    });
+
+    testWidgets('says what it does, and turns it on', (tester) async {
+      final stay = FakeStayAwake();
+      await _show(tester, _session(), stayAwake: stay);
+      expect(find.text(title), findsOneWidget);
+      expect(find.text(offText), findsOneWidget);
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+
+      await tester.tap(find.byType(Switch));
+      await tester.pumpAndSettle();
+
+      expect(stay.sets, [true]);
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+      expect(find.text(holdingText), findsOneWidget);
+      expect(find.text(offText), findsNothing);
+    });
+
+    testWidgets('turns it off from the row as well as the switch', (
+      tester,
+    ) async {
+      final stay = FakeStayAwake(StayAwake.holding);
+      await _show(tester, _session(), stayAwake: stay);
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+      expect(find.text(holdingText), findsOneWidget);
+
+      await tester.tap(find.text(title));
+      await tester.pumpAndSettle();
+
+      expect(stay.sets, [false]);
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+      expect(find.text(offText), findsOneWidget);
+    });
+
+    testWidgets('says that a Mac on its battery waits to be plugged in', (
+      tester,
+    ) async {
+      final stay = FakeStayAwake(StayAwake.waiting);
+      await _show(tester, _session(), stayAwake: stay);
+
+      // It was asked for, so the switch is on, and the Mac is not held now.
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+      expect(find.text(waitingText), findsOneWidget);
+      expect(find.text(holdingText), findsNothing);
+    });
+
+    testWidgets('says that the Mac was not held when it was asked on the '
+        'battery', (tester) async {
+      final stay = FakeStayAwake()..onAnswer = StayAwake.waiting;
+      await _show(tester, _session(), stayAwake: stay);
+
+      await tester.tap(find.byType(Switch));
+      await tester.pumpAndSettle();
+
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+      expect(find.text(waitingText), findsOneWidget);
+    });
+
+    testWidgets('says when the system would not hold the Mac, and asks again '
+        'on a new turn of the switch', (tester) async {
+      final stay = FakeStayAwake()..onAnswer = StayAwake.refused;
+      await _show(tester, _session(), stayAwake: stay);
+
+      await tester.tap(find.byType(Switch));
+      await tester.pumpAndSettle();
+
+      // Asked for, and not done: the switch is on and the sentence says so.
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+      expect(find.text(refusedText), findsOneWidget);
+      expect(find.text(holdingText), findsNothing);
+
+      await tester.tap(find.byType(Switch));
+      await tester.pumpAndSettle();
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+      stay.onAnswer = StayAwake.holding;
+      await tester.tap(find.byType(Switch));
+      await tester.pumpAndSettle();
+
+      expect(stay.sets, [true, false, true]);
+      expect(find.text(holdingText), findsOneWidget);
+    });
+
+    testWidgets('holds the switch while the Mac is being asked', (
+      tester,
+    ) async {
+      final stay = FakeStayAwake()..hold = Completer<void>();
+      await _show(tester, _session(), stayAwake: stay);
+
+      await tester.tap(find.byType(Switch));
+      await tester.pump();
+      expect(tester.widget<Switch>(find.byType(Switch)).onChanged, isNull);
+      // A second tap on the row does nothing while the first is on its way.
+      await tester.tap(find.text(title));
+      await tester.pump();
+      expect(stay.sets, [true]);
+
+      stay.hold!.complete();
+      await tester.pumpAndSettle();
+      expect(tester.widget<Switch>(find.byType(Switch)).onChanged, isNotNull);
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+    });
+
+    testWidgets(
+      'turns away a second tap that comes before the screen has changed',
+      (tester) async {
+        // Two taps in the same frame both reach the switch as it was before it was held, so the
+        // change that goes to the Mac is the first, and the second is turned away by the screen.
+        final stay = FakeStayAwake()..hold = Completer<void>();
+        await _show(tester, _session(), stayAwake: stay);
+
+        await tester.tap(find.byType(Switch));
+        await tester.tap(find.byType(Switch));
+        await tester.pump();
+        expect(stay.sets, [true]);
+
+        stay.hold!.complete();
+        await tester.pumpAndSettle();
+        expect(stay.sets, [true]);
+        expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+      },
+    );
+
+    testWidgets('does not touch a screen that closed while the Mac was asked', (
+      tester,
+    ) async {
+      // Where it stands, when the screen opens.
+      final looking = FakeStayAwake()..stateHold = Completer<void>();
+      await _show(tester, _session(), stayAwake: looking);
+      await tester.pumpWidget(const SizedBox());
+      looking.stateHold!.complete();
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+
+      // A change, from the switch.
+      final changing = FakeStayAwake()..hold = Completer<void>();
+      await _show(tester, _session(), stayAwake: changing);
+      await tester.tap(find.byType(Switch));
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox());
+      changing.hold!.complete();
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('looks again when the person comes back to Baton', (
+      tester,
+    ) async {
+      final stay = FakeStayAwake(StayAwake.waiting);
+      await _show(tester, _session(), stayAwake: stay);
+      expect(find.text(waitingText), findsOneWidget);
+      final asked = stay.asks;
+
+      // The Mac was plugged in meanwhile.
+      stay.stay = StayAwake.holding;
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+
+      expect(stay.asks, asked + 1);
+      expect(find.text(holdingText), findsOneWidget);
+    });
+
+    testWidgets('is a switch of its own beside opening at sign-in', (
+      tester,
+    ) async {
+      final alwaysOn = FakeAlwaysOn();
+      final stay = FakeStayAwake();
+      await _show(tester, _session(), alwaysOn: alwaysOn, stayAwake: stay);
+      expect(find.byType(Switch), findsNWidgets(2));
+
+      await tester.tap(find.text(title));
+      await tester.pumpAndSettle();
+
+      expect(stay.sets, [true]);
+      expect(alwaysOn.sets, isEmpty);
+      await tester.tap(find.text('Open Baton when you sign in'));
+      await tester.pumpAndSettle();
+      expect(alwaysOn.sets, [true]);
+      expect(stay.sets, [true]);
     });
   });
 }

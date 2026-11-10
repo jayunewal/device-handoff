@@ -197,6 +197,9 @@ public class BatonStreamPlugin: NSObject, FlutterPlugin {
     shared = plugin
     registrar.addMethodCallDelegate(
       plugin, channel: FlutterMethodChannel(name: channelName, binaryMessenger: messenger))
+    #if os(macOS)
+    answerAboutStayingAwake(messenger: messenger)
+    #endif
   }
 
   private init(textures: FlutterTextureRegistry) {
@@ -337,3 +340,35 @@ public class BatonStreamPlugin: NSObject, FlutterPlugin {
     done()
   }
 }
+
+#if os(macOS)
+/// Answers what the app asks about keeping this Mac awake while it is plugged in
+/// (BatonStayAwake.swift decides, BatonStayAwakeMac.swift talks to the system): where it stands,
+/// and the person's choice. The plugin follows the power of the Mac from the moment it is
+/// registered, which is before any screen is up, so a Mac that the person asked for is held from the
+/// start of the app, and again after every restart of the Mac. The names of the channel and of the
+/// questions, and the words of the answers, must be the ones in lib/src/stay_awake.dart.
+private func answerAboutStayingAwake(messenger: FlutterBinaryMessenger) {
+  let keeper = MacStayAwake.shared
+  keeper.start()
+  let channel = FlutterMethodChannel(
+    name: "io.github.jayunewal.baton/stay_awake", binaryMessenger: messenger)
+  channel.setMethodCallHandler { call, result in
+    switch call.method {
+    case "state":
+      result(keeper.state.rawValue)
+    case "set":
+      guard let on = call.arguments as? Bool else {
+        result(
+          FlutterError(
+            code: "bad_choice", message: "The choice was not a yes or a no.", details: nil))
+        return
+      }
+      keeper.ask(on)
+      result(keeper.state.rawValue)
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+}
+#endif

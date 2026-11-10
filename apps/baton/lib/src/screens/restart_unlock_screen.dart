@@ -14,6 +14,12 @@ import 'content_box.dart';
 /// what the phone heard.
 const macKeyCommand = 'ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub';
 
+/// What may be behind an answer with another key than the one that was saved, for the person to
+/// weigh. The unlock and the check of the way give it alike.
+const _otherKeyReasons =
+    'Something else on the network may be answering for your Mac, or a Mac that is still '
+    'locked after a restart may answer with a key of its own.';
+
 /// Unlocks a Mac that FileVault holds locked after a restart.
 ///
 /// After a restart, a Mac with FileVault turned on runs nothing until someone types the password
@@ -129,10 +135,13 @@ class _RestartUnlockScreenState extends State<RestartUnlockScreen> {
       case SshUnlock_UnknownKey(:final fingerprint):
         await _unknownKey(mac, fingerprint);
       case SshUnlock_NoPassword():
+        // The Mac answered with the key that was saved, so Remote Login is on. It takes keys only,
+        // as a Mac that runs may be set up to on purpose, and the Add screen saves one.
         await _tell(
           mac,
-          'The Mac does not take a password over SSH. Check that Remote Login is on in '
-          'System Settings > General > Sharing.',
+          'The Mac answered, but it takes keys only, so it did not take the password. That is '
+          'expected while the Mac runs. If it is waiting for its disk password after a restart, '
+          'this way cannot unlock it, and it has to be unlocked at the Mac.',
         );
       case SshUnlock_Unreachable():
         await _tell(
@@ -145,7 +154,7 @@ class _RestartUnlockScreenState extends State<RestartUnlockScreen> {
       case SshUnlock_Failed(:final detail):
         await _tell(
           mac,
-          'Something went wrong while talking to the Mac ($detail).',
+          'Something went wrong while talking to the Mac (${visibleText(detail)}).',
         );
     }
   }
@@ -173,10 +182,7 @@ class _RestartUnlockScreenState extends State<RestartUnlockScreen> {
                 style: const TextStyle(fontFamily: 'monospace'),
               ),
               const SizedBox(height: 12),
-              const Text(
-                'Something else on the network may be answering for your Mac, or a Mac that is '
-                'still locked after a restart may answer with a key of its own.',
-              ),
+              const Text(_otherKeyReasons),
             ],
           ),
         ),
@@ -193,7 +199,10 @@ class _RestartUnlockScreenState extends State<RestartUnlockScreen> {
   /// Asks the Mac for its key at the saved address and says what came of it. The password is not
   /// sent, and the face is not asked for: the check can be made on any network, as often as the
   /// person likes, with a Mac that runs and with one that waits for its disk password. It shows
-  /// from where the person is whether an unlock would reach the Mac.
+  /// from where the person is whether the way to the Mac works, and whether the Mac is the one that
+  /// was saved. The key it hears is the key of the Mac that runs: a Mac that waits for its disk
+  /// password may answer with a key of its own, so "the way is open" says nothing yet of the unlock
+  /// after a restart, and the dialog says so.
   Future<void> _checkWay(SavedMac mac) async {
     setState(() => _busy = mac.id);
     final started = widget.now();
@@ -207,12 +216,13 @@ class _RestartUnlockScreenState extends State<RestartUnlockScreen> {
     }
     if (!mounted) return;
     final host = visibleText(mac.host);
-    final (title, message, shown) = switch (heard) {
+    final (title, message, shown, reasons) = switch (heard) {
       SshKeyCheck_Heard(:final fingerprint) when _isSaved(mac, fingerprint) => (
         'The way is open',
-        'Reached $host in ${_took(took)}. It answered with the key that you saved, so an '
-            'unlock from here would reach your Mac. Nothing was sent to it, not even the '
-            'password.',
+        'Reached $host in ${_took(took)}. It answered with the key that you saved, so the way '
+            'from here works. Nothing was sent to it, not even the password. A Mac that waits '
+            'for its disk password after a restart may answer with a key of its own.',
+        null,
         null,
       ),
       SshKeyCheck_Heard(:final fingerprint) => (
@@ -220,6 +230,7 @@ class _RestartUnlockScreenState extends State<RestartUnlockScreen> {
         'Reached $host in ${_took(took)}, but with another key than the one you saved, so an '
             'unlock from here would send it nothing. It answered with:',
         fingerprint,
+        _otherKeyReasons,
       ),
       SshKeyCheck_Unreachable() => (
         'No answer',
@@ -228,11 +239,13 @@ class _RestartUnlockScreenState extends State<RestartUnlockScreen> {
             'network is on, and that the device at home that carries it is on too. A Mac that '
             'has just restarted may take a minute to join the network.',
         null,
+        null,
       ),
       SshKeyCheck_Failed(:final detail) => (
         'Not a Mac with Remote Login',
         'Something answered at $host, but not as a Mac with Remote Login does '
             '(${visibleText(detail)}).',
+        null,
         null,
       ),
     };
@@ -252,6 +265,10 @@ class _RestartUnlockScreenState extends State<RestartUnlockScreen> {
                   shown,
                   style: const TextStyle(fontFamily: 'monospace'),
                 ),
+              ],
+              if (reasons != null) ...[
+                const SizedBox(height: 12),
+                Text(reasons),
               ],
             ],
           ),
@@ -553,7 +570,8 @@ class _AddMacScreenState extends State<AddMacScreen> {
               'leads to it.';
         case SshKeyCheck_Failed(:final detail):
           _problem =
-              'Something answered, but not as a Mac with Remote Login does ($detail).';
+              'Something answered, but not as a Mac with Remote Login does '
+              '(${visibleText(detail)}).';
       }
     });
   }

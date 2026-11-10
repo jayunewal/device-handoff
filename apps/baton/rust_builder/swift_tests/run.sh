@@ -21,6 +21,7 @@ swiftc -swift-version 5 "$@" \
   "$classes/BatonAacDecoder.swift" "$classes/BatonEngineOutput.swift" \
   "$classes/BatonSound.swift" "$classes/BatonAacEncoder.swift" "$classes/BatonSoundMac.swift" \
   "$classes/BatonUnlock.swift" "$classes/BatonUnlockMac.swift" \
+  "$classes/BatonStayAwake.swift" "$classes/BatonStayAwakeMac.swift" \
   "$here"/*.swift \
   -o "$work/tests"
 "$work/tests"

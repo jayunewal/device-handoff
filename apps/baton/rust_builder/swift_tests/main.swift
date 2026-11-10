@@ -1816,6 +1816,43 @@ tests += [
   ),
 ]
 
+tests += [
+  ("nothing is held until the person asks", testNothingIsHeldUntilThePersonAsks),
+  (
+    "a Mac that is plugged in is held when asked, and only once",
+    testAMacThatIsPluggedInIsHeldWhenAskedAndOnlyOnce
+  ),
+  ("a choice from before is held at the start", testAChoiceFromBeforeIsHeldAtTheStart),
+  (
+    "a Mac on its battery is not held, and is held once it is plugged in",
+    testAMacOnItsBatteryIsNotHeldAndIsHeldOnceItIsPluggedIn
+  ),
+  (
+    "a hold is let go of when the Mac is unplugged and taken again when it is plugged in",
+    testAHoldIsLetGoOfWhenTheMacIsUnpluggedAndTakenAgainWhenItIsPluggedIn
+  ),
+  (
+    "a hold is let go of when the person turns it off, and stays off",
+    testAHoldIsLetGoOfWhenThePersonTurnsItOffAndStaysOff
+  ),
+  (
+    "turning it off on the battery takes and lets go of nothing",
+    testAHoldIsLetGoOfWhenThePersonTurnsItOffOnTheBattery
+  ),
+  (
+    "a system that refuses the hold is said so and asked again",
+    testASystemThatRefusesTheHoldIsSaidSoAndAskedAgain
+  ),
+  (
+    "a power that the system does not say is not held and is said so",
+    testAPowerThatTheSystemDoesNotSayIsNotHeldAndIsSaidSo
+  ),
+  (
+    "the words of the states are the ones of the app",
+    testTheWordsOfTheStatesAreTheOnesOfTheApp
+  ),
+]
+
 #if canImport(AudioToolbox)
   tests += [
     (
@@ -1974,6 +2011,22 @@ tests += [
     (
       "a screen that never started is not unlocked and its key is wiped",
       testAScreenThatNeverStartedIsNotUnlockedAndItsKeyIsWiped
+    ),
+    (
+      "the system says where the power of the Mac comes from",
+      testTheSystemSaysWhereThePowerOfTheMacComesFrom
+    ),
+    (
+      "the hold shows to the system and is gone when it is let go of",
+      testTheHoldShowsToTheSystemAndIsGoneWhenItIsLetGoOf
+    ),
+    (
+      "the choice is kept in the defaults and held at the next start",
+      testTheChoiceIsKeptInTheDefaultsAndHeldAtTheNextStart
+    ),
+    (
+      "the watch of the power starts and stops as often as it is asked",
+      testTheWatchOfThePowerStartsAndStopsAsOftenAsItIsAsked
     ),
   ]
 #endif

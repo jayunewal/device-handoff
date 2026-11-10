@@ -1,0 +1,62 @@
+# 0018: Stay awake while plugged in: a Mac holds off its idle sleep when the person asks and it is on a charger
+
+Status: proposed. The decision, the calls to the system and the setting are written and tested without a Mac in front of the person. The choice, the power and the hold are played by a Mac that the tests make up, the calls to the system are tested on a Mac in CI against the list of holds that the system keeps (`pmset -g assertions`), and the screen is tested without a Mac. Nothing has been tried by the person at a Mac of their own: checks S1 to S6 below are for them.
+
+## Context
+
+A Mac that is asleep answers nobody, and nothing wakes it from outside its own network. Everything that another device asks of a Mac needs it awake: the unlock of its screen ([ADR 0013](0013-unlock-from-a-phone.md)), what is open on it ([ADR 0015](0015-continue-from-another-device.md)), what waits for it ([ADR 0016](0016-outbox.md)), a session that a phone starts ([ADR 0010](0010-sessions-that-the-viewer-starts.md)) and the way in from away ([ADR 0017](0017-away-from-home.md), check A6). ADR 0013 and ADR 0017 both leave keeping a charging Mac awake as a later change, and a person who leaves the Mac on its charger at home asked for it as a setting.
+
+What is known:
+
+- [locked-devices.md](../locked-devices.md#4-on-desktops-sleep-is-what-stops-the-agent-not-the-lock) says that on macOS a power assertion is a suggestion that lid close, low battery, thermal limits and Dark Wake override, and that the assertions against sleep that follows from nobody using the Mac have no effect in Dark Wake (documented). A hold stops the sleep that comes from the Mac being left alone, and not the others.
+- The rule of that page for desktops is to hold a sleep inhibitor only while a transfer or a session is running, and never just to stay reachable while idle. The reasons it gives for Linux are that an idle inhibitor also turns off the person's auto-lock, and that a closed laptop in a bag would stay awake if it took the lid inhibitor. This record keeps the rule for everything that Baton does by itself, and makes one exception: what the person chooses with a switch of their own.
+- The Mac app already asks the system not to slow it down when it has no window (App Nap), and says in that request that the system may still put the Mac to sleep (`userInitiatedAllowingIdleSystemSleep`). During a private session it also holds the screens awake ([ADR 0011](0011-privacy-mode.md)). Neither keeps an idle Mac from sleeping.
+- The app is sandboxed. It already declares user activity to the power management of the system for the unlock ([ADR 0013](0013-unlock-from-a-phone.md)), with no entitlement for it. Whether the sandbox lets the app read where the Mac's power comes from is not known. It is expected to (inferred, from apps that show the battery), and the test on the sandboxed app in CI is the first answer, and S6 the second.
+
+## Decision
+
+**The person chooses it, in Settings on the Mac, and it is off until they do.** **Stay awake while plugged in** is a switch in the Settings of the Mac app. Baton never turns it on, no message from another device turns it on, and it is not part of pairing or of any session. The row is not shown on any system but a Mac.
+
+**The hold is one assertion against idle system sleep, held only while the Mac is plugged in.** When the person has asked for it and the system says that the Mac's power comes from the wall, Baton takes an assertion of the type `PreventUserIdleSystemSleep`, which stops the sleep that follows from nobody using the Mac. When the Mac is unplugged Baton lets go of it, and when the Mac is plugged in again Baton takes it again, so a laptop that leaves the charger is not kept awake in a bag. The screen is not held: it turns off as the person set it, and the Mac locks itself as they set it (inferred, check S3). The system can still put a laptop to sleep when its lid is closed and when its battery is low or hot (documented, see above), and is expected to when the person chooses Sleep (inferred, S3). Baton does not try to stop any of that, and the words of the setting say so. The reason that Baton gives the system says what it does and for whom, so that `pmset -g assertions` and the battery menu show who holds the Mac awake and why.
+
+**The choice is kept by the Mac app and held from the start of the app, before any screen is up.** It is a yes or a no in the defaults of the app (`stayAwakeWhilePluggedIn`), and the plugin follows it from the moment it is registered, so a Mac that starts after a restart, or from the login item with its window hidden, holds itself without anyone opening the window. The Flutter side only asks where it stands and passes on the person's choice, over the channel `io.github.jayunewal.baton/stay_awake` with the questions `state` and `set`, and the hold does not depend on it.
+
+**The power is followed, and not polled.** The system tells the main run loop when the power changes (`IOPSNotificationCreateRunLoopSource`), and each news settles the hold again: taken once and let go of once, however many times the Mac is told.
+
+**Where it cannot be done, it says so, and tries again.** There are four states, in the words of the app. **Off**: the person did not ask. **Holding**: the person asked, and the Mac is plugged in and held. **Waiting**: the person asked, and the Mac runs on its battery, so nothing is held until it is plugged in. **Refused**: the person asked, and the system would not say where the Mac's power comes from, or would not give the hold. A refusal is not kept: it is tried again at the next change of the power and when the person asks again. The switch is on for holding, waiting and refused, with a sentence under it for each, and it never says that the Mac stays awake when it does not.
+
+**Nothing else changes.** The hold does not wake a sleeping Mac, does not keep the screen on and does not stop the lid. A transfer and a session hold what they need for as long as they run, as before.
+
+## How it will be measured
+
+On a Mac built from this change, by the person at it. S1 to S3 and S5 need a laptop with a charger. A Mac with no battery counts as plugged in, so it can do S1, S4, S5 and S6.
+
+- **S1. The hold shows.** Turn the switch on while the Mac is plugged in. `pmset -g assertions` lists `PreventUserIdleSystemSleep` held by Baton, with the reason "Baton keeps this Mac awake while it is plugged in, so that your other devices can reach it." Turn the switch off: the line is gone.
+- **S2. The charger.** With the switch on, unplug a laptop. Is the line gone within a moment, and does the sentence under the switch say that the Mac runs on its battery? Plug it in again: is the line back, and does the sentence follow?
+- **S3. The screen, the lock and the lid.** With the switch on and the Mac idle on its charger, does the display turn off as System Settings says, and does the Mac then lock as its Lock Screen setting says? Close the lid of a laptop that has no external display, and choose Sleep in the Apple menu. It is expected to sleep both times, whatever is held. If it does not, say so here: that is a hold that is stronger than the one that this record decides.
+- **S4. Reachable while idle.** With the switch on and the Mac idle on its charger for longer than System Settings gives it before it sleeps, with the display off, check the Mac from a phone on the home Wi-Fi: **Check the way** at the Mac's address, and a connection of Baton's own. With the switch off, how long does the Mac take to stop answering? That is the case that check A6 of ADR 0017 expects to fail.
+- **S5. After a restart.** With the switch on, restart the Mac and sign in without opening the window of Baton. Is the hold in the list again? If the Mac is set to open Baton at sign-in, is it there before anyone touches the Mac?
+- **S6. The sandbox.** Is the answer of the switch ever "refused" on a Mac that is plugged in? If it is, the log says which call was refused: `log show --predicate 'subsystem == "io.github.jayunewal.baton" AND category == "stay-awake"' --last 5m`.
+
+## Alternatives considered
+
+- **Hold only while a transfer or a session runs, as the rule was.** It does not help here. When a phone first asks, nothing is running yet, and a Mac that has gone to sleep never starts anything.
+- **Hold whenever Baton runs.** A Mac on its battery would be drained by an app that the person did not ask to do it. The switch and the charger are what make it safe to hold.
+- **Hold whether or not the Mac is plugged in.** The reason to hold is the charger. A Mac that stays awake on its battery for a phone that may not call costs the person a battery that they notice only when it is flat.
+- **Let the Flutter side take the hold while its window is open.** The hold would end with the window, and Baton keeps running with its window closed, from the menu bar and from the login item. The Swift side keeps the choice so that it holds from the start of the app.
+- **Change the setting of the system.** macOS has a setting of its own that stops automatic sleeping on the power adapter when the display is off, under a name that differs between versions and that was not checked here. Baton cannot change it from its sandbox, and a setting of the system outlives Baton. A person who prefers it can use it and leave this switch off.
+- **A stronger assertion that holds off more kinds of sleep.** None is taken. A closed lid is the person's way of saying that the Mac goes to sleep, and a laptop in a bag that is held awake is the case that the rule above exists for.
+
+## Consequences
+
+- A Mac on a charger with the switch on is expected to be reachable while nobody uses it, on its own network and through the route of ADR 0017. A laptop with its lid shut, a Mac on its battery and a Mac that the person put to sleep are expected to be asleep and to answer nothing. Whether a laptop that is shut and plugged in to an external display, which the system keeps awake as its own rule, is held by this switch or on its own was not tested.
+- The Mac keeps using power while it is held, as any Mac that is awake does. Holding a Mac awake for days is a choice that the person makes with the switch, and the words under it say what it does.
+- The hold is visible to the system: it is in `pmset -g assertions` with a reason that names Baton, and in the log.
+- What the app keeps is a yes or a no in its own defaults. It crosses no network, is in no message, and is not among the settings that another device can read or change.
+- The phone does not say that a Mac is asleep. A phone that cannot reach a Mac says that the Mac did not answer, and the guide lists a sleeping Mac among the reasons. For the Mac to tell the phone that it is awake, held or asleep, the wire format would change, which this record does not do.
+
+## Open points
+
+- **The sandbox (S6).** If the system will not tell the app where the Mac's power comes from, or will not give the hold, the switch says so and holds nothing, and this record is amended with what the checks show.
+- **The lid with an external display.** Left to the system's own rule, and not tested.
+- **The words on the phone.** Saying plainly that a Mac is asleep needs the Mac to tell the phone, and is a change of its own.
