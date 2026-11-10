@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 
 import '../awake.dart';
 import '../backend.dart';
+import '../continue_reader.dart';
+import '../continue_server.dart';
 import '../control_access.dart';
 import '../file_chooser.dart';
 import '../file_shower.dart';
@@ -42,6 +44,7 @@ class HomeScreen extends StatefulWidget {
     this.screenAccess = const PlatformScreenAccess(),
     this.notices = const PlatformNoticeKeeper(),
     this.ownerCheck = const PlatformOwnerCheck(),
+    this.continueReader = const PlatformContinueReader(),
     super.key,
   });
 
@@ -82,6 +85,10 @@ class HomeScreen extends StatefulWidget {
   /// another for its screen. Tests give it one of their own.
   final OwnerCheck ownerCheck;
 
+  /// Reads the page in front in the browser and the text on the clipboard, for a paired device
+  /// that the person allowed to ask what they are working on. Tests give it one of their own.
+  final ContinueReader continueReader;
+
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
@@ -107,6 +114,10 @@ class _HomeScreenState extends State<HomeScreen> {
     widget.session,
     widget.notices,
   );
+  late final ContinueServer _continueServer = ContinueServer(
+    widget.session,
+    widget.continueReader,
+  );
   StreamSubscription<Received>? _arrivals;
   StreamSubscription<TransferRequest>? _requests;
   StreamSubscription<WindowRequest>? _windowRequests;
@@ -124,6 +135,7 @@ class _HomeScreenState extends State<HomeScreen> {
     unawaited(_transfers.start());
     unawaited(_windows.start());
     unawaited(_unlockNotices.start());
+    unawaited(_continueServer.start());
   }
 
   @override
@@ -136,6 +148,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _transfers.dispose();
     _windows.dispose();
     _unlockNotices.dispose();
+    _continueServer.dispose();
     super.dispose();
   }
 
