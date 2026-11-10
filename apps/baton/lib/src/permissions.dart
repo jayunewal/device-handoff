@@ -28,7 +28,8 @@ enum Permission {
   /// The camera, to read the code that another device shows when the two pair.
   camera,
 
-  /// Face ID, on an iPhone or iPad: it checks that it is the person before a Mac is unlocked.
+  /// Face ID, on an iPhone or iPad: it checks that it is the person before a Mac is opened or
+  /// unlocked.
   faceId,
 
   /// The local network: devices on the same network connect straight to each other. The system

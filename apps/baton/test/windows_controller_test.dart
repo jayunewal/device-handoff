@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import 'package:baton/src/backend.dart';
+import 'package:baton/src/owner_check.dart';
 import 'package:baton/src/unlock_text.dart';
 import 'package:baton/src/window_sound.dart';
 import 'package:baton/src/windows_controller.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'fake_backend.dart';
+import 'fake_owner_check.dart';
 import 'fake_screen.dart';
 
 const _ipad = Device(
@@ -42,12 +44,19 @@ FakeSession _session() => FakeSession(
 Future<WindowsController> _controller(
   FakeSession session, {
   FakeScreen? screen,
+  OwnerCheck? owner,
   Duration? openingLimit,
 }) async {
   final keeper = screen ?? FakeScreen();
+  final check = owner ?? FakeOwnerCheck();
   final controller = openingLimit == null
-      ? WindowsController(session, screen: keeper)
-      : WindowsController(session, screen: keeper, openingLimit: openingLimit);
+      ? WindowsController(session, screen: keeper, ownerCheck: check)
+      : WindowsController(
+          session,
+          screen: keeper,
+          ownerCheck: check,
+          openingLimit: openingLimit,
+        );
   addTearDown(controller.dispose);
   await controller.start();
   return controller;
@@ -2401,6 +2410,213 @@ void main() {
         session.releaseStart();
         await done;
 
+        expect(told, 0);
+      },
+    );
+  });
+
+  group('the person is checked before a screen is asked for', () {
+    test(
+      'is asked first, and the device is sent nothing until they are confirmed',
+      () async {
+        final session = _session();
+        final owner = FakeOwnerCheck()..hold();
+        final controller = await _controller(session, owner: owner);
+
+        final done = controller.startScreen(_mac);
+        await pumpEventQueue();
+
+        expect(owner.asked, ['Look at the screen of Anna’s Mac']);
+        expect(
+          session.screensAsked,
+          isEmpty,
+          reason: 'the person has not been confirmed yet',
+        );
+
+        owner.release();
+        await done;
+
+        expect(session.screensAsked, [(id: _mac.id, control: false)]);
+        expect(controller.notes, isEmpty);
+        expect(controller.asking, isNull);
+      },
+    );
+
+    test('says in the question what is wanted of which device', () async {
+      final session = _session();
+      final owner = FakeOwnerCheck();
+      final controller = await _controller(session, owner: owner);
+
+      await controller.startScreen(_mac);
+      await controller.startScreen(_mac, control: true);
+
+      expect(owner.asked, [
+        'Look at the screen of Anna’s Mac',
+        'Look at the screen of Anna’s Mac and control it',
+      ]);
+    });
+
+    test('is asked every time, and a yes is not kept for the next', () async {
+      final session = _session();
+      final owner = FakeOwnerCheck();
+      final controller = await _controller(session, owner: owner);
+
+      await controller.startScreen(_mac);
+      await controller.startScreen(_mac);
+      await controller.startScreen(_mac, control: true);
+
+      expect(owner.asked, hasLength(3));
+      expect(session.screensAsked, hasLength(3));
+    });
+
+    test(
+      'is asked once while one is going, whatever is tapped meanwhile',
+      () async {
+        final session = _session();
+        final owner = FakeOwnerCheck()..hold();
+        final controller = await _controller(session, owner: owner);
+
+        final first = controller.startScreen(_mac);
+        await pumpEventQueue();
+        await controller.startScreen(_mac, control: true);
+        await controller.share(_ipad);
+
+        expect(owner.asked, hasLength(1));
+        expect(session.windowsShared, isEmpty);
+
+        owner.release();
+        await first;
+
+        expect(session.screensAsked, [(id: _mac.id, control: false)]);
+      },
+    );
+
+    test(
+      'keeps the screen on while the person is asked, and lets it go after',
+      () async {
+        final session = _session();
+        final screen = FakeScreen();
+        final owner = FakeOwnerCheck()..hold();
+        final controller = await _controller(
+          session,
+          screen: screen,
+          owner: owner,
+        );
+
+        final done = controller.startScreen(_mac);
+        await pumpEventQueue();
+
+        expect(screen.on, isTrue);
+
+        owner.result = OwnerCheckResult.cancelled;
+        owner.release();
+        await done;
+
+        expect(screen.on, isFalse);
+      },
+    );
+
+    test(
+      'starts nothing for a person who stops the question, and says nothing',
+      () async {
+        final session = _session();
+        final owner = FakeOwnerCheck(OwnerCheckResult.cancelled);
+        final controller = await _controller(session, owner: owner);
+
+        await controller.startScreen(_mac, control: true);
+
+        expect(owner.asked, hasLength(1));
+        expect(session.screensAsked, isEmpty);
+        expect(controller.notes, isEmpty);
+        expect(controller.asking, isNull);
+        expect(controller.askingControl, isFalse);
+        expect(controller.sessions, isEmpty);
+      },
+    );
+
+    for (final result in [
+      OwnerCheckResult.notRecognised,
+      OwnerCheckResult.noLock,
+      OwnerCheckResult.failed,
+    ]) {
+      test(
+        'starts nothing for a person who could not be confirmed (${result.name}), and says so',
+        () async {
+          final session = _session();
+          final screen = FakeScreen();
+          final controller = await _controller(
+            session,
+            screen: screen,
+            owner: FakeOwnerCheck(result),
+          );
+
+          await controller.startScreen(_mac, control: true);
+
+          expect(
+            session.screensAsked,
+            isEmpty,
+            reason: 'the device is not asked for anything',
+          );
+          expect(controller.notes, hasLength(1));
+          expect(
+            (controller.notes.single as WindowFailed).message,
+            describeOwnerRefusal(result, _mac.name),
+          );
+          expect(controller.asking, isNull);
+          expect(controller.askingControl, isFalse);
+          expect(controller.sessions, isEmpty);
+          expect(screen.asked, ['keepOn', 'letTurnOff']);
+        },
+      );
+    }
+
+    test('can be tried again after a refusal', () async {
+      final session = _session();
+      final owner = FakeOwnerCheck(OwnerCheckResult.notRecognised);
+      final controller = await _controller(session, owner: owner);
+
+      await controller.startScreen(_mac);
+      expect(session.screensAsked, isEmpty);
+
+      owner.result = OwnerCheckResult.confirmed;
+      await controller.startScreen(_mac);
+
+      expect(owner.asked, hasLength(2));
+      expect(session.screensAsked, [(id: _mac.id, control: false)]);
+    });
+
+    test('asks nothing for a window that this device offers', () async {
+      final session = _session();
+      final owner = FakeOwnerCheck();
+      final controller = await _controller(session, owner: owner);
+
+      await controller.share(_ipad);
+
+      expect(session.windowsShared, [(id: _ipad.id, control: false)]);
+      expect(owner.asked, isEmpty);
+    });
+
+    test(
+      'sends the device nothing when the controller is let go of meanwhile',
+      () async {
+        final session = _session();
+        final owner = FakeOwnerCheck()..hold();
+        final controller = WindowsController(
+          session,
+          screen: FakeScreen(),
+          ownerCheck: owner,
+        );
+        await controller.start();
+        final done = controller.startScreen(_mac);
+        await pumpEventQueue();
+        var told = 0;
+        controller.addListener(() => told++);
+
+        controller.dispose();
+        owner.release();
+        await done;
+
+        expect(session.screensAsked, isEmpty);
         expect(told, 0);
       },
     );
