@@ -422,6 +422,13 @@ void main() {
         find.textContaining('locked or its screen is off'),
         findsOneWidget,
       );
+      // Each paragraph starts as a sentence does, also the one that names this Mac.
+      final limits = tester.widget<Text>(
+        find.textContaining('locked or its screen is off'),
+      );
+      for (final paragraph in limits.data!.split('\n\n')) {
+        expect(paragraph, matches(RegExp(r'^[A-Z]')), reason: paragraph);
+      }
       expect(find.textContaining('private windows of Chrome'), findsOneWidget);
       expect(
         find.textContaining('It cannot promise that for Safari'),
