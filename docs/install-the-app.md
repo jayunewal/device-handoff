@@ -305,6 +305,10 @@ When the Mac locks during a session, the phone shows a card saying so with an **
 
 The first tries on real devices worked. When you try it, use a Mac account whose password you can change back.
 
+### Unlock the Mac after a restart
+
+A Mac with FileVault keeps its disk locked after a restart until someone gives it a password, and Baton does not run until then. On an iPhone or an iPad, **Settings** and **Unlock a Mac after restart** give the Mac that password over SSH, behind Face ID. At the Mac, turn on Remote Login in System Settings, under **General** and **Sharing**. At the phone, tap **Add a Mac**, type the Mac's address and the account, compare the key with the command that the phone shows, and save. This has not been tried on a restart yet. [Reach your Mac from away](away-from-home.md) says how to give the Mac a fixed address, and how to make this work from outside your home network.
+
 ## Every seven days
 
 An app made with a free Apple ID stops opening after seven days. Its icon is still there, but it closes at once. To install it again, plug the phone in, unlock it and run, in `device-handoff/apps/baton`:
