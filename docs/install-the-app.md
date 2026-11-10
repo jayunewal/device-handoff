@@ -198,6 +198,24 @@ What to know in this version:
 - On an iPhone or an iPad the dialog copies what you choose into the app's temporary space before it is sent, so a very large file takes room for a second copy while it goes. Baton deletes the copies when the sending is over, however it went. If Baton is closed while files go, the copies stay until iOS clears them.
 - If Baton is closed on the device that sends while files go, nothing is kept of that transfer, and the device that takes the files still lists it and counts it. When Baton is opened again on the device that sent, it tells the other device to let go of it as soon as the two can reach each other, and keeps trying, less often as time goes by, until the other device answers. Until then, which is up to an hour if the sending device stays closed, a device that has left two transfers like that is turned away. The other device counts that hour only while it is awake, so a phone that slept in between may still hold the transfer after more than an hour of the clock. Stopping a transfer with **Stop sending** tells the other device at once, and if it cannot be reached then, Baton tells it later.
 
+## Continue from the Mac
+
+An iPhone or an iPad can ask a Mac which page is open in its browser and what was copied last, and open or copy them with one tap. It is off until you turn it on at the Mac, for each phone. This part is built and tested in CI, and has not been tried on real devices yet.
+
+### Turn it on at the Mac, once for each phone
+
+1. On the Mac's **Devices** tab, tap the three dots at the end of the phone's row, then **Let this device continue from this Mac…**.
+2. Turn on **Let** and the phone's name **continue from this Mac**, and tap **Save**. Nobody at the Mac is asked when the phone asks, so this is the one place that says yes.
+3. macOS asks whether Baton may control **Safari** and **Chrome**, one question for each that is open. Baton uses that only to read the address and the title of the page in front. Choose **OK**. If you choose **Don't Allow**, the phone still gets what you copied, and Baton tells you where to change it: **System Settings**, **Privacy & Security**, **Automation**. A browser that is not open is not asked: Baton says so after you save, and macOS asks the first time a phone reads from it. To be asked now, open the browser and save again. After a rebuild of the Mac app macOS asks again, so save again then too.
+
+### Ask from the phone
+
+1. Keep Baton running on the Mac. With its window closed, its icon in the menu bar is enough.
+2. On the phone's **Devices** tab, tap the browser button on the Mac's row (**Continue from** and the Mac's name). A sheet opens with the page that is in front in the Mac's browser and the text on its clipboard.
+3. **Open** opens the page on the phone, **Copy address** copies its address, and **Copy** copies the text. Nothing opens and nothing is copied until you tap, and Baton keeps none of it after you close the sheet.
+
+The Mac gives the address and the title of the page in front in Safari or Chrome (the one in front, or the one you were in last), and the text on its clipboard, as they are when the phone asks. It gives nothing while it is locked, its screen is off or another account is using it, and never text that a password manager marked as secret. Baton leaves out the private windows of Chrome. It cannot promise that for Safari, so turn the setting off for a phone if you keep private pages open that it should not see. The phone says **Nothing to continue** when the Mac gave nothing, and cannot tell why. A Mac that is asleep cannot be asked.
+
 ## Look at and control the Mac
 
 An iPhone or iPad can show the Mac's whole screen or one of its windows, control it by touch and keyboard, and play its sound. The phone cannot be controlled itself, which iOS does not allow, and showing its screen is not built. This part is built and tested in CI, and has been tried on real devices only in part: see the table in the [README](../README.md#what-works-today).
@@ -209,6 +227,7 @@ The Mac asks the first time it needs each of these. If you answered **Don't Allo
 - **Screen & System Audio Recording**, to share the screen or a window and its sound.
 - **Accessibility**, to let the phone control the Mac and to keep the Mac's own keyboard and trackpad held in privacy mode.
 - **Notifications**, so that the Mac can tell you afterwards that it was unlocked from the phone.
+- **Automation**, for Safari and Chrome, only if you let a phone continue from the Mac (see above). macOS asks when you turn that on.
 
 **After every rebuild of the Mac app**, macOS treats it as a new program and the old permissions no longer apply, but the switches can still look on. Sharing or control then stops working without saying why. Reset them and grant them again:
 

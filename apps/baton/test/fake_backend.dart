@@ -434,6 +434,73 @@ class FakeSession implements Session {
     }
   }
 
+  /// What `continueAccess` gives for each device. A device that is not here is not allowed.
+  final Map<String, bool> continueAccesses = {};
+
+  @override
+  bool continueAccess(String id) {
+    final failure = startAccessUnknown;
+    if (failure != null) throw failure;
+    return continueAccesses[id] ?? false;
+  }
+
+  /// What `setContinueAccess` was asked, in order.
+  final List<({String id, bool allowed})> continueAccessSet = [];
+
+  /// What `setContinueAccess` throws, if it should fail.
+  Object? continueAccessFailure;
+
+  @override
+  Future<void> setContinueAccess(String id, bool allowed) async {
+    continueAccessSet.add((id: id, allowed: allowed));
+    final failure = continueAccessFailure;
+    if (failure != null) throw failure;
+    continueAccesses[id] = allowed;
+  }
+
+  /// What `answerContinue` was given, in order: the request, and what was read (`null` where it
+  /// could not be read).
+  final List<({int request, ContinueItems? items})> continueAnswers = [];
+
+  /// What `answerContinue` says: whether the request was still waiting.
+  bool continueAnswerTaken = true;
+
+  @override
+  bool answerContinue(int request, ContinueItems? items) {
+    continueAnswers.add((request: request, items: items));
+    return continueAnswerTaken;
+  }
+
+  /// The devices that `continueFrom` was asked about, in order.
+  final List<String> continueAsked = [];
+
+  /// What `continueFrom` gives: nothing to continue, unless a test says otherwise.
+  ContinueOutcome continueOutcome = const ContinueOutcome.items(
+    items: ContinueItems(),
+  );
+
+  /// What `continueFrom` throws, if it should fail.
+  Object? continueFailure;
+
+  /// Makes `continueFrom` wait until [releaseContinue], as it does while the other device reads.
+  /// The next call waits for the completer that this gives back, and a test can finish it by
+  /// itself to answer the calls in another order.
+  Completer<void> holdContinue() => _continueReady = Completer<void>();
+
+  /// Lets the held `continueFrom` answer.
+  void releaseContinue() => _continueReady?.complete();
+
+  Completer<void>? _continueReady;
+
+  @override
+  Future<ContinueOutcome> continueFrom(String id) async {
+    continueAsked.add(id);
+    await _continueReady?.future;
+    final failure = continueFailure;
+    if (failure != null) throw failure;
+    return continueOutcome;
+  }
+
   /// The sessions that `endWindow` was asked to end, in order.
   final List<int> windowsEnded = [];
 

@@ -238,6 +238,30 @@ class DevicesController extends ChangeNotifier {
     }
   }
 
+  /// Whether [device] may ask this device what its person is working on, to continue it there.
+  /// `null` if it is not paired with this device any more, say because it forgot this one first.
+  bool? continueAccess(Device device) {
+    try {
+      return _session.continueAccess(device.id);
+    } on BatonError {
+      return null;
+    }
+  }
+
+  /// Lets [device] ask this device what its person is working on, or does not. Returns what to
+  /// tell the person if that did not work, and `null` if it did.
+  Future<String?> setContinueAccess(
+    Device device, {
+    required bool allowed,
+  }) async {
+    try {
+      await _session.setContinueAccess(device.id, allowed);
+      return null;
+    } on BatonError catch (e) {
+      return e.message;
+    }
+  }
+
   /// How the unlock of [device] stands at this device: whether the person set it up so that the
   /// device can unlock this one while it is locked, and whether it ended since. `null` if it is not
   /// paired with this device any more, say because it forgot this one first.

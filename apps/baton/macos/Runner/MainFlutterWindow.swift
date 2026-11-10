@@ -1,5 +1,6 @@
 import AVFoundation
 import Cocoa
+import CoreServices
 import FlutterMacOS
 import ServiceManagement
 import UserNotifications
@@ -19,6 +20,7 @@ class MainFlutterWindow: NSWindow {
     answerAboutNotifications(messenger: flutterViewController.engine.binaryMessenger)
     answerAboutPermissions(messenger: flutterViewController.engine.binaryMessenger)
     answerAboutStayingOn(messenger: flutterViewController.engine.binaryMessenger)
+    answerAboutContinuing(messenger: flutterViewController.engine.binaryMessenger)
 
     super.awakeFromNib()
   }
@@ -433,4 +435,284 @@ private func openSignInSettings() -> Bool {
   guard #available(macOS 13.0, *) else { return false }
   SMAppService.openSystemSettingsLoginItems()
   return true
+}
+
+/// Gives what the person at this Mac is working on to a paired device that they allowed to ask: the
+/// page that is in front in Safari or Chrome, and the text on the clipboard. It is read when the
+/// question comes and kept nowhere. This also says where the person's consent to read the browsers
+/// stands, and asks the system for it. The names of the channel and of the questions, and the words
+/// of the answers, must be the ones in lib/src/continue_reader.dart.
+private func answerAboutContinuing(messenger: FlutterBinaryMessenger) {
+  browserWatch.start()
+  let channel = FlutterMethodChannel(
+    name: "io.github.jayunewal.baton/continuing", binaryMessenger: messenger)
+  channel.setMethodCallHandler { call, result in
+    switch call.method {
+    case "read":
+      readWhatThePersonIsWorkingOn(result)
+    case "browser":
+      guard let arguments = call.arguments as? [String: Any],
+        let name = arguments["browser"] as? String,
+        let browser = pageBrowsers.first(where: { $0.name == name })
+      else {
+        result(
+          FlutterError(
+            code: "bad_browser", message: "The browser was not Safari or Chrome.", details: nil))
+        return
+      }
+      let ask = arguments["ask"] as? Bool ?? false
+      // The system waits for the person to answer when it asks, so the main thread is not held.
+      continueQueue.async {
+        let answer = browserAccess(browser, ask: ask)
+        DispatchQueue.main.async { result(answer) }
+      }
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+}
+
+/// The browsers that the page in front is read from.
+private struct PageBrowser {
+  /// The word for it in lib/src/continue_reader.dart.
+  let name: String
+  let bundleIdentifier: String
+  /// What is asked of it, in AppleScript: nothing at all if it has no window, and otherwise the
+  /// address and the title of the page in front, as a list. Three seconds is all that it gets.
+  let script: String
+}
+
+private let pageBrowsers = [
+  PageBrowser(
+    name: "safari", bundleIdentifier: "com.apple.Safari",
+    script: """
+      with timeout of 3 seconds
+        tell application id "com.apple.Safari"
+          if (count of windows) is 0 then return {}
+          set thePage to current tab of front window
+          return {URL of thePage, name of thePage}
+        end tell
+      end timeout
+      """),
+  PageBrowser(
+    // The page of a private window is never given: Chrome says which of its windows are.
+    name: "chrome", bundleIdentifier: "com.google.Chrome",
+    script: """
+      with timeout of 3 seconds
+        tell application id "com.google.Chrome"
+          if (count of windows) is 0 then return {}
+          set theWindow to front window
+          if (mode of theWindow) is "incognito" then return {}
+          set thePage to active tab of theWindow
+          return {URL of thePage, title of thePage}
+        end tell
+      end timeout
+      """),
+]
+
+/// A browser answers on a queue of its own, one question at a time: one that hangs holds nothing
+/// else, and the system's own question to the person can wait here too.
+private let continueQueue = DispatchQueue(
+  label: "io.github.jayunewal.baton.continue", qos: .userInitiated)
+
+/// What came of reading the page in front of a browser.
+private enum PageRead {
+  case page(url: String, title: String?)
+  /// The browser has no window open, or has no page in it, or the window in front is private.
+  case nothing
+  /// The browser did not answer: it was not allowed to, or it took too long.
+  case failed
+}
+
+/// What the person is working on, as the answer to the question "read" of
+/// lib/src/continue_reader.dart: whichever of "pageUrl", "pageTitle" and "clipboard" there is, and
+/// nothing at all for a Mac that nobody is using. An error says that the page could not be read and
+/// that there is nothing else to give, which is not the same as there being nothing.
+private func readWhatThePersonIsWorkingOn(_ result: @escaping FlutterResult) {
+  // A Mac that is locked, or whose screen is off, gives nothing and not what it last held: the
+  // person is not there to have chosen to hand it over.
+  if macIsNotInUse() {
+    result([String: Any]())
+    return
+  }
+  var found = [String: Any]()
+  if let text = clipboardText() {
+    found["clipboard"] = text
+  }
+  guard let browser = browserWatch.inFront() else {
+    result(found)
+    return
+  }
+  continueQueue.async { [found] in
+    let page = readPage(of: browser)
+    DispatchQueue.main.async {
+      var found = found
+      switch page {
+      case .page(let url, let title):
+        found["pageUrl"] = url
+        if let title = title {
+          found["pageTitle"] = title
+        }
+        result(found)
+      case .nothing:
+        result(found)
+      case .failed:
+        // What was read of the clipboard is still given. With nothing else to give, the app is
+        // told that it could not be read.
+        if found.isEmpty {
+          result(
+            FlutterError(
+              code: "unreadable", message: "The browser did not answer.", details: nil))
+        } else {
+          result(found)
+        }
+      }
+    }
+  }
+}
+
+/// Whether this Mac is locked, or its screen is off, or another account has the screen. The
+/// dictionary of the session says the first and the last; a session that cannot be read is taken
+/// as one that nobody is using.
+private func macIsNotInUse() -> Bool {
+  guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return true }
+  if session["CGSSessionScreenIsLocked"] as? Bool == true { return true }
+  if session["kCGSSessionOnConsoleKey"] as? Bool == false { return true }
+  return CGDisplayIsAsleep(CGMainDisplayID()) != 0
+}
+
+/// The text on the clipboard. Nothing where there is none, where the app that copied it marked it
+/// as secret or as one-time (a password manager does, by the convention of nspasteboard.org, so
+/// that nothing keeps it), and where it is more than the protocol carries
+/// (crates/baton-proto/src/limits.rs).
+private func clipboardText() -> String? {
+  let pasteboard = NSPasteboard.general
+  let marks = ["org.nspasteboard.ConcealedType", "org.nspasteboard.TransientType"]
+  if (pasteboard.types ?? []).contains(where: { marks.contains($0.rawValue) }) {
+    return nil
+  }
+  guard let text = pasteboard.string(forType: .string),
+    !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+    text.utf8.count <= 1024 * 1024
+  else {
+    return nil
+  }
+  return text
+}
+
+/// Which browser is the one to read: the one in front, and where the person is in another app, or
+/// in Baton, the one that was in front last, if it is still open. A device that asks gets the page
+/// that the person was on, and nothing from a browser that was left long ago and closed.
+private final class BrowserWatch {
+  private var last: PageBrowser?
+  private var watching = false
+
+  /// Starts to remember, from the browser that is in front now.
+  func start() {
+    guard !watching else { return }
+    watching = true
+    last = frontBrowser()
+    NSWorkspace.shared.notificationCenter.addObserver(
+      forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+    ) { [weak self] note in
+      let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+      if let browser = pageBrowser(withBundleIdentifier: app?.bundleIdentifier) {
+        self?.last = browser
+      }
+    }
+  }
+
+  /// The browser to read, or nothing if there is none.
+  func inFront() -> PageBrowser? {
+    if let front = frontBrowser() {
+      return front
+    }
+    guard let last = last,
+      !NSRunningApplication.runningApplications(withBundleIdentifier: last.bundleIdentifier)
+        .isEmpty
+    else {
+      return nil
+    }
+    return last
+  }
+}
+
+private let browserWatch = BrowserWatch()
+
+private func frontBrowser() -> PageBrowser? {
+  pageBrowser(withBundleIdentifier: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
+}
+
+private func pageBrowser(withBundleIdentifier identifier: String?) -> PageBrowser? {
+  guard let identifier = identifier else { return nil }
+  return pageBrowsers.first(where: { $0.bundleIdentifier == identifier })
+}
+
+/// Reads the address and the title of the page in front of a browser. A browser that is not open is
+/// not asked, because asking one by name would open it.
+private func readPage(of browser: PageBrowser) -> PageRead {
+  guard
+    !NSRunningApplication.runningApplications(withBundleIdentifier: browser.bundleIdentifier)
+      .isEmpty
+  else {
+    return .nothing
+  }
+  guard let script = NSAppleScript(source: browser.script) else { return .failed }
+  var problem: NSDictionary?
+  let answer = script.executeAndReturnError(&problem)
+  if let problem = problem {
+    // -1743 is a no from the person, and -1712 an answer that did not come in time. The number
+    // says nothing of the page, so it is all that is written down.
+    NSLog(
+      "Baton could not read the page in front in \(browser.name): "
+        + "\(problem["NSAppleScriptErrorNumber"] ?? "no number")")
+    return .failed
+  }
+  // An empty list is a browser with no window open.
+  guard answer.numberOfItems >= 1, let url = answer.atIndex(1)?.stringValue, !url.isEmpty else {
+    return .nothing
+  }
+  return .page(url: url, title: answer.atIndex(2)?.stringValue)
+}
+
+/// Where the person's consent to read pages from a browser stands, in the words of
+/// lib/src/continue_reader.dart. With `ask`, the system asks the person if it has not yet, which it
+/// can do only while the browser is open, and this returns once they have answered.
+private func browserAccess(_ browser: PageBrowser, ask: Bool) -> String {
+  guard
+    NSWorkspace.shared.urlForApplication(withBundleIdentifier: browser.bundleIdentifier) != nil
+  else {
+    return "unavailable"
+  }
+  guard
+    !NSRunningApplication.runningApplications(withBundleIdentifier: browser.bundleIdentifier)
+      .isEmpty
+  else {
+    return "notOpen"
+  }
+  let target = NSAppleEventDescriptor(bundleIdentifier: browser.bundleIdentifier)
+  guard let address = target.aeDesc else { return "unavailable" }
+  // '****' in four characters, which the system calls typeWildCard: any kind of event. The answer
+  // is asked for in two calls so that the flag is a literal, whichever type the system's header
+  // gives it.
+  let anyEvent: UInt32 = 0x2A2A_2A2A
+  let status =
+    ask
+    ? AEDeterminePermissionToAutomateTarget(address, anyEvent, anyEvent, true)
+    : AEDeterminePermissionToAutomateTarget(address, anyEvent, anyEvent, false)
+  switch status {
+  case 0:
+    return "allowed"
+  case -1744:
+    // errAEEventWouldRequireUserConsent: the system has not asked, and was told not to.
+    return "needed"
+  case -1743:
+    // errAEEventNotPermitted: the person said no.
+    return "denied"
+  case -600:
+    // procNotFound: the browser closed after it was found open.
+    return "notOpen"
+  default:
+    return "unavailable"
+  }
 }

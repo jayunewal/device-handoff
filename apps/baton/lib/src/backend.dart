@@ -9,8 +9,17 @@ import 'rust/api/model.dart';
 export 'rust/api/error.dart' show BatonError, ErrorKind;
 export 'rust/api/model.dart'
     show
+        ContinueItems,
+        ContinueOutcome,
+        ContinueOutcome_Busy,
+        ContinueOutcome_Items,
+        ContinueOutcome_NotAllowed,
+        ContinueOutcome_Unavailable,
+        ContinueOutcome_Unsupported,
+        ContinuePage,
         Device,
         Event,
+        Event_ContinueAsked,
         Event_DevicesChanged,
         Event_OfferEnded,
         Event_PairingRequestEnded,
@@ -264,6 +273,33 @@ abstract interface class Session {
   /// until then. Throws a `BatonError` of kind `notPaired`, or `storage` if the setting could not
   /// be kept.
   Future<void> setHearSetting(String id, bool? setting);
+
+  /// Gives what the platform read for a paired device that asked (`Event_ContinueAsked`): the page
+  /// that is in front in the browser and the text on the clipboard, each `null` when there is none,
+  /// so that an empty [ContinueItems] says that there is nothing to continue. `null` says that it
+  /// could not be read, and the device that asked is told so. Returns whether the answer was passed
+  /// on, which it is not for a request that is not waiting any more: it was answered already, the
+  /// few seconds that there are ran out, or Baton stopped. Nothing of what was read is kept.
+  bool answerContinue(int request, ContinueItems? items);
+
+  /// Whether the paired device [id] may ask this device what its person is working on, to continue
+  /// it there: the page that is in front in the browser, and the text on the clipboard. `false` for
+  /// a device that was just paired. Throws a `BatonError` of kind `notPaired`.
+  bool continueAccess(String id);
+
+  /// Lets the paired device [id] ask this device what its person is working on, or does not. Only
+  /// the person at this device can say so: nothing a paired device sends changes it. Nothing is
+  /// read until the device asks, and a device that is turned away is not read for. Throws a
+  /// `BatonError` of kind `notPaired`, or `storage` if the setting could not be kept.
+  Future<void> setContinueAccess(String id, bool allowed);
+
+  /// Asks the paired device [id] what its person is working on, to continue it here: the page that
+  /// is in front in its browser, and the text on its clipboard. Nobody there is asked: the person
+  /// allowed this device beforehand ([setContinueAccess] there), or the answer is
+  /// `ContinueOutcome_NotAllowed`. What comes back is as old as the asking, and is kept nowhere.
+  /// Throws a `BatonError` of kind `notPaired`, or `unreachable` if the device cannot be reached or
+  /// does not answer in time.
+  Future<ContinueOutcome> continueFrom(String id);
 
   /// Ends the window [session], which is shown here or shared from here, and tells the other
   /// device. `Event_WindowEnded` follows. Returns whether there was such a window.

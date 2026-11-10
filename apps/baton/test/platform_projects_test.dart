@@ -8,6 +8,7 @@ import 'dart:io';
 
 import 'package:baton/src/always_on.dart';
 import 'package:baton/src/awake.dart';
+import 'package:baton/src/continue_reader.dart';
 import 'package:baton/src/file_shower.dart';
 import 'package:baton/src/notice_access.dart';
 import 'package:baton/src/rust_backend.dart';
@@ -414,6 +415,155 @@ void main() {
     expect(swift, isNot(contains('SMAppService.agent')));
     expect(swift, isNot(contains('SMAppService.daemon')));
     expect(swift, isNot(contains('SMAppService.loginItem')));
+  });
+
+  test(
+    'the Mac app says why it reads the page in front in Safari and Chrome',
+    () {
+      // The system gives no answer to a program that has no such text, and asks nothing.
+      expect(
+        _read('macos/Runner/Info.plist'),
+        contains('<key>NSAppleEventsUsageDescription'),
+      );
+    },
+  );
+
+  test('the sandboxed Mac app may send Apple events to Safari and Chrome, and '
+      'to no other app', () {
+    // Without this the sandbox turns the question to the browser away, and the system never asks
+    // the person. It is a list of two: another app in it is another place that Baton can read
+    // from, which the person is told of in the settings for a device and in docs/security.md.
+    for (final file in [
+      'macos/Runner/DebugProfile.entitlements',
+      'macos/Runner/Release.entitlements',
+    ]) {
+      expect(
+        _read(file),
+        contains(
+          '<key>com.apple.security.temporary-exception.apple-events</key>\n'
+          '\t<array>\n'
+          '\t\t<string>com.apple.Safari</string>\n'
+          '\t\t<string>com.google.Chrome</string>\n'
+          '\t</array>',
+        ),
+        reason: file,
+      );
+    }
+  });
+
+  test('the Mac app answers what Baton asks about what the person is working '
+      'on', () {
+    // The channel, its questions, the words of its answers and the names of the parts of what it
+    // reads are named in lib/src/continue_reader.dart and in the app. If they differ, a phone that
+    // asks is given nothing, or is told that the Mac could not read, and nothing fails but that.
+    final swift = _read('macos/Runner/MainFlutterWindow.swift');
+    expect(swift, contains('name: "${PlatformContinueReader.channelName}"'));
+    for (final question in [
+      PlatformContinueReader.readQuestion,
+      PlatformContinueReader.browserQuestion,
+    ]) {
+      expect(swift, contains('case "$question":'), reason: question);
+    }
+    for (final word in [
+      'allowed',
+      'needed',
+      'denied',
+      'notOpen',
+      'unavailable',
+    ]) {
+      expect(swift, contains('return "$word"'), reason: word);
+    }
+    for (final part in ['pageUrl', 'pageTitle', 'clipboard']) {
+      expect(swift, contains('found["$part"] = '), reason: part);
+    }
+    for (final browser in Browser.values) {
+      expect(swift, contains('name: "${browser.name}"'), reason: browser.name);
+    }
+    expect(
+      swift,
+      contains(
+        '    answerAboutContinuing(messenger: flutterViewController.engine.binaryMessenger)',
+      ),
+    );
+  });
+
+  test('the Mac app reads only the page in front in the two browsers, and '
+      'never starts one', () {
+    final swift = _read('macos/Runner/MainFlutterWindow.swift');
+    // The scripts ask for an address and a title and do nothing else, in the two browsers that the
+    // entitlements name, and each gives up after three seconds.
+    final scripts = [
+      for (final match in RegExp(
+        r'script: """\n(.*?)"""',
+        dotAll: true,
+      ).allMatches(swift))
+        match.group(1)!,
+    ];
+    expect(scripts, hasLength(2));
+    final targets = <String>{};
+    for (final script in scripts) {
+      expect(script, contains('with timeout of 3 seconds'));
+      targets.addAll(
+        RegExp(r'tell application id "([^"]+)"')
+            .allMatches(script)
+            .map((match) => match.group(1)!),
+      );
+      for (final action in [
+        'activate',
+        'launch',
+        'open',
+        'make',
+        'close',
+        'delete',
+        'quit',
+        'reload',
+        'save',
+        'print',
+        'execute',
+        'do JavaScript',
+      ]) {
+        expect(script, isNot(contains(action)), reason: action);
+      }
+      // The one thing that is assigned is a name for what was found.
+      for (final line in script.split('\n').where((l) => l.contains('set '))) {
+        expect(line, matches(RegExp(r'^\s*set (thePage|theWindow) to ')));
+      }
+    }
+    expect(targets, {'com.apple.Safari', 'com.google.Chrome'});
+    // A browser that is not open is not asked, because asking one by name would open it.
+    expect(
+      'runningApplications(withBundleIdentifier: browser.bundleIdentifier)'
+          .allMatches(swift),
+      hasLength(2),
+      reason: 'reading the page, and saying where the consent stands',
+    );
+    // A private window of Chrome gives nothing.
+    expect(
+      swift,
+      contains('if (mode of theWindow) is "incognito" then return {}'),
+    );
+  });
+
+  test('the Mac app gives nothing while nobody is using the Mac, and nothing '
+      'that was marked as secret', () {
+    final swift = _read('macos/Runner/MainFlutterWindow.swift');
+    // Locked, with the screen off, or with another account in front: nothing is read at all.
+    expect(swift, contains('if macIsNotInUse() {'));
+    expect(swift, contains('session["CGSSessionScreenIsLocked"]'));
+    expect(swift, contains('session["kCGSSessionOnConsoleKey"]'));
+    expect(swift, contains('CGDisplayIsAsleep(CGMainDisplayID())'));
+    final read = swift.indexOf('private func readWhatThePersonIsWorkingOn(');
+    expect(read, isNonNegative);
+    expect(
+      swift.indexOf('if macIsNotInUse() {', read),
+      lessThan(swift.indexOf('clipboardText()', read)),
+      reason: 'the check comes before anything is read',
+    );
+    // Text that the app that copied it marked as secret, or as one-time, is not read.
+    expect(swift, contains('org.nspasteboard.ConcealedType'));
+    expect(swift, contains('org.nspasteboard.TransientType'));
+    // What the protocol carries of text is a mebibyte (crates/baton-proto/src/limits.rs).
+    expect(swift, contains('text.utf8.count <= 1024 * 1024'));
   });
 
   test('the apps show the files that arrived and never open them', () {

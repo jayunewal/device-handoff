@@ -32,6 +32,11 @@ IconData platformIcon(Platform platform) => switch (platform) {
 /// worth offering to ask it. A Mac does. The others have no way to yet.
 bool givesScreenWhenAsked(Platform platform) => platform == Platform.macOs;
 
+/// Whether a device that runs this system can say what its person is working on, the page in front
+/// in its browser and the text on its clipboard, so that it is worth offering to ask it. A Mac can.
+/// The others have no way to yet.
+bool servesContinue(Platform platform) => platform == Platform.macOs;
+
 /// Whether a device that runs this system can unlock another with its face, so that it is worth
 /// offering to set the unlock up for it. An iPhone or an iPad can. The others have no way to yet.
 bool unlocksWithFace(Platform platform) =>

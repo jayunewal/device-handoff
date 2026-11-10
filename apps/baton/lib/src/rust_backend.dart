@@ -115,6 +115,10 @@ class RustBackend implements Backend {
       lanDiscovery: phone ? false : null,
       portMapping: phone ? false : null,
       receiveDir: receiveDir,
+      // Only a Mac has the code that reads the page in front in the browser and the clipboard,
+      // in macos/Runner/MainFlutterWindow.swift, and the code in lib/src/continue_server.dart that
+      // asks it. A device started without it does not say that it can.
+      serveContinue: io.Platform.isMacOS ? true : null,
     );
     return _RustSession(baton, receiveDir, receiveProblem);
   }
@@ -240,6 +244,21 @@ class _RustSession implements Session {
   @override
   Future<void> setHearSetting(String id, bool? setting) =>
       _baton.setHearSetting(id: id, setting: setting);
+
+  @override
+  bool answerContinue(int request, ContinueItems? items) =>
+      _baton.answerContinue(request: request, items: items);
+
+  @override
+  bool continueAccess(String id) => _baton.continueAccess(id: id);
+
+  @override
+  Future<void> setContinueAccess(String id, bool allowed) =>
+      _baton.setContinueAccess(id: id, allowed: allowed);
+
+  @override
+  Future<ContinueOutcome> continueFrom(String id) =>
+      _baton.continueFrom(id: id);
 
   @override
   bool endWindow(int session) => _baton.endWindow(session: session);

@@ -689,12 +689,21 @@ impl App {
     /// is none, so an empty [`ContinueItems`] says that there is nothing to continue. `None` says
     /// that it could not be read, and the device that asked is told so.
     ///
+    /// A page that a screen would not open in the web browser ([`web_address`](crate::web_address))
+    /// is not passed on, whatever it is: a file, `about:blank` and the start page of a browser are
+    /// pages with nothing to continue, and the text is given all the same.
+    ///
     /// Returns whether the answer was passed on. It is not for a request that is not waiting any
     /// more, because it was answered already, the few seconds that there are ran out, or the app
     /// stopped. Nothing of what was read is kept.
     pub fn answer_continue(&self, request: u64, items: Option<ContinueItems>) -> bool {
         let waiting = locked(&self.inner.questions.readings).remove(&request);
-        waiting.is_some_and(|answer| answer.send(items.map(CoreContinueItems::from)).is_ok())
+        waiting.is_some_and(|answer| {
+            let items = items
+                .map(ContinueItems::without_a_page_that_would_not_open)
+                .map(CoreContinueItems::from);
+            answer.send(items).is_ok()
+        })
     }
 
     /// Asks the paired device `id` what its person is working on, to continue it here: the page
