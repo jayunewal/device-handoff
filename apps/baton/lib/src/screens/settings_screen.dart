@@ -173,6 +173,13 @@ class _SettingsScreenState extends State<SettingsScreen>
     if (mounted) setState(() => _permissionsOff = off);
   }
 
+  /// The devices paired with this one that are Macs, with where each was last reached, for the
+  /// screen that adds a Mac to unlock after a restart.
+  List<Device> _pairedMacs() => [
+    for (final device in _controller.devices ?? const <Device>[])
+      if (device.platform == Platform.macOs) device,
+  ];
+
   Future<void> _open(Widget screen) async {
     await Navigator.of(context)
         .push(MaterialPageRoute<void>(builder: (_) => screen));
@@ -262,8 +269,14 @@ class _SettingsScreenState extends State<SettingsScreen>
                     _Row(
                       icon: Icons.lock_open_outlined,
                       title: 'Unlock a Mac after restart',
-                      onTap: () =>
-                          unawaited(_open(RestartUnlockScreen(keeper: keeper))),
+                      onTap: () => unawaited(
+                        _open(
+                          RestartUnlockScreen(
+                            keeper: keeper,
+                            pairedMacs: _pairedMacs,
+                          ),
+                        ),
+                      ),
                     ),
                 ],
               ),

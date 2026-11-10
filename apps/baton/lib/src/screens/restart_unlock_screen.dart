@@ -8,11 +8,11 @@ import 'package:flutter/material.dart';
 import '../format.dart';
 import '../mac_passwords.dart';
 import '../rust/api/mac_unlock.dart';
+import '../rust/api/model.dart';
+import '../theme.dart';
+import 'add_mac_screen.dart';
 import 'content_box.dart';
-
-/// The command that shows the fingerprint of a Mac's own key, for the person to compare with
-/// what the phone heard.
-const macKeyCommand = 'ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub';
+import 'icon_tile.dart';
 
 /// What may be behind an answer with another key than the one that was saved, for the person to
 /// weigh. The unlock and the check of the way give it alike.
@@ -31,6 +31,7 @@ class RestartUnlockScreen extends StatefulWidget {
   const RestartUnlockScreen({
     required this.keeper,
     this.unlocker = const RustSshUnlocker(),
+    this.pairedMacs = _noPairedMacs,
     this.newId = _randomId,
     this.now = DateTime.now,
     super.key,
@@ -38,6 +39,10 @@ class RestartUnlockScreen extends StatefulWidget {
 
   final MacPasswordKeeper keeper;
   final SshUnlocker unlocker;
+
+  /// The devices paired with this one that are Macs, as they are when a Mac is to be added. Baton
+  /// looks for them where they were last reached.
+  final List<Device> Function() pairedMacs;
 
   /// Makes the id of a Mac that is being saved. Tests give one that they know.
   final String Function() newId;
@@ -48,6 +53,8 @@ class RestartUnlockScreen extends StatefulWidget {
   @override
   State<RestartUnlockScreen> createState() => _RestartUnlockScreenState();
 }
+
+List<Device> _noPairedMacs() => const [];
 
 String _randomId() {
   final random = Random.secure();
@@ -94,6 +101,7 @@ class _RestartUnlockScreenState extends State<RestartUnlockScreen> {
           keeper: widget.keeper,
           unlocker: widget.unlocker,
           id: widget.newId(),
+          pairedMacs: widget.pairedMacs(),
         ),
       ),
     );
@@ -373,77 +381,129 @@ class _RestartUnlockScreenState extends State<RestartUnlockScreen> {
       body: SafeArea(
         child: ContentBox(
           child: ListView(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
+            padding: const EdgeInsets.fromLTRB(
+              BatonTheme.gap,
+              BatonTheme.gap,
+              BatonTheme.gap,
+              96,
+            ),
             children: [
-              const Text(
-                'After a restart, a Mac with FileVault keeps its disk locked until someone types '
-                'a password, and Baton cannot reach it. With Remote Login turned on, this device '
-                'can give the Mac its password. The password stays on this device, behind your '
-                'face.',
+              Card(
+                margin: EdgeInsets.zero,
+                child: Padding(
+                  padding: const EdgeInsets.all(BatonTheme.gap),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const IconTile(Icons.lock_open_outlined),
+                      const SizedBox(width: BatonTheme.gap),
+                      Expanded(
+                        child: Text(
+                          'After a restart, a Mac with FileVault keeps its disk locked until '
+                          'someone types a password, and Baton cannot reach it. With Remote '
+                          'Login turned on, this device can give the Mac its password. The '
+                          'password stays on this device, behind your face.',
+                          style: Theme.of(context).textTheme.bodyMedium,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
               if (_problem case final problem?) ...[
-                const SizedBox(height: 16),
+                const SizedBox(height: BatonTheme.gap),
                 Text(
                   problem,
                   style: TextStyle(color: Theme.of(context).colorScheme.error),
                 ),
               ],
-              const SizedBox(height: 16),
+              const SizedBox(height: BatonTheme.gap),
               if (macs == null)
                 const Center(child: CircularProgressIndicator())
               else if (macs.isEmpty)
-                const Text('No Mac saved yet.')
+                const _NoMacs()
               else
                 for (final mac in macs)
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.laptop_mac),
-                    title: Text(mac.host),
-                    subtitle: Text(mac.account),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (_busy == mac.id)
-                          const SizedBox.square(
-                            dimension: 24,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        else
-                          FilledButton(
-                            onPressed: _busy == null
-                                ? () => _unlock(mac)
-                                : null,
-                            child: const Text('Unlock'),
+                  Card(
+                    margin: const EdgeInsets.only(bottom: BatonTheme.gapSmall),
+                    child: ListTile(
+                      leading: const IconTile(Icons.laptop_mac),
+                      title: Text(mac.host),
+                      subtitle: Text(mac.account),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_busy == mac.id)
+                            const SizedBox.square(
+                              dimension: 24,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          else
+                            FilledButton(
+                              onPressed: _busy == null
+                                  ? () => _unlock(mac)
+                                  : null,
+                              child: const Text('Unlock'),
+                            ),
+                          PopupMenuButton<_MacAction>(
+                            tooltip: 'More',
+                            enabled: _busy == null,
+                            onSelected: (action) => switch (action) {
+                              _MacAction.check => _checkWay(mac),
+                              _MacAction.password => _changePassword(mac),
+                              _MacAction.forget => _forget(mac),
+                            },
+                            itemBuilder: (context) => const [
+                              PopupMenuItem(
+                                value: _MacAction.check,
+                                child: Text('Check the way'),
+                              ),
+                              PopupMenuItem(
+                                value: _MacAction.password,
+                                child: Text('Change password'),
+                              ),
+                              PopupMenuItem(
+                                value: _MacAction.forget,
+                                child: Text('Forget'),
+                              ),
+                            ],
                           ),
-                        PopupMenuButton<_MacAction>(
-                          tooltip: 'More',
-                          enabled: _busy == null,
-                          onSelected: (action) => switch (action) {
-                            _MacAction.check => _checkWay(mac),
-                            _MacAction.password => _changePassword(mac),
-                            _MacAction.forget => _forget(mac),
-                          },
-                          itemBuilder: (context) => const [
-                            PopupMenuItem(
-                              value: _MacAction.check,
-                              child: Text('Check the way'),
-                            ),
-                            PopupMenuItem(
-                              value: _MacAction.password,
-                              child: Text('Change password'),
-                            ),
-                            PopupMenuItem(
-                              value: _MacAction.forget,
-                              child: Text('Forget'),
-                            ),
-                          ],
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// What the list shows while no Mac is saved.
+class _NoMacs extends StatelessWidget {
+  const _NoMacs();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        vertical: 32,
+        horizontal: BatonTheme.gap,
+      ),
+      child: Column(
+        children: [
+          Icon(Icons.laptop_mac, size: 48, color: theme.colorScheme.outline),
+          const SizedBox(height: 12),
+          Text('No Mac saved yet', style: theme.textTheme.titleMedium),
+          const SizedBox(height: 4),
+          Text(
+            'Tap Add a Mac to save the Mac that you want to unlock from here.',
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodyMedium,
+          ),
+        ],
       ),
     );
   }
@@ -489,260 +549,6 @@ class _PasswordDialogState extends State<_PasswordDialog> {
           child: const Text('Save'),
         ),
       ],
-    );
-  }
-}
-
-/// Saves a Mac to unlock after a restart: its address, the account and its password, and the
-/// fingerprint of its key once the person has compared it with the Mac.
-class AddMacScreen extends StatefulWidget {
-  const AddMacScreen({
-    required this.keeper,
-    required this.unlocker,
-    required this.id,
-    super.key,
-  });
-
-  final MacPasswordKeeper keeper;
-  final SshUnlocker unlocker;
-  final String id;
-
-  @override
-  State<AddMacScreen> createState() => _AddMacScreenState();
-}
-
-class _AddMacScreenState extends State<AddMacScreen> {
-  final _host = TextEditingController();
-  final _account = TextEditingController();
-  final _password = TextEditingController();
-
-  bool _checking = false;
-  String? _problem;
-
-  /// The fingerprint that the Mac answered with, once it has.
-  String? _heard;
-
-  /// The address that [_heard] came from. A change of address needs a new check.
-  String? _heardFrom;
-
-  /// Whether the password is being tried and saved.
-  bool _saving = false;
-
-  /// Whether the password could not be tried, because the Mac did not answer or does not take a
-  /// password while it runs, so that it may be saved without the try.
-  bool _unchecked = false;
-
-  @override
-  void dispose() {
-    _host.dispose();
-    _account.dispose();
-    _password.dispose();
-    super.dispose();
-  }
-
-  String get _address => _host.text.trim();
-
-  bool get _filled =>
-      _address.isNotEmpty &&
-      _account.text.trim().isNotEmpty &&
-      _password.text.isNotEmpty;
-
-  Future<void> _check() async {
-    setState(() {
-      _checking = true;
-      _problem = null;
-      _heard = null;
-      _unchecked = false;
-    });
-    final address = _address;
-    final check = await widget.unlocker.key(address, 22);
-    if (!mounted) return;
-    setState(() {
-      _checking = false;
-      switch (check) {
-        case SshKeyCheck_Heard(:final fingerprint):
-          _heard = fingerprint;
-          _heardFrom = address;
-        case SshKeyCheck_Unreachable():
-          _problem =
-              'The Mac did not answer. Check the address, that Remote Login is on, and that '
-              'this device is on the same network as the Mac or on the private network that '
-              'leads to it.';
-        case SshKeyCheck_Failed(:final detail):
-          _problem =
-              'Something answered, but not as a Mac with Remote Login does '
-              '(${visibleText(detail)}).';
-      }
-    });
-  }
-
-  /// Saves the Mac. The password is tried first, while the Mac is running and its key has just
-  /// been compared, so that a typo shows now and not at a Mac that is locked after a restart, where
-  /// it would cost a try. A Mac that does not answer the try can be saved without it.
-  Future<void> _save({bool check = true}) async {
-    final heard = _heard;
-    if (heard == null) return;
-    // Read once: the password that was tried is the one that is saved.
-    final password = _password.text;
-    final mac = SavedMac(
-      id: widget.id,
-      host: _address,
-      account: _account.text.trim(),
-      keys: [heard],
-    );
-    setState(() {
-      _saving = true;
-      _problem = null;
-      _unchecked = false;
-    });
-    if (check) {
-      final outcome = await widget.unlocker.unlock(mac, password);
-      if (!mounted) return;
-      final String? problem;
-      switch (outcome) {
-        case SshUnlock_Accepted():
-          problem = null;
-        case SshUnlock_Rejected():
-          problem = 'The Mac said the account name or the password is wrong. Nothing was saved.';
-        case SshUnlock_UnknownKey():
-          problem =
-              'The Mac now answers with another key than the one you compared, so it was '
-              'given nothing and nothing was saved. Check the Mac again.';
-          _heard = null;
-        case SshUnlock_NoPassword():
-          // The Mac that runs takes keys only. The SSH server that answers before the disk is
-          // unlocked is another one, and it is not known to read that setting, so the Mac may
-          // still take a password after a restart. The person decides.
-          problem =
-              'This Mac does not take a password over SSH while it runs, so the password could '
-              'not be tried. A Mac that waits for its disk password after a restart may still '
-              'take one. You can save it without the try.';
-          _unchecked = true;
-        case SshUnlock_Unreachable():
-        case SshUnlock_Failed():
-          problem =
-              'The Mac did not say whether the password is right. You can save it '
-              'without the try.';
-          _unchecked = true;
-      }
-      if (problem != null) {
-        setState(() {
-          _saving = false;
-          _problem = problem;
-        });
-        return;
-      }
-    }
-    try {
-      await widget.keeper.save(mac, password: password);
-    } on MacPasswordProblem catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _saving = false;
-        _problem = e.message;
-      });
-      return;
-    }
-    if (mounted) Navigator.of(context).pop(true);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final heard = _heardFrom == _address ? _heard : null;
-    return Scaffold(
-      appBar: AppBar(title: const Text('Add a Mac')),
-      body: SafeArea(
-        child: ContentBox(
-          child: ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              const Text(
-                'On the Mac, open System Settings > General > Sharing and turn on Remote Login. '
-                'Click the info button next to it to see the address, such as '
-                'ssh jay@Jays-MBP.local: the part after @ is the address, and the part before '
-                'it is the account. If you can, use the Mac\'s number address, such as '
-                '192.168.73.20, and not its name: a name may not work from outside your home '
-                'network, and a Mac that waits for its disk password may not announce one. The '
-                'guide "Reach your Mac from away" says how to give the Mac a fixed address.',
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: _host,
-                readOnly: _saving,
-                decoration: const InputDecoration(
-                  labelText: 'Address of the Mac',
-                ),
-                autocorrect: false,
-                keyboardType: TextInputType.url,
-                onChanged: (_) => setState(() {}),
-              ),
-              TextField(
-                controller: _account,
-                readOnly: _saving,
-                decoration: const InputDecoration(labelText: 'Account name'),
-                autocorrect: false,
-                onChanged: (_) => setState(() {}),
-              ),
-              TextField(
-                controller: _password,
-                readOnly: _saving,
-                decoration: const InputDecoration(
-                  labelText: 'Password of the account',
-                ),
-                obscureText: true,
-                onChanged: (_) => setState(() {}),
-              ),
-              const SizedBox(height: 16),
-              if (_problem case final problem?) ...[
-                Text(
-                  problem,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
-                const SizedBox(height: 16),
-              ],
-              if (heard == null)
-                FilledButton(
-                  onPressed: _filled && !_checking ? _check : null,
-                  child: Text(_checking ? 'Checking…' : 'Check the Mac'),
-                )
-              else ...[
-                const Text(
-                  'The Mac answered with this key. On the Mac, run this in Terminal and check '
-                  'that the line it shows has the same text after SHA256:',
-                ),
-                const SizedBox(height: 8),
-                const SelectableText(
-                  macKeyCommand,
-                  style: TextStyle(fontFamily: 'monospace'),
-                ),
-                const SizedBox(height: 8),
-                SelectableText(
-                  heard,
-                  key: const Key('heard'),
-                  style: const TextStyle(
-                    fontFamily: 'monospace',
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                FilledButton(
-                  onPressed: _filled && !_saving ? _save : null,
-                  child: Text(
-                    _saving ? 'Trying the password…' : 'They match. Save',
-                  ),
-                ),
-                if (_unchecked)
-                  TextButton(
-                    onPressed: _filled && !_saving
-                        ? () => _save(check: false)
-                        : null,
-                    child: const Text('Save without trying'),
-                  ),
-              ],
-            ],
-          ),
-        ),
-      ),
     );
   }
 }

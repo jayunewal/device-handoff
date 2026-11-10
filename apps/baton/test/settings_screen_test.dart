@@ -157,6 +157,37 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(RestartUnlockScreen), findsOneWidget);
   });
+  testWidgets('offers the Macs that are paired with this device when a Mac is '
+      'added to unlock after a restart', (tester) async {
+    Device paired(String name, Platform platform, String address) => Device(
+      id: name.padRight(64, '0'),
+      name: name,
+      platform: platform,
+      fingerprint: 'abcd-efgh-ijkl-mnop-qrst',
+      pairedAt: 1,
+      localAddresses: [address],
+    );
+    final session = _session()
+      ..pairedDevices = [
+        paired('Studio Mac', Platform.macOs, '10.0.0.5'),
+        paired('Jay iPhone', Platform.ios, '10.0.0.9'),
+        paired('Kitchen Mac', Platform.macOs, '192.168.73.20'),
+      ];
+    await _show(tester, session, macPasswords: _NoMacs());
+    await tester.tap(find.text('Unlock a Mac after restart'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add a Mac'));
+    await tester.pumpAndSettle();
+
+    // Both Macs, with where each was seen, and not the phone. There are two, so Baton waits to be
+    // told which one before it looks.
+    expect(find.text('Studio Mac'), findsOneWidget);
+    expect(find.text('Kitchen Mac'), findsOneWidget);
+    expect(find.text('Jay iPhone'), findsNothing);
+    expect(find.text('Seen at 10.0.0.5'), findsOneWidget);
+    expect(find.text('Seen at 192.168.73.20'), findsOneWidget);
+  });
+
   group('opening at sign-in', () {
     const title = 'Open Baton when you sign in';
 
