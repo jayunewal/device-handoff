@@ -4,8 +4,11 @@ import 'dart:async';
 
 import 'package:baton/src/mac_passwords.dart';
 import 'package:baton/src/rust/api/mac_unlock.dart';
+import 'package:baton/src/rust/api/model.dart';
+import 'package:baton/src/screens/add_mac_screen.dart';
 import 'package:baton/src/screens/restart_unlock_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _key = 'SHA256:9mX2bq0Zt1sYtWw3m4nU5oP6qR7sT8uV9wX0yZ1aB2c';
@@ -54,10 +57,18 @@ class _FakeUnlocker extends SshUnlocker {
   /// When set, [key] answers only when this does.
   Completer<SshKeyCheck>? hold;
 
+  /// What an address answers, where it is not [heard].
+  final answers = <String, SshKeyCheck>{};
+
+  /// For an address, when its answer waits for this.
+  final holds = <String, Completer<SshKeyCheck>>{};
+
   @override
   Future<SshKeyCheck> key(String host, int port) async {
     asked.add((host, port));
-    return hold?.future ?? heard;
+    final held = holds[host];
+    if (held != null) return held.future;
+    return answers[host] ?? hold?.future ?? heard;
   }
 
   @override
@@ -86,11 +97,22 @@ class _Clock {
       DateTime.utc(2026, 11, 10).add(_reads++ == 0 ? Duration.zero : took);
 }
 
+/// A Mac that is paired with this device, last reached at `addresses`.
+Device _paired(String name, List<String> addresses) => Device(
+  id: name.padRight(64, '0'),
+  name: name,
+  platform: Platform.macOs,
+  fingerprint: 'abcd-efgh-ijkl-mnop-qrst',
+  pairedAt: 1,
+  localAddresses: addresses,
+);
+
 Future<void> _show(
   WidgetTester tester,
   _FakeKeeper keeper,
   _FakeUnlocker unlocker, {
   DateTime Function()? now,
+  List<Device> macs = const [],
 }) async {
   // Tall enough that the whole form of a new Mac is on the screen.
   tester.view.physicalSize = const Size(1200, 2400);
@@ -101,6 +123,7 @@ Future<void> _show(
       home: RestartUnlockScreen(
         keeper: keeper,
         unlocker: unlocker,
+        pairedMacs: () => macs,
         newId: () => 'new',
         now: now ?? DateTime.now,
       ),
@@ -119,35 +142,71 @@ void main() {
     },
   );
 
-  testWidgets('a Mac is saved only after its key has been heard and compared', (
-    tester,
-  ) async {
-    final keeper = _FakeKeeper();
-    final unlocker = _FakeUnlocker();
-    await _show(tester, keeper, unlocker);
-    expect(find.text('No Mac saved yet.'), findsOneWidget);
-
+  /// Opens the screen that adds a Mac, from the list.
+  Future<void> openAdd(WidgetTester tester) async {
     await tester.tap(find.text('Add a Mac'));
     await tester.pumpAndSettle();
-    expect(find.text('They match. Save'), findsNothing);
+  }
+
+  /// Types an address, and asks the Mac for its key.
+  Future<void> typeAddressAndCheck(WidgetTester tester, String address) async {
     await tester.enterText(
       find.widgetWithText(TextField, 'Address of the Mac'),
-      ' Jays-MBP.local ',
+      address,
     );
+    await tester.pump();
+    await tester.tap(find.text('Check the Mac'));
+    await tester.pumpAndSettle();
+  }
+
+  /// Gives the account and its password, which the screen asks for once the Mac has answered.
+  Future<void> signIn(WidgetTester tester, {String password = 'secret'}) async {
     await tester.enterText(
       find.widgetWithText(TextField, 'Account name'),
       'jay',
     );
     await tester.enterText(
       find.widgetWithText(TextField, 'Password of the account'),
-      'secret',
+      password,
     );
     await tester.pump();
-    await tester.tap(find.text('Check the Mac'));
-    await tester.pumpAndSettle();
+  }
 
+  /// What the address field says.
+  String addressShown(WidgetTester tester) => tester
+      .widget<TextField>(find.widgetWithText(TextField, 'Address of the Mac'))
+      .controller!
+      .text;
+
+  Future<void> fillAndCheck(WidgetTester tester) async {
+    await openAdd(tester);
+    await typeAddressAndCheck(tester, 'mac.local');
+    await signIn(tester, password: 'typo');
+  }
+
+  testWidgets('a Mac is saved only after its key has been heard and compared', (
+    tester,
+  ) async {
+    final keeper = _FakeKeeper();
+    final unlocker = _FakeUnlocker();
+    await _show(tester, keeper, unlocker);
+    expect(find.text('No Mac saved yet'), findsOneWidget);
+
+    await openAdd(tester);
+    // Until the Mac has answered there is nothing to sign in to and nothing to compare.
+    expect(find.text('Account name'), findsNothing);
+    expect(find.text('They match. Save'), findsNothing);
+    await typeAddressAndCheck(tester, ' Jays-MBP.local ');
+    expect(unlocker.asked, [('Jays-MBP.local', 22)]);
+    expect(
+      find.text('The Mac answered, so Remote Login is on.'),
+      findsOneWidget,
+    );
     expect(find.text(_key), findsOneWidget);
     expect(find.text(macKeyCommand), findsOneWidget);
+    // The Mac is there, so there is nothing left to turn on.
+    expect(find.text('Turn on Remote Login at the Mac'), findsNothing);
+    await signIn(tester);
     await tester.tap(find.text('They match. Save'));
     await tester.pumpAndSettle();
 
@@ -165,25 +224,45 @@ void main() {
     expect(find.text('Jays-MBP.local'), findsOneWidget);
   });
 
-  Future<void> fillAndCheck(WidgetTester tester) async {
-    await tester.tap(find.text('Add a Mac'));
-    await tester.pumpAndSettle();
+  testWidgets('the check needs only the address', (tester) async {
+    await _show(tester, _FakeKeeper(), _FakeUnlocker());
+    await openAdd(tester);
+    FilledButton check() => tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'Check the Mac'),
+    );
+    expect(check().onPressed, isNull);
     await tester.enterText(
       find.widgetWithText(TextField, 'Address of the Mac'),
-      'mac.local',
-    );
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Account name'),
-      'jay',
-    );
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Password of the account'),
-      'typo',
+      '192.168.1.5',
     );
     await tester.pump();
-    await tester.tap(find.text('Check the Mac'));
-    await tester.pumpAndSettle();
-  }
+    expect(check().onPressed, isNotNull);
+  });
+
+  testWidgets('a Mac is not saved without the account and its password', (
+    tester,
+  ) async {
+    await _show(tester, _FakeKeeper(), _FakeUnlocker());
+    await openAdd(tester);
+    await typeAddressAndCheck(tester, 'mac.local');
+    FilledButton save() => tester.widget<FilledButton>(
+      find.widgetWithText(FilledButton, 'They match. Save'),
+    );
+    expect(save().onPressed, isNull);
+    // Neither one alone is enough.
+    final account = find.widgetWithText(TextField, 'Account name');
+    final password = find.widgetWithText(TextField, 'Password of the account');
+    await tester.enterText(password, 'secret');
+    await tester.pump();
+    expect(save().onPressed, isNull);
+    await tester.enterText(password, '');
+    await tester.enterText(account, 'jay');
+    await tester.pump();
+    expect(save().onPressed, isNull);
+    await tester.enterText(password, 'secret');
+    await tester.pump();
+    expect(save().onPressed, isNotNull);
+  });
 
   testWidgets('a password the running Mac turns down is not saved', (
     tester,
@@ -276,25 +355,14 @@ void main() {
     final unlocker = _FakeUnlocker()
       ..heard = const SshKeyCheck.unreachable(detail: 'refused');
     await _show(tester, keeper, unlocker);
-    await tester.tap(find.text('Add a Mac'));
-    await tester.pumpAndSettle();
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Address of the Mac'),
-      'mac.local',
-    );
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Account name'),
-      'jay',
-    );
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Password of the account'),
-      'secret',
-    );
-    await tester.pump();
-    await tester.tap(find.text('Check the Mac'));
-    await tester.pumpAndSettle();
+    await openAdd(tester);
+    await typeAddressAndCheck(tester, 'mac.local');
     expect(find.textContaining('The Mac did not answer.'), findsOneWidget);
     expect(find.text('They match. Save'), findsNothing);
+    expect(find.text('Account name'), findsNothing);
+    // What to do about it is on the screen, and the check can be made again.
+    expect(find.text('Turn on Remote Login at the Mac'), findsOneWidget);
+    expect(find.text('Check the Mac'), findsOneWidget);
     expect(keeper.macs, isEmpty);
   });
 
@@ -303,17 +371,269 @@ void main() {
     final unlocker = _FakeUnlocker()
       ..heard = const SshKeyCheck.failed(detail: 'not ssh\u202E');
     await _show(tester, keeper, unlocker);
-    await fillAndCheck(tester);
+    await openAdd(tester);
+    await typeAddressAndCheck(tester, 'mac.local');
 
     expect(
       find.textContaining(
-        'Something answered, but not as a Mac with Remote Login does '
+        'Something answered at mac.local, but not as a Mac with Remote Login does '
         '(not ssh\u{FFFD}).',
       ),
       findsOneWidget,
     );
     expect(find.text('They match. Save'), findsNothing);
     expect(keeper.macs, isEmpty);
+  });
+
+  group('a Mac that is paired with this device', () {
+    final mbp = _paired("Jay's MacBook Pro", ['192.168.73.20']);
+
+    testWidgets('is looked for by itself when it is the only one', (
+      tester,
+    ) async {
+      final keeper = _FakeKeeper();
+      final unlocker = _FakeUnlocker();
+      await _show(tester, keeper, unlocker, macs: [mbp]);
+      await openAdd(tester);
+
+      // Nothing was typed and nothing was tapped after the screen opened.
+      expect(unlocker.asked, [('192.168.73.20', 22)]);
+      expect(addressShown(tester), '192.168.73.20');
+      expect(
+        find.text('The Mac answered, so Remote Login is on.'),
+        findsOneWidget,
+      );
+      // It is still compared with the Mac: an address says nothing of who answers at it.
+      expect(find.text(_key), findsOneWidget);
+      expect(find.text(macKeyCommand), findsOneWidget);
+      await signIn(tester);
+      await tester.tap(find.text('They match. Save'));
+      await tester.pumpAndSettle();
+      expect(
+        keeper.macs['new'],
+        const SavedMac(
+          id: 'new',
+          host: '192.168.73.20',
+          account: 'jay',
+          keys: [_key],
+        ),
+      );
+      expect(unlocker.tries.single.$2, 'secret');
+    });
+
+    testWidgets('is picked before any of several is looked for', (
+      tester,
+    ) async {
+      final studio = _paired('Studio Mac', ['10.0.0.5']);
+      final unlocker = _FakeUnlocker();
+      await _show(tester, _FakeKeeper(), unlocker, macs: [studio, mbp]);
+      await openAdd(tester);
+
+      expect(unlocker.asked, isEmpty);
+      expect(find.text('Studio Mac'), findsOneWidget);
+      expect(find.text("Jay's MacBook Pro"), findsOneWidget);
+      expect(find.text('Seen at 10.0.0.5'), findsOneWidget);
+      expect(find.text('Seen at 192.168.73.20'), findsOneWidget);
+      expect(find.text('Another Mac'), findsOneWidget);
+      // There is no address to give before the Mac is chosen.
+      expect(find.text('Address of the Mac'), findsNothing);
+
+      await tester.tap(find.text("Jay's MacBook Pro"));
+      await tester.pumpAndSettle();
+      expect(unlocker.asked, [('192.168.73.20', 22)]);
+      expect(addressShown(tester), '192.168.73.20');
+      expect(find.text(_key), findsOneWidget);
+    });
+
+    testWidgets('is asked at each of its addresses, and the one that answers '
+        'is kept', (tester) async {
+      final two = _paired('Studio Mac', ['10.0.0.5', '192.168.73.20']);
+      final unlocker = _FakeUnlocker()
+        ..answers['10.0.0.5'] = const SshKeyCheck.unreachable(detail: 'gone');
+      await _show(tester, _FakeKeeper(), unlocker, macs: [two]);
+      await openAdd(tester);
+
+      expect(unlocker.asked, [('10.0.0.5', 22), ('192.168.73.20', 22)]);
+      expect(addressShown(tester), '192.168.73.20');
+      expect(find.text(_key), findsOneWidget);
+    });
+
+    testWidgets('that is answered for at several addresses is kept at the '
+        'first', (tester) async {
+      final two = _paired('Studio Mac', ['10.0.0.5', '192.168.73.20']);
+      final unlocker = _FakeUnlocker();
+      await _show(tester, _FakeKeeper(), unlocker, macs: [two]);
+      await openAdd(tester);
+
+      expect(unlocker.asked, [('10.0.0.5', 22), ('192.168.73.20', 22)]);
+      expect(addressShown(tester), '10.0.0.5');
+    });
+
+    testWidgets('that answers is not made to wait for an address that does '
+        'not', (tester) async {
+      final two = _paired('Studio Mac', ['10.0.0.5', '192.168.73.20']);
+      final stale = Completer<SshKeyCheck>();
+      final unlocker = _FakeUnlocker()..holds['10.0.0.5'] = stale;
+      await _show(tester, _FakeKeeper(), unlocker, macs: [two]);
+      await openAdd(tester);
+
+      // The other address has not given up, and the Mac is already there.
+      expect(addressShown(tester), '192.168.73.20');
+      expect(find.text(_key), findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+
+      stale.complete(const SshKeyCheck.heard(fingerprint: _other));
+      await tester.pumpAndSettle();
+      expect(addressShown(tester), '192.168.73.20');
+      expect(find.text(_key), findsOneWidget);
+      expect(find.text(_other), findsNothing);
+    });
+
+    testWidgets('that no address of it answers is told what to do', (
+      tester,
+    ) async {
+      final two = _paired('Studio Mac', ['10.0.0.5', '192.168.73.20']);
+      final unlocker = _FakeUnlocker()
+        ..heard = const SshKeyCheck.unreachable(detail: 'refused');
+      await _show(tester, _FakeKeeper(), unlocker, macs: [two]);
+      await openAdd(tester);
+
+      expect(
+        find.textContaining(
+          'The Mac did not answer at 10.0.0.5 or 192.168.73.20. Check that Remote Login is on',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Turn on Remote Login at the Mac'), findsOneWidget);
+      expect(find.text('Account name'), findsNothing);
+      expect(find.text('They match. Save'), findsNothing);
+      expect(find.text('Check the Mac'), findsOneWidget);
+      // The address that was tried first is in the field, to be corrected.
+      expect(addressShown(tester), '10.0.0.5');
+    });
+
+    testWidgets('that was not seen on a local network is asked for its '
+        'address', (tester) async {
+      final unseen = _paired("Jay's MacBook Pro", const []);
+      final keeper = _FakeKeeper();
+      final unlocker = _FakeUnlocker();
+      await _show(tester, keeper, unlocker, macs: [unseen]);
+      await openAdd(tester);
+
+      expect(unlocker.asked, isEmpty);
+      expect(addressShown(tester), isEmpty);
+      expect(
+        find.textContaining(
+          "Baton has not seen Jay's MacBook Pro on a local network yet.",
+        ),
+        findsOneWidget,
+      );
+      await typeAddressAndCheck(tester, '192.168.1.9');
+      await signIn(tester);
+      await tester.tap(find.text('They match. Save'));
+      await tester.pumpAndSettle();
+      expect(keeper.macs['new']!.host, '192.168.1.9');
+    });
+
+    testWidgets('can be passed over for another Mac that is typed', (
+      tester,
+    ) async {
+      final studio = _paired('Studio Mac', ['10.0.0.5']);
+      final unlocker = _FakeUnlocker();
+      await _show(tester, _FakeKeeper(), unlocker, macs: [studio, mbp]);
+      await openAdd(tester);
+      await tester.tap(find.text('Studio Mac'));
+      await tester.pumpAndSettle();
+      expect(unlocker.asked, [('10.0.0.5', 22)]);
+      expect(find.text('Account name'), findsOneWidget);
+
+      // What was found for the Mac that was picked is not carried over to another one.
+      await tester.tap(find.text('Another Mac'));
+      await tester.pumpAndSettle();
+      expect(addressShown(tester), isEmpty);
+      expect(find.text('Account name'), findsNothing);
+      expect(find.text(_key), findsNothing);
+      await typeAddressAndCheck(tester, 'mac.local');
+      expect(unlocker.asked, [('10.0.0.5', 22), ('mac.local', 22)]);
+      expect(find.text(_key), findsOneWidget);
+    });
+
+    testWidgets('that was passed over for another is not heard from after '
+        'that', (tester) async {
+      final studio = _paired('Studio Mac', ['10.0.0.5']);
+      final slow = Completer<SshKeyCheck>();
+      final unlocker = _FakeUnlocker()..holds['10.0.0.5'] = slow;
+      await _show(tester, _FakeKeeper(), unlocker, macs: [studio, mbp]);
+      await openAdd(tester);
+
+      await tester.tap(find.text('Studio Mac'));
+      await tester.pump();
+      expect(
+        find.textContaining('Looking for the Mac at 10.0.0.5'),
+        findsOneWidget,
+      );
+      await tester.tap(find.text("Jay's MacBook Pro"));
+      await tester.pumpAndSettle();
+      expect(addressShown(tester), '192.168.73.20');
+      expect(find.text(_key), findsOneWidget);
+
+      // The first Mac answers late, with a key of its own, and the screen is not changed.
+      slow.complete(const SshKeyCheck.heard(fingerprint: _other));
+      await tester.pumpAndSettle();
+      expect(addressShown(tester), '192.168.73.20');
+      expect(find.text(_key), findsOneWidget);
+      expect(find.text(_other), findsNothing);
+    });
+
+    testWidgets('is not trusted at a new address without a new check', (
+      tester,
+    ) async {
+      final unlocker = _FakeUnlocker();
+      await _show(tester, _FakeKeeper(), unlocker, macs: [mbp]);
+      await openAdd(tester);
+      await signIn(tester);
+      expect(find.text('They match. Save'), findsOneWidget);
+
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Address of the Mac'),
+        '192.168.73.99',
+      );
+      await tester.pump();
+      expect(find.text('They match. Save'), findsNothing);
+      expect(find.text('Account name'), findsNothing);
+      expect(find.text(_key), findsNothing);
+      expect(find.text('Check the Mac'), findsOneWidget);
+      expect(unlocker.asked, [('192.168.73.20', 22)]);
+    });
+  });
+
+  testWidgets('the command that shows the key at the Mac can be copied', (
+    tester,
+  ) async {
+    final copied = <Object?>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.setData') {
+          copied.add((call.arguments as Map<Object?, Object?>)['text']);
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+    await _show(tester, _FakeKeeper(), _FakeUnlocker());
+    await openAdd(tester);
+    await typeAddressAndCheck(tester, 'mac.local');
+
+    await tester.tap(find.byTooltip('Copy the command'));
+    await tester.pumpAndSettle();
+    expect(copied, [macKeyCommand]);
+    expect(find.textContaining('Copied.'), findsOneWidget);
   });
 
   testWidgets('unlocking asks for the face and gives the Mac its password', (
@@ -419,7 +739,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(keeper.macs, isEmpty);
     expect(keeper.passwords, isEmpty);
-    expect(find.text('No Mac saved yet.'), findsOneWidget);
+    expect(find.text('No Mac saved yet'), findsOneWidget);
   });
 
   testWidgets(
