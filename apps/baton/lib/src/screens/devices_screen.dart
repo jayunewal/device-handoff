@@ -6,10 +6,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../backend.dart';
+import '../continue_reader.dart';
 import '../control_access.dart';
 import '../controller.dart';
 import '../file_chooser.dart';
 import '../format.dart';
+import '../links.dart';
 import '../notice_access.dart';
 import '../permissions.dart';
 import '../scanner.dart';
@@ -17,6 +19,8 @@ import '../theme.dart';
 import '../unlock_text.dart';
 import 'add_device_screen.dart';
 import 'content_box.dart';
+import 'continue_access_dialog.dart';
+import 'continue_sheet.dart';
 import 'permissions_screen.dart';
 import 'send_screen.dart';
 import 'start_access_dialog.dart';
@@ -36,6 +40,8 @@ class DevicesScreen extends StatefulWidget {
     this.controlAccess = const PlatformControlAccess(),
     this.screenAccess = const PlatformScreenAccess(),
     this.notices = const PlatformNoticeKeeper(),
+    this.continueReader = const PlatformContinueReader(),
+    this.openLink = openInBrowser,
     this.platform,
     this.system = const PlatformSystemSettings(),
     super.key,
@@ -81,6 +87,14 @@ class DevicesScreen extends StatefulWidget {
   /// What the system says about showing notifications, which tell the person that a paired device
   /// unlocked this one. Tests give it one of their own.
   final NoticeKeeper notices;
+
+  /// What the system says about reading the page in front in a browser, which a device that asks
+  /// what the person here is working on needs. Tests give it one of their own.
+  final ContinueReader continueReader;
+
+  /// Opens a web address in the web browser, for a page that a device has open. Tests give it one
+  /// of their own.
+  final OpenLink openLink;
 
   /// The system this runs on, which says what permissions there are to check. Tests give it one
   /// of their own.
@@ -286,6 +300,64 @@ class _DevicesScreenState extends State<DevicesScreen>
     }
   }
 
+  /// Lets the person say whether [device] may ask this device what they are working on, with no one
+  /// here asked each time. The system is asked once the setting is kept, while the person is here
+  /// to answer: reading the page in front in a browser needs their consent, which the system asks
+  /// for only while the browser is open. It is asked also when the person saves what was kept
+  /// already, which is how they ask again after a no, or after a new build of Baton lost the
+  /// consent.
+  Future<void> _allowContinue(Device device) async {
+    final current = _controller.continueAccess(device);
+    if (current == null) return;
+    final chosen = await showDialog<bool>(
+      context: context,
+      builder: (context) => ContinueAccessDialog(
+        device: device,
+        thisDevice: _controller.me.platform,
+        allowed: current,
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    if (chosen != current) {
+      final problem = await _controller.setContinueAccess(
+        device,
+        allowed: chosen,
+      );
+      if (!mounted) return;
+      if (problem != null) {
+        _tell(problem);
+        return;
+      }
+    }
+    if (!chosen) return;
+    final access = {
+      for (final browser in Browser.values)
+        browser: await widget.continueReader.browserAccess(browser, ask: true),
+    };
+    if (!mounted) return;
+    final more = describeBrowserAccess(access);
+    _tell(
+      [
+        '${visibleText(device.name)} can now ask this '
+            '${platformName(_controller.me.platform)} what you are working on.',
+        ?more,
+      ].join(' '),
+      stay: more != null,
+    );
+  }
+
+  /// Asks [device] what its person is working on, and shows it in a sheet to open or copy.
+  void _continue(Device device) {
+    unawaited(
+      showContinueSheet(
+        context,
+        session: widget.session,
+        device: device,
+        openLink: widget.openLink,
+      ),
+    );
+  }
+
   /// Tells the person a sentence for a few seconds, or until they say OK if it [stay]s. A sentence
   /// about what to do in the settings of the system stays: the person is in the settings, and a
   /// sentence that left in the meantime is not there to read when they are back.
@@ -376,6 +448,10 @@ class _DevicesScreenState extends State<DevicesScreen>
               onStartScreen: widget.onStartScreen,
               canControl: _access != ControlAccess.unavailable,
               onAllowScreen: widget.canGiveScreen ? _allowScreen : null,
+              onAllowContinue: servesContinue(_controller.me.platform)
+                  ? _allowContinue
+                  : null,
+              onContinue: _continue,
               onUnlock: widget.canBeUnlocked ? _unlock : null,
               onForget: _forget,
               permissionsOff: _permissionsOff,
@@ -397,6 +473,8 @@ class _Devices extends StatelessWidget {
     required this.onStartScreen,
     required this.canControl,
     required this.onAllowScreen,
+    required this.onAllowContinue,
+    required this.onContinue,
     required this.onUnlock,
     required this.onForget,
     required this.permissionsOff,
@@ -416,6 +494,13 @@ class _Devices extends StatelessWidget {
   /// Lets the person say whether a device may ask for the screen of this one, or `null` on a
   /// device that cannot give its screen.
   final void Function(Device device)? onAllowScreen;
+
+  /// Lets the person say whether a device may ask what they are working on, or `null` on a device
+  /// that has no way to say it.
+  final void Function(Device device)? onAllowContinue;
+
+  /// Asks a device what its person is working on. Only a device that can say has the button.
+  final void Function(Device device) onContinue;
 
   /// Lets the person say whether a device may unlock this one while it is locked, or `null` on a
   /// device that cannot be unlocked. Only a device that unlocks with its face has the entry.
@@ -470,6 +555,8 @@ class _Devices extends StatelessWidget {
               canControl: canControl,
               thisDevice: controller.me.platform,
               onAllowScreen: onAllowScreen,
+              onAllowContinue: onAllowContinue,
+              onContinue: onContinue,
               onUnlock: onUnlock,
               onForget: onForget,
             ),
@@ -614,7 +701,7 @@ class _NoDevices extends StatelessWidget {
 }
 
 /// What a device's menu offers.
-enum _DeviceAction { allowScreen, unlock, forget }
+enum _DeviceAction { allowScreen, allowContinue, unlock, forget }
 
 class _DeviceTile extends StatelessWidget {
   const _DeviceTile({
@@ -626,6 +713,8 @@ class _DeviceTile extends StatelessWidget {
     required this.canControl,
     required this.thisDevice,
     required this.onAllowScreen,
+    required this.onAllowContinue,
+    required this.onContinue,
     required this.onUnlock,
     required this.onForget,
   });
@@ -640,6 +729,8 @@ class _DeviceTile extends StatelessWidget {
   /// The system that this device runs, to name it in the menu.
   final Platform thisDevice;
   final void Function(Device device)? onAllowScreen;
+  final void Function(Device device)? onAllowContinue;
+  final void Function(Device device) onContinue;
   final void Function(Device device)? onUnlock;
   final void Function(Device device) onForget;
 
@@ -700,12 +791,20 @@ class _DeviceTile extends StatelessWidget {
                   ),
                 ],
               ),
+            if (servesContinue(device.platform))
+              IconButton(
+                tooltip: 'Continue from ${device.name}',
+                icon: const Icon(Icons.open_in_browser_outlined),
+                onPressed: () => onContinue(device),
+              ),
             PopupMenuButton<_DeviceAction>(
               tooltip: 'More about ${device.name}',
               onSelected: (action) {
                 switch (action) {
                   case _DeviceAction.allowScreen:
                     onAllowScreen?.call(device);
+                  case _DeviceAction.allowContinue:
+                    onAllowContinue?.call(device);
                   case _DeviceAction.unlock:
                     onUnlock?.call(device);
                   case _DeviceAction.forget:
@@ -717,6 +816,14 @@ class _DeviceTile extends StatelessWidget {
                   const PopupMenuItem(
                     value: _DeviceAction.allowScreen,
                     child: Text('Let this device ask for the screen…'),
+                  ),
+                if (onAllowContinue != null)
+                  PopupMenuItem(
+                    value: _DeviceAction.allowContinue,
+                    child: Text(
+                      'Let this device continue from this '
+                      '${platformName(thisDevice)}…',
+                    ),
                   ),
                 if (onUnlock != null && unlocksWithFace(device.platform))
                   PopupMenuItem(

@@ -275,6 +275,8 @@ class _HomeScreenState extends State<HomeScreen> {
           controlAccess: widget.controlAccess,
           screenAccess: widget.screenAccess,
           notices: widget.notices,
+          continueReader: widget.continueReader,
+          openLink: widget.openLink,
           onShareWindow: _windows.abilities.canShare
               ? (device, {required control}) =>
                     unawaited(_windows.share(device, control: control))
