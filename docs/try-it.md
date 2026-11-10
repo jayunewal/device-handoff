@@ -130,7 +130,7 @@ What to expect: the items arrive while A is locked, and nothing is opened or cop
 - The background agent: nothing starts by itself, so `baton listen` has to be left running in a window, and there is no tray icon. Nothing opens a link or fills the clipboard automatically.
 - Lock detection. The program cannot tell whether the computer is locked, and so it never acts on what arrives, locked or not.
 - Accounts that pair every device at once. Phones, tablets and the Mac app, with files and screen streaming, are in the app: see [install-the-app.md](install-the-app.md).
-- An outbox. Sending to a computer that is asleep or offline fails; it does not wait.
+- An outbox in the program. The app has one: a link or some text for a device that cannot be reached waits on the device that sent it, for up to a day (see [install-the-app.md](install-the-app.md)). `baton send` still fails at once for a computer that is asleep or offline.
 - Real-network testing. Pairing, sending, the inbox and the command line are tested automatically on Linux, macOS and Windows with two copies on one machine. Finding each other across a real Wi-Fi network (mDNS), through the public relays and through a router are written but have not yet been run on real networks, so these are the likeliest places for a surprise. Reports are welcome.
 - Signed programs. The builds are not signed by a developer, which is why macOS and Windows may warn.
 

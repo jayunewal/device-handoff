@@ -214,11 +214,13 @@ Delivery has three paths, tried in this order:
 
 Until the mailbox exists, an item for a device that is off or out of reach is delivered when both devices are awake and reachable at the same time, and the apps say so. A sender that is locked and awake counts as awake. The case that stays open is a laptop that goes to sleep with the item still in the outbox, and the "send and lock" gesture of section 5.6 exists to avoid it: the source is not locked until the other device has the item.
 
+The sender outbox is built for links and text, and not for files ([ADR 0016](adr/0016-outbox.md)). A send that cannot reach the device waits in a file on the sender, for 24 hours at most, with room for 50 items and 20 for one device. The app layer tries again when an item is added, when the list of paired devices changes and after pauses that grow from two seconds to half a minute, and tells the person how each item ended. It runs while Baton runs: the Mac app keeps running with its window closed, and an iPhone or an iPad does not, so what waits on a phone is sent the next time Baton is open on it. None of it has been tried on real devices yet.
+
 The limits on a locked outbox:
 
 - **Sent items only.** A locked agent does not push staged items. It serves them on request, and only under the opt-in in section 5.4.
 - **Only the named device.** The agent never widens an item to another device. Unpairing a device cancels everything queued for it.
-- **A lifetime.** An item that has not been delivered within its lifetime is dropped, and the person is told. The proposed default is 24 hours, to be decided before the outbox ships.
+- **A lifetime.** An item that has not been delivered within its lifetime is dropped, and the person is told. The lifetime is 24 hours, counted from the time the person sent the item ([ADR 0016](adr/0016-outbox.md)).
 - **The receiver decides what happens next.** The receiving device applies its own locked mode and its own policy (section 5.4).
 - **Phones.** An iOS or iPadOS app has no agent. After the lock it has about five seconds, which a background task can extend (documented), to finish what the person sent. An item that has not left by then waits until the app runs again, or for the mailbox. An Android foreground service keeps delivering while the phone is locked for as long as it stays alive (section 5.1).
 
