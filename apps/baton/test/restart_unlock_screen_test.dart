@@ -298,6 +298,24 @@ void main() {
     expect(keeper.macs, isEmpty);
   });
 
+  testWidgets('what a new Mac answered with is shown plainly', (tester) async {
+    final keeper = _FakeKeeper();
+    final unlocker = _FakeUnlocker()
+      ..heard = const SshKeyCheck.failed(detail: 'not ssh\u202E');
+    await _show(tester, keeper, unlocker);
+    await fillAndCheck(tester);
+
+    expect(
+      find.textContaining(
+        'Something answered, but not as a Mac with Remote Login does '
+        '(not ssh\u{FFFD}).',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('They match. Save'), findsNothing);
+    expect(keeper.macs, isEmpty);
+  });
+
   testWidgets('unlocking asks for the face and gives the Mac its password', (
     tester,
   ) async {
@@ -358,6 +376,13 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text(_other), findsOneWidget);
       expect(find.textContaining('nothing was sent'), findsOneWidget);
+      expect(
+        find.text(
+          'Something else on the network may be answering for your Mac, or a Mac that is '
+          'still locked after a restart may answer with a key of its own.',
+        ),
+        findsOneWidget,
+      );
       expect(find.textContaining('Trust'), findsNothing);
       await tester.tap(find.text('OK'));
       await tester.pumpAndSettle();
@@ -449,6 +474,65 @@ void main() {
     );
   });
 
+  testWidgets(
+    'a Mac that takes keys only is not told to turn Remote Login on',
+    (tester) async {
+      final keeper = _FakeKeeper()..macs['m1'] = _mac;
+      keeper.opens = (_) => 'secret';
+      final unlocker = _FakeUnlocker()
+        ..outcomes.add(const SshUnlock.noPassword());
+      await _show(tester, keeper, unlocker);
+      await tester.tap(find.text('Unlock'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Could not unlock Jays-MBP.local'), findsOneWidget);
+      expect(
+        find.textContaining(
+          'it takes keys only, so it did not take the password.',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('That is expected while the Mac runs.'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining(
+          'If it is waiting for its disk password after a restart, this way '
+          'cannot unlock it, and it has to be unlocked at the Mac.',
+        ),
+        findsOneWidget,
+      );
+      // The Mac answered with the key that was saved, so Remote Login is on and the person has
+      // nothing to turn on.
+      expect(
+        find.descendant(
+          of: find.byType(AlertDialog),
+          matching: find.textContaining('Remote Login'),
+        ),
+        findsNothing,
+      );
+      expect(find.text('Enter the password again'), findsNothing);
+    },
+  );
+
+  testWidgets('shows what went wrong with a Mac plainly', (tester) async {
+    final keeper = _FakeKeeper()..macs['m1'] = _mac;
+    keeper.opens = (_) => 'secret';
+    final unlocker = _FakeUnlocker()
+      ..outcomes.add(const SshUnlock.failed(detail: 'not ssh\u202E'));
+    await _show(tester, keeper, unlocker);
+    await tester.tap(find.text('Unlock'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text(
+        'Something went wrong while talking to the Mac (not ssh\u{FFFD}).',
+      ),
+      findsOneWidget,
+    );
+  });
+
   group('the check of the way', () {
     Future<void> checkWay(WidgetTester tester) async {
       await tester.tap(find.byTooltip('More'));
@@ -477,6 +561,26 @@ void main() {
       // The face was not asked for, and no password was given.
       expect(keeper.reasons, isEmpty);
       expect(unlocker.tries, isEmpty);
+    });
+
+    testWidgets('promises the way and no more than the way', (tester) async {
+      final keeper = _FakeKeeper()..macs['m1'] = _mac;
+      await _show(tester, keeper, _FakeUnlocker());
+      await checkWay(tester);
+
+      expect(
+        find.textContaining('so the way from here works.'),
+        findsOneWidget,
+      );
+      // After a restart a Mac may answer with a key of its own, which this check cannot know.
+      expect(
+        find.textContaining(
+          'A Mac that waits for its disk password after a restart may answer '
+          'with a key of its own.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.textContaining('would reach your Mac'), findsNothing);
     });
 
     for (final (milliseconds, said) in [
@@ -515,6 +619,14 @@ void main() {
         expect(find.text(_other), findsOneWidget);
         expect(find.text('The way is open'), findsNothing);
         expect(find.textContaining('Trust'), findsNothing);
+        // The reasons are the ones that the unlock gives for the same answer.
+        expect(
+          find.text(
+            'Something else on the network may be answering for your Mac, or a Mac that is '
+            'still locked after a restart may answer with a key of its own.',
+          ),
+          findsOneWidget,
+        );
         await tester.tap(find.text('OK'));
         await tester.pumpAndSettle();
         expect(keeper.macs['m1']!.keys, [_key]);
