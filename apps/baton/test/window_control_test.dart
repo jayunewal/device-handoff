@@ -6,6 +6,7 @@ import 'package:baton/src/format.dart';
 import 'package:baton/src/screens/window_screen.dart';
 import 'package:baton/src/window_control.dart';
 import 'package:baton/src/windows_controller.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -212,6 +213,37 @@ PointerUpEvent _fingerUp(int pointer, Offset at) =>
     PointerUpEvent(pointer: pointer, position: at);
 PointerCancelEvent _fingerCancelled(int pointer, Offset at) =>
     PointerCancelEvent(pointer: pointer, position: at);
+
+// The events of a mouse, a trackpad and a pen, for the control that is given them straight.
+PointerHoverEvent _mouseOver(Offset at) =>
+    PointerHoverEvent(kind: PointerDeviceKind.mouse, position: at);
+PointerDownEvent _mouseDown(Offset at, {int buttons = kPrimaryButton}) =>
+    PointerDownEvent(
+      kind: PointerDeviceKind.mouse,
+      position: at,
+      buttons: buttons,
+    );
+PointerMoveEvent _mouseMoved(Offset at, {int buttons = kPrimaryButton}) =>
+    PointerMoveEvent(
+      kind: PointerDeviceKind.mouse,
+      position: at,
+      buttons: buttons,
+    );
+PointerUpEvent _mouseUp(Offset at) =>
+    PointerUpEvent(kind: PointerDeviceKind.mouse, position: at);
+PointerCancelEvent _mouseCancelled(Offset at) =>
+    PointerCancelEvent(kind: PointerDeviceKind.mouse, position: at);
+PointerScrollEvent _wheel(Offset at, Offset by) => PointerScrollEvent(
+  kind: PointerDeviceKind.mouse,
+  position: at,
+  scrollDelta: by,
+);
+PointerPanZoomUpdateEvent _twoFingers(Offset at, Offset moved) =>
+    PointerPanZoomUpdateEvent(position: at, pan: moved, panDelta: moved);
+PointerDownEvent _penDown(Offset at) =>
+    PointerDownEvent(kind: PointerDeviceKind.stylus, position: at);
+PointerUpEvent _penUp(Offset at) =>
+    PointerUpEvent(kind: PointerDeviceKind.stylus, position: at);
 
 /// A control with no screen around it, for what only the control does. The picture that it is
 /// told of has the size [picture], which a test can change or take away.
@@ -626,6 +658,211 @@ void main() {
     });
   });
 
+  group('a mouse on the picture', () {
+    /// A mouse over [at] on the screen, which presses with [buttons].
+    Future<TestGesture> mouseAt(
+      WidgetTester tester,
+      Offset at, {
+      int buttons = kPrimaryButton,
+    }) async {
+      final mouse = await tester.createGesture(
+        kind: PointerDeviceKind.mouse,
+        buttons: buttons,
+      );
+      await mouse.addPointer(location: at);
+      addTearDown(mouse.removePointer);
+      return mouse;
+    }
+
+    /// Turns the wheel of a mouse over [at]: this device is asked to scroll by [by], which moves
+    /// what is scrolled the other way.
+    Future<void> turnWheel(WidgetTester tester, Offset at, Offset by) =>
+        tester.sendEventToBinding(
+          PointerScrollEvent(
+            viewId: tester.view.viewId,
+            kind: PointerDeviceKind.mouse,
+            position: at,
+            scrollDelta: by,
+          ),
+        );
+
+    testWidgets('does nothing while control is off', (tester) async {
+      final shown = await _open(tester);
+      final mouse = await mouseAt(tester, _at(tester, 0.1, 0.1));
+
+      await mouse.moveTo(_at(tester, 0.5, 0.5));
+      await mouse.down(_at(tester, 0.5, 0.5));
+      await mouse.up();
+      await tester.pump(const Duration(seconds: 1));
+
+      expect(shown.session.windowInputs, isEmpty);
+    });
+
+    testWidgets(
+      'moves the pointer of the window as it moves over the picture',
+      (tester) async {
+        final shown = await _open(tester);
+        await _turnOn(tester);
+        final mouse = await mouseAt(
+          tester,
+          _corner(tester) - const Offset(0, 40),
+        );
+
+        await mouse.moveTo(_corner(tester) - const Offset(0, 20));
+        await tester.pump();
+        expect(
+          shown.session.windowInputs,
+          isEmpty,
+          reason: 'not on the picture',
+        );
+        await mouse.moveTo(_at(tester, 0.25, 0.75));
+        await mouse.moveTo(_at(tester, 0.5, 0.5));
+        await tester.pump();
+
+        expect(shown.given, [
+          _pointer(0.25, 0.75, const WindowPointer.move()),
+          _pointer(0.5, 0.5, const WindowPointer.move()),
+        ]);
+      },
+    );
+
+    testWidgets('clicks where the button goes down, with no wait', (
+      tester,
+    ) async {
+      final shown = await _open(tester);
+      await _turnOn(tester);
+      final mouse = await mouseAt(tester, _at(tester, 0.5, 0.5));
+
+      await mouse.down(_at(tester, 0.25, 0.75));
+      expect(shown.given, [
+        _pointer(0.25, 0.75, const WindowPointer.move()),
+        _pointer(
+          0.25,
+          0.75,
+          const WindowPointer.down(button: WindowButton.left),
+        ),
+      ], reason: 'a mouse is not a finger: nothing waits for it to lift');
+      // A button that is held is not a right click, which a finger that stays is.
+      await tester.pump(const Duration(seconds: 2));
+      await mouse.up();
+      await tester.pump();
+
+      expect(shown.given, _click(0.25, 0.75));
+    });
+
+    testWidgets('drags with the left button from the first move', (
+      tester,
+    ) async {
+      final shown = await _open(tester);
+      await _turnOn(tester);
+      final size = tester.getSize(find.byType(Texture));
+      final mouse = await mouseAt(tester, _at(tester, 0.5, 0.5));
+
+      await mouse.down(_at(tester, 0.5, 0.5));
+      // A finger has to move 10 points before it drags, and a mouse does not.
+      await mouse.moveBy(Offset(size.width / 512, 0));
+      await mouse.up();
+      await tester.pump();
+
+      expect(shown.given, [
+        _pointer(0.5, 0.5, const WindowPointer.move()),
+        _pointer(0.5, 0.5, const WindowPointer.down(button: WindowButton.left)),
+        _pointer(0.5 + 1 / 512, 0.5, const WindowPointer.move()),
+        _pointer(
+          0.5 + 1 / 512,
+          0.5,
+          const WindowPointer.up(button: WindowButton.left),
+        ),
+      ]);
+    });
+
+    testWidgets('clicks with the right button when that is the one pressed', (
+      tester,
+    ) async {
+      final shown = await _open(tester);
+      await _turnOn(tester);
+      final mouse = await mouseAt(
+        tester,
+        _at(tester, 0.5, 0.5),
+        buttons: kSecondaryMouseButton,
+      );
+
+      await mouse.down(_at(tester, 0.75, 0.25));
+      await mouse.up();
+      await tester.pump();
+
+      expect(shown.given, _click(0.75, 0.25, button: WindowButton.right));
+    });
+
+    testWidgets('scrolls the window as the wheel turns, as it does on a Mac', (
+      tester,
+    ) async {
+      final shown = await _open(tester);
+      await _turnOn(tester);
+
+      // A wheel that asks this device to scroll down moves the content up.
+      await turnWheel(tester, _at(tester, 0.25, 0.75), const Offset(0, 40));
+      await turnWheel(tester, _at(tester, 0.25, 0.75), const Offset(-16, -8));
+
+      expect(shown.given, [
+        _pointer(0.25, 0.75, const WindowPointer.scroll(dx: 0, dy: -40)),
+        _pointer(0.25, 0.75, const WindowPointer.scroll(dx: 16, dy: 8)),
+      ]);
+    });
+
+    testWidgets('scrolls the window with two fingers on a trackpad', (
+      tester,
+    ) async {
+      final shown = await _open(tester);
+      await _turnOn(tester);
+      final at = _at(tester, 0.5, 0.5);
+
+      // The content goes where the fingers go.
+      final trackpad = await tester.startGesture(
+        at,
+        kind: PointerDeviceKind.trackpad,
+      );
+      await trackpad.panZoomUpdate(at, pan: const Offset(0, 30));
+      await trackpad.panZoomUpdate(at, pan: const Offset(12, 50));
+      await trackpad.panZoomEnd();
+      await tester.pump();
+
+      expect(shown.given, [
+        _pointer(0.5, 0.5, const WindowPointer.scroll(dx: 0, dy: 30)),
+        _pointer(0.5, 0.5, const WindowPointer.scroll(dx: 12, dy: 20)),
+      ]);
+    });
+
+    testWidgets('has what was chosen on the screen, until a click uses it up', (
+      tester,
+    ) async {
+      final shown = await _open(tester);
+      await _turnOn(tester);
+      await tester.tap(find.widgetWithText(FilterChip, 'Cmd'));
+      await tester.pump();
+      final at = _at(tester, 0.5, 0.5);
+      final mouse = await mouseAt(tester, at);
+
+      await turnWheel(tester, at, const Offset(0, 40));
+      await mouse.down(at);
+      await mouse.up();
+      await mouse.down(at);
+      await mouse.up();
+      await tester.pump();
+
+      expect(shown.given, [
+        _pointer(
+          0.5,
+          0.5,
+          const WindowPointer.scroll(dx: 0, dy: -40),
+          modifiers: _command,
+        ),
+        ..._click(0.5, 0.5, modifiers: _command),
+        ..._click(0.5, 0.5),
+      ]);
+    });
+  });
+
   group('the keys of the screen', () {
     testWidgets('Escape and Tab go down and come up', (tester) async {
       final shown = await _open(tester);
@@ -908,6 +1145,123 @@ void main() {
       expect(shown.session.windowInputsReleased, [1]);
       expect(shown.session.windowInputs, isEmpty);
     });
+  });
+
+  group('a key that is held on an iPad', () {
+    // The starting values of the control, until a keyboard has been tried with them.
+    const first = Duration(milliseconds: 400);
+    const every = Duration(milliseconds: 80);
+    final onAnIpad = TargetPlatformVariant.only(TargetPlatform.iOS);
+
+    testWidgets('repeats until it comes up, as it does on a Mac', (
+      tester,
+    ) async {
+      final shown = await _open(tester);
+      await _turnOn(tester);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyA, character: 'a');
+      await tester.pump(first - const Duration(milliseconds: 1));
+      expect(shown.given, [_key(0x04, text: 'a')], reason: 'not yet');
+      await tester.pump(const Duration(milliseconds: 1));
+      await tester.pump(every * 2);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyA);
+      await tester.pump(const Duration(seconds: 1));
+
+      expect(shown.given, [
+        _key(0x04, text: 'a'),
+        _key(0x04, repeat: true, text: 'a'),
+        _key(0x04, repeat: true, text: 'a'),
+        _key(0x04, repeat: true, text: 'a'),
+        _key(0x04, down: false),
+      ]);
+    }, variant: onAnIpad);
+
+    testWidgets('is left to a keyboard that repeats it itself', (tester) async {
+      final shown = await _open(tester);
+      await _turnOn(tester);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyA, character: 'a');
+      await tester.pump(const Duration(seconds: 2));
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyA);
+
+      expect(shown.given, [_key(0x04, text: 'a'), _key(0x04, down: false)]);
+    });
+
+    testWidgets('is repeated only for the key that went down last', (
+      tester,
+    ) async {
+      final shown = await _open(tester);
+      await _turnOn(tester);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyA, character: 'a');
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyB, character: 'b');
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyA);
+      await tester.pump(first + every);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyB);
+      await tester.pump(const Duration(seconds: 1));
+
+      expect(shown.given, [
+        _key(0x04, text: 'a'),
+        _key(0x05, text: 'b'),
+        _key(0x04, down: false),
+        _key(0x05, repeat: true, text: 'b'),
+        _key(0x05, repeat: true, text: 'b'),
+        _key(0x05, down: false),
+      ]);
+    }, variant: onAnIpad);
+
+    testWidgets('has no text once the modifiers are not those it began with', (
+      tester,
+    ) async {
+      final shown = await _open(tester);
+      await _turnOn(tester);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyA, character: 'a');
+      await tester.pump(first);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.pump(every);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyA);
+      await tester.pump(const Duration(seconds: 1));
+
+      expect(shown.given, [
+        _key(0x04, text: 'a'),
+        _key(0x04, repeat: true, text: 'a'),
+        _key(0x04, repeat: true, modifiers: _shift),
+        _key(0x04, down: false),
+      ]);
+    }, variant: onAnIpad);
+
+    testWidgets('is let go of when the keyboard says it came up unheard', (
+      tester,
+    ) async {
+      final shown = await _open(tester);
+      await _turnOn(tester);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyA, character: 'a');
+      // The key comes up while the focus is where the window is not given the keys.
+      HardwareKeyboard.instance.handleKeyEvent(_aUp);
+      await tester.pump(first);
+      await tester.pump(const Duration(seconds: 1));
+
+      expect(shown.given, [_key(0x04, text: 'a'), _key(0x04, down: false)]);
+    }, variant: onAnIpad);
+
+    testWidgets('stops when control is turned off', (tester) async {
+      final shown = await _open(tester);
+      await _turnOn(tester);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyA, character: 'a');
+      await tester.pump(first);
+
+      await _turnOn(tester);
+      shown.forget();
+      await tester.pump(const Duration(seconds: 1));
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyA);
+
+      expect(shown.session.windowInputs, isEmpty);
+      expect(shown.session.windowInputsReleased, [1]);
+    }, variant: onAnIpad);
   });
 
   group('a key of a keyboard that the window takes', () {
@@ -1557,6 +1911,35 @@ void main() {
         expect(rig.control.chosen.has(Modifier.command), isFalse);
       });
 
+      testWidgets('are repeated on an iPad for no longer than is meant', (
+        tester,
+      ) async {
+        final rig = await _Control.start(tester);
+        final control = WindowControl(
+          windows: rig.windows,
+          session: rig.window,
+          pictureSize: () => rig.picture,
+          repeatAfter: const Duration(milliseconds: 100),
+          repeatEvery: const Duration(milliseconds: 50),
+          repeatFor: const Duration(milliseconds: 200),
+        )..turnOn();
+        addTearDown(control.dispose);
+
+        // The keyboard says that the key is down, and nothing says that it comes up.
+        HardwareKeyboard.instance.handleKeyEvent(_aDown);
+        control.key(_aDown);
+        await tester.pump(const Duration(seconds: 5));
+
+        // At 100, 150, 200 and 250 ms. The next would be 300 ms after the key went down, and the
+        // repeats have gone on for 200 ms by then.
+        expect(rig.given, [
+          _key(0x04, text: 'a'),
+          for (var i = 0; i < 4; i++) _key(0x04, repeat: true, text: 'a'),
+        ]);
+        HardwareKeyboard.instance.handleKeyEvent(_aUp);
+        control.key(_aUp);
+      }, variant: TargetPlatformVariant.only(TargetPlatform.iOS));
+
       testWidgets('are deleted with the modifiers that were chosen', (
         tester,
       ) async {
@@ -1666,6 +2049,204 @@ void main() {
         expect(rig.given, isEmpty);
         expect(rig.control.gestures.touching, isFalse);
       });
+    });
+
+    group('the mouse and the trackpad', () {
+      testWidgets('are not taken before the picture is laid out', (
+        tester,
+      ) async {
+        final rig = await _Control.start(tester);
+        rig.picture = null;
+        rig.control.turnOn();
+        const at = Offset(40, 30);
+
+        rig.control
+          ..pointerHover(_mouseOver(at))
+          ..pointerDown(_mouseDown(at))
+          ..pointerSignal(_wheel(at, const Offset(0, 40)))
+          ..pointerPanZoomUpdate(_twoFingers(at, const Offset(0, 40)))
+          ..pointerUp(_mouseUp(at));
+
+        expect(rig.control.mouse.pressing, isFalse);
+        expect(rig.given, isEmpty);
+      });
+
+      testWidgets('are not heard while control is off', (tester) async {
+        final rig = await _Control.start(tester);
+        const at = Offset(40, 30);
+
+        rig.control
+          ..pointerHover(_mouseOver(at))
+          ..pointerDown(_mouseDown(at))
+          ..pointerMove(_mouseMoved(at + const Offset(10, 0)))
+          ..pointerSignal(_wheel(at, const Offset(0, 40)))
+          ..pointerPanZoomUpdate(_twoFingers(at, const Offset(0, 40)))
+          ..pointerUp(_mouseUp(at + const Offset(10, 0)));
+
+        expect(rig.control.mouse.pressing, isFalse);
+        expect(rig.given, isEmpty);
+      });
+
+      testWidgets('a press that names no button is of the left button', (
+        tester,
+      ) async {
+        final rig = await _Control.start(tester);
+        rig.control
+          ..turnOn()
+          ..pointerDown(_mouseDown(const Offset(100, 150), buttons: 0))
+          ..pointerUp(_mouseUp(const Offset(100, 150)));
+
+        expect(rig.given, _click(0.25, 0.5));
+      });
+
+      testWidgets('a pen is a finger, which clicks once it lifts', (
+        tester,
+      ) async {
+        final rig = await _Control.start(tester);
+        rig.control
+          ..turnOn()
+          ..pointerDown(_penDown(const Offset(100, 150)));
+        expect(rig.given, isEmpty);
+
+        rig.control.pointerUp(_penUp(const Offset(100, 150)));
+
+        expect(rig.given, _click(0.25, 0.5));
+      });
+
+      testWidgets('let go of what is down once when control is turned off', (
+        tester,
+      ) async {
+        final rig = await _Control.start(tester);
+        rig.control
+          ..turnOn()
+          ..pointerDown(_mouseDown(const Offset(100, 150)))
+          ..pointerMove(_mouseMoved(const Offset(100, 210)))
+          ..turnOff();
+
+        expect(
+          rig.given.last,
+          _pointer(
+            0.25,
+            0.7,
+            const WindowPointer.up(button: WindowButton.left),
+          ),
+        );
+        expect(rig.backend.windowInputsReleased, [1]);
+        rig.forget();
+
+        rig.control
+          ..pointerMove(_mouseMoved(const Offset(100, 250)))
+          ..pointerUp(_mouseUp(const Offset(100, 250)));
+
+        expect(rig.given, isEmpty);
+        expect(rig.control.mouse.pressing, isFalse);
+      });
+
+      testWidgets(
+        'let go of what is down where the mouse was when it is taken',
+        (tester) async {
+          final rig = await _Control.start(tester);
+          rig.control
+            ..turnOn()
+            ..pointerDown(_mouseDown(const Offset(100, 150)))
+            ..pointerMove(_mouseMoved(const Offset(100, 210)));
+          rig.forget();
+
+          rig.control.pointerCancel(_mouseCancelled(const Offset(100, 210)));
+
+          expect(rig.given, [
+            _pointer(
+              0.25,
+              0.7,
+              const WindowPointer.up(button: WindowButton.left),
+            ),
+          ]);
+          expect(rig.control.mouse.pressing, isFalse);
+        },
+      );
+
+      testWidgets('a wheel moves the window by what it moves on the picture', (
+        tester,
+      ) async {
+        final rig = await _Control.start(tester);
+        rig.picture = const Size(800, 600);
+        rig.control.turnOn();
+
+        // The picture is shown at twice its size, so the transform that takes a place on the
+        // screen to a place on the picture halves it.
+        rig.control.pointerSignal(
+          _wheel(
+            const Offset(200, 150),
+            const Offset(0, 40),
+          ).transformed(Matrix4.diagonal3Values(0.5, 0.5, 1)),
+        );
+
+        expect(rig.given, [
+          _pointer(0.125, 0.125, const WindowPointer.scroll(dx: 0, dy: -20)),
+        ]);
+      });
+
+      testWidgets('scroll as far as two fingers do for the same picture', (
+        tester,
+      ) async {
+        final rig = await _Control.start(tester, width: 800, height: 500);
+        rig.backend.emit(
+          const Event.windowPicture(id: 1, width: 2400, height: 1500),
+        );
+        await tester.pump();
+        rig.control.turnOn();
+
+        rig.control
+          ..pointerSignal(_wheel(const Offset(200, 150), const Offset(0, 10)))
+          ..pointerPanZoomUpdate(
+            _twoFingers(const Offset(200, 150), const Offset(0, 10)),
+          );
+
+        // The picture has 2400 pixels across 400 points, and half as many points as pixels: 3.
+        expect(rig.given, [
+          _pointer(0.5, 0.5, const WindowPointer.scroll(dx: 0, dy: -30)),
+          _pointer(0.5, 0.5, const WindowPointer.scroll(dx: 0, dy: 30)),
+        ]);
+      });
+
+      testWidgets('use up what was chosen when the last button comes up', (
+        tester,
+      ) async {
+        final rig = await _Control.start(tester);
+        rig.control
+          ..turnOn()
+          ..chosen.toggle(Modifier.command);
+
+        // A wheel has no end, so it leaves what was chosen for the click that follows it.
+        rig.control.pointerSignal(
+          _wheel(const Offset(100, 100), const Offset(0, 40)),
+        );
+        rig.control.pointerDown(_mouseDown(const Offset(100, 100)));
+        expect(rig.control.chosen.has(Modifier.command), isTrue);
+
+        rig.control.pointerUp(_mouseUp(const Offset(100, 100)));
+        expect(rig.control.chosen.has(Modifier.command), isFalse);
+      });
+
+      testWidgets(
+        'use up what was chosen when two fingers on a trackpad lift',
+        (tester) async {
+          final rig = await _Control.start(tester);
+          rig.control
+            ..turnOn()
+            ..chosen.toggle(Modifier.command)
+            ..pointerPanZoomUpdate(
+              _twoFingers(const Offset(100, 100), const Offset(0, 10)),
+            );
+          expect(rig.control.chosen.has(Modifier.command), isTrue);
+
+          rig.control.pointerPanZoomEnd(
+            const PointerPanZoomEndEvent(position: Offset(100, 100)),
+          );
+
+          expect(rig.control.chosen.has(Modifier.command), isFalse);
+        },
+      );
     });
 
     group('the scroll of two fingers', () {

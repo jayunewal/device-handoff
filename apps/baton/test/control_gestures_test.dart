@@ -79,6 +79,26 @@ class _Rig {
   }
 }
 
+class _MouseRig {
+  _MouseRig({double scrollGain = 1, WindowModifiers Function()? modifiers}) {
+    mouse = MouseGestures(
+      send: sent.add,
+      unit: _unit,
+      modifiers: modifiers ?? () => _none,
+      scrollGain: scrollGain,
+    );
+  }
+
+  late final MouseGestures mouse;
+  final List<WindowInput> sent = [];
+
+  List<WindowInput> take() {
+    final taken = List.of(sent);
+    sent.clear();
+    return taken;
+  }
+}
+
 void main() {
   group('one finger', () {
     testWidgets(
@@ -674,6 +694,226 @@ void main() {
       rig.down(2, const Offset(120, 50));
       rig.gestures.reset();
       expect(rig.gestures.touching, isFalse);
+    });
+  });
+
+  group('a mouse', () {
+    testWidgets('moves the pointer of the window where it moves, with no '
+        'button down', (tester) async {
+      final rig = _MouseRig();
+
+      rig.mouse.hover(const Offset(50, 25));
+      rig.mouse.hover(const Offset(60, 30));
+
+      expect(rig.take(), [
+        _pointer(0.25, 0.25, const WindowPointer.move()),
+        _pointer(0.3, 0.3, const WindowPointer.move()),
+      ]);
+      expect(rig.mouse.pressing, isFalse);
+    });
+
+    testWidgets('clicks where it was pressed, as soon as it is', (
+      tester,
+    ) async {
+      final rig = _MouseRig();
+
+      rig.mouse.down(const Offset(100, 50), const {_left});
+      expect(rig.take(), [
+        _pointer(0.5, 0.5, const WindowPointer.move()),
+        _pointer(0.5, 0.5, const WindowPointer.down(button: _left)),
+      ], reason: 'nothing is waited for');
+      expect(rig.mouse.pressing, isTrue);
+
+      rig.mouse.up(const Offset(100, 50));
+      expect(rig.take(), [
+        _pointer(0.5, 0.5, const WindowPointer.up(button: _left)),
+      ]);
+      expect(rig.mouse.pressing, isFalse);
+    });
+
+    testWidgets('holds a button for as long as it is held, with no right '
+        'click for it', (tester) async {
+      final rig = _MouseRig();
+
+      rig.mouse.down(const Offset(100, 50), const {_left});
+      rig.take();
+      await tester.pump(const Duration(seconds: 3));
+      expect(rig.sent, isEmpty);
+
+      rig.mouse.up(const Offset(100, 50));
+      expect(rig.take(), [
+        _pointer(0.5, 0.5, const WindowPointer.up(button: _left)),
+      ]);
+    });
+
+    testWidgets('drags from the first movement, with no slop', (tester) async {
+      final rig = _MouseRig();
+
+      rig.mouse.down(const Offset(100, 50), const {_left});
+      rig.take();
+      rig.mouse.move(const Offset(101, 50), const {_left});
+      rig.mouse.move(const Offset(120, 60), const {_left});
+      rig.mouse.up(const Offset(120, 60));
+
+      expect(rig.take(), [
+        _pointer(0.505, 0.5, const WindowPointer.move()),
+        _pointer(0.6, 0.6, const WindowPointer.move()),
+        _pointer(0.6, 0.6, const WindowPointer.up(button: _left)),
+      ]);
+    });
+
+    testWidgets('clicks the right button, and the middle one, for those', (
+      tester,
+    ) async {
+      final rig = _MouseRig();
+
+      rig.mouse.down(const Offset(40, 20), const {_right});
+      rig.mouse.up(const Offset(40, 20));
+      rig.mouse.down(const Offset(40, 20), const {WindowButton.middle});
+      rig.mouse.up(const Offset(40, 20));
+
+      expect(rig.take(), [
+        _pointer(0.2, 0.2, const WindowPointer.move()),
+        _pointer(0.2, 0.2, const WindowPointer.down(button: _right)),
+        _pointer(0.2, 0.2, const WindowPointer.up(button: _right)),
+        _pointer(0.2, 0.2, const WindowPointer.move()),
+        _pointer(
+          0.2,
+          0.2,
+          const WindowPointer.down(button: WindowButton.middle),
+        ),
+        _pointer(0.2, 0.2, const WindowPointer.up(button: WindowButton.middle)),
+      ]);
+    });
+
+    testWidgets('presses and lets go of the buttons that change while one is '
+        'held, each at the place it changed', (tester) async {
+      final rig = _MouseRig();
+
+      rig.mouse.down(const Offset(100, 50), const {_left});
+      rig.take();
+
+      rig.mouse.move(const Offset(110, 50), const {_left, _right});
+      expect(rig.take(), [
+        _pointer(0.55, 0.5, const WindowPointer.down(button: _right)),
+        _pointer(0.55, 0.5, const WindowPointer.move()),
+      ]);
+
+      rig.mouse.move(const Offset(120, 50), const {_right});
+      expect(rig.take(), [
+        _pointer(0.6, 0.5, const WindowPointer.up(button: _left)),
+        _pointer(0.6, 0.5, const WindowPointer.move()),
+      ]);
+
+      rig.mouse.up(const Offset(130, 50));
+      expect(rig.take(), [
+        _pointer(0.65, 0.5, const WindowPointer.up(button: _right)),
+      ]);
+      expect(rig.mouse.pressing, isFalse);
+    });
+
+    testWidgets('lets the buttons stand when a move does not say which are '
+        'down', (tester) async {
+      final rig = _MouseRig();
+
+      rig.mouse.down(const Offset(100, 50), const {_left});
+      rig.take();
+      rig.mouse.move(const Offset(120, 50));
+
+      expect(rig.take(), [_pointer(0.6, 0.5, const WindowPointer.move())]);
+      expect(rig.mouse.pressing, isTrue);
+    });
+
+    testWidgets('leaves alone the moves and the releases of a press it did '
+        'not see', (tester) async {
+      final rig = _MouseRig();
+
+      rig.mouse.move(const Offset(120, 50), const {_left});
+      rig.mouse.up(const Offset(120, 50));
+      rig.mouse.reset();
+
+      expect(rig.sent, isEmpty);
+      expect(rig.mouse.pressing, isFalse);
+    });
+
+    testWidgets('lets go of what is down where the pointer last was when it '
+        'is taken away', (tester) async {
+      final rig = _MouseRig();
+
+      rig.mouse.down(const Offset(100, 50), const {_left, _right});
+      rig.mouse.move(const Offset(140, 70), const {_left, _right});
+      rig.take();
+      rig.mouse.reset();
+
+      expect(rig.take(), [
+        _pointer(0.7, 0.7, const WindowPointer.up(button: _left)),
+        _pointer(0.7, 0.7, const WindowPointer.up(button: _right)),
+      ]);
+      expect(rig.mouse.pressing, isFalse);
+
+      rig.mouse.reset();
+      expect(rig.sent, isEmpty, reason: 'once');
+    });
+
+    testWidgets('puts a place off the picture at its edge', (tester) async {
+      final rig = _MouseRig();
+
+      rig.mouse.down(const Offset(190, 90), const {_left});
+      rig.take();
+      rig.mouse.move(const Offset(260, -30), const {_left});
+      rig.mouse.up(const Offset(260, -30));
+
+      expect(rig.take(), [
+        _pointer(1, 0, const WindowPointer.move()),
+        _pointer(1, 0, const WindowPointer.up(button: _left)),
+      ]);
+    });
+
+    testWidgets('scrolls the window by how far its content moves, at the '
+        'place of the pointer', (tester) async {
+      final rig = _MouseRig();
+
+      rig.mouse.scroll(const Offset(100, 50), const Offset(0, 12));
+      rig.mouse.scroll(const Offset(40, 20), const Offset(-3, -8));
+
+      expect(rig.take(), [
+        _pointer(0.5, 0.5, const WindowPointer.scroll(dx: 0, dy: 12)),
+        _pointer(0.2, 0.2, const WindowPointer.scroll(dx: -3, dy: -8)),
+      ]);
+    });
+
+    testWidgets('scrolls by a gain, and not at all by nothing', (tester) async {
+      final rig = _MouseRig(scrollGain: 2.5);
+
+      rig.mouse.scroll(const Offset(100, 50), const Offset(2, 4));
+      rig.mouse.scroll(const Offset(100, 50), Offset.zero);
+
+      expect(rig.take(), [
+        _pointer(0.5, 0.5, const WindowPointer.scroll(dx: 5, dy: 10)),
+      ]);
+    });
+
+    testWidgets('has the modifiers that are down for each event', (
+      tester,
+    ) async {
+      var current = _none;
+      final rig = _MouseRig(modifiers: () => current);
+
+      current = _shift;
+      rig.mouse.hover(const Offset(10, 10));
+      rig.mouse.down(const Offset(10, 10), const {_left});
+      current = _none;
+      rig.mouse.up(const Offset(10, 10));
+      current = _shift;
+      rig.mouse.scroll(const Offset(10, 10), const Offset(0, 1));
+
+      expect(rig.take().map((e) => (e as WindowInput_Pointer).modifiers), [
+        _shift,
+        _shift,
+        _shift,
+        _none,
+        _shift,
+      ]);
     });
   });
 }

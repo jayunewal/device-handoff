@@ -25,12 +25,13 @@ import 'windows_panel.dart';
 /// person drags it where it is not in the way, and opens it with a tap ([_SessionBall]).
 ///
 /// The window is looked at, and zoomed with two fingers. If the other device let this one control
-/// it, the person can turn control on: their fingers and keys then act on the window, and the
-/// picture is not zoomed until they turn it off. The keys of an attached keyboard are taken by the
-/// focus scope of the screen, so that a key which the window takes does not also move the focus,
-/// press a button or type into a field of the app. Leaving the screen ends the window, after
-/// asking: it would have to be shared again. A window that ends by itself leaves the screen in
-/// place and says how, so that the person is not left wondering what happened.
+/// it, the person can turn control on: their fingers, their mouse or trackpad and their keys then
+/// act on the window, and the picture is not zoomed until they turn it off. The keys of an
+/// attached keyboard are taken by the focus scope of the screen, so that a key which the window
+/// takes does not also move the focus, press a button or type into a field of the app. Leaving the
+/// screen ends the window, after asking: it would have to be shared again. A window that ends by
+/// itself leaves the screen in place and says how, so that the person is not left wondering what
+/// happened.
 ///
 /// A screen that this device controls and that the other device keeps private (dark, with its
 /// keyboard and trackpad out of use) has settings for the session, which the person opens from the
@@ -914,7 +915,7 @@ class _SessionSettingsState extends State<_SessionSettings> {
 
 /// The picture of the window, as large as the screen allows with its shape kept, and zoomed
 /// with two fingers so that small writing can be read. While the window is controlled the fingers
-/// are the window's, and the picture stays as it is.
+/// are the window's, and so are the mouse and the trackpad, and the picture stays as it is.
 ///
 /// The shape is that of the picture, which the source says and can change: it scales the window to
 /// what this device takes, and a window that is resized changes shape. The shape of the window as
@@ -969,9 +970,9 @@ class _Picture extends StatelessWidget {
         child: Center(
           child: AspectRatio(
             aspectRatio: width / height,
-            // The fingers are told to the controller whether it is on or not, and it takes them
-            // only while it is: the picture is the same in both, and is not made again when the
-            // person turns control on.
+            // The fingers, the mouse and the trackpad are told to the controller whether it is on
+            // or not, and it takes them only while it is: the picture is the same in both, and is
+            // not made again when the person turns control on.
             child: Listener(
               key: pictureKey,
               behavior: HitTestBehavior.opaque,
@@ -979,6 +980,10 @@ class _Picture extends StatelessWidget {
               onPointerMove: control.pointerMove,
               onPointerUp: control.pointerUp,
               onPointerCancel: control.pointerCancel,
+              onPointerHover: control.pointerHover,
+              onPointerSignal: control.pointerSignal,
+              onPointerPanZoomUpdate: control.pointerPanZoomUpdate,
+              onPointerPanZoomEnd: control.pointerPanZoomEnd,
               child: Semantics(
                 label: session.display
                     ? 'The screen from ${visibleText(session.deviceName)}'
