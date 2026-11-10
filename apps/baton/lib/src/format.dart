@@ -72,8 +72,9 @@ String since(int seconds, DateTime now) {
 
 /// How long is left until [seconds], counted from the Unix epoch as the app layer gives it, in
 /// words that suit what lasts for hours: "in 24 hours", "in 40 minutes" and, for the last minute
-/// and for a time that has passed, "in less than a minute". A part of a unit counts as the whole,
-/// so "in 24 hours" is what an item that was just queued for a day says.
+/// (from 60 seconds down to 1), "in 1 minute". A time that has been reached or has passed says
+/// "in less than a minute". A part of a unit counts as the whole, so "in 24 hours" is what an
+/// item that was just queued for a day says.
 String until(int seconds, DateTime now) {
   final then = DateTime.fromMillisecondsSinceEpoch(seconds * 1000);
   final minutes = (then.difference(now).inSeconds + 59) ~/ 60;
