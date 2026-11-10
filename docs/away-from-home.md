@@ -10,7 +10,7 @@ Baton has no code for the route and does not look at which tool makes it. The st
 
 - **Unlock after a restart, from anywhere.** The **Unlock a Mac after restart** screen of the iPhone and iPad app talks to the Mac's SSH door, port 22, at an address of your home network. With the route, that address answers wherever the phone is.
 - **Baton's own connection** (screen, control, files) tries every address that the Mac announces, and one of them is its home address, so it can use the route while the Mac is awake and signed in. That has not been tried either.
-- **It does not wake a Mac that sleeps.** A Mac that is asleep answers nothing, with the route or without it.
+- **It does not wake a Mac that sleeps.** A Mac that is asleep is expected to answer nothing, with the route or without it. Apple's Bonjour Sleep Proxy, which a device such as an Apple TV or a HomePod on your home network can be, may wake a Mac that has **Wake for network access** turned on when something connects to a service that the Mac announces, and Remote Login announces SSH (inferred, not tried). Whether a connection through the route does that is not known, and check A6 in [ADR 0017](adr/0017-away-from-home.md#how-it-will-be-measured) looks at it.
 - **It does not sign you in.** Whether the Mac signs the account in after its disk is unlocked, or waits at the login window, is not known yet. Baton does not run until someone is signed in.
 
 ## What you need
@@ -24,21 +24,21 @@ Baton has no code for the route and does not look at which tool makes it. The st
 
 ### 1. Look at the range of your home network
 
-Every device at home has an address that starts the same way, such as `192.168.1.x`. That start is the range. A café, a hotel or a friend's Wi-Fi that uses the same range as your home confuses the phone, because the address you saved then means a device there and not your Mac. The ranges `192.168.0.x` and `192.168.1.x` are the most common, so if your home uses one of them, that is the likeliest reason for a Mac that answers on some networks and not on others.
+Every device at home has an address that starts the same way, such as `192.168.1.x`. That start is the range. A café, a hotel or a friend's Wi-Fi that uses the same range as your home is expected to confuse the phone, because the address you saved can then mean a device there and not your Mac. No page of Tailscale that was found says which route an iPhone takes when the two overlap, so this is expected and not known, and it has not been tried with Baton. The ranges `192.168.0.x` and `192.168.1.x` are the most common, so if your home uses one of them, that is the likeliest reason for a Mac that answers on some networks and not on others.
 
 If your router lets you change the range (look for its LAN or DHCP settings), choose an unusual one such as `192.168.73.x`. Every device at home then takes a new address, which takes a few minutes. If you cannot change it, go on: the route works wherever the range is not shared. The rest of this page uses `192.168.73.0/24` as the range and `192.168.73.20` as the Mac's address. Replace them with yours.
 
 ### 2. Give the Mac a fixed address
 
-In your router's settings, find the list of connected devices and reserve the address that the Mac has now. The setting is often called a DHCP reservation, an address reservation or a static lease. The Mac's address is in System Settings, under **Network**, your connection and **Details**. In Terminal, `ipconfig getifaddr en0` prints it for the Wi-Fi of most laptops, and prints nothing for a Mac that uses another connection.
+In your router's settings, find the list of connected devices and reserve the address that the Mac has now. The setting is often called a DHCP reservation, an address reservation or a static lease. The Mac's address is in System Settings, under **Network**, your connection and **Details**. In Terminal, `ipconfig getifaddr en0` prints the address of the first network port, and prints nothing when that port is not in use. On a laptop that port is Wi-Fi. On a Mac with an Ethernet port it is usually the cable and Wi-Fi is `en1`, and `networksetup -listallhardwareports` says which is which. A Mac that is on Wi-Fi and has a cable plugged in has two addresses, one for each, and a reservation covers only the address that it was made for. Reserve the address of each connection that the Mac may use after a restart, and save the one that you expect it to be on at its disk password screen: the cable's, if there is one.
 
-Baton saves this address and not the Mac's name. A name such as `Jays-MBP.local` is announced on the local network and does not reach through the route, and it is not known whether a Mac that waits for its disk password announces one at all. Do not use an address that starts with `100.` either: that is a Tailscale address, and the Mac runs no Tailscale while it waits for its disk password.
+Type this address in Baton and not the Mac's name. Baton saves whatever you type, and its screen says to prefer the number address, but a name such as `Jays-MBP.local` is announced on the local network, so it is expected to work at home and not through the route, and it is not known whether a Mac that waits for its disk password announces one at all. Do not use an address that starts with `100.` either: that is a Tailscale address, and the Mac runs no Tailscale while it waits for its disk password.
 
 ### 3. Turn on Remote Login and check FileVault at the Mac
 
 In System Settings, under **General** and **Sharing**, turn on **Remote Login**. Anyone who has the password of an account on the Mac can then sign in over SSH, so click the info button next to it and allow only the account that you unlock with. Under **Privacy & Security**, **FileVault** must be on: only then does the Mac ask for its disk password after a restart.
 
-People report that a Mac had to be on Ethernet to answer before sign-in in the first version of macOS 26, and that Wi-Fi works from macOS 26.5. If the Mac does not answer at its disk password screen, try a cable.
+People report that a Mac that was only on Wi-Fi could not be reached before sign-in. One report, [Jeff Geerling's](https://www.jeffgeerling.com/blog/2025/you-can-finally-manage-macs-filevault-remotely-tahoe/), says in an undated update that it worked as of macOS 26.5. Neither has been checked here. If the Mac does not answer at its disk password screen, try a cable. A cable gives the Mac a second address, which is not the one that you reserved and saved: reserve that one too, and save the Mac again with it.
 
 ### 4. Set up the device at home that carries the route
 
@@ -62,17 +62,18 @@ Install Tailscale from the App Store, sign in with the same account and turn it 
 
 ### 6. Save the Mac in Baton and check the way
 
-In Baton on the phone, open **Settings**, **Unlock a Mac after restart** and **Add a Mac**. Type the Mac's fixed address, the account and its password, and tap **Check the Mac**. The phone shows the key that the Mac answered with. Compare it with the line that the command under it prints at the Mac, and save.
+In Baton on the phone, open **Settings**, **Unlock a Mac after restart** and **Add a Mac**. Type the Mac's fixed address, the account and its password. **Check the Mac** stays grey until all three boxes are filled in, although the check itself sends only the request for the Mac's key, and neither the account nor the password. The phone shows the key that the Mac answered with. Compare it with the line that the command under it prints at the Mac, and save. The phone tries the password on the running Mac first, so a typo shows now and not at a Mac that is locked.
 
-Then check the way from away: turn Wi-Fi off on the phone, so that it uses mobile data, make sure Tailscale is on, and tap **Check the Mac** on another **Add a Mac** screen with the same address. The check sends neither the account nor the password, so what you type in those two boxes does not matter for it. If the same key shows, the route works.
+Then check the way from away: turn Wi-Fi off on the phone, so that it uses mobile data, make sure Tailscale is on, tap the three dots at the saved Mac and choose **Check the way**. The phone says how long the Mac took to answer, and whether it answered with the key that you saved. The check sends nothing, not even the password, and does not ask for your face, so you can use it as often as you like, from any network. If it says that the way is open, the route works.
 
 ## If it does not work
 
 | What the phone says | Likely reasons | What to try |
 | --- | --- | --- |
-| The Mac did not answer, only away from home | Tailscale is off on the phone. The device at home is off, or has lost its connection. The route is not turned on in the admin console. The network you are on uses the same range as your home. | In the Tailscale app, check that it is on and that the device at home shows as connected. Check the route in the admin console. Try another network. |
-| The Mac did not answer, also at home | The Mac has a new address, because it was not reserved. Remote Login is off. The Mac is asleep. The Mac is on another network, such as a guest network. | Read the Mac's address again and compare it. Wake the Mac. Check Remote Login. |
+| No answer, only away from home | Tailscale is off on the phone. The device at home is off, or has lost its connection. The route is not turned on in the admin console. The network you are on uses the same range as your home. The address that you saved is a name and not a number. | In the Tailscale app, check that it is on and that the device at home shows as connected. Check the route in the admin console. Try another network. Save the Mac again with its number address. |
+| No answer, also at home | The Mac has a new address, because it was not reserved. Remote Login is off. The Mac is asleep. The Mac is on another network, such as a guest network. | Read the Mac's address again and compare it. Wake the Mac. Check Remote Login. |
 | The Mac answered with another key | Another device has the address that you saved. Or the Mac waits for its disk password and answers with a key of its own, which is not known yet. | Do not trust it. Read the key of the Mac again while it runs. The restart test in [ADR 0017](adr/0017-away-from-home.md#how-it-will-be-measured) is for this case. |
+| When saving: this Mac does not take a password over SSH while it runs | The running Mac only takes keys, so the phone cannot try the password. | Choose **Save without trying**. Apple's notes suggest that the door before the disk is unlocked does not read that setting, so the password may still work after a restart. The restart test shows it. |
 | The Mac took the password, and Baton cannot connect afterwards | The Mac stops at the login window after the unlock, and no Baton runs until someone signs in there. | Sign in at the Mac. This is one of the things the restart test looks at. |
 
 ## What the route can reach
