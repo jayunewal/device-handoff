@@ -73,8 +73,11 @@ class WindowControl extends ChangeNotifier {
   /// What the mouse or the trackpad on the picture does.
   late final MouseGestures mouse;
 
-  /// The keys of a keyboard that were sent as down and not yet as up.
-  final Set<int> _down = {};
+  /// The keys of a keyboard that were sent as down and not yet as up, each with what the person
+  /// chose on the screen when it went down. The press used that up, and the key keeps it for its
+  /// repeats, so that a key held with Cmd chosen repeats with Cmd, as it would with the Cmd key of
+  /// a keyboard held. The release is told as it was: with the modifiers that are down then.
+  final Map<int, WindowModifiers> _down = {};
 
   /// The key that repeats while it is held, if one does. It is the last one that went down, as it
   /// is on a Mac: another key that goes down takes the repeat, and the first does not get it back.
@@ -279,16 +282,22 @@ class WindowControl extends ChangeNotifier {
   /// sends repeats of its own has them given to the window as they come.
   bool key(KeyEvent event) {
     if (!_on) return false;
-    final input = windowKey(event, _modifiers());
-    if (input == null) return false;
+    final code = keyboardCode(event.physicalKey);
+    if (code == null) return false;
     if (event is KeyUpEvent) {
       // A key that went down before control was turned on has nothing to be let go of.
-      if (!_down.remove(input.code)) return false;
+      if (_down.remove(code) == null) return false;
       if (_holding?.key == event.physicalKey) _stopHolding();
-      _send(input);
+      _send(windowKey(event, _modifiers())!);
       return true;
     }
-    _down.add(input.code);
+    // What was chosen on the screen is used up by the press, and the key keeps it for its repeats:
+    // they are of the same shortcut.
+    final kept = event is KeyDownEvent
+        ? chosen.now()
+        : _down[code] ?? noModifiers;
+    _down[code] = kept;
+    final input = windowKey(event, _modifiersWith(kept))!;
     _send(input);
     if (event is KeyDownEvent) {
       chosen.spend();
@@ -317,7 +326,8 @@ class WindowControl extends ChangeNotifier {
   /// release was not heard here (the focus was elsewhere), and for no longer than [repeatFor].
   void _repeat(_Held held) {
     final code = held.first.code;
-    if (!_on || !_down.contains(code)) {
+    final kept = _down[code];
+    if (!_on || kept == null) {
       _stopHolding();
       return;
     }
@@ -342,7 +352,7 @@ class WindowControl extends ChangeNotifier {
     held.repeats++;
     // The text of the key is what it typed with the modifiers it went down with. Others change
     // it, and the other device makes the text of the key by its own layout then.
-    final modifiers = _modifiers();
+    final modifiers = _modifiersWith(kept);
     _send(
       WindowInput.key(
         code: code,
@@ -382,6 +392,19 @@ class WindowControl extends ChangeNotifier {
 
   WindowModifiers _modifiers() =>
       chosen.now(modifiersOf(HardwareKeyboard.instance));
+
+  /// The modifiers that are down now, and those that the person chose for a key that is still
+  /// down ([kept]), which its press used up. A repeat of the key has both.
+  WindowModifiers _modifiersWith(WindowModifiers kept) {
+    final now = _modifiers();
+    return WindowModifiers(
+      shift: now.shift || kept.shift,
+      control: now.control || kept.control,
+      option: now.option || kept.option,
+      command: now.command || kept.command,
+      capsLock: now.capsLock,
+    );
+  }
 
   /// Gives an event to the window. Baton may not take it, and no reason for that ends the window,
   /// so the person goes on.

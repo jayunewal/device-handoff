@@ -1044,6 +1044,25 @@ void main() {
       ]);
     });
 
+    testWidgets('that repeat, repeat with what was chosen on the screen', (
+      tester,
+    ) async {
+      final shown = await _open(tester);
+      await _turnOn(tester);
+      await tester.tap(find.widgetWithText(FilterChip, 'Cmd'));
+      await tester.pump();
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyZ, character: 'z');
+      await tester.sendKeyRepeatEvent(LogicalKeyboardKey.keyZ, character: 'z');
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyZ);
+
+      expect(shown.given, [
+        _key(0x1D, modifiers: _command, text: 'z'),
+        _key(0x1D, repeat: true, modifiers: _command, text: 'z'),
+        _key(0x1D, down: false),
+      ]);
+    });
+
     testWidgets('carry the modifiers that are down, which are no keys', (
       tester,
     ) async {
@@ -1229,6 +1248,30 @@ void main() {
         _key(0x04, text: 'a'),
         _key(0x04, repeat: true, text: 'a'),
         _key(0x04, repeat: true, modifiers: _shift),
+        _key(0x04, down: false),
+      ]);
+    }, variant: onAnIpad);
+
+    testWidgets('repeats with what was chosen on the screen', (tester) async {
+      final shown = await _open(tester);
+      await _turnOn(tester);
+      await tester.tap(find.widgetWithText(FilterChip, 'Cmd'));
+      await tester.pump();
+
+      // Cmd and Z held is an undo that goes on, and not a Z that is typed once the press has used
+      // up what was chosen. The next key is not a shortcut, and the release is told as any is.
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyZ, character: 'z');
+      await tester.pump(first + every);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyZ);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyA, character: 'a');
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyA);
+
+      expect(shown.given, [
+        _key(0x1D, modifiers: _command, text: 'z'),
+        _key(0x1D, repeat: true, modifiers: _command, text: 'z'),
+        _key(0x1D, repeat: true, modifiers: _command, text: 'z'),
+        _key(0x1D, down: false),
+        _key(0x04, text: 'a'),
         _key(0x04, down: false),
       ]);
     }, variant: onAnIpad);
