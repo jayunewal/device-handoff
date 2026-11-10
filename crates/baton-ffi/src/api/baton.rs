@@ -18,8 +18,9 @@ use super::{
     error::BatonError,
     model::{
         ContinueItems, ContinueOutcome, Device, Event, FileProgress, FilesSent, JoinProgress, Me,
-        Network, Offer, Reach, Received, Receiving, ScreenStarted, StartAccess, UnlockEntry,
-        UnlockSetUp, UnlockStatus, WindowAbilities, WindowInput, WindowShared,
+        Network, Offer, OutboxItem, Reach, Received, Receiving, ScreenStarted, SendResult,
+        StartAccess, UnlockEntry, UnlockSetUp, UnlockStatus, WindowAbilities, WindowInput,
+        WindowShared,
     },
 };
 use crate::convert::signed;
@@ -453,18 +454,54 @@ impl Baton {
     }
 
     /// Sends a web link to a paired device.
+    ///
+    /// A device that cannot be reached is not an error: the link waits in the outbox on this
+    /// device, is sent as soon as the device can be reached, for up to a day, and the result is
+    /// `SendResult.waiting` (`Event.outboxSettled` says how it ended). Throws
+    /// `ErrorKind.badItem` if `url` is not a full web address, `ErrorKind.notPaired`,
+    /// `ErrorKind.declined` if the device answers and does not take the link, and
+    /// `ErrorKind.unreachable` if it cannot be reached and nothing more can wait for it (the
+    /// outbox is full).
     pub async fn send_link(
         &self,
         id: String,
         url: String,
         title: Option<String>,
-    ) -> Result<(), BatonError> {
-        Ok(self.app.send_link(&id, &url, title.as_deref()).await?)
+    ) -> Result<SendResult, BatonError> {
+        Ok(self
+            .app
+            .send_link(&id, &url, title.as_deref())
+            .await?
+            .into())
     }
 
-    /// Sends text, such as what was on the clipboard, to a paired device.
-    pub async fn send_text(&self, id: String, text: String) -> Result<(), BatonError> {
-        Ok(self.app.send_text(&id, &text).await?)
+    /// Sends text, such as what was on the clipboard, to a paired device. As for `sendLink`, text
+    /// that cannot be sent now waits in the outbox. Throws what `sendLink` throws, with
+    /// `ErrorKind.badItem` for text that is empty or longer than the settings allow.
+    pub async fn send_text(&self, id: String, text: String) -> Result<SendResult, BatonError> {
+        Ok(self.app.send_text(&id, &text).await?.into())
+    }
+
+    /// What waits to be sent to a device that could not be reached, the item that has waited
+    /// longest first. Read it again when `Event.outboxChanged` comes. It says what each item is
+    /// without showing it (`OutboxItem.summary`).
+    #[frb(sync)]
+    pub fn outbox(&self) -> Vec<OutboxItem> {
+        self.app
+            .outbox()
+            .into_iter()
+            .map(OutboxItem::from)
+            .collect()
+    }
+
+    /// Gives up on sending one item that waits in the outbox, because the person said so. Nothing
+    /// is said of it but `Event.outboxChanged`. Returns whether there was such an item: one that
+    /// was sent a moment ago is not. Throws `ErrorKind.stopped`.
+    pub fn cancel_outbox(&self, id: i64) -> Result<bool, BatonError> {
+        match u64::try_from(id) {
+            Ok(id) => Ok(self.app.cancel_outbox(id)?),
+            Err(_) => Ok(false),
+        }
     }
 
     /// Starts sending files and folders, given by their paths, to a paired device, and

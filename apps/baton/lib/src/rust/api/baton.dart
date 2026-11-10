@@ -70,6 +70,11 @@ abstract class Baton implements RustOpaqueInterface {
   /// Withdraws the offer that is showing, if there is one. `Event.offerEnded` follows.
   void cancelOffer();
 
+  /// Gives up on sending one item that waits in the outbox, because the person said so. Nothing
+  /// is said of it but `Event.outboxChanged`. Returns whether there was such an item: one that
+  /// was sent a moment ago is not. Throws `ErrorKind.stopped`.
+  Future<bool> cancelOutbox({required PlatformInt64 id});
+
   /// Removes everything from the inbox. Returns how many items it held.
   Future<PlatformInt64> clearInbox();
 
@@ -153,6 +158,11 @@ abstract class Baton implements RustOpaqueInterface {
   /// that is already showing is withdrawn.
   Future<Offer> offerPairing();
 
+  /// What waits to be sent to a device that could not be reached, the item that has waited
+  /// longest first. Read it again when `Event.outboxChanged` comes. It says what each item is
+  /// without showing it (`OutboxItem.summary`).
+  List<OutboxItem> outbox();
+
   /// Checks that a paired device answers, and how its traffic gets here.
   Future<Reach> ping({required String id});
 
@@ -175,14 +185,24 @@ abstract class Baton implements RustOpaqueInterface {
   Future<FileSend> sendFiles({required String id, required List<String> paths});
 
   /// Sends a web link to a paired device.
-  Future<void> sendLink({
+  ///
+  /// A device that cannot be reached is not an error: the link waits in the outbox on this
+  /// device, is sent as soon as the device can be reached, for up to a day, and the result is
+  /// `SendResult.waiting` (`Event.outboxSettled` says how it ended). Throws
+  /// `ErrorKind.badItem` if `url` is not a full web address, `ErrorKind.notPaired`,
+  /// `ErrorKind.declined` if the device answers and does not take the link, and
+  /// `ErrorKind.unreachable` if it cannot be reached and nothing more can wait for it (the
+  /// outbox is full).
+  Future<SendResult> sendLink({
     required String id,
     required String url,
     String? title,
   });
 
-  /// Sends text, such as what was on the clipboard, to a paired device.
-  Future<void> sendText({required String id, required String text});
+  /// Sends text, such as what was on the clipboard, to a paired device. As for `sendLink`, text
+  /// that cannot be sent now waits in the outbox. Throws what `sendLink` throws, with
+  /// `ErrorKind.badItem` for text that is empty or longer than the settings allow.
+  Future<SendResult> sendText({required String id, required String text});
 
   /// Lets the paired device `id` ask this device what its person is working on, or does not. Only
   /// the person at this device can say so: nothing a paired device sends changes it. Nothing is

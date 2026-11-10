@@ -14,9 +14,11 @@ use std::{
 };
 
 use baton_core::{
-    Config, DataDir, DirLock, Identity, Inbox, InboxEntry, InboxHandler, Node, NodeBuilder,
-    PairApprovalRequest, PairedDevice, TrustStore,
+    Config, DataDir, DirLock, Full, Identity, Inbox, InboxEntry, InboxHandler, Node, NodeBuilder,
+    Outbox, PairApprovalRequest, PairedDevice, TrustStore,
+    clock::{Clock as _, SystemClock},
     error::{Error as Core, OfferEnd},
+    outbox::{MOST_FOR_A_DEVICE, MOST_WAITING},
     transfer::{
         destination::Destination,
         send::{Holds, Selection},
@@ -28,7 +30,7 @@ use baton_proto::{
     message::{ClipboardText, ContinueItems as CoreContinueItems, Item, Link, Outcome},
     ticket::{PREFIX, PairTicket},
 };
-use tokio::sync::{broadcast, broadcast::error::RecvError, oneshot};
+use tokio::sync::{Notify, broadcast, broadcast::error::RecvError, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -37,10 +39,12 @@ use crate::{
     error::unusable_folder,
     files::Files,
     model::{
-        ContinueItems, ContinueOutcome, Device, Me, Network, Offer, OfferOutcome, PairingRequest,
-        Reach, Received, Receiving, ScreenStarted, StartAccess, TransferRequest, UnlockEntry,
-        UnlockSetUp, UnlockStatus, WindowAbilities, WindowInput, WindowRequest, WindowShared,
+        ContinueItems, ContinueOutcome, Device, Me, Network, Offer, OfferOutcome, OutboxItem,
+        PairingRequest, Reach, Received, Receiving, ScreenStarted, SendResult, StartAccess,
+        TransferRequest, UnlockEntry, UnlockSetUp, UnlockStatus, WindowAbilities, WindowInput,
+        WindowRequest, WindowShared,
     },
+    outbox::Delivery,
     sessions::{Handler, Sessions},
     starts::Starts,
     unlock::{Approver, Attempts, SetUp},
@@ -175,6 +179,11 @@ struct Inner {
     name: String,
     trust: TrustStore,
     inbox: Inbox,
+    /// The links and text that wait for a device that could not be reached, and are sent as soon
+    /// as it can be (`docs/adr/0016-outbox.md`).
+    outbox: Outbox,
+    /// Told when an item is put in `outbox`, so that it is tried at once and not after a pause.
+    outbox_wake: Arc<Notify>,
     events: broadcast::Sender<Event>,
     /// Cancelled as soon as stopping begins, or when the last copy of the app is dropped.
     /// Everything that goes on in the background, such as an offer that is showing, has a
@@ -236,10 +245,14 @@ impl App {
         // start.
         let inbox =
             Inbox::load(dir.inbox_file(), config.handoff.max_inbox_items).map_err(starting)?;
+        // What the last run left waiting. A file that cannot be read is an empty outbox, and the
+        // app starts: what waited is lost, which is better than an app that cannot send at all.
+        let outbox = Outbox::open(dir.outbox_file());
 
         // Subscribed before the node starts, so that nothing that arrives first is missed.
         let arrivals = inbox.subscribe();
         let trust_events = trust.subscribe();
+        let delivery_trust_events = trust.subscribe();
 
         let (events, _) = broadcast::channel(EVENT_BACKLOG);
         let stopped = CancellationToken::new();
@@ -303,6 +316,23 @@ impl App {
             events.clone(),
             stopped.clone(),
         ));
+        // What waits in the outbox is sent from here on: what the last run left, and whatever is
+        // put in it. The task holds the node and the list of devices, never the app, so it ends
+        // when stopping begins or the last copy of the app is dropped.
+        let outbox_wake = Arc::new(Notify::new());
+        tokio::spawn(
+            Delivery::for_app(
+                Arc::clone(&node),
+                trust.clone(),
+                outbox.clone(),
+                events.clone(),
+            )
+            .run(
+                Arc::clone(&outbox_wake),
+                delivery_trust_events,
+                stopped.clone(),
+            ),
+        );
 
         Ok(Self {
             inner: Arc::new(Inner {
@@ -311,6 +341,8 @@ impl App {
                 name: config.device_name(),
                 trust,
                 inbox,
+                outbox,
+                outbox_wake,
                 events,
                 stopped,
                 stopping: AtomicBool::new(false),
@@ -381,7 +413,12 @@ impl App {
     pub fn unpair(&self, id: &str) -> Result<()> {
         let (peer, _) = self.paired(id)?;
         match self.inner.trust.remove(&peer) {
-            Ok(Some(_)) => Ok(()),
+            Ok(Some(_)) => {
+                // What waited to be sent to it is not sent to a device that is not paired, and
+                // would sit in the file for a day if it were left.
+                self.inner.drop_waiting_for(&peer);
+                Ok(())
+            }
             Ok(None) => Err(Error::not_paired()),
             Err(e) => Err(Error::local(&e)),
         }
@@ -996,12 +1033,17 @@ impl App {
 
     /// Sends a web link to a paired device.
     ///
+    /// A device that cannot be reached is not an error: the link waits in the outbox on this
+    /// device, is sent as soon as the device can be reached, for up to a day, and the result is
+    /// [`SendResult::Waiting`] ([`Event::OutboxSettled`] says how it ended).
+    ///
     /// # Errors
     ///
     /// [`ErrorKind::BadItem`] if `url` is not a full web address, [`ErrorKind::NotPaired`],
-    /// [`ErrorKind::Unreachable`] if the device cannot be reached, and
-    /// [`ErrorKind::Declined`] if it answers and does not take the link.
-    pub async fn send_link(&self, id: &str, url: &str, title: Option<&str>) -> Result<()> {
+    /// [`ErrorKind::Declined`] if the device answers and does not take the link, and
+    /// [`ErrorKind::Unreachable`] if it cannot be reached and nothing more can wait for it
+    /// (the outbox is full).
+    pub async fn send_link(&self, id: &str, url: &str, title: Option<&str>) -> Result<SendResult> {
         let url = url.trim();
         if url::Url::parse(url).is_err() {
             return Err(Error::new(
@@ -1020,13 +1062,14 @@ impl App {
         self.send(id, "link", item).await
     }
 
-    /// Sends text, such as what was on the clipboard, to a paired device.
+    /// Sends text, such as what was on the clipboard, to a paired device. As for
+    /// [`send_link`](Self::send_link), text that cannot be sent now waits in the outbox.
     ///
     /// # Errors
     ///
     /// As for [`send_link`](Self::send_link), with [`ErrorKind::BadItem`] for text that is
     /// empty or longer than the settings allow.
-    pub async fn send_text(&self, id: &str, text: &str) -> Result<()> {
+    pub async fn send_text(&self, id: &str, text: &str) -> Result<SendResult> {
         if text.trim().is_empty() {
             return Err(Error::new(ErrorKind::BadItem, "There is no text to send."));
         }
@@ -1108,14 +1151,110 @@ impl App {
             .map_err(|e| Error::local(&e))
     }
 
-    /// Sends `item`, which is `what` to a person, to the paired device `id`.
-    async fn send(&self, id: &str, what: &str, item: Item) -> Result<()> {
+    /// What waits to be sent to a device that could not be reached, the item that has waited longest
+    /// first. Read it again when [`Event::OutboxChanged`] comes. It says what each item is without
+    /// showing it ([`OutboxItem::summary`]).
+    pub fn outbox(&self) -> Vec<OutboxItem> {
+        self.inner
+            .outbox
+            .list()
+            .iter()
+            .map(|waiting| {
+                // The name the device has now, if it is still paired: the person may have renamed
+                // it since.
+                let name = self.inner.trust.get(&waiting.to).map_or_else(
+                    || waiting.device_name.clone(),
+                    |device| device.display_name().to_owned(),
+                );
+                OutboxItem::of(waiting, &name)
+            })
+            .collect()
+    }
+
+    /// Gives up on sending one item that waits in the outbox, because the person said so. Nothing
+    /// is said of it but [`Event::OutboxChanged`]. Returns whether there was such an item: one
+    /// that was sent a moment ago is not.
+    ///
+    /// This writes a file. Call it from a thread where waiting a moment is fine.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::Stopped`] if the app has stopped.
+    pub fn cancel_outbox(&self, id: u64) -> Result<bool> {
+        self.running()?;
+        let removed = self.inner.outbox.remove(id).is_some();
+        if removed {
+            self.inner.emit(Event::OutboxChanged);
+        }
+        Ok(removed)
+    }
+
+    /// Sends `item`, which is `what` to a person, to the paired device `id`. A device that cannot
+    /// be reached is sent it later: the item waits in the outbox.
+    async fn send(&self, id: &str, what: &str, item: Item) -> Result<SendResult> {
         let node = self.running()?;
         let (peer, name) = self.paired(id)?;
-        match node.send(&peer, item).await {
-            Ok(Outcome::Accepted) => Ok(()),
+        match node.send(&peer, item.clone()).await {
+            Ok(Outcome::Accepted) => Ok(SendResult::Delivered),
             Ok(Outcome::Declined(reason)) => Err(Error::declined(&name, what, reason)),
-            Err(e) => Err(Error::reaching(&e, &name)),
+            Err(e) => {
+                let error = Error::reaching(&e, &name);
+                if error.kind() != ErrorKind::Unreachable {
+                    return Err(error);
+                }
+                // Not there: it waits, and is sent when it is.
+                self.queue(peer, &name, item).await
+            }
+        }
+    }
+
+    /// Puts `item` in the outbox, to be sent to `peer` as soon as it can be reached. When nothing
+    /// more can wait, the failure is [`ErrorKind::Unreachable`] with a sentence that says so.
+    async fn queue(&self, peer: DeviceId, name: &str, item: Item) -> Result<SendResult> {
+        // The app may have been stopped while the device was dialed. What is put in the outbox now
+        // would be sent when Baton opens again, which the person did not ask for after quitting.
+        self.running()?;
+        // The device may have been unpaired meanwhile: nothing waits for a device that is not
+        // paired, and the person is told so.
+        if self.inner.trust.get(&peer).is_none() {
+            return Err(Error::not_paired());
+        }
+        let outbox = self.inner.outbox.clone();
+        let owned_name = name.to_owned();
+        let now = SystemClock.now_unix();
+        let added = tokio::task::spawn_blocking(move || outbox.add(peer, &owned_name, item, now))
+            .await
+            .map_err(|_| {
+                Error::new(
+                    ErrorKind::Other,
+                    "Baton could not keep that to send later. Try again.",
+                )
+            })?;
+        match added {
+            Ok(_) => {
+                tracing::debug!(device = %peer.short(), "an item waits in the outbox");
+                self.inner.outbox_wake.notify_one();
+                self.inner.emit(Event::OutboxChanged);
+                Ok(SendResult::Waiting)
+            }
+            Err(full) => Err(Error::new(
+                ErrorKind::Unreachable,
+                match full {
+                    Full::ForTheDevice => format!(
+                        "Could not reach {name}, and nothing more can wait for it: \
+                         {MOST_FOR_A_DEVICE} items already do. Cancel some, or wait until they \
+                         are sent."
+                    ),
+                    Full::Everywhere => format!(
+                        "Could not reach {name}, and nothing more can wait: {MOST_WAITING} items \
+                         already do. Cancel some, or wait until they are sent."
+                    ),
+                    Full::TooMuch => format!(
+                        "Could not reach {name}, and nothing more can wait: what waits takes all \
+                         the room that Baton keeps for it. Cancel some."
+                    ),
+                },
+            )),
         }
     }
 
@@ -1150,6 +1289,15 @@ impl Inner {
     fn emit(&self, event: Event) {
         // Nobody listening is fine.
         let _ = self.events.send(event);
+    }
+
+    /// Strikes out what waits in the outbox for `peer`, which is not paired any more, and says that
+    /// the list changed if there was anything. Nothing is said of what it was: the person unpaired
+    /// the device and knows.
+    fn drop_waiting_for(&self, peer: &DeviceId) {
+        if !self.outbox.remove_for(peer).is_empty() {
+            self.emit(Event::OutboxChanged);
+        }
     }
 
     /// The work of [`App::stop`]: ends everything that is going on, shuts the node down and
@@ -1667,5 +1815,85 @@ mod tests {
         drop(seen);
         assert_eq!(questions.ask_reading("Pocket Phone").await, None);
         assert!(locked(&questions.readings).is_empty());
+    }
+
+    /// An app over a folder of its own, kept to this computer's own addresses.
+    async fn app_in(dir: &std::path::Path) -> App {
+        std::fs::write(
+            dir.join("config.toml"),
+            "device_name = \"Studio Mac\"\n\n[network]\nrelay = \"disabled\"\nlan_discovery = \
+             false\nport_mapping = false\n",
+        )
+        .unwrap();
+        App::start(Options::new(dir)).await.unwrap()
+    }
+
+    fn phone() -> DeviceId {
+        DeviceId::from_bytes([7; DeviceId::LEN])
+    }
+
+    /// Pairs the phone with `app` as the person would have, without a second app.
+    fn pair_phone(app: &App) {
+        let info = baton_proto::device::DeviceInfo {
+            name: "Pocket Phone".to_owned(),
+            platform: ProtoPlatform::Ios,
+            app_version: "0.1.0".to_owned(),
+        };
+        app.inner.trust.pair(phone(), &info, 1_800_000_000).unwrap();
+    }
+
+    fn some_text() -> Item {
+        Item::ClipboardText(ClipboardText {
+            text: "hello".to_owned(),
+        })
+    }
+
+    #[tokio::test]
+    async fn nothing_waits_for_a_device_that_was_unpaired_as_it_was_dialed_or_after_the_app_stopped()
+     {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app_in(dir.path()).await;
+
+        // The device was unpaired while it was dialed.
+        let error = app
+            .queue(phone(), "Pocket Phone", some_text())
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::NotPaired);
+        assert_eq!(app.outbox(), Vec::new());
+
+        // The app was stopped while it was dialed, and that is told before anything else.
+        app.stop().await;
+        let error = app
+            .queue(phone(), "Pocket Phone", some_text())
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Stopped);
+    }
+
+    #[tokio::test]
+    async fn the_list_shows_the_name_that_a_device_has_now_and_the_one_it_had_when_it_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = app_in(dir.path()).await;
+        pair_phone(&app);
+        // Put in the list without waking the loop, which would dial a device that is not there.
+        app.inner
+            .outbox
+            .add(phone(), "Pocket Phone", some_text(), 1_800_000_000)
+            .unwrap();
+        assert_eq!(app.outbox()[0].device_name, "Pocket Phone");
+
+        // The person gave the device another name since.
+        app.inner
+            .trust
+            .update(&phone(), |device| {
+                device.local_name = Some("Phone upstairs".to_owned());
+            })
+            .unwrap();
+        assert_eq!(app.outbox()[0].device_name, "Phone upstairs");
+
+        // The device is not paired any more, and the list says what it was called when queued.
+        app.inner.trust.remove(&phone()).unwrap();
+        assert_eq!(app.outbox()[0].device_name, "Pocket Phone");
     }
 }

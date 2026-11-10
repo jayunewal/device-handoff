@@ -422,6 +422,64 @@ impl From<&InboxEntry> for Received {
     }
 }
 
+/// What came of sending a link or some text with [`App::send_link`](crate::App::send_link) or
+/// [`App::send_text`](crate::App::send_text).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendResult {
+    /// The device took it.
+    Delivered,
+    /// The device could not be reached, so the item waits in the outbox on this device. It is sent
+    /// as soon as the device can be reached, for up to a day, and
+    /// [`Event::OutboxSettled`](crate::Event::OutboxSettled) says how it ended. Tell the person that
+    /// it waits, and that they can cancel it.
+    Waiting,
+}
+
+/// An item that waits to be sent to a device that could not be reached.
+///
+/// It says what the item is without showing it: the person knows what they sent, and a list that
+/// shows the text of a password is one to look over a shoulder at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboxItem {
+    /// Names it for [`App::cancel_outbox`](crate::App::cancel_outbox). It is not used again for
+    /// another item.
+    pub id: u64,
+    /// The id of the device it is for.
+    pub device_id: String,
+    /// The name of the device.
+    pub device_name: String,
+    /// What it is, in words: "a link (example.com)" or "some text (23 characters)".
+    pub summary: String,
+    /// When the person sent it, in seconds since the Unix epoch.
+    pub queued_at: u64,
+    /// When it is given up on, in seconds since the Unix epoch.
+    pub expires_at: u64,
+}
+
+/// How an item that waited in the outbox ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutboxEnd {
+    /// The device took it.
+    Delivered,
+    /// The device was reached and did not take it.
+    Refused,
+    /// A day went by without reaching the device, and the item was dropped.
+    Expired,
+}
+
+/// An item that waited in the outbox and does not any more, and how it ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboxSettled {
+    /// The name of the device it was for.
+    pub device_name: String,
+    /// What it was, as for [`OutboxItem::summary`].
+    pub summary: String,
+    /// How it ended.
+    pub end: OutboxEnd,
+    /// One sentence to show the person as it is.
+    pub message: String,
+}
+
 /// An invitation to pair, as the person who made it sees it.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Offer {

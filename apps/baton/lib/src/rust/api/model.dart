@@ -10,7 +10,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'model.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// What the person at a device has ready to continue on another: the page that is in front in the
 /// browser, and the text on the clipboard. A part that is `null` is something that there is none
@@ -148,6 +148,20 @@ sealed class Event with _$Event {
     /// What arrived.
     required Received received,
   }) = Event_Received;
+
+  /// What waits in the outbox changed: an item was queued, sent, given up on or dropped. Read it
+  /// again with `Baton.outbox`.
+  const factory Event.outboxChanged() = Event_OutboxChanged;
+
+  /// An item that waited in the outbox is not waiting any more, because the device took it, did
+  /// not take it, or could not be reached for a day. Tell the person, with the sentence as it is.
+  ///
+  /// It does not come for an item that the person cancelled, nor for one whose device they
+  /// unpaired. `Event.outboxChanged` comes with it.
+  const factory Event.outboxSettled({
+    /// How it ended.
+    required OutboxSettled settled,
+  }) = Event_OutboxSettled;
 
   /// The list of paired devices changed: one was added, renamed, forgotten, or heard from.
   /// Read it again with `Baton.devices`.
@@ -568,6 +582,108 @@ sealed class OfferOutcome with _$OfferOutcome {
   }) = OfferOutcome_Failed;
 }
 
+/// How an item that waited in the outbox ended.
+enum OutboxEnd {
+  /// The device took it.
+  delivered,
+
+  /// The device was reached and did not take it.
+  refused,
+
+  /// A day went by without reaching the device, and the item was dropped.
+  expired,
+}
+
+/// An item that waits to be sent to a device that could not be reached.
+///
+/// It says what the item is without showing it: the person knows what they sent, and a list that
+/// shows the text of a password is one to look over a shoulder at.
+class OutboxItem {
+  /// Names it for `Baton.cancelOutbox`. It is not used again for another item.
+  final PlatformInt64 id;
+
+  /// The id of the device it is for.
+  final String deviceId;
+
+  /// The name of the device.
+  final String deviceName;
+
+  /// What it is, in words: "a link (example.com)" or "some text (23 characters)".
+  final String summary;
+
+  /// When the person sent it, in seconds since the Unix epoch.
+  final PlatformInt64 queuedAt;
+
+  /// When it is given up on, in seconds since the Unix epoch.
+  final PlatformInt64 expiresAt;
+
+  const OutboxItem({
+    required this.id,
+    required this.deviceId,
+    required this.deviceName,
+    required this.summary,
+    required this.queuedAt,
+    required this.expiresAt,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      deviceId.hashCode ^
+      deviceName.hashCode ^
+      summary.hashCode ^
+      queuedAt.hashCode ^
+      expiresAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OutboxItem &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          deviceId == other.deviceId &&
+          deviceName == other.deviceName &&
+          summary == other.summary &&
+          queuedAt == other.queuedAt &&
+          expiresAt == other.expiresAt;
+}
+
+/// An item that waited in the outbox and does not any more, and how it ended.
+class OutboxSettled {
+  /// The name of the device it was for.
+  final String deviceName;
+
+  /// What it was, as for `OutboxItem.summary`.
+  final String summary;
+
+  /// How it ended.
+  final OutboxEnd end;
+
+  /// One sentence to show the person as it is.
+  final String message;
+
+  const OutboxSettled({
+    required this.deviceName,
+    required this.summary,
+    required this.end,
+    required this.message,
+  });
+
+  @override
+  int get hashCode =>
+      deviceName.hashCode ^ summary.hashCode ^ end.hashCode ^ message.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OutboxSettled &&
+          runtimeType == other.runtimeType &&
+          deviceName == other.deviceName &&
+          summary == other.summary &&
+          end == other.end &&
+          message == other.message;
+}
+
 /// A device asking to pair, for the person to answer.
 ///
 /// Show all of it, with the code most prominent, and say what the code is to be compared
@@ -821,6 +937,17 @@ sealed class ScreenStarted with _$ScreenStarted {
     /// do about it.
     required String message,
   }) = ScreenStarted_NotStarted;
+}
+
+/// What came of sending a link or some text with `Baton.sendLink` or `Baton.sendText`.
+enum SendResult {
+  /// The device took it.
+  delivered,
+
+  /// The device could not be reached, so the item waits in the outbox on this device. It is sent
+  /// as soon as the device can be reached, for up to a day, and `Event.outboxSettled` says how it
+  /// ended. Tell the person that it waits, and that they can cancel it.
+  waiting,
 }
 
 /// What a transfer that is being sent is doing.

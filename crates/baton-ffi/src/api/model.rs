@@ -138,6 +138,61 @@ pub struct Received {
     pub item: ReceivedItem,
 }
 
+/// What came of sending a link or some text with `Baton.sendLink` or `Baton.sendText`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendResult {
+    /// The device took it.
+    Delivered,
+    /// The device could not be reached, so the item waits in the outbox on this device. It is sent
+    /// as soon as the device can be reached, for up to a day, and `Event.outboxSettled` says how it
+    /// ended. Tell the person that it waits, and that they can cancel it.
+    Waiting,
+}
+
+/// An item that waits to be sent to a device that could not be reached.
+///
+/// It says what the item is without showing it: the person knows what they sent, and a list that
+/// shows the text of a password is one to look over a shoulder at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboxItem {
+    /// Names it for `Baton.cancelOutbox`. It is not used again for another item.
+    pub id: i64,
+    /// The id of the device it is for.
+    pub device_id: String,
+    /// The name of the device.
+    pub device_name: String,
+    /// What it is, in words: "a link (example.com)" or "some text (23 characters)".
+    pub summary: String,
+    /// When the person sent it, in seconds since the Unix epoch.
+    pub queued_at: i64,
+    /// When it is given up on, in seconds since the Unix epoch.
+    pub expires_at: i64,
+}
+
+/// How an item that waited in the outbox ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutboxEnd {
+    /// The device took it.
+    Delivered,
+    /// The device was reached and did not take it.
+    Refused,
+    /// A day went by without reaching the device, and the item was dropped.
+    Expired,
+}
+
+/// An item that waited in the outbox and does not any more, and how it ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboxSettled {
+    /// The name of the device it was for.
+    pub device_name: String,
+    /// What it was, as for `OutboxItem.summary`.
+    pub summary: String,
+    /// How it ended.
+    pub end: OutboxEnd,
+    /// One sentence to show the person as it is.
+    pub message: String,
+}
+
 /// An invitation to pair, as the person who made it sees it.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Offer {
@@ -975,6 +1030,18 @@ pub enum Event {
     Received {
         /// What arrived.
         received: Received,
+    },
+    /// What waits in the outbox changed: an item was queued, sent, given up on or dropped. Read it
+    /// again with `Baton.outbox`.
+    OutboxChanged,
+    /// An item that waited in the outbox is not waiting any more, because the device took it, did
+    /// not take it, or could not be reached for a day. Tell the person, with the sentence as it is.
+    ///
+    /// It does not come for an item that the person cancelled, nor for one whose device they
+    /// unpaired. `Event.outboxChanged` comes with it.
+    OutboxSettled {
+        /// How it ended.
+        settled: OutboxSettled,
     },
     /// The list of paired devices changed: one was added, renamed, forgotten, or heard from.
     /// Read it again with `Baton.devices`.

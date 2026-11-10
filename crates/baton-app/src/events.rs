@@ -6,8 +6,9 @@ use tokio::sync::broadcast::{self, error::RecvError};
 use tokio_util::sync::CancellationToken;
 
 use crate::model::{
-    OfferOutcome, PairingRequest, Received, TransferEnd, TransferRequest, UnlockEntry, WindowEnd,
-    WindowNoticeReason, WindowRequest, WindowSession, WindowSound, WindowUnlock,
+    OfferOutcome, OutboxSettled, PairingRequest, Received, TransferEnd, TransferRequest,
+    UnlockEntry, WindowEnd, WindowNoticeReason, WindowRequest, WindowSession, WindowSound,
+    WindowUnlock,
 };
 
 /// Something a screen may want to react to.
@@ -15,6 +16,15 @@ use crate::model::{
 pub enum Event {
     /// A device handed this one something. It is in the inbox already.
     Received(Received),
+    /// What waits in the outbox changed: an item was queued, sent, given up on or dropped. Read it
+    /// again with [`App::outbox`](crate::App::outbox).
+    OutboxChanged,
+    /// An item that waited in the outbox is not waiting any more, because the device took it, did
+    /// not take it, or could not be reached for a day. Tell the person, with the sentence as it is.
+    ///
+    /// It is not sent for an item that the person cancelled, nor for one whose device they
+    /// unpaired. [`Event::OutboxChanged`] comes with it.
+    OutboxSettled(OutboxSettled),
     /// The list of paired devices changed: one was added, renamed, forgotten, or heard from.
     /// Read it again with [`App::devices`](crate::App::devices).
     DevicesChanged,

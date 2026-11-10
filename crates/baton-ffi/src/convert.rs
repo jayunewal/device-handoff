@@ -12,12 +12,12 @@ use crate::api::{
     error::{BatonError, ErrorKind},
     model::{
         ContinueItems, ContinueOutcome, ContinuePage, Device, Event, FileProgress, FilesSent, Me,
-        Network, Offer, OfferOutcome, PairingRequest, Platform, PreviewName, Reach, Received,
-        ReceivedItem, Receiving, Route, ScreenStarted, SendStage, StartAccess, TransferEnd,
-        TransferRequest, TransferResult, UnlockEntry, UnlockResult, UnlockSetUp, UnlockStatus,
-        WindowAbilities, WindowButton, WindowEnd, WindowInput, WindowModifiers, WindowNoticeReason,
-        WindowPointer, WindowRequest, WindowRole, WindowSession, WindowShared, WindowSound,
-        WindowUnlock,
+        Network, Offer, OfferOutcome, OutboxEnd, OutboxItem, OutboxSettled, PairingRequest,
+        Platform, PreviewName, Reach, Received, ReceivedItem, Receiving, Route, ScreenStarted,
+        SendResult, SendStage, StartAccess, TransferEnd, TransferRequest, TransferResult,
+        UnlockEntry, UnlockResult, UnlockSetUp, UnlockStatus, WindowAbilities, WindowButton,
+        WindowEnd, WindowInput, WindowModifiers, WindowNoticeReason, WindowPointer, WindowRequest,
+        WindowRole, WindowSession, WindowShared, WindowSound, WindowUnlock,
     },
 };
 
@@ -141,6 +141,63 @@ impl From<app::Received> for Received {
             from_name,
             received_at: signed(received_at),
             item: item.into(),
+        }
+    }
+}
+
+impl From<app::SendResult> for SendResult {
+    fn from(result: app::SendResult) -> Self {
+        match result {
+            app::SendResult::Delivered => Self::Delivered,
+            app::SendResult::Waiting => Self::Waiting,
+        }
+    }
+}
+
+impl From<app::OutboxItem> for OutboxItem {
+    fn from(item: app::OutboxItem) -> Self {
+        let app::OutboxItem {
+            id,
+            device_id,
+            device_name,
+            summary,
+            queued_at,
+            expires_at,
+        } = item;
+        Self {
+            id: signed(id),
+            device_id,
+            device_name,
+            summary,
+            queued_at: signed(queued_at),
+            expires_at: signed(expires_at),
+        }
+    }
+}
+
+impl From<app::OutboxEnd> for OutboxEnd {
+    fn from(end: app::OutboxEnd) -> Self {
+        match end {
+            app::OutboxEnd::Delivered => Self::Delivered,
+            app::OutboxEnd::Refused => Self::Refused,
+            app::OutboxEnd::Expired => Self::Expired,
+        }
+    }
+}
+
+impl From<app::OutboxSettled> for OutboxSettled {
+    fn from(settled: app::OutboxSettled) -> Self {
+        let app::OutboxSettled {
+            device_name,
+            summary,
+            end,
+            message,
+        } = settled;
+        Self {
+            device_name,
+            summary,
+            end: end.into(),
+            message,
         }
     }
 }
@@ -718,6 +775,10 @@ impl From<app::Event> for Event {
         match event {
             app::Event::Received(received) => Self::Received {
                 received: received.into(),
+            },
+            app::Event::OutboxChanged => Self::OutboxChanged,
+            app::Event::OutboxSettled(settled) => Self::OutboxSettled {
+                settled: settled.into(),
             },
             app::Event::DevicesChanged => Self::DevicesChanged,
             app::Event::PairingRequested(request) => Self::PairingRequested {

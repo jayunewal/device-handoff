@@ -40,7 +40,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1915639737;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1246210543;
 
 // Section: executor
 
@@ -350,6 +350,57 @@ fn wire__crate__api__baton__Baton_cancel_offer_impl(
                 })?;
                 std::result::Result::Ok(output_ok)
             })())
+        },
+    )
+}
+fn wire__crate__api__baton__Baton_cancel_outbox_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Baton_cancel_outbox",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Baton>,
+            >>::sse_decode(&mut deserializer);
+            let api_id = <i64>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, crate::api::error::BatonError>((move || {
+                    let mut api_that_guard = None;
+                    let decode_indices_ =
+                        flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                            flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                                &api_that, 0, false,
+                            ),
+                        ]);
+                    for i in decode_indices_ {
+                        match i {
+                            0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                            _ => unreachable!(),
+                        }
+                    }
+                    let api_that_guard = api_that_guard.unwrap();
+                    let output_ok =
+                        crate::api::baton::Baton::cancel_outbox(&*api_that_guard, api_id)?;
+                    std::result::Result::Ok(output_ok)
+                })())
+            }
         },
     )
 }
@@ -1083,6 +1134,52 @@ fn wire__crate__api__baton__Baton_offer_pairing_impl(
                     .await,
                 )
             }
+        },
+    )
+}
+fn wire__crate__api__baton__Baton_outbox_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "Baton_outbox",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<Baton>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let mut api_that_guard = None;
+                let decode_indices_ =
+                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                            &api_that, 0, false,
+                        ),
+                    ]);
+                for i in decode_indices_ {
+                    match i {
+                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                        _ => unreachable!(),
+                    }
+                }
+                let api_that_guard = api_that_guard.unwrap();
+                let output_ok = Ok::<_, ()>(crate::api::baton::Baton::outbox(&*api_that_guard))?;
+                std::result::Result::Ok(output_ok)
+            })())
         },
     )
 }
@@ -3047,46 +3144,55 @@ impl SseDecode for crate::api::model::Event {
                 };
             }
             1 => {
-                return crate::api::model::Event::DevicesChanged;
+                return crate::api::model::Event::OutboxChanged;
             }
             2 => {
+                let mut var_settled = <crate::api::model::OutboxSettled>::sse_decode(deserializer);
+                return crate::api::model::Event::OutboxSettled {
+                    settled: var_settled,
+                };
+            }
+            3 => {
+                return crate::api::model::Event::DevicesChanged;
+            }
+            4 => {
                 let mut var_request = <crate::api::model::PairingRequest>::sse_decode(deserializer);
                 return crate::api::model::Event::PairingRequested {
                     request: var_request,
                 };
             }
-            3 => {
+            5 => {
                 let mut var_id = <i64>::sse_decode(deserializer);
                 return crate::api::model::Event::PairingRequestEnded { id: var_id };
             }
-            4 => {
+            6 => {
                 let mut var_outcome = <crate::api::model::OfferOutcome>::sse_decode(deserializer);
                 return crate::api::model::Event::OfferEnded {
                     outcome: var_outcome,
                 };
             }
-            5 => {
+            7 => {
                 let mut var_request =
                     <crate::api::model::TransferRequest>::sse_decode(deserializer);
                 return crate::api::model::Event::TransferRequested {
                     request: var_request,
                 };
             }
-            6 => {
+            8 => {
                 let mut var_id = <i64>::sse_decode(deserializer);
                 return crate::api::model::Event::TransferRequestEnded { id: var_id };
             }
-            7 => {
+            9 => {
                 let mut var_end = <crate::api::model::TransferEnd>::sse_decode(deserializer);
                 return crate::api::model::Event::TransferEnded { end: var_end };
             }
-            8 => {
+            10 => {
                 let mut var_request = <crate::api::model::WindowRequest>::sse_decode(deserializer);
                 return crate::api::model::Event::WindowRequested {
                     request: var_request,
                 };
             }
-            9 => {
+            11 => {
                 let mut var_id = <i64>::sse_decode(deserializer);
                 let mut var_failure = <Option<String>>::sse_decode(deserializer);
                 return crate::api::model::Event::WindowRequestEnded {
@@ -3094,13 +3200,13 @@ impl SseDecode for crate::api::model::Event {
                     failure: var_failure,
                 };
             }
-            10 => {
+            12 => {
                 let mut var_session = <crate::api::model::WindowSession>::sse_decode(deserializer);
                 return crate::api::model::Event::WindowStarted {
                     session: var_session,
                 };
             }
-            11 => {
+            13 => {
                 let mut var_id = <i64>::sse_decode(deserializer);
                 let mut var_width = <u32>::sse_decode(deserializer);
                 let mut var_height = <u32>::sse_decode(deserializer);
@@ -3110,7 +3216,7 @@ impl SseDecode for crate::api::model::Event {
                     height: var_height,
                 };
             }
-            12 => {
+            14 => {
                 let mut var_id = <i64>::sse_decode(deserializer);
                 let mut var_reason =
                     <crate::api::model::WindowNoticeReason>::sse_decode(deserializer);
@@ -3121,7 +3227,7 @@ impl SseDecode for crate::api::model::Event {
                     count: var_count,
                 };
             }
-            13 => {
+            15 => {
                 let mut var_id = <i64>::sse_decode(deserializer);
                 let mut var_sound = <crate::api::model::WindowSound>::sse_decode(deserializer);
                 return crate::api::model::Event::WindowSound {
@@ -3129,7 +3235,7 @@ impl SseDecode for crate::api::model::Event {
                     sound: var_sound,
                 };
             }
-            14 => {
+            16 => {
                 let mut var_id = <i64>::sse_decode(deserializer);
                 let mut var_locked = <bool>::sse_decode(deserializer);
                 return crate::api::model::Event::WindowLocked {
@@ -3137,7 +3243,7 @@ impl SseDecode for crate::api::model::Event {
                     locked: var_locked,
                 };
             }
-            15 => {
+            17 => {
                 let mut var_id = <i64>::sse_decode(deserializer);
                 let mut var_step = <crate::api::model::WindowUnlock>::sse_decode(deserializer);
                 return crate::api::model::Event::WindowUnlock {
@@ -3145,11 +3251,11 @@ impl SseDecode for crate::api::model::Event {
                     step: var_step,
                 };
             }
-            16 => {
+            18 => {
                 let mut var_entry = <crate::api::model::UnlockEntry>::sse_decode(deserializer);
                 return crate::api::model::Event::UnlockAttempted { entry: var_entry };
             }
-            17 => {
+            19 => {
                 let mut var_id = <i64>::sse_decode(deserializer);
                 let mut var_from = <String>::sse_decode(deserializer);
                 return crate::api::model::Event::ContinueAsked {
@@ -3157,7 +3263,7 @@ impl SseDecode for crate::api::model::Event {
                     from: var_from,
                 };
             }
-            18 => {
+            20 => {
                 let mut var_id = <i64>::sse_decode(deserializer);
                 let mut var_end = <crate::api::model::WindowEnd>::sse_decode(deserializer);
                 return crate::api::model::Event::WindowEnded {
@@ -3165,7 +3271,7 @@ impl SseDecode for crate::api::model::Event {
                     end: var_end,
                 };
             }
-            19 => {
+            21 => {
                 return crate::api::model::Event::Resync;
             }
             _ => {
@@ -3273,6 +3379,18 @@ impl SseDecode for Vec<crate::api::model::Device> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<crate::api::model::Device>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::model::OutboxItem> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::model::OutboxItem>::sse_decode(deserializer));
         }
         return ans_;
     }
@@ -3457,6 +3575,55 @@ impl SseDecode for Option<i64> {
     }
 }
 
+impl SseDecode for crate::api::model::OutboxEnd {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::model::OutboxEnd::Delivered,
+            1 => crate::api::model::OutboxEnd::Refused,
+            2 => crate::api::model::OutboxEnd::Expired,
+            _ => unreachable!("Invalid variant for OutboxEnd: {}", inner),
+        };
+    }
+}
+
+impl SseDecode for crate::api::model::OutboxItem {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_id = <i64>::sse_decode(deserializer);
+        let mut var_deviceId = <String>::sse_decode(deserializer);
+        let mut var_deviceName = <String>::sse_decode(deserializer);
+        let mut var_summary = <String>::sse_decode(deserializer);
+        let mut var_queuedAt = <i64>::sse_decode(deserializer);
+        let mut var_expiresAt = <i64>::sse_decode(deserializer);
+        return crate::api::model::OutboxItem {
+            id: var_id,
+            device_id: var_deviceId,
+            device_name: var_deviceName,
+            summary: var_summary,
+            queued_at: var_queuedAt,
+            expires_at: var_expiresAt,
+        };
+    }
+}
+
+impl SseDecode for crate::api::model::OutboxSettled {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_deviceName = <String>::sse_decode(deserializer);
+        let mut var_summary = <String>::sse_decode(deserializer);
+        let mut var_end = <crate::api::model::OutboxEnd>::sse_decode(deserializer);
+        let mut var_message = <String>::sse_decode(deserializer);
+        return crate::api::model::OutboxSettled {
+            device_name: var_deviceName,
+            summary: var_summary,
+            end: var_end,
+            message: var_message,
+        };
+    }
+}
+
 impl SseDecode for crate::api::model::PairingRequest {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -3623,6 +3790,18 @@ impl SseDecode for crate::api::model::ScreenStarted {
                 unimplemented!("");
             }
         }
+    }
+}
+
+impl SseDecode for crate::api::model::SendResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::model::SendResult::Delivered,
+            1 => crate::api::model::SendResult::Waiting,
+            _ => unreachable!("Invalid variant for SendResult: {}", inner),
+        };
     }
 }
 
@@ -4233,49 +4412,50 @@ fn pde_ffi_dispatcher_primary_impl(
 ) {
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
-        7 => wire__crate__api__baton__Baton_clear_inbox_impl(port, ptr, rust_vec_len, data_len),
-        9 => wire__crate__api__baton__Baton_continue_from_impl(port, ptr, rust_vec_len, data_len),
-        10 => wire__crate__api__baton__Baton_devices_impl(port, ptr, rust_vec_len, data_len),
-        13 => wire__crate__api__baton__Baton_events_impl(port, ptr, rust_vec_len, data_len),
-        16 => wire__crate__api__baton__Baton_inbox_impl(port, ptr, rust_vec_len, data_len),
-        17 => wire__crate__api__baton__Baton_join_pairing_impl(port, ptr, rust_vec_len, data_len),
-        19 => wire__crate__api__baton__Baton_network_impl(port, ptr, rust_vec_len, data_len),
-        20 => wire__crate__api__baton__Baton_offer_pairing_impl(port, ptr, rust_vec_len, data_len),
-        21 => wire__crate__api__baton__Baton_ping_impl(port, ptr, rust_vec_len, data_len),
-        24 => {
+        7 => wire__crate__api__baton__Baton_cancel_outbox_impl(port, ptr, rust_vec_len, data_len),
+        8 => wire__crate__api__baton__Baton_clear_inbox_impl(port, ptr, rust_vec_len, data_len),
+        10 => wire__crate__api__baton__Baton_continue_from_impl(port, ptr, rust_vec_len, data_len),
+        11 => wire__crate__api__baton__Baton_devices_impl(port, ptr, rust_vec_len, data_len),
+        14 => wire__crate__api__baton__Baton_events_impl(port, ptr, rust_vec_len, data_len),
+        17 => wire__crate__api__baton__Baton_inbox_impl(port, ptr, rust_vec_len, data_len),
+        18 => wire__crate__api__baton__Baton_join_pairing_impl(port, ptr, rust_vec_len, data_len),
+        20 => wire__crate__api__baton__Baton_network_impl(port, ptr, rust_vec_len, data_len),
+        21 => wire__crate__api__baton__Baton_offer_pairing_impl(port, ptr, rust_vec_len, data_len),
+        23 => wire__crate__api__baton__Baton_ping_impl(port, ptr, rust_vec_len, data_len),
+        26 => {
             wire__crate__api__baton__Baton_remove_received_impl(port, ptr, rust_vec_len, data_len)
         }
-        25 => wire__crate__api__baton__Baton_send_files_impl(port, ptr, rust_vec_len, data_len),
-        26 => wire__crate__api__baton__Baton_send_link_impl(port, ptr, rust_vec_len, data_len),
-        27 => wire__crate__api__baton__Baton_send_text_impl(port, ptr, rust_vec_len, data_len),
-        28 => wire__crate__api__baton__Baton_set_continue_access_impl(
+        27 => wire__crate__api__baton__Baton_send_files_impl(port, ptr, rust_vec_len, data_len),
+        28 => wire__crate__api__baton__Baton_send_link_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__crate__api__baton__Baton_send_text_impl(port, ptr, rust_vec_len, data_len),
+        30 => wire__crate__api__baton__Baton_set_continue_access_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        29 => {
+        31 => {
             wire__crate__api__baton__Baton_set_hear_setting_impl(port, ptr, rust_vec_len, data_len)
         }
-        30 => {
+        32 => {
             wire__crate__api__baton__Baton_set_start_access_impl(port, ptr, rust_vec_len, data_len)
         }
-        31 => wire__crate__api__baton__Baton_set_up_unlock_impl(port, ptr, rust_vec_len, data_len),
-        32 => wire__crate__api__baton__Baton_share_window_impl(port, ptr, rust_vec_len, data_len),
-        33 => wire__crate__api__baton__Baton_start_impl(port, ptr, rust_vec_len, data_len),
-        35 => wire__crate__api__baton__Baton_start_screen_impl(port, ptr, rust_vec_len, data_len),
-        36 => wire__crate__api__baton__Baton_stop_impl(port, ptr, rust_vec_len, data_len),
-        37 => {
+        33 => wire__crate__api__baton__Baton_set_up_unlock_impl(port, ptr, rust_vec_len, data_len),
+        34 => wire__crate__api__baton__Baton_share_window_impl(port, ptr, rust_vec_len, data_len),
+        35 => wire__crate__api__baton__Baton_start_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__crate__api__baton__Baton_start_screen_impl(port, ptr, rust_vec_len, data_len),
+        38 => wire__crate__api__baton__Baton_stop_impl(port, ptr, rust_vec_len, data_len),
+        39 => {
             wire__crate__api__baton__Baton_turn_off_unlock_impl(port, ptr, rust_vec_len, data_len)
         }
-        41 => wire__crate__api__baton__Baton_unpair_impl(port, ptr, rust_vec_len, data_len),
-        46 => wire__crate__api__baton__FileSend_outcome_impl(port, ptr, rust_vec_len, data_len),
-        48 => wire__crate__api__baton__device_name_impl(port, ptr, rust_vec_len, data_len),
-        49 => wire__crate__api__startup__init_app_impl(port, ptr, rust_vec_len, data_len),
-        51 => wire__crate__api__baton__set_device_name_impl(port, ptr, rust_vec_len, data_len),
-        52 => wire__crate__api__mac_unlock__ssh_mac_key_impl(port, ptr, rust_vec_len, data_len),
-        53 => wire__crate__api__mac_unlock__ssh_unlock_mac_impl(port, ptr, rust_vec_len, data_len),
-        56 => wire__crate__api__model__window_modifiers_default_impl(
+        43 => wire__crate__api__baton__Baton_unpair_impl(port, ptr, rust_vec_len, data_len),
+        48 => wire__crate__api__baton__FileSend_outcome_impl(port, ptr, rust_vec_len, data_len),
+        50 => wire__crate__api__baton__device_name_impl(port, ptr, rust_vec_len, data_len),
+        51 => wire__crate__api__startup__init_app_impl(port, ptr, rust_vec_len, data_len),
+        53 => wire__crate__api__baton__set_device_name_impl(port, ptr, rust_vec_len, data_len),
+        54 => wire__crate__api__mac_unlock__ssh_mac_key_impl(port, ptr, rust_vec_len, data_len),
+        55 => wire__crate__api__mac_unlock__ssh_unlock_mac_impl(port, ptr, rust_vec_len, data_len),
+        58 => wire__crate__api__model__window_modifiers_default_impl(
             port,
             ptr,
             rust_vec_len,
@@ -4299,26 +4479,27 @@ fn pde_ffi_dispatcher_sync_impl(
         4 => wire__crate__api__baton__Baton_answer_window_impl(ptr, rust_vec_len, data_len),
         5 => wire__crate__api__baton__Baton_cancel_join_impl(ptr, rust_vec_len, data_len),
         6 => wire__crate__api__baton__Baton_cancel_offer_impl(ptr, rust_vec_len, data_len),
-        8 => wire__crate__api__baton__Baton_continue_access_impl(ptr, rust_vec_len, data_len),
-        11 => wire__crate__api__baton__Baton_end_window_impl(ptr, rust_vec_len, data_len),
-        12 => wire__crate__api__baton__Baton_end_window_leaving_impl(ptr, rust_vec_len, data_len),
-        14 => wire__crate__api__baton__Baton_hear_setting_impl(ptr, rust_vec_len, data_len),
-        15 => wire__crate__api__baton__Baton_hear_window_impl(ptr, rust_vec_len, data_len),
-        18 => wire__crate__api__baton__Baton_me_impl(ptr, rust_vec_len, data_len),
-        22 => wire__crate__api__baton__Baton_receiving_impl(ptr, rust_vec_len, data_len),
-        23 => wire__crate__api__baton__Baton_release_window_input_impl(ptr, rust_vec_len, data_len),
-        34 => wire__crate__api__baton__Baton_start_access_impl(ptr, rust_vec_len, data_len),
-        38 => wire__crate__api__baton__Baton_unlock_history_impl(ptr, rust_vec_len, data_len),
-        39 => wire__crate__api__baton__Baton_unlock_status_impl(ptr, rust_vec_len, data_len),
-        40 => wire__crate__api__baton__Baton_unlock_window_impl(ptr, rust_vec_len, data_len),
-        42 => wire__crate__api__baton__Baton_window_abilities_impl(ptr, rust_vec_len, data_len),
-        43 => wire__crate__api__baton__Baton_window_input_impl(ptr, rust_vec_len, data_len),
-        44 => wire__crate__api__baton__Baton_window_lift_impl(ptr, rust_vec_len, data_len),
-        45 => wire__crate__api__baton__FileSend_cancel_impl(ptr, rust_vec_len, data_len),
-        47 => wire__crate__api__baton__FileSend_progress_impl(ptr, rust_vec_len, data_len),
-        50 => wire__crate__api__startup__recent_log_impl(ptr, rust_vec_len, data_len),
-        54 => wire__crate__api__baton__suggested_device_name_impl(ptr, rust_vec_len, data_len),
-        55 => wire__crate__api__baton__web_address_impl(ptr, rust_vec_len, data_len),
+        9 => wire__crate__api__baton__Baton_continue_access_impl(ptr, rust_vec_len, data_len),
+        12 => wire__crate__api__baton__Baton_end_window_impl(ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__baton__Baton_end_window_leaving_impl(ptr, rust_vec_len, data_len),
+        15 => wire__crate__api__baton__Baton_hear_setting_impl(ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__baton__Baton_hear_window_impl(ptr, rust_vec_len, data_len),
+        19 => wire__crate__api__baton__Baton_me_impl(ptr, rust_vec_len, data_len),
+        22 => wire__crate__api__baton__Baton_outbox_impl(ptr, rust_vec_len, data_len),
+        24 => wire__crate__api__baton__Baton_receiving_impl(ptr, rust_vec_len, data_len),
+        25 => wire__crate__api__baton__Baton_release_window_input_impl(ptr, rust_vec_len, data_len),
+        36 => wire__crate__api__baton__Baton_start_access_impl(ptr, rust_vec_len, data_len),
+        40 => wire__crate__api__baton__Baton_unlock_history_impl(ptr, rust_vec_len, data_len),
+        41 => wire__crate__api__baton__Baton_unlock_status_impl(ptr, rust_vec_len, data_len),
+        42 => wire__crate__api__baton__Baton_unlock_window_impl(ptr, rust_vec_len, data_len),
+        44 => wire__crate__api__baton__Baton_window_abilities_impl(ptr, rust_vec_len, data_len),
+        45 => wire__crate__api__baton__Baton_window_input_impl(ptr, rust_vec_len, data_len),
+        46 => wire__crate__api__baton__Baton_window_lift_impl(ptr, rust_vec_len, data_len),
+        47 => wire__crate__api__baton__FileSend_cancel_impl(ptr, rust_vec_len, data_len),
+        49 => wire__crate__api__baton__FileSend_progress_impl(ptr, rust_vec_len, data_len),
+        52 => wire__crate__api__startup__recent_log_impl(ptr, rust_vec_len, data_len),
+        56 => wire__crate__api__baton__suggested_device_name_impl(ptr, rust_vec_len, data_len),
+        57 => wire__crate__api__baton__web_address_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -4500,85 +4681,89 @@ impl flutter_rust_bridge::IntoDart for crate::api::model::Event {
             crate::api::model::Event::Received { received } => {
                 [0.into_dart(), received.into_into_dart().into_dart()].into_dart()
             }
-            crate::api::model::Event::DevicesChanged => [1.into_dart()].into_dart(),
+            crate::api::model::Event::OutboxChanged => [1.into_dart()].into_dart(),
+            crate::api::model::Event::OutboxSettled { settled } => {
+                [2.into_dart(), settled.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::model::Event::DevicesChanged => [3.into_dart()].into_dart(),
             crate::api::model::Event::PairingRequested { request } => {
-                [2.into_dart(), request.into_into_dart().into_dart()].into_dart()
+                [4.into_dart(), request.into_into_dart().into_dart()].into_dart()
             }
             crate::api::model::Event::PairingRequestEnded { id } => {
-                [3.into_dart(), id.into_into_dart().into_dart()].into_dart()
+                [5.into_dart(), id.into_into_dart().into_dart()].into_dart()
             }
             crate::api::model::Event::OfferEnded { outcome } => {
-                [4.into_dart(), outcome.into_into_dart().into_dart()].into_dart()
+                [6.into_dart(), outcome.into_into_dart().into_dart()].into_dart()
             }
             crate::api::model::Event::TransferRequested { request } => {
-                [5.into_dart(), request.into_into_dart().into_dart()].into_dart()
+                [7.into_dart(), request.into_into_dart().into_dart()].into_dart()
             }
             crate::api::model::Event::TransferRequestEnded { id } => {
-                [6.into_dart(), id.into_into_dart().into_dart()].into_dart()
+                [8.into_dart(), id.into_into_dart().into_dart()].into_dart()
             }
             crate::api::model::Event::TransferEnded { end } => {
-                [7.into_dart(), end.into_into_dart().into_dart()].into_dart()
+                [9.into_dart(), end.into_into_dart().into_dart()].into_dart()
             }
             crate::api::model::Event::WindowRequested { request } => {
-                [8.into_dart(), request.into_into_dart().into_dart()].into_dart()
+                [10.into_dart(), request.into_into_dart().into_dart()].into_dart()
             }
             crate::api::model::Event::WindowRequestEnded { id, failure } => [
-                9.into_dart(),
+                11.into_dart(),
                 id.into_into_dart().into_dart(),
                 failure.into_into_dart().into_dart(),
             ]
             .into_dart(),
             crate::api::model::Event::WindowStarted { session } => {
-                [10.into_dart(), session.into_into_dart().into_dart()].into_dart()
+                [12.into_dart(), session.into_into_dart().into_dart()].into_dart()
             }
             crate::api::model::Event::WindowPicture { id, width, height } => [
-                11.into_dart(),
+                13.into_dart(),
                 id.into_into_dart().into_dart(),
                 width.into_into_dart().into_dart(),
                 height.into_into_dart().into_dart(),
             ]
             .into_dart(),
             crate::api::model::Event::WindowNotice { id, reason, count } => [
-                12.into_dart(),
+                14.into_dart(),
                 id.into_into_dart().into_dart(),
                 reason.into_into_dart().into_dart(),
                 count.into_into_dart().into_dart(),
             ]
             .into_dart(),
             crate::api::model::Event::WindowSound { id, sound } => [
-                13.into_dart(),
+                15.into_dart(),
                 id.into_into_dart().into_dart(),
                 sound.into_into_dart().into_dart(),
             ]
             .into_dart(),
             crate::api::model::Event::WindowLocked { id, locked } => [
-                14.into_dart(),
+                16.into_dart(),
                 id.into_into_dart().into_dart(),
                 locked.into_into_dart().into_dart(),
             ]
             .into_dart(),
             crate::api::model::Event::WindowUnlock { id, step } => [
-                15.into_dart(),
+                17.into_dart(),
                 id.into_into_dart().into_dart(),
                 step.into_into_dart().into_dart(),
             ]
             .into_dart(),
             crate::api::model::Event::UnlockAttempted { entry } => {
-                [16.into_dart(), entry.into_into_dart().into_dart()].into_dart()
+                [18.into_dart(), entry.into_into_dart().into_dart()].into_dart()
             }
             crate::api::model::Event::ContinueAsked { id, from } => [
-                17.into_dart(),
+                19.into_dart(),
                 id.into_into_dart().into_dart(),
                 from.into_into_dart().into_dart(),
             ]
             .into_dart(),
             crate::api::model::Event::WindowEnded { id, end } => [
-                18.into_dart(),
+                20.into_dart(),
                 id.into_into_dart().into_dart(),
                 end.into_into_dart().into_dart(),
             ]
             .into_dart(),
-            crate::api::model::Event::Resync => [19.into_dart()].into_dart(),
+            crate::api::model::Event::Resync => [21.into_dart()].into_dart(),
             _ => {
                 unimplemented!("");
             }
@@ -4744,6 +4929,70 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::model::OfferOutcome>
     for crate::api::model::OfferOutcome
 {
     fn into_into_dart(self) -> crate::api::model::OfferOutcome {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::model::OutboxEnd {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Delivered => 0.into_dart(),
+            Self::Refused => 1.into_dart(),
+            Self::Expired => 2.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::model::OutboxEnd {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::model::OutboxEnd>
+    for crate::api::model::OutboxEnd
+{
+    fn into_into_dart(self) -> crate::api::model::OutboxEnd {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::model::OutboxItem {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.id.into_into_dart().into_dart(),
+            self.device_id.into_into_dart().into_dart(),
+            self.device_name.into_into_dart().into_dart(),
+            self.summary.into_into_dart().into_dart(),
+            self.queued_at.into_into_dart().into_dart(),
+            self.expires_at.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::model::OutboxItem {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::model::OutboxItem>
+    for crate::api::model::OutboxItem
+{
+    fn into_into_dart(self) -> crate::api::model::OutboxItem {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::model::OutboxSettled {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.device_name.into_into_dart().into_dart(),
+            self.summary.into_into_dart().into_dart(),
+            self.end.into_into_dart().into_dart(),
+            self.message.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::model::OutboxSettled
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::model::OutboxSettled>
+    for crate::api::model::OutboxSettled
+{
+    fn into_into_dart(self) -> crate::api::model::OutboxSettled {
         self
     }
 }
@@ -4950,6 +5199,24 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::model::ScreenStarted>
     for crate::api::model::ScreenStarted
 {
     fn into_into_dart(self) -> crate::api::model::ScreenStarted {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::model::SendResult {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            Self::Delivered => 0.into_dart(),
+            Self::Waiting => 1.into_dart(),
+            _ => unreachable!(),
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::model::SendResult {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::model::SendResult>
+    for crate::api::model::SendResult
+{
+    fn into_into_dart(self) -> crate::api::model::SendResult {
         self
     }
 }
@@ -5801,89 +6068,96 @@ impl SseEncode for crate::api::model::Event {
                 <i32>::sse_encode(0, serializer);
                 <crate::api::model::Received>::sse_encode(received, serializer);
             }
-            crate::api::model::Event::DevicesChanged => {
+            crate::api::model::Event::OutboxChanged => {
                 <i32>::sse_encode(1, serializer);
             }
-            crate::api::model::Event::PairingRequested { request } => {
+            crate::api::model::Event::OutboxSettled { settled } => {
                 <i32>::sse_encode(2, serializer);
+                <crate::api::model::OutboxSettled>::sse_encode(settled, serializer);
+            }
+            crate::api::model::Event::DevicesChanged => {
+                <i32>::sse_encode(3, serializer);
+            }
+            crate::api::model::Event::PairingRequested { request } => {
+                <i32>::sse_encode(4, serializer);
                 <crate::api::model::PairingRequest>::sse_encode(request, serializer);
             }
             crate::api::model::Event::PairingRequestEnded { id } => {
-                <i32>::sse_encode(3, serializer);
+                <i32>::sse_encode(5, serializer);
                 <i64>::sse_encode(id, serializer);
             }
             crate::api::model::Event::OfferEnded { outcome } => {
-                <i32>::sse_encode(4, serializer);
+                <i32>::sse_encode(6, serializer);
                 <crate::api::model::OfferOutcome>::sse_encode(outcome, serializer);
             }
             crate::api::model::Event::TransferRequested { request } => {
-                <i32>::sse_encode(5, serializer);
+                <i32>::sse_encode(7, serializer);
                 <crate::api::model::TransferRequest>::sse_encode(request, serializer);
             }
             crate::api::model::Event::TransferRequestEnded { id } => {
-                <i32>::sse_encode(6, serializer);
+                <i32>::sse_encode(8, serializer);
                 <i64>::sse_encode(id, serializer);
             }
             crate::api::model::Event::TransferEnded { end } => {
-                <i32>::sse_encode(7, serializer);
+                <i32>::sse_encode(9, serializer);
                 <crate::api::model::TransferEnd>::sse_encode(end, serializer);
             }
             crate::api::model::Event::WindowRequested { request } => {
-                <i32>::sse_encode(8, serializer);
+                <i32>::sse_encode(10, serializer);
                 <crate::api::model::WindowRequest>::sse_encode(request, serializer);
             }
             crate::api::model::Event::WindowRequestEnded { id, failure } => {
-                <i32>::sse_encode(9, serializer);
+                <i32>::sse_encode(11, serializer);
                 <i64>::sse_encode(id, serializer);
                 <Option<String>>::sse_encode(failure, serializer);
             }
             crate::api::model::Event::WindowStarted { session } => {
-                <i32>::sse_encode(10, serializer);
+                <i32>::sse_encode(12, serializer);
                 <crate::api::model::WindowSession>::sse_encode(session, serializer);
             }
             crate::api::model::Event::WindowPicture { id, width, height } => {
-                <i32>::sse_encode(11, serializer);
+                <i32>::sse_encode(13, serializer);
                 <i64>::sse_encode(id, serializer);
                 <u32>::sse_encode(width, serializer);
                 <u32>::sse_encode(height, serializer);
             }
             crate::api::model::Event::WindowNotice { id, reason, count } => {
-                <i32>::sse_encode(12, serializer);
+                <i32>::sse_encode(14, serializer);
                 <i64>::sse_encode(id, serializer);
                 <crate::api::model::WindowNoticeReason>::sse_encode(reason, serializer);
                 <u32>::sse_encode(count, serializer);
             }
             crate::api::model::Event::WindowSound { id, sound } => {
-                <i32>::sse_encode(13, serializer);
+                <i32>::sse_encode(15, serializer);
                 <i64>::sse_encode(id, serializer);
                 <crate::api::model::WindowSound>::sse_encode(sound, serializer);
             }
             crate::api::model::Event::WindowLocked { id, locked } => {
-                <i32>::sse_encode(14, serializer);
+                <i32>::sse_encode(16, serializer);
                 <i64>::sse_encode(id, serializer);
                 <bool>::sse_encode(locked, serializer);
             }
             crate::api::model::Event::WindowUnlock { id, step } => {
-                <i32>::sse_encode(15, serializer);
+                <i32>::sse_encode(17, serializer);
                 <i64>::sse_encode(id, serializer);
                 <crate::api::model::WindowUnlock>::sse_encode(step, serializer);
             }
             crate::api::model::Event::UnlockAttempted { entry } => {
-                <i32>::sse_encode(16, serializer);
+                <i32>::sse_encode(18, serializer);
                 <crate::api::model::UnlockEntry>::sse_encode(entry, serializer);
             }
             crate::api::model::Event::ContinueAsked { id, from } => {
-                <i32>::sse_encode(17, serializer);
+                <i32>::sse_encode(19, serializer);
                 <i64>::sse_encode(id, serializer);
                 <String>::sse_encode(from, serializer);
             }
             crate::api::model::Event::WindowEnded { id, end } => {
-                <i32>::sse_encode(18, serializer);
+                <i32>::sse_encode(20, serializer);
                 <i64>::sse_encode(id, serializer);
                 <crate::api::model::WindowEnd>::sse_encode(end, serializer);
             }
             crate::api::model::Event::Resync => {
-                <i32>::sse_encode(19, serializer);
+                <i32>::sse_encode(21, serializer);
             }
             _ => {
                 unimplemented!("");
@@ -5973,6 +6247,16 @@ impl SseEncode for Vec<crate::api::model::Device> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::api::model::Device>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::model::OutboxItem> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::model::OutboxItem>::sse_encode(item, serializer);
         }
     }
 }
@@ -6125,6 +6409,45 @@ impl SseEncode for Option<i64> {
     }
 }
 
+impl SseEncode for crate::api::model::OutboxEnd {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::model::OutboxEnd::Delivered => 0,
+                crate::api::model::OutboxEnd::Refused => 1,
+                crate::api::model::OutboxEnd::Expired => 2,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
+    }
+}
+
+impl SseEncode for crate::api::model::OutboxItem {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i64>::sse_encode(self.id, serializer);
+        <String>::sse_encode(self.device_id, serializer);
+        <String>::sse_encode(self.device_name, serializer);
+        <String>::sse_encode(self.summary, serializer);
+        <i64>::sse_encode(self.queued_at, serializer);
+        <i64>::sse_encode(self.expires_at, serializer);
+    }
+}
+
+impl SseEncode for crate::api::model::OutboxSettled {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.device_name, serializer);
+        <String>::sse_encode(self.summary, serializer);
+        <crate::api::model::OutboxEnd>::sse_encode(self.end, serializer);
+        <String>::sse_encode(self.message, serializer);
+    }
+}
+
 impl SseEncode for crate::api::model::PairingRequest {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -6262,6 +6585,22 @@ impl SseEncode for crate::api::model::ScreenStarted {
                 unimplemented!("");
             }
         }
+    }
+}
+
+impl SseEncode for crate::api::model::SendResult {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(
+            match self {
+                crate::api::model::SendResult::Delivered => 0,
+                crate::api::model::SendResult::Waiting => 1,
+                _ => {
+                    unimplemented!("");
+                }
+            },
+            serializer,
+        );
     }
 }
 
