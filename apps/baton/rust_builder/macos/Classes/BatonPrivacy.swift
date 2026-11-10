@@ -291,6 +291,7 @@ final class PrivateSession {
   private let timing: PrivacyTiming
   private let sleep: (TimeInterval) -> Void
   private let now: () -> TimeInterval
+  private let beatNow: () -> TimeInterval
   private let log: (String) -> Void
   private let placed: (Bool) -> Void
 
@@ -313,16 +314,20 @@ final class PrivateSession {
 
   /// `guardian` is the guard, which is handed the Mac for as long as the cover is up. `end` ends
   /// the session at the other device with a sentence for the person there. `sleep` and `now` are
-  /// the clocks of the locking, which the tests replace. `placed` is told whether the privacy is in
-  /// place (`inPlace`) each time that changes, which it does when the cover goes up, when the
-  /// person at the other device lifts something or puts it back, and when the session ends or
-  /// something ends it; it is told from the thread that made the change, and never with a lock of
-  /// this session held.
+  /// the clocks of the locking, which the tests replace. `beatNow` is the clock of the bound on
+  /// telling the guard that the app is at work while the cover goes up (`PrivacyTiming.raise`). It
+  /// is real time, since the guard counts real time, and a test that has to pass the bound at a
+  /// moment of its own, and not when a busy Mac lets the time go by, replaces it. `placed` is told
+  /// whether the privacy is in place (`inPlace`) each time that changes, which it does when the
+  /// cover goes up, when the person at the other device lifts something or puts it back, and when
+  /// the session ends or something ends it; it is told from the thread that made the change, and
+  /// never with a lock of this session held.
   init(
     curtain: Curtain, guardian: SessionGuard, timing: PrivacyTiming = PrivacyTiming(),
     end: @escaping (String) -> Void,
     sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
     now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+    beatNow: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
     log: @escaping (String) -> Void = { _ in },
     placed: @escaping (Bool) -> Void = { _ in }
   ) {
@@ -332,6 +337,7 @@ final class PrivateSession {
     self.end = end
     self.sleep = sleep
     self.now = now
+    self.beatNow = beatNow
     self.log = log
     self.placed = placed
   }
@@ -594,7 +600,7 @@ final class PrivateSession {
     beating.lock()
     beatingOn = true
     judging = false
-    beatingSince = ProcessInfo.processInfo.systemUptime
+    beatingSince = beatNow()
     beating.unlock()
     let interval = timing.beat
     let thread = Thread { [weak self] in
@@ -616,7 +622,7 @@ final class PrivateSession {
     guard on else { return false }
     let well =
       judged
-      ? curtain.healthy : ProcessInfo.processInfo.systemUptime - since < timing.raise
+      ? curtain.healthy : beatNow() - since < timing.raise
     if well { guardian.beat() }
     return true
   }
