@@ -12,3 +12,13 @@ PRODUCT_BUNDLE_IDENTIFIER = io.github.jayunewal.baton
 
 // The copyright displayed in application information
 PRODUCT_COPYRIGHT = Copyright © 2026 The Baton contributors. Licensed under the Apache License 2.0.
+
+// How the app is signed. By default it is signed ad hoc ("Sign to Run Locally", which is what the
+// project sets for the identity), and an ad hoc signature is new with every build. macOS ties what
+// the person allowed (Screen Recording, Accessibility, Automation and the like) to the signature,
+// so each new build starts again with nothing allowed. A person who made a certificate for Baton
+// (docs/install-the-app.md, "Keep the permissions when you rebuild") puts two lines in
+// Signing.local.xcconfig, which Git does not keep, and every build is then signed with it. The
+// include is last so that it can change what is set above it.
+CODE_SIGN_STYLE = Automatic
+#include? "Signing.local.xcconfig"

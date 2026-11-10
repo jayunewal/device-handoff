@@ -5,3 +5,7 @@
 # Xcode-related
 **/dgph
 **/xcuserdata/
+
+# The certificate that this computer signs Baton with, if there is one
+# (docs/install-the-app.md)
+Runner/Configs/Signing.local.xcconfig

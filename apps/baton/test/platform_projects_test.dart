@@ -1168,6 +1168,54 @@ void main() {
     expect(ios, contains('isFolder.boolValue && !isPackage'));
   });
 
+  test(
+    'the Mac app is signed ad hoc, unless the person made a certificate for it',
+    () {
+      // An ad hoc signature is new with every build, so macOS forgets what the person allowed each
+      // time. A person who made a certificate names it in Signing.local.xcconfig, which Git does
+      // not keep, and every build is then signed with it. For that file to win, the style is set in
+      // the xcconfig of the app and not in the project file, where a setting of the target would
+      // beat the include, and the include comes last.
+      const include = '#include? "Signing.local.xcconfig"';
+      final lines = [
+        for (final line in _read(
+          'macos/Runner/Configs/AppInfo.xcconfig',
+        ).split('\n'))
+          line.trim(),
+      ];
+      final settings = lines
+          .where((line) => line.isNotEmpty && !line.startsWith('//'))
+          .toList();
+      expect(settings.last, include, reason: 'the include is the last thing');
+      expect(settings, contains('CODE_SIGN_STYLE = Automatic'));
+      final project = _read('macos/Runner.xcodeproj/project.pbxproj');
+      final app = project
+          .split('isa = XCBuildConfiguration;')
+          .where((block) => block.contains('CODE_SIGN_ENTITLEMENTS'));
+      expect(app, hasLength(3), reason: 'debug, profile and release');
+      for (final block in app) {
+        expect(block, isNot(contains('CODE_SIGN_STYLE')));
+        expect(block, isNot(contains('CODE_SIGN_IDENTITY')));
+      }
+      // The identity that the project gives is the ad hoc one, which the include changes.
+      expect(
+        RegExp(r'CODE_SIGN_IDENTITY = "-";').allMatches(project),
+        hasLength(3),
+        reason: 'debug, profile and release',
+      );
+      expect(
+        _read('macos/.gitignore').split('\n').map((line) => line.trim()),
+        contains('Runner/Configs/Signing.local.xcconfig'),
+        reason: 'the certificate of one Mac is not kept in the repository',
+      );
+      // The guard is signed with the identity of the app, whichever that is.
+      expect(
+        _read('macos/Guard/build-guard.sh'),
+        contains(r'--sign "${EXPANDED_CODE_SIGN_IDENTITY:--}"'),
+      );
+    },
+  );
+
   test('the Mac app builds its guard and signs it to inherit the sandbox', () {
     // The guard locks the Mac when the app goes away during a private session
     // (docs/adr/0011-privacy-mode.md). Only the build puts it into the app, and the app looks
