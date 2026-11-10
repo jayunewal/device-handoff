@@ -6,12 +6,14 @@
 //! A link or some text that could not be sent because the device was not there is put in the
 //! [`Outbox`] by [`App::send_link`](crate::App::send_link) and
 //! [`App::send_text`](crate::App::send_text). The loop in this module looks at the outbox when an
-//! item is added, when the list of paired devices changes, and after a pause in between, and sends
-//! each item to the device it is for, oldest first. The pauses start at [`Pace::first`] and double
-//! up to [`Pace::longest`], so a device that is away for the night is not dialed every few
-//! seconds, and they start short again whenever something happens. Nothing tells the loop that a
+//! item is added, when the list of paired devices changes, when a device takes something that is
+//! sent to it at once while other items wait for it, and after a pause in between, and sends each
+//! item to the device it is for, oldest first. The pauses start at [`Pace::first`] and double up
+//! to [`Pace::longest`], so a device that is away for the night is not dialed every few seconds,
+//! and they start short again whenever something happens. Nothing else tells the loop that a
 //! device has come back: it finds out by dialing, so a device that comes back is sent what waits
-//! within the longest pause, and the time that a dial takes, and not at once.
+//! within the longest pause, and the time that a dial takes, and not at once, unless the person
+//! sends it something first and it takes that.
 //!
 //! One look takes each device that something waits for on a task of its own, so a device that does
 //! not answer the dial does not hold up one that does. A device is sent its items one after the
@@ -28,9 +30,11 @@
 //! - The person cancelled it, or unpaired the device. Those are the person's own acts, and nothing
 //!   is said of them.
 //!
-//! An item is delivered at least once and, if Baton closes at the very moment that the device has
-//! taken it, perhaps twice: the item is struck out when the answer comes, and nothing can make the
-//! two steps one.
+//! An item is delivered at least once and, in two cases, perhaps twice. It is struck out when the
+//! device's answer comes, and nothing can make taking an item and hearing about it one step: Baton
+//! may close after the device took the item and before the strike-out is written, and the answer
+//! may be lost on the way, which reads as a device that cannot be reached. Either way the item goes
+//! again as a new send, with a number of its own, so the device cannot tell the repeat.
 
 use std::{future::Future, sync::Arc, time::Duration};
 

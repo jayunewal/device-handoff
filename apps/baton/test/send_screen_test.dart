@@ -462,6 +462,24 @@ void main() {
     semantics.dispose();
   });
 
+  testWidgets('says the name of a device that is not there without hidden '
+      'characters', (tester) async {
+    final session = _session();
+    // The name that a device gave itself, with a mark in it that turns the text after it round.
+    session.queue(deviceId: _kitchenIpad.id, deviceName: 'Kitchen\u202EiPad');
+    await _show(tester, session: session);
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text(
+        'Kitchen\uFFFDiPad could not be reached. Baton tries again while it is '
+        'running on this device, and gives up after a day.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.textContaining('\u202E'), findsNothing);
+  });
+
   testWidgets('stops listening for what waits once the screen is closed', (
     tester,
   ) async {
