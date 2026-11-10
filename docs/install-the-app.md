@@ -176,6 +176,17 @@ In this version a device receives only while Baton is running on it. On an iPhon
 
 Until then, keep Baton open and the phone in your hand when you send to it, or lengthen **Auto-Lock** while you try Baton (**Settings**, **Display & Brightness**, **Auto-Lock**) and set it back afterwards. If a send to a phone keeps ending with **Could not reach**, check **Low Power Mode** first: it sets Auto-Lock to 30 seconds. Baton keeps the screen on only while two devices pair (see **Pair two devices**) and while files go (see **Send files**). At any other time Auto-Lock works as you set it, because a phone that never locks is the opposite of what Baton is for.
 
+### From the share sheet
+
+An iPhone or iPad with iOS or iPadOS 16 or newer can send what it is showing, such as a page in Safari, to a paired device in two taps. Baton has an action for the **Shortcuts** app, **Send with Baton**, which takes a link or some text and brings Baton forward with it in the box of the send screen. Baton does not add itself to the share sheet: you make a shortcut that has the action and shows in the share sheet. This part is built and tested in CI, and has not been tried on real devices yet.
+
+1. Open **Shortcuts**, tap **+**, and search for **Baton**. Add **Send with Baton**.
+2. Tap **Link or text** in the action and choose **Shortcut Input**.
+3. Name the shortcut, for example **Send to my Mac**. In its details (the **i** button), turn on **Show in Share Sheet**, and keep at least **Text** and **URLs** among the kinds that it accepts.
+4. In Safari, or any app with a **Share** button, tap **Share** and then **Send to my Mac**. Baton opens at the send screen with the link or the text in the box. **Nothing is sent yet**: check it, and tap **Send link** or **Send text**. With more than one paired device, Baton first asks which one.
+
+The text a shortcut hands to Baton is kept in memory only, until Baton is on the screen and shows it, and is written nowhere. If Baton has no paired device, it says so and sends nothing. A normal share extension would put Baton in the share sheet by itself, but it needs an App Group to hand what it was given to the app, and a free Apple ID cannot have one.
+
 ## Send files
 
 You need two paired devices, with Baton open on both. They should be on the same Wi-Fi network, as for a link.
