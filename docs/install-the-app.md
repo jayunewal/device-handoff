@@ -246,7 +246,27 @@ The Mac asks the first time it needs each of these. If you answered **Don't Allo
 tccutil reset All io.github.jayunewal.baton
 ```
 
-Start Baton, allow each permission when it asks, then quit Baton and start it once more.
+Start Baton, allow each permission when it asks, then quit Baton and start it once more. To stop this from happening after each rebuild, sign the Mac app with a certificate of your own, as in the next section.
+
+### Keep the permissions when you rebuild
+
+A build of the Mac app is signed ad hoc unless you say otherwise, and an ad hoc signature is new with every build. That is why macOS forgets the permissions above each time. Signing every build with one certificate keeps them: macOS then sees the same program again. The certificate is made on your Mac in a few minutes, costs nothing, needs no Apple ID and no Apple Developer Program, and goes nowhere. Do this once on each Mac that builds Baton.
+
+1. Open **Keychain Access** (in **Applications**, **Utilities**). In its menu bar choose **Keychain Access**, then **Certificate Assistant**, then **Create a Certificate…**.
+2. Name it **Baton Signing**. Set **Identity Type** to **Self Signed Root** and **Certificate Type** to **Code Signing**. Click **Create**, then **Done**. It is kept in your **login** keychain.
+3. Under **My Certificates**, double-click **Baton Signing**, open **Trust**, and set **Code Signing** to **Always Trust**. Close the window, and give your password when macOS asks.
+4. Tell the build to use it. In `device-handoff/apps/baton`, run:
+
+   ```sh
+   printf 'CODE_SIGN_STYLE = Manual\nCODE_SIGN_IDENTITY = Baton Signing\n' > macos/Runner/Configs/Signing.local.xcconfig
+   ```
+
+   Git does not keep this file, so it is for this Mac only. Delete it to go back to ad hoc signing.
+5. Build as before with `flutter build macos --release`. The first time, macOS may ask whether `codesign` may use the key. Choose **Always Allow**.
+6. Check that it took: `codesign -d -r- build/macos/Build/Products/Release/Baton.app` should print a line that has `certificate leaf =` in it. An ad hoc build prints `cdhash` instead.
+7. A build with the certificate is a new program to macOS the first time, so reset the permissions and grant them once more, as in the section above. After that a rebuild keeps them.
+
+The private key of the certificate stays in your keychain and is not needed by anyone else: do not export it or put it in the repository. A build that is made somewhere else, such as the one CI makes, is still signed ad hoc and starts with no permissions.
 
 ### Start from the Mac
 
@@ -305,7 +325,7 @@ The two `pod install` lines matter when a newer version adds or removes files of
 - **`Developer Mode disabled`**: turn it on as above.
 - **The phone is listed as unsupported, or Xcode says it cannot use this iOS**: your Xcode is older than the iOS on the phone. Update macOS and Xcode.
 - **`Untrusted Developer` when you open Baton, or Baton closes at once**: trust yourself as above. If it was working and stopped, seven days have passed: install it again as above.
-- **Sharing, control or sound stopped working after a rebuild of the Mac app**: reset the permissions as in [Give the Mac its permissions, once](#give-the-mac-its-permissions-once).
+- **Sharing, control or sound stopped working after a rebuild of the Mac app**: reset the permissions as in [Give the Mac its permissions, once](#give-the-mac-its-permissions-once), and sign the app with a certificate of your own so that it does not happen again ([Keep the permissions when you rebuild](#keep-the-permissions-when-you-rebuild)).
 - **`cargo` or `rustup` not found**: Xcode does not use your shell's search path when you build from its window. Build with `flutter run --release --no-resident` in Terminal, as above, and if it still happens, check that `rustup --version` works in the same Terminal.
 - **`Unable to install` or `The code signature is invalid`**: unlock the phone, plug it in again and try once more. If it repeats, delete the Baton app from the phone and run `flutter run --release --no-resident` again. That also deletes what the app had stored.
 - **The camera does not start, or the picture stays black**: check that Baton may use the camera, in **Settings** on the phone, or **System Settings**, **Privacy & Security**, **Camera** on the Mac. The iPhone simulator has no camera. You can always paste the code instead.
