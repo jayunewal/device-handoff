@@ -309,6 +309,59 @@ void main() {
     );
   });
 
+  testWidgets(
+    'shows the sentence about an item that did not go for longer than '
+    'the one about an item that went',
+    (tester) async {
+      final session = await _show(tester);
+      const went = 'Sent a link (example.com) to Kitchen iPad.';
+      const notTaken = 'Kitchen iPad did not take the link.';
+
+      final first = session.queue(
+        deviceId: _kitchenIpad.id,
+        deviceName: 'Kitchen iPad',
+      );
+      session.settle(first, OutboxEnd.delivered, went);
+      await tester.pumpAndSettle();
+      expect(find.text(went), findsOneWidget);
+      await tester.pump(const Duration(seconds: 7));
+      await tester.pumpAndSettle();
+      expect(find.text(went), findsNothing, reason: 'a short time is enough');
+
+      for (final end in [OutboxEnd.refused, OutboxEnd.expired]) {
+        final item = session.queue(
+          deviceId: _kitchenIpad.id,
+          deviceName: 'Kitchen iPad',
+        );
+        session.settle(item, end, notTaken);
+        await tester.pumpAndSettle();
+        expect(find.text(notTaken), findsOneWidget);
+        await tester.pump(const Duration(seconds: 7));
+        await tester.pumpAndSettle();
+        expect(
+          find.text(notTaken),
+          findsOneWidget,
+          reason: 'still there after the time that was enough for the other',
+        );
+        await tester.pump(const Duration(seconds: 6));
+        await tester.pumpAndSettle();
+        expect(find.text(notTaken), findsNothing, reason: 'and not for ever');
+      }
+    },
+  );
+
+  testWidgets('lets go of the events of the session when it is closed', (
+    tester,
+  ) async {
+    final session = await _show(tester);
+    expect(session.listening, isTrue);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpAndSettle();
+
+    expect(session.listening, isFalse);
+  });
+
   testWidgets('a notice never says what came, which can be a password', (
     tester,
   ) async {
