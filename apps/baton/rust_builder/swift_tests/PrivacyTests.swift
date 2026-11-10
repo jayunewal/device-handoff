@@ -249,6 +249,33 @@ final class FakeClock: @unchecked Sendable {
   }
 }
 
+/// The clock of the bound on telling the guard that the app is at work, which a test holds: it
+/// stands still until the test passes time, and counts how often the beat looked at it.
+final class FakeBeatClock: @unchecked Sendable {
+  private let mutex = NSLock()
+  private var time: TimeInterval = 1000
+  private var looks = 0
+
+  func now() -> TimeInterval {
+    mutex.lock()
+    defer { mutex.unlock() }
+    looks += 1
+    return time
+  }
+
+  func pass(_ seconds: TimeInterval) {
+    mutex.lock()
+    time += seconds
+    mutex.unlock()
+  }
+
+  var looked: Int {
+    mutex.lock()
+    defer { mutex.unlock() }
+    return looks
+  }
+}
+
 /// What a session told the other device, from whatever thread it did.
 final class Told: @unchecked Sendable {
   private let mutex = NSLock()
@@ -960,7 +987,9 @@ func testTheGuardIsToldThatTheAppIsAtWorkWhileTheCoverGoesUp() {
   curtain.healthy = false
   var during = 0
   curtain.whileRaising = {
-    Thread.sleep(forTimeInterval: 0.3)
+    // The cover is not up until the guard has been told three times, however long a busy Mac takes
+    // to let the beat have its turn.
+    _ = eventually { guardian.beats >= 3 }
     during = guardian.beats
   }
   let privacy = session(curtain, guardian: guardian)
@@ -972,30 +1001,42 @@ func testTheGuardIsToldThatTheAppIsAtWorkWhileTheCoverGoesUp() {
   Thread.sleep(forTimeInterval: 0.2)
   check(guardian.beats == judged, "the guard was told that a curtain that is not well is well")
   curtain.healthy = true
-  Thread.sleep(forTimeInterval: 0.2)
-  check(guardian.beats > judged, "the guard was not told that a curtain that is well is well")
+  check(
+    eventually { guardian.beats > judged },
+    "the guard was not told that a curtain that is well is well")
   privacy.finish(.sessionOver)
 }
 
 func testTheGuardIsNotToldThatTheAppIsAtWorkForLongerThanTheBound() {
   // A cover that hangs while it goes up must end in the lock of the guard, and not be told well
-  // for as long as it hangs.
+  // for as long as it hangs. The test holds the clock of the bound, so that the bound is passed
+  // when the test says so, and not when a busy Mac lets the time go by.
   let curtain = FakeCurtain()
   let guardian = FakeGuard()
   curtain.healthy = false
+  let beatClock = FakeBeatClock()
   var first = 0
   var second = 0
   curtain.whileRaising = {
-    Thread.sleep(forTimeInterval: 0.25)
+    // Inside the bound the guard is told, however long the beat takes to have its turn.
+    check(
+      eventually { guardian.beats >= 2 },
+      "the guard was not told while the cover went up: \(guardian.beats)")
+    beatClock.pass(1)
+    // The beat that was under way when the bound passed has told the guard or not by the time that
+    // it looks at the clock again, and then it sees that the bound is behind it.
+    let passed = beatClock.looked
+    check(eventually { beatClock.looked >= passed + 3 }, "the beat did not look at the clock")
     first = guardian.beats
-    Thread.sleep(forTimeInterval: 0.25)
+    let behind = beatClock.looked
+    check(eventually { beatClock.looked >= behind + 3 }, "the beat did not look at the clock")
     second = guardian.beats
   }
   let clock = FakeClock()
   let privacy = PrivateSession(
     curtain: curtain, guardian: guardian,
     timing: PrivacyTiming(patience: 5, beat: 0.005, raise: 0.1), end: Told().tell,
-    sleep: clock.sleep, now: clock.now)
+    sleep: clock.sleep, now: clock.now, beatNow: beatClock.now)
   do { try privacy.begin() } catch { check(false, "the cover could not be raised: \(error)") }
   check(first >= 2, "the guard was not told while the cover went up: \(first)")
   check(second == first, "the guard was told after the bound: \(first) then \(second)")
