@@ -218,6 +218,97 @@ void main() {
     expect(_named('Inbox, 2 new'), findsOneWidget);
   });
 
+  testWidgets('says how a link that waited to be sent ended, on any screen', (
+    tester,
+  ) async {
+    final session = await _show(tester);
+    final first = session.queue(
+      deviceId: _kitchenIpad.id,
+      deviceName: 'Kitchen iPad',
+    );
+    await tester.pumpAndSettle();
+
+    session.settle(
+      first,
+      OutboxEnd.delivered,
+      'Sent a link (example.com) to Kitchen iPad.',
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Sent a link (example.com) to Kitchen iPad.'),
+      findsOneWidget,
+    );
+
+    // The person has gone on to the screen for sending, and the next ending shows there.
+    final second = session.queue(
+      deviceId: _kitchenIpad.id,
+      deviceName: 'Kitchen iPad',
+      summary: 'some text (4 characters)',
+    );
+    await tester.tap(find.text('Kitchen iPad'));
+    await tester.pumpAndSettle();
+    expect(find.text('Send to Kitchen iPad'), findsOneWidget);
+
+    session.settle(
+      second,
+      OutboxEnd.expired,
+      'Gave up on sending some text (4 characters) to Kitchen iPad: it could not '
+      'be reached for a day. Send it again when Kitchen iPad is open.',
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text(
+        'Gave up on sending some text (4 characters) to Kitchen iPad: it could '
+        'not be reached for a day. Send it again when Kitchen iPad is open.',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.text('Sent a link (example.com) to Kitchen iPad.'),
+      findsNothing,
+      reason: 'the newest sentence replaces the one before it',
+    );
+  });
+
+  testWidgets('says nothing of an item that the person gave up on', (
+    tester,
+  ) async {
+    final session = await _show(tester);
+    final item = session.queue(
+      deviceId: _kitchenIpad.id,
+      deviceName: 'Kitchen iPad',
+    );
+    await tester.pumpAndSettle();
+
+    await session.cancelOutbox(item.id);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(SnackBar), findsNothing);
+  });
+
+  testWidgets('shows what the library said about an item that waited as plain '
+      'text', (tester) async {
+    final session = await _show(tester);
+    final item = session.queue(
+      deviceId: _kitchenIpad.id,
+      deviceName: 'Kitchen\u202Eiriad',
+    );
+    await tester.pumpAndSettle();
+
+    session.settle(
+      item,
+      OutboxEnd.refused,
+      'Kitchen\u202Eiriad did not take the link.',
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('Kitchen\uFFFDiriad did not take the link.'),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('a notice never says what came, which can be a password', (
     tester,
   ) async {

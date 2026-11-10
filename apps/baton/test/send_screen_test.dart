@@ -190,10 +190,15 @@ void main() {
       findsOneWidget,
     );
     expect(
-      find.text('Baton has to be open on Kitchen iPad for it to arrive.'),
+      find.text(
+        'Baton has to be open on Kitchen iPad for it to arrive. A link or some '
+        'text that cannot be sent waits here, for up to a day. Files do not '
+        'wait.',
+      ),
       findsOneWidget,
     );
     expect(find.textContaining('It will be sent as'), findsNothing);
+    expect(find.text('Waiting to be sent'), findsNothing);
     expect(_enabled(tester, 'Send text'), isFalse);
     expect(_enabled(tester, 'Paste'), isTrue);
   });
@@ -320,6 +325,178 @@ void main() {
     expect(find.byIcon(Icons.error_outline), findsNothing);
   });
 
+  testWidgets('says that a link waits when the device cannot be reached, and '
+      'lists it', (tester) async {
+    final session = _session()..sendResult = SendResult.waiting;
+    await _show(tester, session: session);
+
+    await _type(tester, 'https://example.com/a');
+    await tester.tap(find.text('Send link'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text(
+        'Kitchen iPad cannot be reached now, so the link waits here for up to a '
+        'day. Baton sends it as soon as Kitchen iPad can be reached.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Waiting to be sent'), findsOneWidget);
+    expect(find.text('A link (example.com)'), findsOneWidget);
+    expect(find.widgetWithText(TextButton, 'Cancel'), findsOneWidget);
+    expect(
+      find.byIcon(Icons.schedule),
+      findsNWidgets(2),
+      reason: 'the line that says it waits, and the item',
+    );
+    expect(find.byIcon(Icons.error_outline), findsNothing);
+    expect(_typed(tester), isEmpty, reason: 'it left the box');
+  });
+
+  testWidgets('lists what waits for this device, and only this device', (
+    tester,
+  ) async {
+    final session = _session();
+    // Two minutes before the clock of the test.
+    final queued = _now.millisecondsSinceEpoch ~/ 1000 - 120;
+    session.queue(
+      deviceId: _kitchenIpad.id,
+      deviceName: 'Kitchen iPad',
+      summary: 'some text (11 characters)',
+      queuedAt: queued,
+    );
+    session.queue(
+      deviceId: 'd2' * 32,
+      deviceName: 'Pocket Phone',
+      summary: 'a link (elsewhere.example)',
+      queuedAt: queued,
+    );
+    await _show(tester, session: session);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Waiting to be sent'), findsOneWidget);
+    expect(find.text('Some text (11 characters)'), findsOneWidget);
+    expect(
+      find.text('Added 2 minutes ago. Baton gives up in 24 hours.'),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        'could not be reached. Baton tries again while it is '
+        'running on this device, and gives up after a day.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.textContaining('elsewhere.example'), findsNothing);
+    expect(
+      find.text('Waiting for Kitchen iPad to answer.'),
+      findsNothing,
+      reason: 'nothing is being asked',
+    );
+  });
+
+  testWidgets('gives up on an item that waits, and says it will not be sent', (
+    tester,
+  ) async {
+    final session = _session()..sendResult = SendResult.waiting;
+    await _show(tester, session: session);
+    await _type(tester, 'https://example.com/a');
+    await tester.tap(find.text('Send link'));
+    await tester.pumpAndSettle();
+    final id = session.waiting.single.id;
+
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
+
+    expect(session.cancelled, [id]);
+    expect(find.text('Waiting to be sent'), findsNothing);
+    expect(
+      find.text(
+        'Cancelled. Baton will not send a link (example.com) to Kitchen iPad.',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('cannot be reached now'),
+      findsNothing,
+      reason: 'nothing waits any more, so that is not said',
+    );
+  });
+
+  testWidgets('says why an item could not be given up, and it still waits', (
+    tester,
+  ) async {
+    final session = _session()
+      ..cancelFailure = const BatonError(
+        kind: ErrorKind.stopped,
+        message: 'Baton has stopped',
+      );
+    session.queue(deviceId: _kitchenIpad.id, deviceName: 'Kitchen iPad');
+    await _show(tester, session: session);
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Baton has stopped.'), findsOneWidget);
+    expect(find.text('A link (example.com)'), findsOneWidget);
+  });
+
+  testWidgets('shows what waits without hidden characters, and says which '
+      'item a button gives up', (tester) async {
+    final semantics = tester.ensureSemantics();
+    final session = _session();
+    session.queue(
+      deviceId: _kitchenIpad.id,
+      deviceName: 'Kitchen iPad',
+      summary: 'a link (example\u200B.com)',
+    );
+    await _show(tester, session: session);
+    await tester.pumpAndSettle();
+
+    expect(find.text('A link (example\uFFFD.com)'), findsOneWidget);
+    expect(
+      find.bySemanticsLabel('Cancel sending a link (example\uFFFD.com)'),
+      findsOneWidget,
+    );
+    semantics.dispose();
+  });
+
+  testWidgets('stops listening for what waits once the screen is closed', (
+    tester,
+  ) async {
+    final session = await _show(tester);
+    await tester.pumpAndSettle();
+    expect(session.listening, isTrue);
+
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump();
+
+    expect(session.listening, isFalse);
+  });
+
+  testWidgets('what was said of a link that waits goes once it was sent', (
+    tester,
+  ) async {
+    final session = _session()..sendResult = SendResult.waiting;
+    await _show(tester, session: session);
+    await _type(tester, 'https://example.com/a');
+    await tester.tap(find.text('Send link'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('cannot be reached now'), findsOneWidget);
+
+    // The device came back, and Baton sent it.
+    session.settle(
+      session.waiting.single,
+      OutboxEnd.delivered,
+      'Sent a link (example.com) to Kitchen iPad.',
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Waiting to be sent'), findsNothing);
+    expect(find.textContaining('cannot be reached now'), findsNothing);
+  });
+
   testWidgets('shows that it is sending, and cannot send twice', (
     tester,
   ) async {
@@ -333,8 +510,8 @@ void main() {
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
     expect(
       find.text(
-        'Sending to Kitchen iPad. If Baton is not open there, Baton gives up '
-        'after a while.',
+        'Sending to Kitchen iPad. If it cannot be reached, it waits here and '
+        'goes when it can.',
       ),
       findsOneWidget,
     );
@@ -483,6 +660,25 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(session.sent.map((sent) => sent.text), ['hello']);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a cancel that ends after the screen is closed does no harm', (
+    tester,
+  ) async {
+    final session = _session();
+    session.queue(deviceId: _kitchenIpad.id, deviceName: 'Kitchen iPad');
+    await _show(tester, session: session);
+    await tester.pumpAndSettle();
+    session.holdCancel();
+
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pump();
+    await tester.pumpWidget(const SizedBox());
+    session.releaseCancel();
+    await tester.pumpAndSettle();
+
+    expect(session.cancelled, hasLength(1));
     expect(tester.takeException(), isNull);
   });
 

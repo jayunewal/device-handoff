@@ -237,6 +237,11 @@ class FakeSession implements Session {
   /// What `sendLink` and `sendText` throw, if they should fail.
   Object? sendFailure;
 
+  /// What `sendLink` and `sendText` answer. With `SendResult.waiting` each send adds an item to
+  /// [waiting], as a device that cannot be reached does, and says so with
+  /// `Event_OutboxChanged`.
+  SendResult sendResult = SendResult.delivered;
+
   /// Makes `sendLink` and `sendText` wait until [releaseSend], as a send to a device that is
   /// slow to answer does.
   void holdSend() => _sendReady = Completer<void>();
@@ -246,7 +251,7 @@ class FakeSession implements Session {
 
   Completer<void>? _sendReady;
 
-  Future<void> _send(
+  Future<SendResult> _send(
     String id, {
     String? url,
     String? title,
@@ -256,14 +261,107 @@ class FakeSession implements Session {
     final failure = sendFailure;
     if (failure != null) throw failure;
     sent.add((id: id, url: url, title: title, text: text));
+    if (sendResult == SendResult.waiting) {
+      final name = [
+        for (final device in pairedDevices)
+          if (device.id == id) device.name,
+      ].firstOrNull;
+      queue(
+        deviceId: id,
+        deviceName: name ?? 'A device',
+        summary: url != null
+            ? 'a link (${Uri.parse(url).host})'
+            : 'some text (${text!.length} characters)',
+      );
+    }
+    return sendResult;
   }
 
   @override
-  Future<void> sendLink(String id, String url, {String? title}) =>
+  Future<SendResult> sendLink(String id, String url, {String? title}) =>
       _send(id, url: url, title: title);
 
   @override
-  Future<void> sendText(String id, String text) => _send(id, text: text);
+  Future<SendResult> sendText(String id, String text) => _send(id, text: text);
+
+  /// What `outbox` gives, the item that has waited longest first.
+  final List<OutboxItem> waiting = [];
+
+  int _nextWaiting = 1;
+
+  /// The numbers that `cancelOutbox` was given, in order.
+  final List<int> cancelled = [];
+
+  /// What `cancelOutbox` throws, if it should fail.
+  Object? cancelFailure;
+
+  /// Makes `cancelOutbox` wait until [releaseCancel], as a Baton that is busy does.
+  void holdCancel() => _cancelReady = Completer<void>();
+
+  /// Lets the held `cancelOutbox` answer.
+  void releaseCancel() => _cancelReady?.complete();
+
+  Completer<void>? _cancelReady;
+
+  /// Queues an item as the outbox does, and says that the list changed. Returns the item.
+  OutboxItem queue({
+    required String deviceId,
+    required String deviceName,
+    String summary = 'a link (example.com)',
+    int queuedAt = 1760000000,
+  }) {
+    final item = OutboxItem(
+      id: _nextWaiting++,
+      deviceId: deviceId,
+      deviceName: deviceName,
+      summary: summary,
+      queuedAt: queuedAt,
+      expiresAt: queuedAt + 24 * 60 * 60,
+    );
+    waiting.add(item);
+    emit(const Event_OutboxChanged());
+    return item;
+  }
+
+  /// Takes an item out of the list as the outbox does when it sent it: with the event that tells
+  /// how it ended, then the one that says that the list changed.
+  void settle(OutboxItem item, OutboxEnd end, String message) {
+    waiting.remove(item);
+    emit(
+      Event_OutboxSettled(
+        settled: OutboxSettled(
+          deviceName: item.deviceName,
+          summary: item.summary,
+          end: end,
+          message: message,
+        ),
+      ),
+    );
+    emit(const Event_OutboxChanged());
+  }
+
+  /// What `outbox` throws, if it should fail, as it does once Baton has stopped.
+  Object? outboxFailure;
+
+  @override
+  List<OutboxItem> outbox() {
+    final failure = outboxFailure;
+    if (failure != null) throw failure;
+    return [...waiting];
+  }
+
+  @override
+  Future<bool> cancelOutbox(int id) async {
+    cancelled.add(id);
+    await _cancelReady?.future;
+    final failure = cancelFailure;
+    if (failure != null) throw failure;
+    final before = waiting.length;
+    waiting.removeWhere((item) => item.id == id);
+    final found = waiting.length < before;
+    if (found) emit(const Event_OutboxChanged());
+    return found;
+  }
 
   /// The ids that `ping` was given, in order.
   final List<String> pinged = [];

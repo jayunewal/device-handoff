@@ -10,6 +10,7 @@ import '../backend.dart';
 import '../file_chooser.dart';
 import '../files_controller.dart';
 import '../format.dart';
+import '../outbox_controller.dart';
 import '../send_controller.dart';
 import 'content_box.dart';
 
@@ -58,6 +59,7 @@ class _SendScreenState extends State<SendScreen> {
     widget.device,
     screen: widget.screen,
   );
+  late final OutboxController _outbox = OutboxController(widget.session);
   final TextEditingController _field = TextEditingController();
 
   @override
@@ -65,14 +67,25 @@ class _SendScreenState extends State<SendScreen> {
     super.initState();
     final text = widget.initialText;
     if (text != null) _field.text = text;
+    unawaited(_outbox.start());
   }
 
   @override
   void dispose() {
     _controller.dispose();
     _files.dispose();
+    _outbox.dispose();
     _field.dispose();
     super.dispose();
+  }
+
+  /// Gives up on sending an item that waits for the device, and says that it will not be sent.
+  Future<void> _cancel(OutboxItem item) async {
+    final said = await _outbox.cancel(item);
+    if (said == null || !mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(said)));
   }
 
   /// Asks the person for what to send with [choose], and sends it.
@@ -167,12 +180,24 @@ class _SendScreenState extends State<SendScreen> {
         body: SafeArea(
           child: ContentBox(
             child: ListenableBuilder(
-              listenable: Listenable.merge([_controller, _files, _field]),
+              listenable: Listenable.merge([
+                _controller,
+                _files,
+                _field,
+                _outbox,
+              ]),
               builder: (context, _) {
                 final text = _field.text;
                 final link = _controller.linkIn(text);
                 final empty = text.trim().isEmpty;
-                final outcome = _controller.outcome;
+                final waiting = _outbox.waitingFor(device.id);
+                // What was said of a send that waits is true only while something waits for this
+                // device. Once the item was sent, or given up on, a note says that, and this line
+                // would only say what is not true any more.
+                final said = _controller.outcome;
+                final outcome = said != null && said.waiting && waiting.isEmpty
+                    ? null
+                    : said;
                 return ListView(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 16,
@@ -266,8 +291,8 @@ class _SendScreenState extends State<SendScreen> {
                         liveRegion: true,
                         child: Text(
                           _controller.sending
-                              ? 'Sending to ${device.name}. If Baton is not open '
-                                    'there, Baton gives up after a while.'
+                              ? 'Sending to ${device.name}. If it cannot be '
+                                    'reached, it waits here and goes when it can.'
                               : 'Waiting for ${device.name} to answer.',
                           style: theme.textTheme.bodyMedium,
                         ),
@@ -277,9 +302,19 @@ class _SendScreenState extends State<SendScreen> {
                       const SizedBox(height: 16),
                       _OutcomeLine(outcome: outcome),
                     ],
+                    if (waiting.isNotEmpty) ...[
+                      const SizedBox(height: 24),
+                      _WaitingSection(
+                        items: waiting,
+                        now: widget.now(),
+                        onCancel: (item) => unawaited(_cancel(item)),
+                      ),
+                    ],
                     const SizedBox(height: 32),
                     Text(
-                      'Baton has to be open on ${device.name} for it to arrive.',
+                      'Baton has to be open on ${device.name} for it to arrive. A '
+                      'link or some text that cannot be sent waits here, for up to '
+                      'a day. Files do not wait.',
                       style: theme.textTheme.bodyMedium,
                     ),
                     const SizedBox(height: 12),
@@ -327,7 +362,11 @@ class _OutcomeLine extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Icon(
-            outcome.ok ? Icons.check_circle_outline : Icons.error_outline,
+            outcome.waiting
+                ? Icons.schedule
+                : outcome.ok
+                ? Icons.check_circle_outline
+                : Icons.error_outline,
             color: color,
           ),
           const SizedBox(width: 12),
@@ -340,6 +379,63 @@ class _OutcomeLine extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// The links and texts that wait to be sent to the device, because it could not be reached, each
+/// with a button to give it up. It says what each is and never what it says.
+class _WaitingSection extends StatelessWidget {
+  const _WaitingSection({
+    required this.items,
+    required this.now,
+    required this.onCancel,
+  });
+
+  final List<OutboxItem> items;
+  final DateTime now;
+  final void Function(OutboxItem item) onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Waiting to be sent', style: theme.textTheme.titleMedium),
+        const SizedBox(height: 4),
+        Text(
+          '${visibleText(items.first.deviceName)} could not be reached. Baton '
+          'tries again while it is running on this device, and gives up after a '
+          'day.',
+          style: theme.textTheme.bodySmall,
+        ),
+        const SizedBox(height: 12),
+        Card(
+          margin: EdgeInsets.zero,
+          child: Column(
+            children: [
+              for (final item in items)
+                ListTile(
+                  leading: const Icon(Icons.schedule),
+                  title: Text(capitalized(visibleText(item.summary))),
+                  subtitle: Text(
+                    'Added ${since(item.queuedAt.toInt(), now)}. Baton gives up '
+                    '${until(item.expiresAt.toInt(), now)}.',
+                  ),
+                  trailing: TextButton(
+                    onPressed: () => onCancel(item),
+                    child: Text(
+                      'Cancel',
+                      semanticsLabel:
+                          'Cancel sending ${visibleText(item.summary)}',
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
