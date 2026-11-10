@@ -6,12 +6,14 @@
 //! A link or some text that could not be sent because the device was not there is put in the
 //! [`Outbox`] by [`App::send_link`](crate::App::send_link) and
 //! [`App::send_text`](crate::App::send_text). The loop in this module looks at the outbox when an
-//! item is added, when the list of paired devices changes, and after a pause in between, and sends
-//! each item to the device it is for, oldest first. The pauses start at [`Pace::first`] and double
-//! up to [`Pace::longest`], so a device that is away for the night is not dialed every few
-//! seconds, and they start short again whenever something happens. Nothing tells the loop that a
+//! item is added, when the list of paired devices changes, when a device takes something that is
+//! sent to it at once while other items wait for it, and after a pause in between, and sends each
+//! item to the device it is for, oldest first. The pauses start at [`Pace::first`] and double up
+//! to [`Pace::longest`], so a device that is away for the night is not dialed every few seconds,
+//! and they start short again whenever something happens. Nothing else tells the loop that a
 //! device has come back: it finds out by dialing, so a device that comes back is sent what waits
-//! within the longest pause, and the time that a dial takes, and not at once.
+//! within the longest pause, and the time that a dial takes, and not at once, unless the person
+//! sends it something first and it takes that.
 //!
 //! One look takes each device that something waits for on a task of its own, so a device that does
 //! not answer the dial does not hold up one that does. A device is sent its items one after the

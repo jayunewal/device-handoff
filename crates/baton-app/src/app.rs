@@ -1195,7 +1195,12 @@ impl App {
         let node = self.running()?;
         let (peer, name) = self.paired(id)?;
         match node.send(&peer, item.clone()).await {
-            Ok(Outcome::Accepted) => Ok(SendResult::Delivered),
+            Ok(Outcome::Accepted) => {
+                // The device is there. What waits for it goes now, and not after the pause that
+                // the loop may be in because it could not reach the device a while ago.
+                wake_for(&self.inner.outbox, &self.inner.outbox_wake, &peer);
+                Ok(SendResult::Delivered)
+            }
             Ok(Outcome::Declined(reason)) => Err(Error::declined(&name, what, reason)),
             Err(e) => {
                 let error = Error::reaching(&e, &name);
@@ -1595,6 +1600,18 @@ fn with_windows(mut builder: NodeBuilder, sessions: &Arc<Sessions>) -> NodeBuild
     builder
 }
 
+/// Tells the loop that sends what waits in `outbox` to look now, if anything waits there for
+/// `peer`, which has just taken an item that was sent to it at once. The loop may be in a pause,
+/// as long as its longest, because it could not reach the device a while ago, and what waits for
+/// the device would go after that pause, and after what was sent just now. If nothing waits for
+/// the device, the loop is left alone: a delivery must not make it dial the devices that are
+/// away, and start its pauses again.
+fn wake_for(outbox: &Outbox, wake: &Notify, peer: &DeviceId) {
+    if outbox.next_for(peer).is_some() {
+        wake.notify_one();
+    }
+}
+
 /// Turns each item that arrives into an event.
 async fn forward_arrivals(
     mut arrivals: broadcast::Receiver<Arc<InboxEntry>>,
@@ -1640,6 +1657,7 @@ async fn forward_trust_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::OutboxEnd;
 
     #[test]
     fn the_choices_for_a_run_go_on_top_of_the_settings_file() {
@@ -1819,13 +1837,56 @@ mod tests {
 
     /// An app over a folder of its own, kept to this computer's own addresses.
     async fn app_in(dir: &std::path::Path) -> App {
+        app_named(dir, "Studio Mac").await
+    }
+
+    /// The same, for a device with a name of its own.
+    async fn app_named(dir: &std::path::Path, name: &str) -> App {
         std::fs::write(
             dir.join("config.toml"),
-            "device_name = \"Studio Mac\"\n\n[network]\nrelay = \"disabled\"\nlan_discovery = \
-             false\nport_mapping = false\n",
+            format!(
+                "device_name = \"{name}\"\n\n[network]\nrelay = \"disabled\"\nlan_discovery = \
+                 false\nport_mapping = false\n"
+            ),
         )
         .unwrap();
         App::start(Options::new(dir)).await.unwrap()
+    }
+
+    /// Waits for an event that `pick` likes, and returns what it made of it. The wait has a limit,
+    /// so that a hang fails the test and does not stall the run.
+    async fn next_event<T>(events: &mut Events, mut pick: impl FnMut(Event) -> Option<T>) -> T {
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                let event = events.next().await.expect("the app stopped while waiting");
+                if let Some(found) = pick(event) {
+                    return found;
+                }
+            }
+        })
+        .await
+        .expect("the event never came")
+    }
+
+    /// Pairs two apps the way two people would: the offerer shows a ticket, the joiner enters it,
+    /// and the offerer says yes.
+    async fn pair_apps(offerer: &App, joiner: &App) {
+        let mut events = offerer.events();
+        let offer = offerer.offer_pairing().await.unwrap();
+        let joining = joiner.clone();
+        let ticket = offer.ticket.clone();
+        let task = tokio::spawn(async move { joining.join_pairing(&ticket, |_| {}).await });
+        let request = next_event(&mut events, |event| match event {
+            Event::PairingRequested(request) => Some(request),
+            _ => None,
+        })
+        .await;
+        assert!(offerer.answer_pairing(request.id, true));
+        task.await.unwrap().unwrap();
+        next_event(&mut events, |event| {
+            matches!(event, Event::OfferEnded(_)).then_some(())
+        })
+        .await;
     }
 
     fn phone() -> DeviceId {
@@ -1895,5 +1956,83 @@ mod tests {
         // The device is not paired any more, and the list says what it was called when queued.
         app.inner.trust.remove(&phone()).unwrap();
         assert_eq!(app.outbox()[0].device_name, "Pocket Phone");
+    }
+
+    /// Whether `wake` has been told since it was last waited on.
+    async fn told(wake: &Notify) -> bool {
+        tokio::time::timeout(std::time::Duration::ZERO, wake.notified())
+            .await
+            .is_ok()
+    }
+
+    #[tokio::test]
+    async fn a_delivery_wakes_the_loop_only_if_something_waits_for_the_device_that_took_it() {
+        let outbox = Outbox::memory();
+        let wake = Notify::new();
+        let kitchen_ipad = DeviceId::from_bytes([8; DeviceId::LEN]);
+
+        // Nothing waits anywhere: there is nothing to look at.
+        wake_for(&outbox, &wake, &phone());
+        assert!(!told(&wake).await);
+
+        // Something waits for another device. That device was not reached, so a look would only
+        // dial it again, and start the pauses over.
+        outbox
+            .add(kitchen_ipad, "Kitchen iPad", some_text(), 1_800_000_000)
+            .unwrap();
+        wake_for(&outbox, &wake, &phone());
+        assert!(!told(&wake).await);
+
+        // Something waits for the device that was reached: it goes now.
+        outbox
+            .add(phone(), "Pocket Phone", some_text(), 1_800_000_000)
+            .unwrap();
+        wake_for(&outbox, &wake, &phone());
+        assert!(told(&wake).await);
+        assert!(!told(&wake).await, "once for one delivery");
+    }
+
+    #[tokio::test]
+    async fn what_waits_for_a_device_goes_at_once_when_the_device_takes_something_else() {
+        let sender_dir = tempfile::tempdir().unwrap();
+        let device_dir = tempfile::tempdir().unwrap();
+        let sender = app_named(sender_dir.path(), "Studio Mac").await;
+        let device = app_named(device_dir.path(), "Pocket Phone").await;
+        pair_apps(&sender, &device).await;
+        let device_id = DeviceId::from_str(&device.me().id).unwrap();
+
+        // An item that has waited for the device, with the loop asleep: it is put in the list
+        // without waking the loop, as it is found by a loop that is in the middle of a pause, so
+        // that only a wake can make it look.
+        sender
+            .inner
+            .outbox
+            .add(
+                device_id,
+                "Pocket Phone",
+                some_text(),
+                SystemClock.now_unix(),
+            )
+            .unwrap();
+        let mut events = sender.events();
+
+        // The device is there, and takes what is sent to it now.
+        assert_eq!(
+            sender
+                .send_text(&device.me().id, "a newer one")
+                .await
+                .unwrap(),
+            SendResult::Delivered
+        );
+
+        // What waited is sent without a pause after it, and the person is told.
+        let ended = next_event(&mut events, |event| match event {
+            Event::OutboxSettled(settled) => Some(settled.end),
+            _ => None,
+        })
+        .await;
+        assert_eq!(ended, OutboxEnd::Delivered);
+        assert_eq!(sender.outbox(), Vec::new());
+        assert_eq!(device.inbox().unwrap().len(), 2);
     }
 }
