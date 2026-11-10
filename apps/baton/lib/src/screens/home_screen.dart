@@ -20,11 +20,14 @@ import '../mac_passwords.dart';
 import '../notice_access.dart';
 import '../owner_check.dart';
 import '../scanner.dart';
+import '../shares.dart';
 import '../transfers_controller.dart';
 import '../unlock_notices.dart';
 import '../windows_controller.dart';
+import 'device_picker_sheet.dart';
 import 'devices_screen.dart';
 import 'inbox_screen.dart';
+import 'send_screen.dart';
 import 'settings_screen.dart';
 import 'transfers_panel.dart';
 import 'window_screen.dart';
@@ -48,6 +51,7 @@ class HomeScreen extends StatefulWidget {
     this.ownerCheck = const PlatformOwnerCheck(),
     this.continueReader = const PlatformContinueReader(),
     this.alwaysOn = const PlatformAlwaysOnKeeper(),
+    this.shares = const PlatformShareKeeper(),
     super.key,
   });
 
@@ -96,6 +100,10 @@ class HomeScreen extends StatefulWidget {
   /// told by a notification. Tests give it one of their own.
   final AlwaysOnKeeper alwaysOn;
 
+  /// What was handed to Baton from outside it, to send to a paired device. Tests give it one of
+  /// their own.
+  final ShareKeeper shares;
+
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
@@ -106,7 +114,7 @@ enum _Tab { devices, inbox, settings }
 /// Mac, and not in a bar at the bottom.
 const sidebarFrom = 700.0;
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   late final InboxController _inbox = InboxController(widget.session);
   late final TransfersController _transfers = TransfersController(
     widget.session,
@@ -130,11 +138,17 @@ class _HomeScreenState extends State<HomeScreen> {
   StreamSubscription<TransferRequest>? _requests;
   StreamSubscription<WindowRequest>? _windowRequests;
   StreamSubscription<WindowSession>? _windowsStarted;
+  StreamSubscription<void>? _handed;
   _Tab _tab = _Tab.devices;
+
+  /// What was handed to Baton and has not been put in front of the person yet, oldest first.
+  final List<String> _shared = [];
+  bool _offering = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _arrivals = _inbox.arrivals.listen(_arrived);
     _requests = _transfers.asked.listen(_asked);
     _windowRequests = _windows.asked.listen(_windowAsked);
@@ -151,14 +165,29 @@ class _HomeScreenState extends State<HomeScreen> {
     unawaited(_windows.start());
     unawaited(_unlockNotices.start());
     unawaited(_continueServer.start());
+    // A shortcut can hand Baton something while it is already on the screen, which changes nothing
+    // in the app, so the app is told. This is listened to before the first take below, so that
+    // nothing that is handed over from here on falls between the two.
+    _handed = widget.shares.handed.listen((_) => unawaited(_takeShares()));
+    // Something may have been handed to Baton, such as by a shortcut, before it was on the screen.
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => unawaited(_takeShares()),
+    );
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) unawaited(_takeShares());
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     unawaited(_arrivals?.cancel());
     unawaited(_requests?.cancel());
     unawaited(_windowRequests?.cancel());
     unawaited(_windowsStarted?.cancel());
+    unawaited(_handed?.cancel());
     _arrivalNotices.dispose();
     _inbox.dispose();
     _transfers.dispose();
@@ -171,6 +200,66 @@ class _HomeScreenState extends State<HomeScreen> {
   void _show(_Tab tab) {
     setState(() => _tab = tab);
     _inbox.looking = tab == _Tab.inbox;
+  }
+
+  /// Takes what was handed to Baton from outside it, such as by a shortcut that is set to show in
+  /// the share sheet, and puts each in front of the person to send, one after the other.
+  /// Nothing is sent before they tap Send.
+  Future<void> _takeShares() async {
+    _shared.addAll(await widget.shares.take());
+    if (_offering) return;
+    _offering = true;
+    try {
+      while (_shared.isNotEmpty && mounted) {
+        await _offerToSend(_shared.removeAt(0));
+      }
+    } finally {
+      _offering = false;
+    }
+  }
+
+  /// Opens the screen to send [text] to a paired device: the only one there is, or the one that
+  /// the person picks.
+  Future<void> _offerToSend(String text) async {
+    final List<Device> devices;
+    try {
+      devices = await widget.session.devices();
+    } on Object catch (e) {
+      debugPrint('Baton: shares: ${e.runtimeType}');
+      _say('Baton could not look up your devices, so nothing was sent.');
+      return;
+    }
+    if (!mounted) return;
+    if (devices.isEmpty) {
+      _say(
+        'Baton has no paired device to send this to yet. Pair one, then share '
+        'again.',
+      );
+      return;
+    }
+    final device = devices.length == 1
+        ? devices.single
+        : await pickDevice(context, devices: devices, now: widget.now);
+    if (device == null || !mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => SendScreen(
+          session: widget.session,
+          device: device,
+          now: widget.now,
+          chooser: widget.chooser,
+          screen: widget.screen,
+          initialText: text,
+        ),
+      ),
+    );
+  }
+
+  void _say(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
   }
 
   /// Says that something came, when the inbox is not what the person is looking at. It says

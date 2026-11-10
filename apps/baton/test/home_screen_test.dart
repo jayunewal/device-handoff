@@ -716,19 +716,37 @@ void main() {
 
       session.arrive(sampleReceived(1));
       session.emit(Event.transferRequested(request: sampleTransfer()));
+      session.emit(Event.windowRequested(request: sampleWindowRequest));
+      session.emit(
+        const Event.windowRequested(
+          request: WindowRequest(
+            id: 4,
+            deviceId: 'd3',
+            deviceName: 'Anna’s Mac',
+            display: true,
+            width: 3024,
+            height: 1964,
+            control: false,
+          ),
+        ),
+      );
       await tester.pumpAndSettle();
 
       expect(notices.posted.map((n) => n.title), [
         'Anna’s iPhone sent you some text',
         'Anna’s iPhone wants to send you files',
+        'Anna’s Mac wants to show you a window',
+        'Anna’s Mac wants to show you its screen',
       ]);
+      // Not one of them says what it is about: the title of a window can be the name of a file.
+      expect('${notices.posted}', isNot(contains('Budget.numbers')));
 
       // The person came back to the window: it tells them, and a notification would say it twice.
       alwaysOn.seen = true;
       session.arrive(sampleReceived(2));
       await tester.pumpAndSettle();
 
-      expect(notices.posted, hasLength(2));
+      expect(notices.posted, hasLength(4));
       expect(find.text('Anna’s iPhone sent you some text.'), findsOneWidget);
     },
   );

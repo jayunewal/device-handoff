@@ -12,6 +12,7 @@ import 'package:baton/src/continue_reader.dart';
 import 'package:baton/src/file_shower.dart';
 import 'package:baton/src/notice_access.dart';
 import 'package:baton/src/rust_backend.dart';
+import 'package:baton/src/shares.dart';
 import 'package:baton/src/support_folder.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -19,12 +20,20 @@ String _read(String path) => File(path).readAsStringSync();
 
 /// The text of the Swift function that begins with [signature], up to the brace that closes it at
 /// the start of a line.
-String _swiftFunction(String swift, String signature) {
+String _swiftFunction(String swift, String signature) =>
+    _swiftBlock(swift, signature, '\n}\n');
+
+/// The text of the method of a class that begins with [signature], up to the brace that closes it
+/// at the indentation of a method.
+String _swiftMethod(String swift, String signature) =>
+    _swiftBlock(swift, signature, '\n  }\n');
+
+String _swiftBlock(String swift, String signature, String close) {
   final start = swift.indexOf(signature);
   expect(start, isNonNegative, reason: signature);
-  final end = swift.indexOf('\n}\n', start);
+  final end = swift.indexOf(close, start);
   expect(end, isNonNegative, reason: 'the end of $signature');
-  return swift.substring(start, end + 2);
+  return swift.substring(start, end + close.length - 1);
 }
 
 /// What a Swift function does, a line at a time: without its comments, its blank lines and the
@@ -262,6 +271,165 @@ void main() {
     );
   });
 
+  test(
+    'the iPhone app answers where Baton asks for what a shortcut handed over',
+    () {
+      // The channel and its question are named in lib/src/shares.dart and in the app. If they
+      // differ, a shortcut that sends with Baton opens the app and nothing is offered, and
+      // nothing else fails. The channel is registered with the others, or nothing answers.
+      final swift = _read('ios/Runner/SendWithBaton.swift');
+      expect(swift, contains('name: "${PlatformShareKeeper.channelName}"'));
+      expect(swift, contains('case "${PlatformShareKeeper.question}":'));
+      expect(
+        swift,
+        contains(
+          'channel.invokeMethod("${PlatformShareKeeper.news}", arguments: nil)',
+        ),
+        reason: 'the news that the app listens for',
+      );
+      expect(
+        _read('ios/Runner/AppDelegate.swift'),
+        contains(
+          '    answerAboutShares(messenger: engineBridge.applicationRegistrar.messenger())',
+        ),
+      );
+    },
+  );
+
+  test(
+    'the iPhone app has the action that a shortcut sends with, and builds it',
+    () {
+      // The action is what Shortcuts lists for Baton. It needs iOS 16, which the app is built to
+      // run before, so it is marked for it; and it brings the app to the front, because the app
+      // is what sends. A file that is not in the project is not built, and nothing fails.
+      final swift = _read('ios/Runner/SendWithBaton.swift');
+      expect(
+        swift,
+        contains(
+          '@available(iOS 16.0, *)\nstruct SendWithBatonIntent: AppIntent {',
+        ),
+      );
+      expect(swift, contains('static let openAppWhenRun = true'));
+      final project = _read('ios/Runner.xcodeproj/project.pbxproj');
+      expect(
+        RegExp(r'SendWithBaton\.swift in Sources').allMatches(project),
+        hasLength(2),
+        reason: 'the file to build, and its place in the build phase',
+      );
+      expect(project, contains('path = SendWithBaton.swift;'));
+      expect(project, contains('IPHONEOS_DEPLOYMENT_TARGET = 15.0;'));
+    },
+  );
+
+  test('what a shortcut hands to Baton is held in memory and nowhere else', () {
+    // It can be a password, or an address with a token in it. Nothing here keeps it on the
+    // device, writes it to a log, or gives it to anything but the app that asks for it.
+    final swift = _read('ios/Runner/SendWithBaton.swift');
+    for (final elsewhere in [
+      'UserDefaults',
+      'FileManager',
+      'SecItem',
+      'NSLog',
+      'print(',
+      'write(',
+    ]) {
+      expect(swift, isNot(contains(elsewhere)), reason: elsewhere);
+    }
+  });
+
+  test('what a shortcut hands to Baton is kept a few at a time, and is forgotten '
+      'once the app has it', () {
+    // The Swift of the app runs only on an iPhone, so each line of what keeps, gives and hands
+    // over is held as it is written. A line that is lost leaves the app opening on nothing, or
+    // offering the same link each time it comes to the front, or keeping what a shortcut that
+    // ran away handed over, or not knowing that something came while it was in front, and
+    // nothing else fails.
+    final swift = _read('ios/Runner/SendWithBaton.swift');
+    expect(swift, contains('private static let most = 20'));
+    expect(
+      _swiftCode(_swiftMethod(swift, '  func add(_ text: String) {')),
+      [
+        'func add(_ text: String) {',
+        'lock.lock()',
+        'texts.append(text)',
+        'if texts.count > HandedToBaton.most {',
+        'texts.removeFirst(texts.count - HandedToBaton.most)',
+        '}',
+        'let tell = tellTheApp',
+        'lock.unlock()',
+        'tell?()',
+        '}',
+      ],
+      reason:
+          'the oldest go first, once there are more than the most, and the '
+          'app is told once the text is held and the lock is let go',
+    );
+    expect(_swiftCode(_swiftMethod(swift, '  func onAdd(')), [
+      'func onAdd(_ tell: @escaping () -> Void) {',
+      'lock.lock()',
+      'defer { lock.unlock() }',
+      'tellTheApp = tell',
+      '}',
+    ], reason: 'what tells the app is kept, and a later one takes its place');
+    expect(_swiftCode(_swiftMethod(swift, '  func take() -> [String] {')), [
+      'func take() -> [String] {',
+      'lock.lock()',
+      'defer { lock.unlock() }',
+      'let taken = texts',
+      'texts = []',
+      'return taken',
+      '}',
+    ], reason: 'what is given is forgotten');
+    expect(
+      _swiftCode(_swiftMethod(swift, '  func perform() async throws')),
+      [
+        'func perform() async throws -> some IntentResult {',
+        'HandedToBaton.shared.add(content)',
+        'return .result()',
+        '}',
+      ],
+      reason: 'the action hands what it was given to the app, and does no more',
+    );
+    expect(
+      _swiftCode(_swiftFunction(swift, 'func answerAboutShares(')).join('\n'),
+      endsWith(
+        _inOrder([
+          'HandedToBaton.shared.onAdd {',
+          'DispatchQueue.main.async {',
+          'channel.invokeMethod("${PlatformShareKeeper.news}", arguments: nil)',
+          '}',
+          '}',
+          '}',
+        ]),
+      ),
+      reason:
+          'the app is told on the main queue, through the channel that it '
+          'is asked on, which the closure keeps',
+    );
+  });
+
+  test(
+    'the iPhone app asks for no capability that a free Apple ID cannot give',
+    () {
+      // An app group, push and the like need a paid account, and the app is installed with a free
+      // one. A share extension needs an app group to hand what it was given to the app, which is
+      // why the share sheet reaches Baton through a shortcut.
+      final entitlements = Directory('ios/Runner')
+          .listSync()
+          .whereType<File>()
+          .where((file) => file.path.endsWith('.entitlements'));
+      expect(entitlements, isEmpty);
+      expect(
+        _read('ios/Runner.xcodeproj/project.pbxproj'),
+        isNot(contains('CODE_SIGN_ENTITLEMENTS')),
+      );
+      expect(
+        _read('ios/Runner/Info.plist'),
+        isNot(contains('application-groups')),
+      );
+    },
+  );
+
   test('the Mac app answers what Baton asks about notifications', () {
     // The channel, its questions and the words of its answers are named in
     // lib/src/notice_access.dart and in the app. If they differ, Baton cannot tell the person
@@ -343,6 +511,36 @@ void main() {
       expect(delegate, contains('withTitle: "$entry"'), reason: entry);
     }
     expect(delegate, contains('#selector(NSApplication.terminate(_:))'));
+
+    // The menu has to reach the item, and each entry has to reach what answers it: an entry with no
+    // target is greyed out, and a menu that was never put on the item never opens. Every line is
+    // held whole, as the names alone would pass with one of them left out.
+    final item = _swiftCode(
+      _swiftMethod(delegate, 'private func addMenuBarItem()'),
+    );
+    expect(item.take(3), [
+      'private func addMenuBarItem() {',
+      'let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)',
+      'if let button = item.button {',
+    ]);
+    expect(item.skipWhile((line) => line != 'let menu = NSMenu()').toList(), [
+      'let menu = NSMenu()',
+      'let open = menu.addItem(',
+      'withTitle: "Open Baton", action: #selector(openBaton(_:)), keyEquivalent: "")',
+      'open.target = self',
+      'menu.addItem(NSMenuItem.separator())',
+      'let quit = menu.addItem(',
+      'withTitle: "Quit Baton", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")',
+      'quit.target = NSApp',
+      'item.menu = menu',
+      'menuBarItem = item',
+      '}',
+    ]);
+    // And the entry that opens Baton brings the window forward from wherever it is.
+    expect(
+      _swiftCode(_swiftMethod(delegate, '@objc private func openBaton(')),
+      ['@objc private func openBaton(_ sender: Any?) {', 'showBaton()', '}'],
+    );
   });
 
   test(
@@ -356,6 +554,23 @@ void main() {
       expect(delegate, contains('.userInitiatedAllowingIdleSystemSleep'));
       expect(delegate, isNot(contains('idleSystemSleepDisabled')));
       expect(delegate, isNot(contains('IOPMAssertion')));
+
+      // The claim is kept in a property for as long as Baton runs: one that nothing holds ends
+      // with the line that made it, and the system slows Baton down as if it had never been asked.
+      expect(
+        _swiftCode(_swiftMethod(delegate, 'private func holdOffAppNap()')),
+        [
+          'private func holdOffAppNap() {',
+          'running = ProcessInfo.processInfo.beginActivity(',
+          'options: .userInitiatedAllowingIdleSystemSleep,',
+          'reason: "Baton answers the devices that are paired with this Mac")',
+          '}',
+        ],
+      );
+      expect(
+        _swiftCode(delegate),
+        contains('private var running: NSObjectProtocol?'),
+      );
     },
   );
 
@@ -411,6 +626,22 @@ void main() {
       launchBody,
       contains('if wasOpenedAtSignIn() {\n      startHidden()'),
     );
+    // What keeps Baton running with no window starts with every start, and the claim on the system
+    // and the item in the menu bar are made before anything is hidden.
+    final launches = _swiftMethod(
+      delegate,
+      'override func applicationDidFinishLaunching(',
+    );
+    expect(_swiftCode(launches), [
+      'override func applicationDidFinishLaunching(_ notification: Notification) {',
+      'super.applicationDidFinishLaunching(notification)',
+      'holdOffAppNap()',
+      'addMenuBarItem()',
+      'if wasOpenedAtSignIn() {',
+      'startHidden()',
+      '}',
+      '}',
+    ]);
     expect(
       'startHidden()'.allMatches(delegate),
       hasLength(2),
@@ -502,11 +733,15 @@ void main() {
     // is hidden when the system says it has left, not before: hiding one in full screen would
     // leave its space empty.
     final window = _read('macos/Runner/MainFlutterWindow.swift');
-    final close = window.indexOf('override func performClose(');
-    final closeBody = window.substring(close, window.indexOf('\n  }\n', close));
+    final closeBody = _swiftMethod(window, 'override func performClose(');
+    // A line that is missing is -1, which is before every line that is there: both must be found.
+    final waits = closeBody.indexOf('hideWhenOutOfFullScreen()');
+    final leaves = closeBody.indexOf('toggleFullScreen(sender)');
+    expect(waits, isNonNegative, reason: 'closing sets the wait');
+    expect(leaves, isNonNegative, reason: 'closing leaves full screen');
     expect(
-      closeBody.indexOf('hideWhenOutOfFullScreen()'),
-      lessThan(closeBody.indexOf('toggleFullScreen(sender)')),
+      waits,
+      lessThan(leaves),
       reason: 'the wait is set before the window starts to leave',
     );
     final wait = window.indexOf('private func hideWhenOutOfFullScreen()');
@@ -529,25 +764,28 @@ void main() {
     // they can (lib/src/arrival_notices.dart). They cannot while the window is hidden,
     // minimized, waiting to hide, behind another window or while another app is in front.
     final swift = _read('macos/Runner/MainFlutterWindow.swift');
-    final looking = swift.indexOf('private func personCanSeeBaton()');
-    expect(looking, isNonNegative);
-    final lookingBody = swift.substring(
-      looking,
-      swift.indexOf('\n}\n', looking),
-    );
-    for (final check in [
-      'NSApp.isActive',
-      'window.isVisible',
-      '!window.isMiniaturized',
-      'window.alphaValue > 0',
-      'window.occlusionState.contains(.visible)',
-    ]) {
-      expect(lookingBody, contains(check), reason: check);
-    }
+    // A Mac that is locked, whose screen is off or that another account has in front shows nobody
+    // anything, whatever the window is doing, and what the person is told by notification waits for
+    // them there. That check comes first, and every line is held whole: the names alone would pass
+    // with an answer turned round.
     expect(
-      lookingBody,
-      contains('return false'),
-      reason: 'no window, no seeing',
+      _swiftCode(_swiftFunction(swift, 'private func personCanSeeBaton()')),
+      [
+        'private func personCanSeeBaton() -> Bool {',
+        'if macIsNotInUse() { return false }',
+        'guard NSApp.isActive, let window = (NSApp.delegate as? AppDelegate)?.mainFlutterWindow else {',
+        'return false',
+        '}',
+        'return window.isVisible && !window.isMiniaturized && window.alphaValue > 0',
+        '&& window.occlusionState.contains(.visible)',
+        '}',
+      ],
+    );
+    // The question from the app reaches that function, and no other.
+    expect(
+      _swiftCode(_swiftFunction(swift, 'private func answerAboutStayingOn('))
+          .join('\n'),
+      contains(_inOrder(['case "looking":', 'result(personCanSeeBaton())'])),
     );
 
     // A click on a notification, and only a click, brings the window forward.

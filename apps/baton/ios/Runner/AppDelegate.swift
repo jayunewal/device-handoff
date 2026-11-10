@@ -25,6 +25,7 @@ import UIKit
     keepMacPasswords(messenger: engineBridge.applicationRegistrar.messenger())
     checkTheOwner(messenger: engineBridge.applicationRegistrar.messenger())
     answerAboutPermissions(messenger: engineBridge.applicationRegistrar.messenger())
+    answerAboutShares(messenger: engineBridge.applicationRegistrar.messenger())
   }
 }
 
