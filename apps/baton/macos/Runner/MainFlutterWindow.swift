@@ -1,6 +1,7 @@
 import AVFoundation
 import Cocoa
 import FlutterMacOS
+import ServiceManagement
 import UserNotifications
 
 class MainFlutterWindow: NSWindow {
@@ -17,8 +18,20 @@ class MainFlutterWindow: NSWindow {
     showReceivedFilesInFinder(messenger: flutterViewController.engine.binaryMessenger)
     answerAboutNotifications(messenger: flutterViewController.engine.binaryMessenger)
     answerAboutPermissions(messenger: flutterViewController.engine.binaryMessenger)
+    answerAboutStayingOn(messenger: flutterViewController.engine.binaryMessenger)
 
     super.awakeFromNib()
+  }
+
+  /// The close button and Command-W hide the window and leave Baton running, so that the devices
+  /// that reach this Mac still can (AppDelegate.swift says why). A window in full screen leaves
+  /// it first: hiding one there would leave its space empty.
+  override func performClose(_ sender: Any?) {
+    if styleMask.contains(.fullScreen) {
+      toggleFullScreen(sender)
+      return
+    }
+    orderOut(sender)
   }
 }
 
@@ -335,4 +348,89 @@ private func settingsAddress(_ pane: String) -> String? {
   default:
     return nil
   }
+}
+
+/// Answers what the part of the app that keeps Baton running asks (AppDelegate.swift is the rest
+/// of it): whether Baton opens when the person signs in to this Mac, turning that on or off, the
+/// pane of System Settings where the person allows it, and that the first screen of the app is
+/// up. The names of the channel and of the questions, and the words of the answers, must be the
+/// ones in lib/src/always_on.dart.
+private func answerAboutStayingOn(messenger: FlutterBinaryMessenger) {
+  let channel = FlutterMethodChannel(
+    name: "io.github.jayunewal.baton/always_on", binaryMessenger: messenger)
+  channel.setMethodCallHandler { call, result in
+    switch call.method {
+    case "ready":
+      (NSApp.delegate as? AppDelegate)?.interfaceIsUp()
+      result(nil)
+    case "signIn":
+      result(signInState())
+    case "setSignIn":
+      guard let on = call.arguments as? Bool else {
+        result(
+          FlutterError(
+            code: "bad_choice", message: "The choice was not a yes or a no.", details: nil))
+        return
+      }
+      do {
+        result(try setOpensAtSignIn(on))
+      } catch {
+        // What the system says, for the person to read: it is the system that knows why.
+        result(
+          FlutterError(code: "sign_in_failed", message: error.localizedDescription, details: nil))
+      }
+    case "openSignInSettings":
+      result(openSignInSettings())
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+}
+
+/// Whether Baton opens when the person signs in, in the words of lib/src/always_on.dart. A Mac
+/// older than macOS 13 has no way for an app to ask for that, so it says it cannot.
+private func signInState() -> String {
+  guard #available(macOS 13.0, *) else { return "unavailable" }
+  return signInWords(SMAppService.mainApp.status)
+}
+
+@available(macOS 13.0, *)
+private func signInWords(_ status: SMAppService.Status) -> String {
+  switch status {
+  case .enabled:
+    return "on"
+  case .requiresApproval:
+    // Registered, and the person turned it off in System Settings, or has yet to say yes there.
+    // Only the person can change that.
+    return "needsApproval"
+  case .notRegistered, .notFound:
+    return "off"
+  @unknown default:
+    return "unavailable"
+  }
+}
+
+/// Registers Baton to open at sign-in, or takes it back, and says where that stands. A refusal
+/// from the system is thrown, for the app to say. What waits for the person in System Settings is
+/// left alone: registering again changes nothing there.
+private func setOpensAtSignIn(_ on: Bool) throws -> String {
+  guard #available(macOS 13.0, *) else { return "unavailable" }
+  let service = SMAppService.mainApp
+  switch (on, service.status) {
+  case (true, .notRegistered), (true, .notFound):
+    try service.register()
+  case (false, .enabled), (false, .requiresApproval):
+    try service.unregister()
+  default:
+    break
+  }
+  return signInWords(service.status)
+}
+
+/// Opens the pane of System Settings where the person allows Baton to open at sign-in, and
+/// nothing else.
+private func openSignInSettings() -> Bool {
+  guard #available(macOS 13.0, *) else { return false }
+  SMAppService.openSystemSettingsLoginItems()
+  return true
 }
