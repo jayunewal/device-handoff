@@ -22,6 +22,7 @@ class SendScreen extends StatefulWidget {
     this.now = DateTime.now,
     this.chooser = const SystemFileChooser(),
     this.screen = const PlatformScreenKeeper(),
+    this.initialText,
     super.key,
   });
 
@@ -29,6 +30,10 @@ class SendScreen extends StatefulWidget {
 
   /// The device that things are sent to.
   final Device device;
+
+  /// A link or some text that is in the box when the screen opens, as when another app handed it
+  /// to Baton to send. It is not sent until the person taps Send.
+  final String? initialText;
 
   /// The time to measure "seen 5 minutes ago" from. Tests give it a clock of their own.
   final DateTime Function() now;
@@ -54,6 +59,13 @@ class _SendScreenState extends State<SendScreen> {
     screen: widget.screen,
   );
   final TextEditingController _field = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    final text = widget.initialText;
+    if (text != null) _field.text = text;
+  }
 
   @override
   void dispose() {

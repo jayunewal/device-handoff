@@ -90,6 +90,7 @@ Future<FakeSession> _show(
   Size size = const Size(900, 1600),
   FileChooser? chooser,
   ScreenKeeper? screen,
+  String? initialText,
 }) async {
   final shown = session ?? _session();
   tester.view
@@ -104,6 +105,7 @@ Future<FakeSession> _show(
         now: () => _now,
         chooser: chooser ?? _Chooser(),
         screen: screen ?? FakeScreen(),
+        initialText: initialText,
       ),
     ),
   );
@@ -236,6 +238,39 @@ void main() {
     expect(find.text('Sent the link to Kitchen iPad.'), findsOneWidget);
     expect(_typed(tester), isEmpty);
     expect(_enabled(tester, 'Send text'), isFalse, reason: 'nothing to send');
+  });
+
+  testWidgets(
+    'opens with what another app handed over, and sends it on a tap',
+    (tester) async {
+      final session = await _show(
+        tester,
+        initialText: 'https://example.com/plan',
+      );
+
+      expect(_typed(tester), 'https://example.com/plan');
+      expect(
+        find.text('It will be sent as a link, which Kitchen iPad can open.'),
+        findsOneWidget,
+      );
+      expect(_enabled(tester, 'Send link'), isTrue);
+      expect(session.sent, isEmpty, reason: 'nothing goes before the tap');
+
+      await tester.tap(find.text('Send link'));
+      await tester.pumpAndSettle();
+
+      expect(session.sent.map((sent) => (sent.id, sent.url, sent.text)), [
+        (_kitchenIpad.id, 'https://example.com/plan', null),
+      ]);
+      expect(_typed(tester), isEmpty);
+    },
+  );
+
+  testWidgets('opens with nothing in the box when nothing was handed over', (
+    tester,
+  ) async {
+    await _show(tester);
+    expect(_typed(tester), isEmpty);
   });
 
   testWidgets('sends text exactly as it was typed', (tester) async {

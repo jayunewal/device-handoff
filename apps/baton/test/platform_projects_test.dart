@@ -12,6 +12,7 @@ import 'package:baton/src/continue_reader.dart';
 import 'package:baton/src/file_shower.dart';
 import 'package:baton/src/notice_access.dart';
 import 'package:baton/src/rust_backend.dart';
+import 'package:baton/src/shares.dart';
 import 'package:baton/src/support_folder.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -261,6 +262,87 @@ void main() {
       ),
     );
   });
+
+  test(
+    'the iPhone app answers where Baton asks for what a shortcut handed over',
+    () {
+      // The channel and its question are named in lib/src/shares.dart and in the app. If they
+      // differ, a shortcut that sends with Baton opens the app and nothing is offered, and
+      // nothing else fails. The channel is registered with the others, or nothing answers.
+      final swift = _read('ios/Runner/SendWithBaton.swift');
+      expect(swift, contains('name: "${PlatformShareKeeper.channelName}"'));
+      expect(swift, contains('case "${PlatformShareKeeper.question}":'));
+      expect(
+        _read('ios/Runner/AppDelegate.swift'),
+        contains(
+          '    answerAboutShares(messenger: engineBridge.applicationRegistrar.messenger())',
+        ),
+      );
+    },
+  );
+
+  test(
+    'the iPhone app has the action that a shortcut sends with, and builds it',
+    () {
+      // The action is what Shortcuts lists for Baton. It needs iOS 16, which the app is built to
+      // run before, so it is marked for it; and it brings the app to the front, because the app
+      // is what sends. A file that is not in the project is not built, and nothing fails.
+      final swift = _read('ios/Runner/SendWithBaton.swift');
+      expect(
+        swift,
+        contains(
+          '@available(iOS 16.0, *)\nstruct SendWithBatonIntent: AppIntent {',
+        ),
+      );
+      expect(swift, contains('static let openAppWhenRun = true'));
+      final project = _read('ios/Runner.xcodeproj/project.pbxproj');
+      expect(
+        RegExp(r'SendWithBaton\.swift in Sources').allMatches(project),
+        hasLength(2),
+        reason: 'the file to build, and its place in the build phase',
+      );
+      expect(project, contains('path = SendWithBaton.swift;'));
+      expect(project, contains('IPHONEOS_DEPLOYMENT_TARGET = 15.0;'));
+    },
+  );
+
+  test('what a shortcut hands to Baton is held in memory and nowhere else', () {
+    // It can be a password, or an address with a token in it. Nothing here keeps it on the
+    // device, writes it to a log, or gives it to anything but the app that asks for it.
+    final swift = _read('ios/Runner/SendWithBaton.swift');
+    for (final elsewhere in [
+      'UserDefaults',
+      'FileManager',
+      'SecItem',
+      'NSLog',
+      'print(',
+      'write(',
+    ]) {
+      expect(swift, isNot(contains(elsewhere)), reason: elsewhere);
+    }
+  });
+
+  test(
+    'the iPhone app asks for no capability that a free Apple ID cannot give',
+    () {
+      // An app group, push and the like need a paid account, and the app is installed with a free
+      // one. A share extension needs an app group to hand what it was given to the app, which is
+      // why the share sheet reaches Baton through a shortcut.
+      final entitlements = Directory('ios/Runner')
+          .listSync()
+          .whereType<File>()
+          .where((file) => file.path.endsWith('.entitlements'));
+      expect(entitlements, isEmpty);
+      expect(
+        _read('ios/Runner.xcodeproj/project.pbxproj'),
+        isNot(contains('CODE_SIGN_ENTITLEMENTS')),
+      );
+      expect(
+        _read('ios/Runner/Info.plist'),
+        isNot(contains('application-groups')),
+      );
+    },
+  );
 
   test('the Mac app answers what Baton asks about notifications', () {
     // The channel, its questions and the words of its answers are named in
