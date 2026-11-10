@@ -235,6 +235,41 @@ async fn each_part_is_given_alone_and_a_mac_with_nothing_open_gives_nothing() {
 }
 
 #[tokio::test]
+async fn a_page_that_a_phone_would_not_open_is_left_out_and_the_text_is_still_given() {
+    let pair = Pair::new().await;
+    pair.allow();
+
+    // A file, a blank page and the start page of a browser are nothing to continue, and the name of
+    // a file says more of the person's work than they chose to share.
+    for url in [
+        "file:///Users/studio/Documents/taxes-2026.pdf",
+        "about:blank",
+        "chrome://newtab/",
+    ] {
+        let read = ContinueItems {
+            page: Some(ContinuePage {
+                url: url.to_owned(),
+                title: Some("Taxes 2026".to_owned()),
+            }),
+            clipboard: Some("a line that was copied".to_owned()),
+        };
+        let (outcome, _) = pair.asks_and_is_read_for(Some(read)).await;
+        assert_eq!(
+            outcome,
+            ContinueOutcome::Items(ContinueItems {
+                page: None,
+                clipboard: Some("a line that was copied".to_owned()),
+            }),
+            "{url}"
+        );
+    }
+
+    // A page of the web is given, as it was read.
+    let (outcome, _) = pair.asks_and_is_read_for(Some(what_is_open())).await;
+    assert_eq!(outcome, ContinueOutcome::Items(what_is_open()));
+}
+
+#[tokio::test]
 async fn a_phone_is_turned_away_until_the_person_allows_it_and_the_mac_is_not_read_for_it() {
     let pair = Pair::new().await;
     let mut events = pair.mac.app.events();

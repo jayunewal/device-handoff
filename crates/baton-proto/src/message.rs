@@ -348,8 +348,9 @@ pub enum ContinueReply {
     Items(ContinueItems),
     /// The device gave nothing, and says why: [`DeclineReason::Blocked`] where its person has not
     /// allowed the asking device, [`DeclineReason::Unsupported`] where it cannot read what its
-    /// person works on, [`DeclineReason::RateLimited`] where the asking device asks too often,
-    /// and [`DeclineReason::Other`] where it could not read it just now.
+    /// person works on, [`DeclineReason::RateLimited`] where the asking device asks too often or
+    /// a question is being read already, and [`DeclineReason::Other`] where it could not read it
+    /// just now.
     Declined(DeclineReason),
 }
 

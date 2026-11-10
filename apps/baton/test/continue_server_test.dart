@@ -127,6 +127,62 @@ void main() {
     expect(session.continueAnswers, [(request: 4, items: _report)]);
   });
 
+  test('starts no second read while one is out, and says so at once', () async {
+    final session = _session();
+    final reader = FakeContinueReader(items: _report)..holdRead();
+    await _start(session, reader);
+
+    await _ask(session, 1);
+    // The library gave up on the first, and the device asks again.
+    await _ask(session, 2);
+    await _ask(session, 3);
+
+    expect(reader.reads, 1, reason: 'the system is not asked behind its back');
+    expect(session.continueAnswers, [
+      (request: 2, items: null),
+      (request: 3, items: null),
+    ]);
+
+    // The first comes back, late, and is handed over all the same: the library turns it down if
+    // nobody waits for it.
+    reader.releaseRead();
+    await pumpEventQueue();
+    expect(session.continueAnswers.last, (request: 1, items: _report));
+  });
+
+  test('reads again once the one that was out has come back', () async {
+    final session = _session();
+    final reader = FakeContinueReader(items: _report)..holdRead();
+    await _start(session, reader);
+    await _ask(session, 1);
+    reader.releaseRead();
+    await pumpEventQueue();
+
+    reader.items = const ContinueItems(clipboard: 'a newer line');
+    await _ask(session, 2);
+
+    expect(reader.reads, 2);
+    expect(session.continueAnswers.last, (
+      request: 2,
+      items: const ContinueItems(clipboard: 'a newer line'),
+    ));
+  });
+
+  test('reads again after a read that failed', () async {
+    final session = _session();
+    final reader = FakeContinueReader(items: _report)
+      ..readFailure = StateError('the Mac app is gone');
+    await _start(session, reader);
+    await _ask(session, 1);
+    expect(session.continueAnswers, [(request: 1, items: null)]);
+
+    reader.readFailure = null;
+    await _ask(session, 2);
+
+    expect(reader.reads, 2);
+    expect(session.continueAnswers.last, (request: 2, items: _report));
+  });
+
   test('is not troubled by an answer that comes too late', () async {
     final session = _session();
     session.continueAnswerTaken = false;

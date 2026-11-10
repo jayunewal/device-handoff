@@ -143,6 +143,21 @@ pub struct ContinueItems {
     pub clipboard: Option<String>,
 }
 
+impl ContinueItems {
+    /// These items without the page, if a screen would not open it in the web browser
+    /// ([`web_address`]): a file on this device, a blank page, the start page of a browser, a page
+    /// of the browser itself, and the like. The device that asks offers to open the page it is
+    /// given, and one that it cannot open is a button that does nothing. A file's name also says
+    /// more about the person's work than a title does, and it leaves this device for nothing. The
+    /// text stays.
+    pub(crate) fn without_a_page_that_would_not_open(self) -> Self {
+        Self {
+            page: self.page.filter(|page| web_address(&page.url).is_some()),
+            clipboard: self.clipboard,
+        }
+    }
+}
+
 // The text may be a password, so only its size is printed.
 impl fmt::Debug for ContinueItems {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1530,6 +1545,48 @@ mod tests {
             text.web_address(),
             None,
             "text is not a link, whatever it holds"
+        );
+    }
+
+    #[test]
+    fn a_page_that_would_not_open_is_left_out_of_what_is_given_to_continue() {
+        let read = |url: &str| ContinueItems {
+            page: Some(ContinuePage {
+                url: url.to_owned(),
+                title: Some("A title".to_owned()),
+            }),
+            clipboard: Some("the text".to_owned()),
+        };
+        for url in [
+            "file:///Users/studio/Documents/taxes.pdf",
+            "about:blank",
+            "chrome://newtab/",
+            "view-source:https://example.com/",
+            "chrome-extension://abc/page.html",
+            "javascript:alert(1)",
+            "smb://server/share",
+            "example.com",
+            "",
+        ] {
+            let given = read(url).without_a_page_that_would_not_open();
+            assert_eq!(given.page, None, "{url}");
+            assert_eq!(given.clipboard.as_deref(), Some("the text"), "{url}");
+        }
+        // A page that opens is given as it was read, not as it would be written out.
+        for url in [
+            "https://example.com/report?q=1",
+            "http://localhost:3000/app#top",
+            "HTTPS://EXAMPLE.COM",
+        ] {
+            assert_eq!(
+                read(url).without_a_page_that_would_not_open(),
+                read(url),
+                "{url}"
+            );
+        }
+        assert_eq!(
+            ContinueItems::default().without_a_page_that_would_not_open(),
+            ContinueItems::default()
         );
     }
 

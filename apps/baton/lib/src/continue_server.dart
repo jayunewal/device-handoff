@@ -18,6 +18,12 @@ import 'continue_reader.dart';
 ///
 /// It listens for as long as the app runs, also with no window on the screen: this is how a phone
 /// reaches a Mac that nobody sits at, with only its menu bar item.
+///
+/// One read is out at a time. The library gives up on a read after a few seconds, but the system
+/// may be slower than that: a browser that hangs, or the question that it puts to the person. The
+/// Mac app reads on one queue, so a second read would only wait behind the first, and a device that
+/// asks again and again would fill the queue. A question that comes while a read is out is told at
+/// once that it could not be read.
 class ContinueServer {
   ContinueServer(this._session, this._reader);
 
@@ -25,6 +31,7 @@ class ContinueServer {
   final ContinueReader _reader;
   StreamSubscription<Event>? _events;
   bool _disposed = false;
+  bool _reading = false;
 
   /// Starts listening for events.
   Future<void> start() async {
@@ -48,15 +55,28 @@ class ContinueServer {
   }
 
   Future<void> _answer(int request) async {
+    if (_reading) {
+      // The one before is not back yet. The device that asked is told that it could not be read,
+      // which is what `null` says.
+      _give(request, null);
+      return;
+    }
+    _reading = true;
     ContinueItems? items;
     try {
       items = await _reader.read();
     } on Object catch (e) {
       // The device that asked is told that it could not be read, which is what `null` says.
       debugPrint('Baton: continuing: ${e.runtimeType}');
+    } finally {
+      _reading = false;
     }
-    // The library gives a few seconds to read. An answer that comes later is turned down, and the
-    // device has been told already.
+    _give(request, items);
+  }
+
+  /// Hands [items] to the library as the answer to [request]. The library gives a few seconds to
+  /// read: an answer that comes later is turned down, and the device has been told already.
+  void _give(int request, ContinueItems? items) {
     try {
       _session.answerContinue(request, items);
     } on Object catch (e) {
