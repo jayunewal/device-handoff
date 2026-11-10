@@ -991,8 +991,10 @@ impl Node {
     /// Hands `item` to a paired device and reports what it did with it.
     ///
     /// A connection that has gone stale since the last use is replaced and the
-    /// item sent again under the same id, which the receiver recognises, so an item
-    /// is never handled twice.
+    /// item sent again under the same id, which the receiver recognises, so one call
+    /// never hands an item over twice. Each call makes an id of its own: a caller that
+    /// calls again for an item whose answer was lost sends a new handoff, and a device
+    /// that took the item the first time takes it again.
     ///
     /// # Errors
     ///

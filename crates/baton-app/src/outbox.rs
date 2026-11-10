@@ -30,9 +30,11 @@
 //! - The person cancelled it, or unpaired the device. Those are the person's own acts, and nothing
 //!   is said of them.
 //!
-//! An item is delivered at least once and, if Baton closes at the very moment that the device has
-//! taken it, perhaps twice: the item is struck out when the answer comes, and nothing can make the
-//! two steps one.
+//! An item is delivered at least once and, in two cases, perhaps twice. It is struck out when the
+//! device's answer comes, and nothing can make taking an item and hearing about it one step: Baton
+//! may close after the device took the item and before the strike-out is written, and the answer
+//! may be lost on the way, which reads as a device that cannot be reached. Either way the item goes
+//! again as a new send, with a number of its own, so the device cannot tell the repeat.
 
 use std::{future::Future, sync::Arc, time::Duration};
 

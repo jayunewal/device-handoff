@@ -1207,7 +1207,9 @@ impl App {
                 if error.kind() != ErrorKind::Unreachable {
                     return Err(error);
                 }
-                // Not there: it waits, and is sent when it is.
+                // Not there: it waits, and is sent when it is. A device that took the item and
+                // whose answer was lost looks the same from here, and is sent it again
+                // (docs/adr/0016-outbox.md, "An item is sent at least once").
                 self.queue(peer, &name, item).await
             }
         }

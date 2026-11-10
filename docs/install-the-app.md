@@ -186,7 +186,7 @@ If the other device cannot be reached, the link or the text is not lost. It wait
 - What waits is kept in a file that only you can read, on the device you sent from, until it is sent, cancelled or a day old, and it goes to the device you chose and no other. **Forget this device** cancels what waits for it, without a word.
 - Files do not wait. The other device is asked before anything is kept, so it has to be open, with someone there to say yes.
 - A Mac whose window is closed does not tell you how an item ended: the sentence shows in the window.
-- If Baton closes at the very moment that the other device takes an item, the item can be sent again the next time Baton runs, and arrive twice.
+- An item can arrive twice, though rarely. If Baton closes at the very moment that the other device takes an item, the item is sent again the next time Baton runs. And if the other device takes an item and its answer is lost on the way, for example because the connection drops, Baton cannot know that it was taken, and sends it again.
 - This has been built and tested without real devices, and has not been tried on a Mac and a phone yet.
 
 ### From the share sheet
