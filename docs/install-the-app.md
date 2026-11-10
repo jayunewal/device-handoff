@@ -163,7 +163,7 @@ You need two paired devices, with Baton open on both. They should be on the same
 
 1. On the device you send from, tap the other device's row on the **Devices** tab, or the paper plane at the end of it. A screen called **Send to** and the device's name opens.
 2. Type or paste a link or some text. **Paste** puts what is on the clipboard into the box. Under the box Baton says how it will go: a web address on its own goes as a link, which the other device can open, and anything else goes as text, which the other device can copy. Text arrives exactly as you wrote it.
-3. Tap **Send link** or **Send text**. Baton says **Sent the link to** or **Sent the text to** and the device's name, and empties the box. If it did not work, it says why and leaves what you typed, so that you can try again.
+3. Tap **Send link** or **Send text**. Baton says **Sent the link to** or **Sent the text to** and the device's name, and empties the box. If the other device cannot be reached, Baton says that the link or the text **waits here**, and empties the box: see **When the other device is not open**, below. If it did not work for another reason, it says why and leaves what you typed, so that you can try again.
 4. On the other device a notice appears at the bottom, such as "Kitchen iPad sent you a link", with a **View** button, and the **Inbox** tab shows how many items are new. The notice says who sent what kind of thing, never what it says: it could be a password, and a notice can be seen by anyone who is looking at the screen. Tap **View**, or the **Inbox** tab. On a Mac whose Baton window is closed, behind other windows or not in front, the Mac shows a notification of the system instead, if you allowed notifications for Baton: it says the same, and a click on it brings Baton's window forward. The same goes for a device that asks to send you files and one that offers to show you a window or its screen, which wait for your yes in the window.
 
 The inbox lists what other devices sent, newest first, and keeps it until you remove it, also after you close the app. On a link, **Open** opens it in the web browser, **Copy** copies it, and the bin removes it. Text can be copied and removed. Long text is cut short until you tap **Show more**. The icon at the top of the inbox clears all of it, after asking.
@@ -172,9 +172,22 @@ Baton opens only web addresses, the ones that start with `http://` or `https://`
 
 **Check the connection** on the send screen asks the other device to answer, and says how long it took and whether the traffic went over your Wi-Fi, directly over the internet or through the relay.
 
-In this version a device receives only while Baton is running on it. On an iPhone or iPad that means open on the screen: a locked phone, or one that has Baton in the background, cannot be reached, and a send to it ends after a while with a message that says so. Receiving on a locked phone needs a push notification, which is not built yet.
+In this version a device receives only while Baton is running on it. On an iPhone or iPad that means open on the screen: a locked phone, or one that has Baton in the background, cannot be reached. Receiving on a locked phone needs a push notification, which is not built yet. A link or some text that you send to a device that cannot be reached waits and is sent later: see **When the other device is not open**, below.
 
-Until then, keep Baton open and the phone in your hand when you send to it, or lengthen **Auto-Lock** while you try Baton (**Settings**, **Display & Brightness**, **Auto-Lock**) and set it back afterwards. If a send to a phone keeps ending with **Could not reach**, check **Low Power Mode** first: it sets Auto-Lock to 30 seconds. Baton keeps the screen on only while two devices pair (see **Pair two devices**) and while files go (see **Send files**). At any other time Auto-Lock works as you set it, because a phone that never locks is the opposite of what Baton is for.
+To have what you send arrive at once, keep Baton open and the phone in your hand when you send to it, or lengthen **Auto-Lock** while you try Baton (**Settings**, **Display & Brightness**, **Auto-Lock**) and set it back afterwards. If what you send to a phone keeps waiting, check **Low Power Mode** first: it sets Auto-Lock to 30 seconds. Baton keeps the screen on only while two devices pair (see **Pair two devices**) and while files go (see **Send files**). At any other time Auto-Lock works as you set it, because a phone that never locks is the opposite of what Baton is for.
+
+### When the other device is not open
+
+If the other device cannot be reached, the link or the text is not lost. It waits on the device that you sent from, and Baton sends it as soon as the other device can be reached, for up to a day. The send screen says so, and lists what waits for that device under **Waiting to be sent**: what each item is, such as **A link (example.com)** or **Some text (23 characters)**, and never what it says, because it can be a password; how long ago you sent it; when Baton gives up; and a **Cancel** button. At the bottom of the screen, whichever screen you are on, Baton says how each item ended: **Sent a link (example.com) to Kitchen iPad.**, or that the device did not take it and why, or that it could not be reached for a day and Baton gave up. Cancelling says nothing more than that it will not be sent.
+
+- A Mac keeps trying while Baton runs, also with its window closed (see **The Mac app**), unless the Mac is asleep. An iPhone or an iPad tries only while Baton is open on the screen, so what waits on a phone is sent the next time you open Baton there.
+- A device that comes back is sent what waits within about half a minute, and not at the very moment.
+- At most 50 items wait, and 20 for one device. When they are full, Baton says so and takes no more: cancel some.
+- What waits is kept in a file that only you can read, on the device you sent from, until it is sent, cancelled or a day old, and it goes to the device you chose and no other. **Forget this device** cancels what waits for it, without a word.
+- Files do not wait. The other device is asked before anything is kept, so it has to be open, with someone there to say yes.
+- A Mac whose window is closed does not tell you how an item ended: the sentence shows in the window.
+- If Baton closes at the very moment that the other device takes an item, the item can be sent again the next time Baton runs, and arrive twice.
+- This has been built and tested without real devices, and has not been tried on a Mac and a phone yet.
 
 ### From the share sheet
 

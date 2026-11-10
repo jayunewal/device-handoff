@@ -84,6 +84,45 @@ void main() {
     );
   });
 
+  test('the time left until a day is up is said in hours, then minutes', () {
+    final start = DateTime.fromMillisecondsSinceEpoch(1760529600 * 1000);
+    String left(Duration d) =>
+        until(start.add(d).millisecondsSinceEpoch ~/ 1000, start);
+    const day = Duration(hours: 24);
+    expect(left(day), 'in 24 hours');
+    // A part of an hour counts as the whole hour, so a link that was queued a minute ago still
+    // has the day.
+    expect(left(day - const Duration(minutes: 1)), 'in 24 hours');
+    expect(left(day - const Duration(minutes: 61)), 'in 23 hours');
+    expect(left(const Duration(hours: 2, minutes: 1)), 'in 3 hours');
+    expect(left(const Duration(hours: 2)), 'in 2 hours');
+    expect(left(const Duration(hours: 1)), 'in 1 hour');
+    expect(
+      left(const Duration(minutes: 59, seconds: 30)),
+      'in 1 hour',
+      reason: 'not "in 60 minutes"',
+    );
+    expect(left(const Duration(minutes: 59)), 'in 59 minutes');
+    expect(left(const Duration(minutes: 40)), 'in 40 minutes');
+    expect(left(const Duration(minutes: 1)), 'in 1 minute');
+    expect(left(const Duration(seconds: 61)), 'in 2 minutes');
+    expect(left(const Duration(seconds: 30)), 'in 1 minute');
+    expect(left(const Duration(seconds: 1)), 'in 1 minute');
+    expect(left(Duration.zero), 'in less than a minute');
+    expect(
+      left(const Duration(hours: -3)),
+      'in less than a minute',
+      reason: 'a time that has passed',
+    );
+  });
+
+  test('a phrase that opens a line gets a capital letter', () {
+    expect(capitalized('a link (example.com)'), 'A link (example.com)');
+    expect(capitalized('some text (5 characters)'), 'Some text (5 characters)');
+    expect(capitalized('Already'), 'Already');
+    expect(capitalized(''), '');
+  });
+
   test('a message from the library is made to read as a sentence', () {
     expect(
       sentence('pairing was not accepted: the other device declined'),

@@ -18,6 +18,7 @@ import '../inbox_controller.dart';
 import '../links.dart';
 import '../mac_passwords.dart';
 import '../notice_access.dart';
+import '../outbox_controller.dart';
 import '../owner_check.dart';
 import '../scanner.dart';
 import '../shares.dart';
@@ -133,8 +134,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     widget.session,
     widget.continueReader,
   );
+  late final OutboxController _outbox = OutboxController(widget.session);
   late final ArrivalNotices _arrivalNotices;
   StreamSubscription<Received>? _arrivals;
+  StreamSubscription<OutboxSettled>? _outboxEnds;
   StreamSubscription<TransferRequest>? _requests;
   StreamSubscription<WindowRequest>? _windowRequests;
   StreamSubscription<WindowSession>? _windowsStarted;
@@ -150,6 +153,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _arrivals = _inbox.arrivals.listen(_arrived);
+    _outboxEnds = _outbox.settled.listen(_outboxEnded);
     _requests = _transfers.asked.listen(_asked);
     _windowRequests = _windows.asked.listen(_windowAsked);
     _windowsStarted = _windows.started.listen(_showWindow);
@@ -161,6 +165,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       window: widget.alwaysOn,
     );
     unawaited(_inbox.start());
+    unawaited(_outbox.start());
     unawaited(_transfers.start());
     unawaited(_windows.start());
     unawaited(_unlockNotices.start());
@@ -184,12 +189,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_arrivals?.cancel());
+    unawaited(_outboxEnds?.cancel());
     unawaited(_requests?.cancel());
     unawaited(_windowRequests?.cancel());
     unawaited(_windowsStarted?.cancel());
     unawaited(_handed?.cancel());
     _arrivalNotices.dispose();
     _inbox.dispose();
+    _outbox.dispose();
     _transfers.dispose();
     _windows.dispose();
     _unlockNotices.dispose();
@@ -276,6 +283,26 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         SnackBar(
           content: Text('${received.fromName} sent you $what.'),
           action: SnackBarAction(label: 'View', onPressed: _view),
+        ),
+      );
+  }
+
+  /// Says how a link or some text that waited to be sent ended: the device took it, did not take
+  /// it, or could not be reached for a day. It is the sentence of the library as it is, which says
+  /// what the item was and not what it said, and it shows on whatever screen is in front, because
+  /// the person has long since left the one they sent from. An item that the person gave up on,
+  /// or whose device they forgot, says nothing.
+  void _outboxEnded(OutboxSettled ended) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(visibleText(ended.message)),
+          // Long enough to read the sentence of an item that was given up on.
+          duration: ended.end == OutboxEnd.delivered
+              ? const Duration(seconds: 6)
+              : const Duration(seconds: 12),
         ),
       );
   }

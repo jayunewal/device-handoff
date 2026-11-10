@@ -206,12 +206,18 @@ class _RustSession implements Session {
       _RustFileTransfer(await _baton.sendFiles(id: id, paths: paths));
 
   @override
-  Future<void> sendLink(String id, String url, {String? title}) =>
+  Future<SendResult> sendLink(String id, String url, {String? title}) =>
       _baton.sendLink(id: id, url: url, title: title);
 
   @override
-  Future<void> sendText(String id, String text) =>
+  Future<SendResult> sendText(String id, String text) =>
       _baton.sendText(id: id, text: text);
+
+  @override
+  List<OutboxItem> outbox() => _baton.outbox();
+
+  @override
+  Future<bool> cancelOutbox(int id) => _baton.cancelOutbox(id: id);
 
   @override
   Future<Reach> ping(String id) => _baton.ping(id: id);

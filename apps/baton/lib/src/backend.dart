@@ -24,6 +24,8 @@ export 'rust/api/model.dart'
         Event_OfferEnded,
         Event_PairingRequestEnded,
         Event_PairingRequested,
+        Event_OutboxChanged,
+        Event_OutboxSettled,
         Event_Received,
         Event_Resync,
         Event_TransferEnded,
@@ -55,6 +57,9 @@ export 'rust/api/model.dart'
         OfferOutcome_Expired,
         OfferOutcome_Failed,
         OfferOutcome_Paired,
+        OutboxEnd,
+        OutboxItem,
+        OutboxSettled,
         PairingRequest,
         Platform,
         PreviewName,
@@ -71,6 +76,7 @@ export 'rust/api/model.dart'
         ScreenStarted,
         ScreenStarted_NotStarted,
         ScreenStarted_Started,
+        SendResult,
         SendStage,
         StartAccess,
         TransferEnd,
@@ -206,14 +212,28 @@ abstract interface class Session {
   /// message says why, `notPaired`, or `stopped`.
   Future<FileTransfer> sendFiles(String id, List<String> paths);
 
-  /// Sends a web link to a paired device. Throws a `BatonError` that says why not, of kind
-  /// `badItem` if [url] is not a full web address, `notPaired`, `unreachable` if the device
-  /// cannot be reached, or `declined` if it answers and does not take the link.
-  Future<void> sendLink(String id, String url, {String? title});
+  /// Sends a web link to a paired device. A device that cannot be reached is not an error: the
+  /// link waits in the outbox on this device, is sent as soon as the device can be reached, for up
+  /// to a day, and the answer is `SendResult.waiting` (`Event_OutboxSettled` says how it ended).
+  /// Throws a `BatonError` that says why not, of kind `badItem` if [url] is not a full web address,
+  /// `notPaired`, `declined` if the device answers and does not take the link, or `unreachable` if
+  /// it cannot be reached and nothing more can wait for it (the outbox is full).
+  Future<SendResult> sendLink(String id, String url, {String? title});
 
   /// Sends text to a paired device. Throws a `BatonError` as [sendLink] does, with `badItem`
-  /// for text that is empty or longer than the settings allow.
-  Future<void> sendText(String id, String text);
+  /// for text that is empty or longer than the settings allow, and text that cannot be sent now
+  /// waits in the outbox as a link does.
+  Future<SendResult> sendText(String id, String text);
+
+  /// What waits to be sent to a device that could not be reached, the item that has waited
+  /// longest first. Read it again when `Event_OutboxChanged` comes. It says what each item is
+  /// without showing it: [OutboxItem.summary].
+  List<OutboxItem> outbox();
+
+  /// Gives up on sending one item that waits in the outbox, because the person said so. Returns
+  /// whether there was such an item: one that was sent a moment ago is not. Throws a `BatonError`
+  /// of kind `stopped`.
+  Future<bool> cancelOutbox(int id);
 
   /// Checks that a paired device answers, and how its traffic gets here. Throws a
   /// `BatonError` of kind `notPaired` or `unreachable`.

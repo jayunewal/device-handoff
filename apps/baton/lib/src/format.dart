@@ -70,10 +70,27 @@ String since(int seconds, DateTime now) {
   return then.year == now.year ? 'on $day' : 'on $day, ${then.year}';
 }
 
+/// How long is left until [seconds], counted from the Unix epoch as the app layer gives it, in
+/// words that suit what lasts for hours: "in 24 hours", "in 40 minutes" and, for the last minute
+/// and for a time that has passed, "in less than a minute". A part of a unit counts as the whole,
+/// so "in 24 hours" is what an item that was just queued for a day says.
+String until(int seconds, DateTime now) {
+  final then = DateTime.fromMillisecondsSinceEpoch(seconds * 1000);
+  final minutes = (then.difference(now).inSeconds + 59) ~/ 60;
+  if (minutes < 1) return 'in less than a minute';
+  if (minutes < 60) return 'in ${_count(minutes, 'minute')}';
+  return 'in ${_count((minutes + 59) ~/ 60, 'hour')}';
+}
+
 /// When a device was last heard from, in words: "seen 5 minutes ago", "seen on Oct 14" or
 /// "not seen yet".
 String lastSeen(int? seconds, DateTime now) =>
     seconds == null ? 'not seen yet' : 'seen ${since(seconds, now)}';
+
+/// [text] with a capital letter at the start, for a phrase that opens a line: "a link (example.com)"
+/// is "A link (example.com)".
+String capitalized(String text) =>
+    text.isEmpty ? text : text[0].toUpperCase() + text.substring(1);
 
 String _count(int n, String unit) => n == 1 ? '1 $unit' : '$n ${unit}s';
 

@@ -53,6 +53,7 @@ void main() {
       ]);
       expect(controller.outcome!.message, 'Sent the link to Kitchen iPad.');
       expect(controller.outcome!.ok, isTrue);
+      expect(controller.outcome!.waiting, isFalse);
     },
   );
 
@@ -135,6 +136,56 @@ void main() {
       );
       expect(controller.outcome!.ok, isFalse);
       expect(controller.sending, isFalse);
+    },
+  );
+
+  test('a link that cannot be sent now waits, and is told as waiting', () async {
+    final session = _session()..sendResult = SendResult.waiting;
+    final controller = _controller(session);
+
+    expect(await controller.send('https://example.com/a'), isTrue);
+
+    expect(
+      controller.outcome!.message,
+      'Kitchen iPad cannot be reached now, so the link waits here for up to a '
+      'day. Baton sends it as soon as Kitchen iPad can be reached.',
+    );
+    expect(
+      controller.outcome!.ok,
+      isTrue,
+      reason: 'nothing for the person to fix',
+    );
+    expect(controller.outcome!.waiting, isTrue);
+    expect(controller.sending, isFalse);
+  });
+
+  test('text that cannot be sent now waits, and is told as text', () async {
+    final session = _session()..sendResult = SendResult.waiting;
+    final controller = _controller(session);
+
+    expect(await controller.send('The door code is 4711'), isTrue);
+
+    expect(
+      controller.outcome!.message,
+      'Kitchen iPad cannot be reached now, so the text waits here for up to a '
+      'day. Baton sends it as soon as Kitchen iPad can be reached.',
+    );
+    expect(controller.outcome!.waiting, isTrue);
+  });
+
+  test(
+    'the next send is told as it ended, not as the one that waited',
+    () async {
+      final session = _session()..sendResult = SendResult.waiting;
+      final controller = _controller(session);
+      await controller.send('first');
+      expect(controller.outcome!.waiting, isTrue);
+
+      session.sendResult = SendResult.delivered;
+      await controller.send('second');
+
+      expect(controller.outcome!.message, 'Sent the text to Kitchen iPad.');
+      expect(controller.outcome!.waiting, isFalse);
     },
   );
 

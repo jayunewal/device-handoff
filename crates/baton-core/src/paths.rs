@@ -88,6 +88,12 @@ impl DataDir {
         self.root.join("inbox.json")
     }
 
+    /// The file of links and text that wait to be sent to devices that could not be reached. See
+    /// [`Outbox`](crate::Outbox).
+    pub fn outbox_file(&self) -> PathBuf {
+        self.root.join("outbox.json")
+    }
+
     /// The file that remembers the transfers of files that other devices may still hold for this
     /// one, from one run of the program to the next. See [`Holds`](crate::transfer::send::Holds).
     pub fn holds_file(&self) -> PathBuf {
@@ -136,6 +142,7 @@ mod tests {
         assert_eq!(dir.root(), root);
         assert_eq!(dir.trust_file(), root.join("devices.json"));
         assert_eq!(dir.holds_file(), root.join("holds.json"));
+        assert_eq!(dir.outbox_file(), root.join("outbox.json"));
     }
 
     #[cfg(unix)]

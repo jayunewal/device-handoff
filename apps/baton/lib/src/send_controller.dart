@@ -7,12 +7,17 @@ import 'format.dart';
 
 /// What happened to the last thing the person asked for, in a sentence to show them.
 class Outcome {
-  const Outcome(this.message, {required this.ok});
+  const Outcome(this.message, {required this.ok, this.waiting = false});
 
   final String message;
 
-  /// Whether it worked.
+  /// Whether it worked. A send that waits did, too: nothing went wrong that the person has to
+  /// act on.
   final bool ok;
+
+  /// Whether what the person sent waits in the outbox, because the device could not be reached
+  /// (`SendResult.waiting`). It is not sent yet, and the sentence says so.
+  final bool waiting;
 }
 
 /// Sends a link or some text to one paired device, and checks that the device can be reached.
@@ -56,23 +61,32 @@ class SendController extends ChangeNotifier {
   }
 
   /// Sends [text] to the device, as a link if it is one and as text if not. Returns whether it
-  /// was sent. [outcome] says what to tell the person either way.
+  /// left the box: it was sent, or the device could not be reached and it waits in the outbox,
+  /// to be sent as soon as the device can be. [outcome] says which, and what to tell the person
+  /// if it did not.
   Future<bool> send(String text) async {
     if (_sending || text.trim().isEmpty) return false;
     final link = linkIn(text);
+    final what = link != null ? 'link' : 'text';
     _sending = true;
     _outcome = null;
     notifyListeners();
     try {
-      if (link != null) {
-        await _session.sendLink(device.id, link);
-      } else {
-        await _session.sendText(device.id, text);
-      }
-      _outcome = Outcome(
-        'Sent the ${link != null ? 'link' : 'text'} to ${device.name}.',
-        ok: true,
-      );
+      final result = link != null
+          ? await _session.sendLink(device.id, link)
+          : await _session.sendText(device.id, text);
+      _outcome = switch (result) {
+        SendResult.delivered => Outcome(
+          'Sent the $what to ${device.name}.',
+          ok: true,
+        ),
+        SendResult.waiting => Outcome(
+          '${device.name} cannot be reached now, so the $what waits here for up '
+          'to a day. Baton sends it as soon as ${device.name} can be reached.',
+          ok: true,
+          waiting: true,
+        ),
+      };
       return true;
     } on BatonError catch (e) {
       _outcome = Outcome(sentence(e.message), ok: false);

@@ -110,6 +110,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   OfferOutcome dco_decode_box_autoadd_offer_outcome(dynamic raw);
 
   @protected
+  OutboxSettled dco_decode_box_autoadd_outbox_settled(dynamic raw);
+
+  @protected
   PairingRequest dco_decode_box_autoadd_pairing_request(dynamic raw);
 
   @protected
@@ -188,6 +191,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<Device> dco_decode_list_device(dynamic raw);
 
   @protected
+  List<OutboxItem> dco_decode_list_outbox_item(dynamic raw);
+
+  @protected
   List<PreviewName> dco_decode_list_preview_name(dynamic raw);
 
   @protected
@@ -227,6 +233,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
 
   @protected
+  OutboxEnd dco_decode_outbox_end(dynamic raw);
+
+  @protected
+  OutboxItem dco_decode_outbox_item(dynamic raw);
+
+  @protected
+  OutboxSettled dco_decode_outbox_settled(dynamic raw);
+
+  @protected
   PairingRequest dco_decode_pairing_request(dynamic raw);
 
   @protected
@@ -252,6 +267,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ScreenStarted dco_decode_screen_started(dynamic raw);
+
+  @protected
+  SendResult dco_decode_send_result(dynamic raw);
 
   @protected
   SendStage dco_decode_send_stage(dynamic raw);
@@ -426,6 +444,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  OutboxSettled sse_decode_box_autoadd_outbox_settled(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   PairingRequest sse_decode_box_autoadd_pairing_request(
     SseDeserializer deserializer,
   );
@@ -518,6 +541,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<Device> sse_decode_list_device(SseDeserializer deserializer);
 
   @protected
+  List<OutboxItem> sse_decode_list_outbox_item(SseDeserializer deserializer);
+
+  @protected
   List<PreviewName> sse_decode_list_preview_name(SseDeserializer deserializer);
 
   @protected
@@ -561,6 +587,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer);
 
   @protected
+  OutboxEnd sse_decode_outbox_end(SseDeserializer deserializer);
+
+  @protected
+  OutboxItem sse_decode_outbox_item(SseDeserializer deserializer);
+
+  @protected
+  OutboxSettled sse_decode_outbox_settled(SseDeserializer deserializer);
+
+  @protected
   PairingRequest sse_decode_pairing_request(SseDeserializer deserializer);
 
   @protected
@@ -586,6 +621,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   ScreenStarted sse_decode_screen_started(SseDeserializer deserializer);
+
+  @protected
+  SendResult sse_decode_send_result(SseDeserializer deserializer);
 
   @protected
   SendStage sse_decode_send_stage(SseDeserializer deserializer);
@@ -782,6 +820,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_outbox_settled(
+    OutboxSettled self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_pairing_request(
     PairingRequest self,
     SseSerializer serializer,
@@ -896,6 +940,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_list_device(List<Device> self, SseSerializer serializer);
 
   @protected
+  void sse_encode_list_outbox_item(
+    List<OutboxItem> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_preview_name(
     List<PreviewName> self,
     SseSerializer serializer,
@@ -953,6 +1003,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_outbox_end(OutboxEnd self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_outbox_item(OutboxItem self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_outbox_settled(OutboxSettled self, SseSerializer serializer);
+
+  @protected
   void sse_encode_pairing_request(
     PairingRequest self,
     SseSerializer serializer,
@@ -981,6 +1040,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_screen_started(ScreenStarted self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_send_result(SendResult self, SseSerializer serializer);
 
   @protected
   void sse_encode_send_stage(SendStage self, SseSerializer serializer);
