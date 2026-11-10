@@ -20,3 +20,4 @@ Short notes on decisions that are expensive to reverse, written when the decisio
 | [0014](0014-lock-the-mac-or-leave-it.md) | Lock the Mac or leave it: the person who ends a private session at the other device is asked |
 | [0015](0015-continue-from-another-device.md) | Continue from another device: the phone asks the Mac what is open, and the Mac reads it then |
 | [0016](0016-outbox.md) | The outbox: a link or some text for a device that is not there waits on the device that sent it |
+| [0017](0017-away-from-home.md) | Away from home: a private network that the person runs carries the way, and Baton checks it |
