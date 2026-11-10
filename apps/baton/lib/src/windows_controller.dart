@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 
 import 'awake.dart';
 import 'backend.dart';
+import 'owner_check.dart';
 import 'unlock_text.dart';
 import 'window_sound.dart';
 
@@ -92,18 +93,25 @@ typedef WindowDropped = ({
 /// has begun, because Baton on a phone works only while it is on the screen. The screen that
 /// shows the window keeps it on from there; [screen] does the asking, and tests give it one of
 /// their own.
+///
+/// A phone asks the person who holds it for their face, or the passcode of the phone, before it
+/// asks another device for its screen ([startScreen]): [ownerCheck] does the asking, and tests give
+/// it one of their own.
 class WindowsController extends ChangeNotifier {
   WindowsController(
     this._session, {
     ScreenKeeper screen = const PlatformScreenKeeper(),
+    OwnerCheck ownerCheck = const PlatformOwnerCheck(),
     this._openingLimit = const Duration(seconds: 20),
-  }) : _awake = AwakeHold(screen);
+  }) : _awake = AwakeHold(screen),
+       _owner = ownerCheck;
 
   /// How many notes are kept to be shown.
   static const keepNotes = 5;
 
   final Session _session;
   final AwakeHold _awake;
+  final OwnerCheck _owner;
   final Duration _openingLimit;
   final StreamController<WindowRequest> _asked = StreamController.broadcast();
   final StreamController<WindowSession> _started = StreamController.broadcast();
@@ -407,6 +415,12 @@ class WindowsController extends ChangeNotifier {
   /// anything to say, and in [sessions] and [started] if the screen began. Does nothing while a
   /// window is being offered or another screen is being asked for.
   ///
+  /// The person here is asked first, every time, to show their face or give the passcode of this
+  /// device ([OwnerCheck]), so that a phone that someone else picked up while it was unlocked
+  /// cannot open the screen of a Mac. Until they have, [device] is sent nothing. A person who
+  /// stops the question starts nothing and is told nothing; one who could not be confirmed starts
+  /// nothing and is told so in [notes].
+  ///
   /// The screen of a phone stays on from the moment the person asks, because Baton on a phone
   /// works only while it is on the screen.
   Future<void> startScreen(Device device, {bool control = false}) async {
@@ -416,6 +430,15 @@ class WindowsController extends ChangeNotifier {
     _awake.renew();
     notifyListeners();
     try {
+      final owner = await _owner.ask(
+        reason: ownerReason(device.name, control: control),
+      );
+      if (_disposed) return;
+      if (!owner.goesOn) {
+        final refusal = describeOwnerRefusal(owner, device.name);
+        if (refusal != null) _note(WindowFailed(refusal));
+        return;
+      }
       final started = await _session.startScreen(device.id, control: control);
       // The session of a screen that began comes as `Event_WindowStarted`, which is the only way
       // that a window is added: a result that arrived after the screen had ended would bring

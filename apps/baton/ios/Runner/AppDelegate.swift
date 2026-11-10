@@ -23,6 +23,7 @@ import UIKit
     answerWhereTheAppKeepsItsFiles(messenger: engineBridge.applicationRegistrar.messenger())
     showReceivedFilesInTheFilesApp(messenger: engineBridge.applicationRegistrar.messenger())
     keepMacPasswords(messenger: engineBridge.applicationRegistrar.messenger())
+    checkTheOwner(messenger: engineBridge.applicationRegistrar.messenger())
     answerAboutPermissions(messenger: engineBridge.applicationRegistrar.messenger())
   }
 }
@@ -390,6 +391,78 @@ private enum MacPasswords {
   }
 }
 
+// MARK: - The person at this device
+
+/// Asks the person who holds this device to show that it is them, before the app asks another
+/// device for its screen (lib/src/owner_check.dart): their face (Face ID, or Touch ID on a device
+/// without it) and, when the face is not recognised, the passcode of this device. The names of the
+/// channel and of the question, and the codes of the failures, must be the ones in that file.
+///
+/// Each question is asked afresh, on a context of its own, so that a face that was recognised a
+/// moment ago does not stand for this one. Whatever is not a clear yes is an error, and the app
+/// does not go on without a yes. Nothing here writes the reason to a log.
+private func checkTheOwner(messenger: FlutterBinaryMessenger) {
+  let channel = FlutterMethodChannel(
+    name: "io.github.jayunewal.baton/owner", binaryMessenger: messenger)
+  channel.setMethodCallHandler { call, result in
+    switch call.method {
+    case "ask":
+      // The system's question fails for a reason that is empty, so none is let through.
+      guard let reason = call.arguments as? String, !reason.isEmpty else {
+        result(FlutterError(code: "bad_arguments", message: nil, details: nil))
+        return
+      }
+      OwnerCheck.ask(reason: reason) { answer in result(answer) }
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+}
+
+private enum OwnerCheck {
+  /// Shows the question, and calls `done` on the main thread with `true` when the person was
+  /// confirmed and with the error to give back when they were not.
+  static func ask(reason: String, done: @escaping (Any) -> Void) {
+    let context = LAContext()
+    // A face is asked for every time. This is also the default.
+    context.touchIDAuthenticationAllowableReuseDuration = 0
+    // The passcode is the way round a face that is not recognised, so a device that has one can
+    // always be asked. One that has none cannot, and the system says so here and not in the
+    // question.
+    var problem: NSError?
+    guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &problem) else {
+      done(refusal(problem))
+      return
+    }
+    context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) {
+      confirmed, error in
+      // The system answers on a queue of its own, and Flutter is answered on the main one.
+      DispatchQueue.main.async {
+        if confirmed {
+          done(true)
+        } else {
+          done(refusal(error))
+        }
+      }
+    }
+  }
+
+  /// The error to give back for a question that did not end in a yes.
+  private static func refusal(_ error: Error?) -> FlutterError {
+    switch (error as? LAError)?.code {
+    case .userCancel, .systemCancel, .appCancel:
+      return FlutterError(code: "cancelled", message: nil, details: nil)
+    case .authenticationFailed:
+      return FlutterError(code: "not_recognised", message: nil, details: nil)
+    case .passcodeNotSet:
+      return FlutterError(code: "no_lock", message: nil, details: nil)
+    default:
+      NSLog("Baton: owner check: LocalAuthentication code %ld", (error as NSError?)?.code ?? 0)
+      return FlutterError(code: "failed", message: nil, details: nil)
+    }
+  }
+}
+
 /// Says where the camera and Face ID stand, asks for the camera, and opens Baton's page in
 /// Settings, where each permission it has is turned on. The names of the channel, of the questions
 /// and of the permissions, and the words of the answers, must be the ones in
@@ -404,7 +477,7 @@ private func answerAboutPermissions(messenger: FlutterBinaryMessenger) {
       result(permissionState(permission))
     case "request":
       guard permission == "camera" else {
-        // Face ID is asked for the first time it is used, to unlock a Mac.
+        // Face ID is asked for the first time it is used, to open or unlock a Mac.
         result(permissionState(permission))
         return
       }

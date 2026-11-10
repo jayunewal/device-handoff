@@ -4,6 +4,7 @@ import 'package:baton/src/backend.dart';
 import 'package:baton/src/control_access.dart';
 import 'package:baton/src/file_chooser.dart';
 import 'package:baton/src/notice_access.dart';
+import 'package:baton/src/owner_check.dart';
 import 'package:baton/src/screens/devices_screen.dart';
 import 'package:baton/src/screens/home_screen.dart';
 import 'package:flutter/material.dart';
@@ -12,6 +13,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'fake_backend.dart';
 import 'fake_control_access.dart';
 import 'fake_notices.dart';
+import 'fake_owner_check.dart';
 import 'fake_screen.dart';
 import 'fake_shower.dart';
 import 'session_controls.dart';
@@ -72,6 +74,7 @@ Future<FakeSession> _show(
   ControlAccessKeeper? controlAccess,
   ScreenAccessKeeper? screenAccess,
   NoticeKeeper? notices,
+  OwnerCheck? ownerCheck,
 ]) async {
   final session = given ?? _session();
   tester.view
@@ -94,6 +97,7 @@ Future<FakeSession> _show(
         screenAccess:
             screenAccess ?? FakeScreenAccess(ScreenAccess.unavailable),
         notices: notices ?? FakeNotices(NoticeAccess.unavailable),
+        ownerCheck: ownerCheck ?? FakeOwnerCheck(),
       ),
     ),
   );
@@ -792,6 +796,107 @@ void main() {
       expect(screen.on, isFalse);
     },
   );
+
+  testWidgets('a screen is asked for only after the person is confirmed', (
+    tester,
+  ) async {
+    final owner = FakeOwnerCheck()..hold();
+    final session = _session()
+      ..pairedDevices = [_annasMac]
+      ..abilities = _phoneAbilities;
+    await _show(
+      tester,
+      session,
+      const SystemFileChooser(),
+      null,
+      null,
+      null,
+      null,
+      null,
+      owner,
+    );
+
+    await tester.tap(find.byTooltip('Look at the screen of Anna’s Mac'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Look at its screen and control it'));
+    await tester.pump();
+
+    expect(owner.asked, ['Look at the screen of Anna’s Mac and control it']);
+    expect(
+      session.screensAsked,
+      isEmpty,
+      reason: 'Anna’s Mac is sent nothing before the person is confirmed',
+    );
+
+    owner.release();
+    await tester.pump();
+
+    expect(session.screensAsked, [(id: _annasMac.id, control: true)]);
+  });
+
+  testWidgets(
+    'a person who cannot be confirmed asks nothing of the Mac, and is told why',
+    (tester) async {
+      final screen = FakeScreen();
+      final session = _session()
+        ..pairedDevices = [_annasMac]
+        ..abilities = _phoneAbilities;
+      await _show(
+        tester,
+        session,
+        const SystemFileChooser(),
+        null,
+        screen,
+        null,
+        null,
+        null,
+        FakeOwnerCheck(OwnerCheckResult.noLock),
+      );
+
+      await tester.tap(find.byTooltip('Look at the screen of Anna’s Mac'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Look at its screen'));
+      await tester.pumpAndSettle();
+
+      expect(session.screensAsked, isEmpty);
+      expect(
+        find.text(describeOwnerRefusal(OwnerCheckResult.noLock, 'Anna’s Mac')!),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Asking'), findsNothing);
+      expect(screen.on, isFalse);
+    },
+  );
+
+  testWidgets('a person who stops the question is left as they were', (
+    tester,
+  ) async {
+    final screen = FakeScreen();
+    final session = _session()
+      ..pairedDevices = [_annasMac]
+      ..abilities = _phoneAbilities;
+    await _show(
+      tester,
+      session,
+      const SystemFileChooser(),
+      null,
+      screen,
+      null,
+      null,
+      null,
+      FakeOwnerCheck(OwnerCheckResult.cancelled),
+    );
+
+    await tester.tap(find.byTooltip('Look at the screen of Anna’s Mac'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Look at its screen'));
+    await tester.pumpAndSettle();
+
+    expect(session.screensAsked, isEmpty);
+    expect(find.textContaining('not asked for its screen'), findsNothing);
+    expect(find.textContaining('Asking'), findsNothing);
+    expect(screen.on, isFalse);
+  });
 
   testWidgets('a screen that the Mac would not start is told with the reason', (
     tester,

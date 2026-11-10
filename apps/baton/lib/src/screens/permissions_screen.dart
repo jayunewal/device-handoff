@@ -187,7 +187,7 @@ class _PermissionsScreenState extends State<PermissionsScreen>
   ),
   Permission.faceId => (
     title: 'Face ID',
-    why: 'Checks that it’s you before this device unlocks your Mac.',
+    why: 'Checks that it’s you before this device opens or unlocks your Mac.',
     where: 'Open Settings, Apps, Baton.',
     whenOff: null,
   ),

@@ -14,6 +14,7 @@ import '../inbox_controller.dart';
 import '../links.dart';
 import '../mac_passwords.dart';
 import '../notice_access.dart';
+import '../owner_check.dart';
 import '../scanner.dart';
 import '../transfers_controller.dart';
 import '../unlock_notices.dart';
@@ -40,6 +41,7 @@ class HomeScreen extends StatefulWidget {
     this.controlAccess = const PlatformControlAccess(),
     this.screenAccess = const PlatformScreenAccess(),
     this.notices = const PlatformNoticeKeeper(),
+    this.ownerCheck = const PlatformOwnerCheck(),
     super.key,
   });
 
@@ -76,6 +78,10 @@ class HomeScreen extends StatefulWidget {
   /// unlocked this one, or tried to, is told of that way. Tests give it one of their own.
   final NoticeKeeper notices;
 
+  /// Asks the person for their face, or the passcode of this device, before this device asks
+  /// another for its screen. Tests give it one of their own.
+  final OwnerCheck ownerCheck;
+
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
@@ -95,6 +101,7 @@ class _HomeScreenState extends State<HomeScreen> {
   late final WindowsController _windows = WindowsController(
     widget.session,
     screen: widget.screen,
+    ownerCheck: widget.ownerCheck,
   );
   late final UnlockNotices _unlockNotices = UnlockNotices(
     widget.session,

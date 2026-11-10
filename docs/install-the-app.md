@@ -222,7 +222,7 @@ On the Mac's **Devices** tab, the screen button on the phone's row offers **Shar
 
 ### Start from the phone
 
-First allow it at the Mac, once: in the **More** menu (three dots) of the phone's row choose **Let this device ask for the screen…** and pick look only, or look and control. Then, on the phone, the eye button on the Mac's row offers **Look at its screen** and **Look at its screen and control it**.
+First allow it at the Mac, once: in the **More** menu (three dots) of the phone's row choose **Let this device ask for the screen…** and pick look only, or look and control. Then, on the phone, the eye button on the Mac's row offers **Look at its screen** and **Look at its screen and control it**. Either one asks for your face (Face ID or Touch ID), or the phone's passcode, before the phone asks the Mac, every time; a phone with no passcode cannot start one.
 
 ### Privacy mode
 
