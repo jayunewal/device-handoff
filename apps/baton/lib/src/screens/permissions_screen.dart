@@ -173,7 +173,9 @@ class _PermissionsScreenState extends State<PermissionsScreen>
   ),
   Permission.notifications => (
     title: 'Notifications',
-    why: 'Tells you when one of your devices unlocked this Mac.',
+    why:
+        'Tells you when a device sends you something, or asks to, while Baton has '
+        'no window in front, and when one of your devices unlocked this Mac.',
     where: 'Open System Settings, Notifications, Baton.',
     whenOff: null,
   ),

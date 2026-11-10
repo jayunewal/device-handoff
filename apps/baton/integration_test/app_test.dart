@@ -109,11 +109,20 @@ void main() {
       const keeper = PlatformAlwaysOnKeeper();
       expect(
         await keeper.signIn(),
-        isNot(SignInOpening.unavailable),
-        reason: 'the Mac app answered the question and understood it',
+        SignInOpening.off,
+        reason:
+            'the Mac app answered the question and understood it, and nothing '
+            'has registered it to open at sign-in on this machine',
       );
       // No window waits to hide, so this changes nothing, and the app answers it.
       await keeper.ready();
+      // Whether the person can see the window depends on the machine, so the test asks the
+      // channel itself: a Mac app that did not know the question would not answer yes or no.
+      expect(
+        await const MethodChannel(PlatformAlwaysOnKeeper.channelName)
+            .invokeMethod<Object>(PlatformAlwaysOnKeeper.lookingQuestion),
+        isA<bool>(),
+      );
     },
     skip: defaultTargetPlatform != TargetPlatform.macOS,
   );

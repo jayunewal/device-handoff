@@ -43,6 +43,7 @@ void main() {
         'openSignInSettings',
       );
       expect(PlatformAlwaysOnKeeper.readyQuestion, 'ready');
+      expect(PlatformAlwaysOnKeeper.lookingQuestion, 'looking');
     });
 
     testWidgets('says whether Baton opens at sign-in, as the app says it', (
@@ -167,6 +168,31 @@ void main() {
       expect([for (final call in calls) call.method], ['ready']);
     }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
+    testWidgets('says whether the person can see Baton, as the app says it', (
+      tester,
+    ) async {
+      Object? answer = true;
+      final calls = _listen(tester, (_) => answer);
+
+      expect(await keeper.looking(), isTrue);
+      answer = false;
+      expect(await keeper.looking(), isFalse);
+
+      expect([for (final call in calls) call.method], ['looking', 'looking']);
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
+    testWidgets('takes the person for one who cannot see Baton when the app '
+        'does not say that they can', (tester) async {
+      Object? answer;
+      _listen(tester, (_) => answer);
+
+      // A notification that was not needed is better than none that was.
+      for (final unknown in [null, 42, 'yes', 'true', '']) {
+        answer = unknown;
+        expect(await keeper.looking(), isFalse, reason: '$unknown');
+      }
+    }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
+
     testWidgets('cannot be asked when the app has no code for it, or fails', (
       tester,
     ) async {
@@ -174,11 +200,13 @@ void main() {
       expect(await keeper.signIn(), SignInOpening.unavailable);
       expect(await keeper.setSignIn(true), SignInOpening.unavailable);
       expect(await keeper.openSignInSettings(), isFalse);
+      expect(await keeper.looking(), isFalse);
       await keeper.ready();
 
       _listen(tester, (_) => throw PlatformException(code: 'broken'));
       expect(await keeper.signIn(), SignInOpening.unavailable);
       expect(await keeper.openSignInSettings(), isFalse);
+      expect(await keeper.looking(), isFalse);
       await keeper.ready();
     }, variant: TargetPlatformVariant.only(TargetPlatform.macOS));
 
@@ -189,6 +217,9 @@ void main() {
       expect(await keeper.setSignIn(true), SignInOpening.unavailable);
       expect(await keeper.openSignInSettings(), isFalse);
       await keeper.ready();
+      // Where there is no window to hide, the person is taken to be looking, so that no
+      // notification is made for a window that is there.
+      expect(await keeper.looking(), isTrue);
 
       expect(calls, isEmpty);
     }, variant: TargetPlatformVariant.all(excluding: {TargetPlatform.macOS}));

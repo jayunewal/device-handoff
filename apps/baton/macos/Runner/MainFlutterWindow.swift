@@ -25,15 +25,35 @@ class MainFlutterWindow: NSWindow {
     super.awakeFromNib()
   }
 
-  /// The close button and Command-W hide the window and leave Baton running, so that the devices
-  /// that reach this Mac still can (AppDelegate.swift says why). A window in full screen leaves
-  /// it first: hiding one there would leave its space empty.
+  /// The close button and Command-W (the Close item of the Window menu) hide the window and leave
+  /// Baton running, so that the devices that reach this Mac still can (AppDelegate.swift says
+  /// why). A window in full screen leaves it first, and hides once it has left: hiding one there
+  /// would leave its space empty, and the person who closed it asked for it to go, not to be
+  /// asked again.
   override func performClose(_ sender: Any?) {
     if styleMask.contains(.fullScreen) {
+      hideWhenOutOfFullScreen()
       toggleFullScreen(sender)
       return
     }
     orderOut(sender)
+  }
+
+  /// What waits for the window to leave full screen, to hide it then.
+  private var fullScreenExit: NSObjectProtocol?
+
+  private func hideWhenOutOfFullScreen() {
+    guard fullScreenExit == nil else { return }
+    fullScreenExit = NotificationCenter.default.addObserver(
+      forName: NSWindow.didExitFullScreenNotification, object: self, queue: .main
+    ) { [weak self] _ in
+      guard let self = self else { return }
+      if let waiting = self.fullScreenExit {
+        NotificationCenter.default.removeObserver(waiting)
+        self.fullScreenExit = nil
+      }
+      self.orderOut(nil)
+    }
   }
 }
 
@@ -152,6 +172,20 @@ private final class NoticeDelegate: NSObject, UNUserNotificationCenterDelegate {
       @escaping (UNNotificationPresentationOptions) -> Void
   ) {
     completionHandler([.banner, .list])
+  }
+
+  /// A click on a notification brings the window forward: what the notification tells of, the
+  /// inbox or a question that waits for a yes, is there.
+  func userNotificationCenter(
+    _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+    withCompletionHandler completionHandler: @escaping () -> Void
+  ) {
+    DispatchQueue.main.async {
+      if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+        (NSApp.delegate as? AppDelegate)?.showBaton()
+      }
+      completionHandler()
+    }
   }
 }
 
@@ -354,9 +388,9 @@ private func settingsAddress(_ pane: String) -> String? {
 
 /// Answers what the part of the app that keeps Baton running asks (AppDelegate.swift is the rest
 /// of it): whether Baton opens when the person signs in to this Mac, turning that on or off, the
-/// pane of System Settings where the person allows it, and that the first screen of the app is
-/// up. The names of the channel and of the questions, and the words of the answers, must be the
-/// ones in lib/src/always_on.dart.
+/// pane of System Settings where the person allows it, that the first screen of the app is up, and
+/// whether the person can see the window. The names of the channel and of the questions, and the
+/// words of the answers, must be the ones in lib/src/always_on.dart.
 private func answerAboutStayingOn(messenger: FlutterBinaryMessenger) {
   let channel = FlutterMethodChannel(
     name: "io.github.jayunewal.baton/always_on", binaryMessenger: messenger)
@@ -365,6 +399,8 @@ private func answerAboutStayingOn(messenger: FlutterBinaryMessenger) {
     case "ready":
       (NSApp.delegate as? AppDelegate)?.interfaceIsUp()
       result(nil)
+    case "looking":
+      result(personCanSeeBaton())
     case "signIn":
       result(signInState())
     case "setSignIn":
@@ -387,6 +423,18 @@ private func answerAboutStayingOn(messenger: FlutterBinaryMessenger) {
       result(FlutterMethodNotImplemented)
     }
   }
+}
+
+/// Whether the person can see Baton now: it is the app in front, and its window is on the screen
+/// with some of it uncovered. A window that is hidden, minimized, waiting to hide or behind the
+/// windows of another app is not seen, and what comes for the person then is told by a
+/// notification (lib/src/arrival_notices.dart).
+private func personCanSeeBaton() -> Bool {
+  guard NSApp.isActive, let window = (NSApp.delegate as? AppDelegate)?.mainFlutterWindow else {
+    return false
+  }
+  return window.isVisible && !window.isMiniaturized && window.alphaValue > 0
+    && window.occlusionState.contains(.visible)
 }
 
 /// Whether Baton opens when the person signs in, in the words of lib/src/always_on.dart. A Mac

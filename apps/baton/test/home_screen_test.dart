@@ -10,6 +10,7 @@ import 'package:baton/src/screens/home_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fake_always_on.dart';
 import 'fake_backend.dart';
 import 'fake_control_access.dart';
 import 'fake_notices.dart';
@@ -75,6 +76,7 @@ Future<FakeSession> _show(
   ScreenAccessKeeper? screenAccess,
   NoticeKeeper? notices,
   OwnerCheck? ownerCheck,
+  FakeAlwaysOn? alwaysOn,
 ]) async {
   final session = given ?? _session();
   tester.view
@@ -98,6 +100,7 @@ Future<FakeSession> _show(
             screenAccess ?? FakeScreenAccess(ScreenAccess.unavailable),
         notices: notices ?? FakeNotices(NoticeAccess.unavailable),
         ownerCheck: ownerCheck ?? FakeOwnerCheck(),
+        alwaysOn: alwaysOn ?? FakeAlwaysOn(),
       ),
     ),
   );
@@ -692,6 +695,43 @@ void main() {
 
     expect(notices.posted, isEmpty);
   });
+
+  testWidgets(
+    'a notification tells the person what came while they cannot see Baton',
+    (tester) async {
+      final notices = FakeNotices();
+      final alwaysOn = FakeAlwaysOn()..seen = false;
+      final session = await _show(
+        tester,
+        null,
+        const SystemFileChooser(),
+        null,
+        null,
+        null,
+        null,
+        notices,
+        null,
+        alwaysOn,
+      );
+
+      session.arrive(sampleReceived(1));
+      session.emit(Event.transferRequested(request: sampleTransfer()));
+      await tester.pumpAndSettle();
+
+      expect(notices.posted.map((n) => n.title), [
+        'Anna’s iPhone sent you some text',
+        'Anna’s iPhone wants to send you files',
+      ]);
+
+      // The person came back to the window: it tells them, and a notification would say it twice.
+      alwaysOn.seen = true;
+      session.arrive(sampleReceived(2));
+      await tester.pumpAndSettle();
+
+      expect(notices.posted, hasLength(2));
+      expect(find.text('Anna’s iPhone sent you some text.'), findsOneWidget);
+    },
+  );
 
   testWidgets('a device that gives no screen offers no such choice', (
     tester,

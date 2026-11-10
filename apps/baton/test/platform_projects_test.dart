@@ -373,6 +373,179 @@ void main() {
     expect(delegate, contains('if !visible || windowWaitsToHide {'));
   });
 
+  test('a Baton that nobody opened at sign-in never hides its window', () {
+    // A window that hid by mistake would leave the person with an app that does not open: no
+    // window, and an item in the menu bar. Only the event that a login item sends hides it, and
+    // the app's saying that it is up changes nothing for a window that was not waiting.
+    final delegate = _read('macos/Runner/AppDelegate.swift');
+    final launch = delegate.indexOf(
+      'override func applicationDidFinishLaunching(',
+    );
+    expect(launch, isNonNegative);
+    final launchBody = delegate.substring(
+      launch,
+      delegate.indexOf('\n  }\n', launch),
+    );
+    expect(
+      launchBody,
+      contains('if wasOpenedAtSignIn() {\n      startHidden()'),
+    );
+    expect(
+      'startHidden()'.allMatches(delegate),
+      hasLength(2),
+      reason: 'the call at launch, and the definition',
+    );
+
+    final opened = delegate.indexOf('private func wasOpenedAtSignIn()');
+    expect(opened, isNonNegative);
+    final openedBody = delegate.substring(
+      opened,
+      delegate.indexOf('\n  }\n', opened),
+    );
+    // Both: the event that opens the app, and the flag that says a login item sent it.
+    expect(
+      openedBody,
+      contains('UInt32(event.eventID) == UInt32(kAEOpenApplication)'),
+    );
+    expect(
+      openedBody,
+      contains('launchedBy == OSType(keyAELaunchedAsLogInItem)'),
+    );
+    expect(openedBody, contains('return opensApp && launchedBy =='));
+    expect(
+      openedBody,
+      contains('else { return false }'),
+      reason: 'no event, no hiding',
+    );
+
+    final up = delegate.indexOf('func interfaceIsUp()');
+    final upBody = delegate.substring(up, delegate.indexOf('\n  }\n', up));
+    expect(upBody, contains('guard windowWaitsToHide'));
+    expect(
+      upBody.indexOf('guard windowWaitsToHide'),
+      lessThan(upBody.indexOf('orderOut')),
+      reason: 'a window that was not waiting is left alone',
+    );
+
+    // What the app's saying that it is up reaches.
+    final swift = _read('macos/Runner/MainFlutterWindow.swift');
+    expect(
+      swift,
+      contains(
+        'case "ready":\n'
+        '      (NSApp.delegate as? AppDelegate)?.interfaceIsUp()',
+      ),
+    );
+
+    // And a window that is brought back is whole, whatever state it was left in.
+    final show = delegate.indexOf('func showBaton()');
+    expect(show, isNonNegative);
+    final showBody = delegate.substring(
+      show,
+      delegate.indexOf('\n  }\n', show),
+    );
+    for (final line in [
+      'windowWaitsToHide = false',
+      'window.alphaValue = 1',
+      'window.ignoresMouseEvents = false',
+      'window.deminiaturize(nil)',
+      'window.makeKeyAndOrderFront(nil)',
+    ]) {
+      expect(showBody, contains(line), reason: line);
+    }
+  });
+
+  test('Command-W and the close button hide the window the same way', () {
+    // The Close item of the Window menu sends performClose to the window in front, which the
+    // window answers by hiding (MainFlutterWindow.performClose), so the claim that Command-W hides
+    // Baton and leaves it running holds.
+    final menu = _read('macos/Runner/Base.lproj/MainMenu.xib');
+    final close = RegExp(
+      r'<menuItem title="Close" keyEquivalent="w" id="[^"]+">\s*'
+      r'<connections>\s*'
+      r'<action selector="performClose:" target="-1" id="[^"]+"/>',
+    );
+    expect(close.hasMatch(menu), isTrue);
+    expect(
+      'keyEquivalent="w"'.allMatches(menu),
+      hasLength(1),
+      reason: 'one item answers Command-W',
+    );
+    // The ids of the items that Interface Builder reads are each used once.
+    final ids = RegExp(r'\sid="([^"]+)"').allMatches(menu).map((m) => m[1]!);
+    expect(ids.toSet(), hasLength(ids.length));
+  });
+
+  test('closing a window in full screen leaves full screen and hides it', () {
+    // One click on the close button does both. Leaving full screen takes a moment, and the window
+    // is hidden when the system says it has left, not before: hiding one in full screen would
+    // leave its space empty.
+    final window = _read('macos/Runner/MainFlutterWindow.swift');
+    final close = window.indexOf('override func performClose(');
+    final closeBody = window.substring(close, window.indexOf('\n  }\n', close));
+    expect(
+      closeBody.indexOf('hideWhenOutOfFullScreen()'),
+      lessThan(closeBody.indexOf('toggleFullScreen(sender)')),
+      reason: 'the wait is set before the window starts to leave',
+    );
+    final wait = window.indexOf('private func hideWhenOutOfFullScreen()');
+    expect(wait, isNonNegative);
+    final waitBody = window.substring(wait, window.indexOf('\n  }\n', wait));
+    expect(waitBody, contains('NSWindow.didExitFullScreenNotification'));
+    expect(waitBody, contains('object: self'));
+    expect(waitBody, contains('self.orderOut(nil)'));
+    expect(
+      waitBody,
+      contains('removeObserver(waiting)'),
+      reason: 'a wait is over once the window has been hidden',
+    );
+    expect(waitBody, contains('guard fullScreenExit == nil else { return }'));
+  });
+
+  test('the Mac app tells whether the person can see the window, and opens it '
+      'for a click on a notification', () {
+    // What came for the person is told by a notification when they cannot see Baton, and not when
+    // they can (lib/src/arrival_notices.dart). They cannot while the window is hidden,
+    // minimized, waiting to hide, behind another window or while another app is in front.
+    final swift = _read('macos/Runner/MainFlutterWindow.swift');
+    final looking = swift.indexOf('private func personCanSeeBaton()');
+    expect(looking, isNonNegative);
+    final lookingBody = swift.substring(
+      looking,
+      swift.indexOf('\n}\n', looking),
+    );
+    for (final check in [
+      'NSApp.isActive',
+      'window.isVisible',
+      '!window.isMiniaturized',
+      'window.alphaValue > 0',
+      'window.occlusionState.contains(.visible)',
+    ]) {
+      expect(lookingBody, contains(check), reason: check);
+    }
+    expect(
+      lookingBody,
+      contains('return false'),
+      reason: 'no window, no seeing',
+    );
+
+    // A click on a notification, and only a click, brings the window forward.
+    final click = swift.indexOf('didReceive response: UNNotificationResponse');
+    expect(click, isNonNegative);
+    final clickBody = swift.substring(click, swift.indexOf('\n  }\n', click));
+    expect(
+      clickBody,
+      contains(
+        'response.actionIdentifier == UNNotificationDefaultActionIdentifier',
+      ),
+    );
+    expect(
+      clickBody,
+      contains('(NSApp.delegate as? AppDelegate)?.showBaton()'),
+    );
+    expect(clickBody, contains('completionHandler()'));
+  });
+
   test('the Mac app answers what Baton asks about opening at sign-in', () {
     // The channel, its questions and the words of its answers are named in
     // lib/src/always_on.dart and in the app. If they differ, the switch in the settings cannot
@@ -384,6 +557,7 @@ void main() {
       PlatformAlwaysOnKeeper.setSignInQuestion,
       PlatformAlwaysOnKeeper.openSignInSettingsQuestion,
       PlatformAlwaysOnKeeper.readyQuestion,
+      PlatformAlwaysOnKeeper.lookingQuestion,
     ]) {
       expect(swift, contains('case "$question":'), reason: question);
     }

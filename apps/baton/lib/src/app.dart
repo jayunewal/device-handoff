@@ -88,6 +88,7 @@ class _BatonAppState extends State<BatonApp> {
             session: _controller.session!,
             scanner: widget.scanner,
             chooser: widget.chooser,
+            alwaysOn: widget.alwaysOn,
           ),
           Phase.failed => ProblemScreen(
             problem: _controller.problem,

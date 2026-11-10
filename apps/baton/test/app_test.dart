@@ -4,6 +4,7 @@
 
 import 'package:baton/src/app.dart';
 import 'package:baton/src/backend.dart';
+import 'package:baton/src/screens/home_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -222,4 +223,33 @@ void main() {
     await tester.pump(const Duration(seconds: 5));
     expect(alwaysOn.readies, 1);
   });
+
+  testWidgets(
+    'says that it is up only after a frame has drawn its first screen',
+    (tester) async {
+      // A Baton that a login item opened keeps its window out of sight until the app says that it is
+      // up, and Flutter draws nothing while no window is on the screen. An app that said it before
+      // its first screen was drawn would hide the window on an empty screen, with nothing listening
+      // for what other devices send.
+      final alwaysOn = FakeAlwaysOn();
+      bool? homeWasThere;
+      alwaysOn.onReady = () {
+        homeWasThere = find.byType(HomeScreen).evaluate().isNotEmpty;
+      };
+      await tester.pumpWidget(
+        BatonApp(backend: FakeBackend(), alwaysOn: alwaysOn),
+      );
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'Desk');
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
+
+      expect(alwaysOn.readies, 1);
+      expect(
+        homeWasThere,
+        isTrue,
+        reason: 'the screen with the devices was drawn when the app said it',
+      );
+    },
+  );
 }

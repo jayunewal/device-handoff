@@ -4,6 +4,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../always_on.dart';
+import '../arrival_notices.dart';
 import '../awake.dart';
 import '../backend.dart';
 import '../continue_reader.dart';
@@ -45,6 +47,7 @@ class HomeScreen extends StatefulWidget {
     this.notices = const PlatformNoticeKeeper(),
     this.ownerCheck = const PlatformOwnerCheck(),
     this.continueReader = const PlatformContinueReader(),
+    this.alwaysOn = const PlatformAlwaysOnKeeper(),
     super.key,
   });
 
@@ -89,6 +92,10 @@ class HomeScreen extends StatefulWidget {
   /// that the person allowed to ask what they are working on. Tests give it one of their own.
   final ContinueReader continueReader;
 
+  /// Says whether the person can see the window, so that what comes for them while they cannot is
+  /// told by a notification. Tests give it one of their own.
+  final AlwaysOnKeeper alwaysOn;
+
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
@@ -118,6 +125,7 @@ class _HomeScreenState extends State<HomeScreen> {
     widget.session,
     widget.continueReader,
   );
+  late final ArrivalNotices _arrivalNotices;
   StreamSubscription<Received>? _arrivals;
   StreamSubscription<TransferRequest>? _requests;
   StreamSubscription<WindowRequest>? _windowRequests;
@@ -131,6 +139,13 @@ class _HomeScreenState extends State<HomeScreen> {
     _requests = _transfers.asked.listen(_asked);
     _windowRequests = _windows.asked.listen(_windowAsked);
     _windowsStarted = _windows.started.listen(_showWindow);
+    _arrivalNotices = ArrivalNotices(
+      arrivals: _inbox.arrivals,
+      files: _transfers.asked,
+      windows: _windows.asked,
+      notices: widget.notices,
+      window: widget.alwaysOn,
+    );
     unawaited(_inbox.start());
     unawaited(_transfers.start());
     unawaited(_windows.start());
@@ -144,6 +159,7 @@ class _HomeScreenState extends State<HomeScreen> {
     unawaited(_requests?.cancel());
     unawaited(_windowRequests?.cancel());
     unawaited(_windowsStarted?.cancel());
+    _arrivalNotices.dispose();
     _inbox.dispose();
     _transfers.dispose();
     _windows.dispose();
