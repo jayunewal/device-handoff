@@ -16,6 +16,11 @@ final class HandedToBaton {
   /// to hold on to what it handed over.
   private static let most = 20
 
+  /// A text of more bytes than this is left out, as the Mac leaves out such text when it reads the
+  /// clipboard: the protocol carries a mebibyte of text at most (crates/baton-proto/src/limits.rs),
+  /// so it could not be sent, and holding it, passing it to the app and laying it out is no use.
+  private static let mostBytes = 1024 * 1024
+
   private let lock = NSLock()
   private var texts: [String] = []
   private var tellTheApp: (() -> Void)?
@@ -30,6 +35,7 @@ final class HandedToBaton {
   }
 
   func add(_ text: String) {
+    guard text.utf8.count <= HandedToBaton.mostBytes else { return }
     lock.lock()
     texts.append(text)
     if texts.count > HandedToBaton.most {
