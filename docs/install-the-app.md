@@ -67,7 +67,7 @@ The first build takes a while, because it compiles the Rust library for both kin
 
 The first time Baton opens, macOS may ask whether it may find devices on your local network. Choose **Allow**.
 
-Closing the window does not quit Baton on a Mac. It hides the window and stays in the menu bar, so that your other devices can still reach this Mac. Choose **Open Baton** from the menu bar item, or click Baton in the Dock, to bring the window back, and **Quit Baton** to end it. To have Baton open when you sign in, turn on **Open Baton when you sign in** in **Settings**. It needs macOS 13 or newer, and macOS may ask you to allow it under **System Settings**, **General**, **Login Items**; Baton opens that page for you.
+Closing the window does not quit Baton on a Mac. It hides the window and stays in the menu bar, so that your other devices can still reach this Mac. Choose **Open Baton** from the menu bar item, or click Baton in the Dock, to bring the window back, and **Quit Baton** to end it. The **Close** item of the **Window** menu (Command-W) does what the close button does. To have Baton open when you sign in, turn on **Open Baton when you sign in** in **Settings**. It needs macOS 13 or newer, and macOS may ask you to allow it under **System Settings**, **General**, **Login Items**; Baton opens that page for you.
 
 If you only want to run the Mac app and not build anything, CI builds it for every change that is merged into `main`. Open the [CI runs](https://github.com/jayunewal/device-handoff/actions/workflows/ci.yml), pick the latest run on `main` with a green tick and download `baton-app-macos` under **Artifacts** at the bottom of the page. GitHub asks you to sign in to download. Unzip it, then unzip the `Baton-macos-app.zip` inside it, move `Baton.app` to your Applications folder and run:
 
@@ -164,7 +164,7 @@ You need two paired devices, with Baton open on both. They should be on the same
 1. On the device you send from, tap the other device's row on the **Devices** tab, or the paper plane at the end of it. A screen called **Send to** and the device's name opens.
 2. Type or paste a link or some text. **Paste** puts what is on the clipboard into the box. Under the box Baton says how it will go: a web address on its own goes as a link, which the other device can open, and anything else goes as text, which the other device can copy. Text arrives exactly as you wrote it.
 3. Tap **Send link** or **Send text**. Baton says **Sent the link to** or **Sent the text to** and the device's name, and empties the box. If it did not work, it says why and leaves what you typed, so that you can try again.
-4. On the other device a notice appears at the bottom, such as "Kitchen iPad sent you a link", with a **View** button, and the **Inbox** tab shows how many items are new. The notice says who sent what kind of thing, never what it says: it could be a password, and a notice can be seen by anyone who is looking at the screen. Tap **View**, or the **Inbox** tab.
+4. On the other device a notice appears at the bottom, such as "Kitchen iPad sent you a link", with a **View** button, and the **Inbox** tab shows how many items are new. The notice says who sent what kind of thing, never what it says: it could be a password, and a notice can be seen by anyone who is looking at the screen. Tap **View**, or the **Inbox** tab. On a Mac whose Baton window is closed, behind other windows or not in front, the Mac shows a notification of the system instead, if you allowed notifications for Baton: it says the same, and a click on it brings Baton's window forward. The same goes for a device that asks to send you files and one that offers to show you a window or its screen, which wait for your yes in the window.
 
 The inbox lists what other devices sent, newest first, and keeps it until you remove it, also after you close the app. On a link, **Open** opens it in the web browser, **Copy** copies it, and the bin removes it. Text can be copied and removed. Long text is cut short until you tap **Show more**. The icon at the top of the inbox clears all of it, after asking.
 
@@ -226,7 +226,7 @@ The Mac asks the first time it needs each of these. If you answered **Don't Allo
 
 - **Screen & System Audio Recording**, to share the screen or a window and its sound.
 - **Accessibility**, to let the phone control the Mac and to keep the Mac's own keyboard and trackpad held in privacy mode.
-- **Notifications**, so that the Mac can tell you afterwards that it was unlocked from the phone.
+- **Notifications**, so that the Mac can tell you afterwards that it was unlocked from the phone, and can tell you that something arrived while Baton has no window in front.
 - **Automation**, for Safari and Chrome, only if you let a phone continue from the Mac (see above). macOS asks when you turn that on.
 
 **After every rebuild of the Mac app**, macOS treats it as a new program and the old permissions no longer apply, but the switches can still look on. Sharing or control then stops working without saying why. Reset them and grant them again:
