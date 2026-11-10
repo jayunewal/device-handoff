@@ -252,7 +252,7 @@ Start Baton, allow each permission when it asks, then quit Baton and start it on
 
 A build of the Mac app is signed ad hoc unless you say otherwise, and an ad hoc signature is new with every build. That is why macOS forgets the permissions above each time. Signing every build with one certificate keeps them: macOS then sees the same program again. The certificate is made on your Mac in a few minutes, costs nothing, needs no Apple ID and no Apple Developer Program, and goes nowhere. Do this once on each Mac that builds Baton.
 
-1. Open **Keychain Access** (in **Applications**, **Utilities**). In its menu bar choose **Keychain Access**, then **Certificate Assistant**, then **Create a Certificate…**.
+1. Open **Keychain Access**: search for it with Spotlight. Since macOS 15 it is no longer in **Applications**, **Utilities**. In its menu bar choose **Keychain Access**, then **Certificate Assistant**, then **Create a Certificate…**.
 2. Name it **Baton Signing**. Set **Identity Type** to **Self Signed Root** and **Certificate Type** to **Code Signing**. Click **Create**, then **Done**. It is kept in your **login** keychain.
 3. Under **My Certificates**, double-click **Baton Signing**, open **Trust**, and set **Code Signing** to **Always Trust**. Close the window, and give your password when macOS asks.
 4. Tell the build to use it. In `device-handoff/apps/baton`, run:
