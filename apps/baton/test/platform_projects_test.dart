@@ -17,6 +17,27 @@ import 'package:flutter_test/flutter_test.dart';
 
 String _read(String path) => File(path).readAsStringSync();
 
+/// The text of the Swift function that begins with [signature], up to the brace that closes it at
+/// the start of a line.
+String _swiftFunction(String swift, String signature) {
+  final start = swift.indexOf(signature);
+  expect(start, isNonNegative, reason: signature);
+  final end = swift.indexOf('\n}\n', start);
+  expect(end, isNonNegative, reason: 'the end of $signature');
+  return swift.substring(start, end + 2);
+}
+
+/// What a Swift function does, a line at a time: without its comments, its blank lines and the
+/// indentation. The Swift of the apps runs only on an Apple computer, so what a line of it does
+/// with what it reads is held by the text of the whole line, and not by the names that it uses.
+List<String> _swiftCode(String function) => [
+  for (final line in function.split('\n'))
+    if (line.trim().isNotEmpty && !line.trim().startsWith('//')) line.trim(),
+];
+
+/// Lines of Swift, one after the other, as [_swiftCode] gives them.
+String _inOrder(List<String> lines) => lines.join('\n');
+
 void main() {
   test('both apps are called Baton and have the same identifier', () {
     final ios = _read('ios/Runner.xcodeproj/project.pbxproj');
@@ -638,15 +659,6 @@ void main() {
     ]) {
       expect(swift, contains('case "$question":'), reason: question);
     }
-    for (final word in [
-      'allowed',
-      'needed',
-      'denied',
-      'notOpen',
-      'unavailable',
-    ]) {
-      expect(swift, contains('return "$word"'), reason: word);
-    }
     for (final part in ['pageUrl', 'pageTitle', 'clipboard']) {
       expect(swift, contains('found["$part"] = '), reason: part);
     }
@@ -659,6 +671,14 @@ void main() {
         '    answerAboutContinuing(messenger: flutterViewController.engine.binaryMessenger)',
       ),
     );
+    // A Mac starts the library able to continue, and no other system does, because only a Mac has
+    // this code. Without it every question from a phone is turned away as not supported.
+    final backend = _read('lib/src/rust_backend.dart');
+    expect(
+      backend,
+      contains('serveContinue: io.Platform.isMacOS ? true : null,'),
+    );
+    expect('serveContinue:'.allMatches(backend), hasLength(1));
   });
 
   test('the Mac app reads only the page in front in the two browsers, and '
@@ -721,23 +741,139 @@ void main() {
   test('the Mac app gives nothing while nobody is using the Mac, and nothing '
       'that was marked as secret', () {
     final swift = _read('macos/Runner/MainFlutterWindow.swift');
-    // Locked, with the screen off, or with another account in front: nothing is read at all.
-    expect(swift, contains('if macIsNotInUse() {'));
-    expect(swift, contains('session["CGSSessionScreenIsLocked"]'));
-    expect(swift, contains('session["kCGSSessionOnConsoleKey"]'));
-    expect(swift, contains('CGDisplayIsAsleep(CGMainDisplayID())'));
-    final read = swift.indexOf('private func readWhatThePersonIsWorkingOn(');
-    expect(read, isNonNegative);
-    expect(
-      swift.indexOf('if macIsNotInUse() {', read),
-      lessThan(swift.indexOf('clipboardText()', read)),
-      reason: 'the check comes before anything is read',
+    // Locked, with the screen off, or with another account in front: nothing is read at all, and
+    // a session that cannot be read is taken as one that nobody uses. The keys alone would pass
+    // with each answer turned round, so every line is held whole.
+    expect(_swiftCode(_swiftFunction(swift, 'private func macIsNotInUse()')), [
+      'private func macIsNotInUse() -> Bool {',
+      'guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return true }',
+      'if session["CGSSessionScreenIsLocked"] as? Bool == true { return true }',
+      'if session["kCGSSessionOnConsoleKey"] as? Bool == false { return true }',
+      'return CGDisplayIsAsleep(CGMainDisplayID()) != 0',
+      '}',
+    ]);
+    final read = _swiftCode(
+      _swiftFunction(swift, 'private func readWhatThePersonIsWorkingOn('),
     );
-    // Text that the app that copied it marked as secret, or as one-time, is not read.
-    expect(swift, contains('org.nspasteboard.ConcealedType'));
-    expect(swift, contains('org.nspasteboard.TransientType'));
-    // What the protocol carries of text is a mebibyte (crates/baton-proto/src/limits.rs).
-    expect(swift, contains('text.utf8.count <= 1024 * 1024'));
+    expect(read.take(5), [
+      'private func readWhatThePersonIsWorkingOn(_ result: @escaping FlutterResult) {',
+      'if macIsNotInUse() {',
+      'result([String: Any]())',
+      'return',
+      '}',
+    ], reason: 'the check comes first, and gives an empty answer');
+    // A browser that cannot be read is told as a failure only when there is nothing else to give,
+    // and is never told as nothing.
+    expect(
+      read.join('\n'),
+      contains(
+        _inOrder([
+          'case .failed:',
+          'if found.isEmpty {',
+          'result(',
+          'FlutterError(',
+          'code: "unreadable", message: "The browser did not answer.", details: nil))',
+          '} else {',
+          'result(found)',
+          '}',
+        ]),
+      ),
+    );
+    // Text that the app that copied it marked as secret, or as one-time, is not read, and neither
+    // is text that is blank or more than the protocol carries, which is a mebibyte
+    // (crates/baton-proto/src/limits.rs).
+    expect(_swiftCode(_swiftFunction(swift, 'private func clipboardText()')), [
+      'private func clipboardText() -> String? {',
+      'let pasteboard = NSPasteboard.general',
+      'let marks = ["org.nspasteboard.ConcealedType", "org.nspasteboard.TransientType"]',
+      'if (pasteboard.types ?? []).contains(where: { marks.contains(\$0.rawValue) }) {',
+      'return nil',
+      '}',
+      'guard let text = pasteboard.string(forType: .string),',
+      '!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,',
+      'text.utf8.count <= 1024 * 1024',
+      'else {',
+      'return nil',
+      '}',
+      'return text',
+      '}',
+    ]);
+  });
+
+  test('the Mac app says where the consent of a browser stands, and asks the '
+      'person only when it is told to', () {
+    final swift = _read('macos/Runner/MainFlutterWindow.swift');
+    // The five words of the answer are also the words about notifications and about the camera,
+    // so only the body of this function says that they are said of the browsers, and for which
+    // answer of the system.
+    final access = _swiftCode(
+      _swiftFunction(swift, 'private func browserAccess('),
+    ).join('\n');
+    expect(
+      access,
+      contains(
+        _inOrder([
+          'switch status {',
+          'case 0:',
+          'return "allowed"',
+          'case -1744:',
+          'return "needed"',
+          'case -1743:',
+          'return "denied"',
+          'case -600:',
+          'return "notOpen"',
+          'default:',
+          'return "unavailable"',
+          '}',
+        ]),
+      ),
+    );
+    // A browser that is not on this Mac, and one that is not open, are told before the system is
+    // asked, because asking about one that is closed would start it.
+    expect(
+      access,
+      contains(
+        _inOrder([
+          'guard',
+          'NSWorkspace.shared.urlForApplication(withBundleIdentifier: browser.bundleIdentifier) != nil',
+          'else {',
+          'return "unavailable"',
+          '}',
+          'guard',
+          '!NSRunningApplication.runningApplications(withBundleIdentifier: browser.bundleIdentifier)',
+          '.isEmpty',
+          'else {',
+          'return "notOpen"',
+          '}',
+        ]),
+      ),
+    );
+    // The system puts its question to the person only when the question from the app said to ask.
+    expect(
+      access,
+      contains(
+        _inOrder([
+          'ask',
+          '? AEDeterminePermissionToAutomateTarget(address, anyEvent, anyEvent, true)',
+          ': AEDeterminePermissionToAutomateTarget(address, anyEvent, anyEvent, false)',
+        ]),
+      ),
+    );
+    final handler = _swiftCode(
+      _swiftFunction(swift, 'private func answerAboutContinuing('),
+    ).join('\n');
+    expect(
+      handler,
+      contains(
+        _inOrder([
+          'let ask = arguments["ask"] as? Bool ?? false',
+          'continueQueue.async {',
+          'let answer = browserAccess(browser, ask: ask)',
+          'DispatchQueue.main.async { result(answer) }',
+          '}',
+        ]),
+      ),
+    );
   });
 
   test('the apps show the files that arrived and never open them', () {
