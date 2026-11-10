@@ -391,6 +391,48 @@ void main() {
       expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
     });
 
+    testWidgets(
+      'turns away a second tap that comes before the screen has changed',
+      (tester) async {
+        // Two taps in the same frame both reach the switch as it was before it was held, so the
+        // change that goes to the Mac is the first, and the second is turned away by the screen.
+        final stay = FakeStayAwake()..hold = Completer<void>();
+        await _show(tester, _session(), stayAwake: stay);
+
+        await tester.tap(find.byType(Switch));
+        await tester.tap(find.byType(Switch));
+        await tester.pump();
+        expect(stay.sets, [true]);
+
+        stay.hold!.complete();
+        await tester.pumpAndSettle();
+        expect(stay.sets, [true]);
+        expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+      },
+    );
+
+    testWidgets('does not touch a screen that closed while the Mac was asked', (
+      tester,
+    ) async {
+      // Where it stands, when the screen opens.
+      final looking = FakeStayAwake()..stateHold = Completer<void>();
+      await _show(tester, _session(), stayAwake: looking);
+      await tester.pumpWidget(const SizedBox());
+      looking.stateHold!.complete();
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+
+      // A change, from the switch.
+      final changing = FakeStayAwake()..hold = Completer<void>();
+      await _show(tester, _session(), stayAwake: changing);
+      await tester.tap(find.byType(Switch));
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox());
+      changing.hold!.complete();
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('looks again when the person comes back to Baton', (
       tester,
     ) async {

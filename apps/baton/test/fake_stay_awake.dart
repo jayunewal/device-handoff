@@ -26,9 +26,14 @@ class FakeStayAwake extends StayAwakeKeeper {
   /// change is on its way.
   Completer<void>? hold;
 
+  /// When set, `state` answers only when this does, so that a test can close the screen while the
+  /// Mac is being asked where it stands.
+  Completer<void>? stateHold;
+
   @override
   Future<StayAwake> state() async {
     asks++;
+    await stateHold?.future;
     return stay;
   }
 
