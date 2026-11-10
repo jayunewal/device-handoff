@@ -331,6 +331,49 @@ void main() {
   });
 
   test(
+    'what a shortcut hands to Baton is kept a few at a time, and is forgotten '
+    'once the app has it',
+    () {
+      // The Swift of the app runs only on an iPhone, so each line of what keeps, gives and hands
+      // over is held as it is written. A line that is lost leaves the app opening on nothing, or
+      // offering the same link each time it comes to the front, or keeping what a shortcut that
+      // ran away handed over, and nothing else fails.
+      final swift = _read('ios/Runner/SendWithBaton.swift');
+      expect(swift, contains('private static let most = 20'));
+      expect(_swiftCode(_swiftMethod(swift, '  func add(_ text: String) {')), [
+        'func add(_ text: String) {',
+        'lock.lock()',
+        'defer { lock.unlock() }',
+        'texts.append(text)',
+        'if texts.count > HandedToBaton.most {',
+        'texts.removeFirst(texts.count - HandedToBaton.most)',
+        '}',
+        '}',
+      ], reason: 'the oldest go first, once there are more than the most');
+      expect(_swiftCode(_swiftMethod(swift, '  func take() -> [String] {')), [
+        'func take() -> [String] {',
+        'lock.lock()',
+        'defer { lock.unlock() }',
+        'let taken = texts',
+        'texts = []',
+        'return taken',
+        '}',
+      ], reason: 'what is given is forgotten');
+      expect(
+        _swiftCode(_swiftMethod(swift, '  func perform() async throws')),
+        [
+          'func perform() async throws -> some IntentResult {',
+          'HandedToBaton.shared.add(content)',
+          'return .result()',
+          '}',
+        ],
+        reason:
+            'the action hands what it was given to the app, and does no more',
+      );
+    },
+  );
+
+  test(
     'the iPhone app asks for no capability that a free Apple ID cannot give',
     () {
       // An app group, push and the like need a paid account, and the app is installed with a free
