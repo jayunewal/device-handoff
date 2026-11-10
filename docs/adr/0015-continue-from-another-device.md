@@ -45,6 +45,8 @@ On a Mac and an iPhone, as in ADR 0009, with the builds, models and network reco
 - **C6. Concealed.** Copy a password from a password manager: the phone is not given it. Copy plain text: it is.
 - **C7. No window.** With the window of Baton closed and only the menu bar item left, ask from the phone.
 - **C8. Off.** Turn the setting off at the Mac: the next ask is turned away without a question and without a read.
+- **C9. The clipboard alert.** With text copied and nobody at the Mac, ask from the phone. Whether macOS puts up an alert for a read of the clipboard that no paste started (Apple describes one from macOS 15.4, with `NSPasteboard.accessBehavior` to say where the person's choice stands), and whether Baton's window stops answering until someone clicks it, because the read runs on the main thread. If the alert shows, the choice can be put to the person when they save, as it is for the browsers. If the read waits, it moves off the main thread.
+- **C10. The three seconds.** Close the browser, turn the setting on for a phone, then open the browser and ask from the phone, which is the first read from it. Whether the script still gives up after three seconds while macOS asks whether Baton may control the browser, or whether that question holds the read until someone answers it. If it holds, the phone is told that it could not be read after five seconds and is not given the clipboard, and the sentence about the first read in the consequences is wrong.
 
 ## Alternatives considered
 
@@ -60,7 +62,7 @@ On a Mac and an iPhone, as in ADR 0009, with the builds, models and network reco
 - The Mac has to be running Baton. The menu bar item of the app, which stays on without a window (the change before this one), is what lets the phone's question reach a Mac that nobody sits at.
 - Reading needs the Automation permission for each browser, and macOS ties it to the signature of the app. A build that is signed ad hoc and differently each time asks again; stable signing is a step of its own.
 - The sandbox of the Mac app is given an exception to send Apple events to Safari and Chrome and to no other app (`com.apple.security.temporary-exception.apple-events` in both entitlement files, and `NSAppleEventsUsageDescription` in `Info.plist`, which is the text that macOS shows when it asks). A test holds the list at those two.
-- A browser that was closed when the person turned the setting on has not been asked about yet, so macOS asks at the first read from it, which may be when nobody is at the Mac. That read gives the clipboard alone, because the script gives up after three seconds, and the next one gives the page if the person said yes.
+- A browser that was closed when the person turned the setting on has not been asked about yet, so macOS asks at the first read from it, which may be when nobody is at the Mac. That read is expected to give the clipboard alone, because the script gives up after three seconds (C10 checks that the question does not hold it longer), and the next one gives the page if the person said yes.
 - Only a Mac reads. A device whose platform does not advertises nothing, and a phone that asks it is told that it cannot.
 - The trust file gets one more optional key. It gives an unpaired device nothing.
 

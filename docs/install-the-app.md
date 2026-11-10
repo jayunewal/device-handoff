@@ -206,7 +206,7 @@ An iPhone or an iPad can ask a Mac which page is open in its browser and what wa
 
 1. On the Mac's **Devices** tab, tap the three dots at the end of the phone's row, then **Let this device continue from this Mac…**.
 2. Turn on **Let** and the phone's name **continue from this Mac**, and tap **Save**. Nobody at the Mac is asked when the phone asks, so this is the one place that says yes.
-3. macOS asks whether Baton may control **Safari** and **Chrome**, one question for each that is open. Baton uses that only to read the address and the title of the page in front. Choose **OK**. If you choose **Don't Allow**, the phone still gets what you copied, and Baton tells you where to change it: **System Settings**, **Privacy & Security**, **Automation**. A browser that is not open is not asked: Baton says so after you save, and macOS asks the first time a phone reads from it. To be asked now, open the browser and save again. After a rebuild of the Mac app macOS asks again, so save again then too.
+3. macOS asks whether Baton may control **Safari** and **Chrome**, one question for each that is open. Baton uses that only to read the address and the title of the page in front. Choose **OK**. If you choose **Don't Allow**, the phone still gets what you copied, and Baton tells you where to change it: **System Settings**, **Privacy & Security**, **Automation**. A browser that is not open is not asked, and macOS asks the first time a phone reads from it while it is open. When no browser is allowed yet and one is not open, Baton says so after you save. To be asked now, open the browser and save again. After a rebuild of the Mac app macOS asks again, so save again then too.
 
 ### Ask from the phone
 
