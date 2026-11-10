@@ -20,12 +20,20 @@ String _read(String path) => File(path).readAsStringSync();
 
 /// The text of the Swift function that begins with [signature], up to the brace that closes it at
 /// the start of a line.
-String _swiftFunction(String swift, String signature) {
+String _swiftFunction(String swift, String signature) =>
+    _swiftBlock(swift, signature, '\n}\n');
+
+/// The text of the method of a class that begins with [signature], up to the brace that closes it
+/// at the indentation of a method.
+String _swiftMethod(String swift, String signature) =>
+    _swiftBlock(swift, signature, '\n  }\n');
+
+String _swiftBlock(String swift, String signature, String close) {
   final start = swift.indexOf(signature);
   expect(start, isNonNegative, reason: signature);
-  final end = swift.indexOf('\n}\n', start);
+  final end = swift.indexOf(close, start);
   expect(end, isNonNegative, reason: 'the end of $signature');
-  return swift.substring(start, end + 2);
+  return swift.substring(start, end + close.length - 1);
 }
 
 /// What a Swift function does, a line at a time: without its comments, its blank lines and the
@@ -425,6 +433,36 @@ void main() {
       expect(delegate, contains('withTitle: "$entry"'), reason: entry);
     }
     expect(delegate, contains('#selector(NSApplication.terminate(_:))'));
+
+    // The menu has to reach the item, and each entry has to reach what answers it: an entry with no
+    // target is greyed out, and a menu that was never put on the item never opens. Every line is
+    // held whole, as the names alone would pass with one of them left out.
+    final item = _swiftCode(
+      _swiftMethod(delegate, 'private func addMenuBarItem()'),
+    );
+    expect(item.take(3), [
+      'private func addMenuBarItem() {',
+      'let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)',
+      'if let button = item.button {',
+    ]);
+    expect(item.skipWhile((line) => line != 'let menu = NSMenu()').toList(), [
+      'let menu = NSMenu()',
+      'let open = menu.addItem(',
+      'withTitle: "Open Baton", action: #selector(openBaton(_:)), keyEquivalent: "")',
+      'open.target = self',
+      'menu.addItem(NSMenuItem.separator())',
+      'let quit = menu.addItem(',
+      'withTitle: "Quit Baton", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")',
+      'quit.target = NSApp',
+      'item.menu = menu',
+      'menuBarItem = item',
+      '}',
+    ]);
+    // And the entry that opens Baton brings the window forward from wherever it is.
+    expect(
+      _swiftCode(_swiftMethod(delegate, '@objc private func openBaton(')),
+      ['@objc private func openBaton(_ sender: Any?) {', 'showBaton()', '}'],
+    );
   });
 
   test(
@@ -438,6 +476,23 @@ void main() {
       expect(delegate, contains('.userInitiatedAllowingIdleSystemSleep'));
       expect(delegate, isNot(contains('idleSystemSleepDisabled')));
       expect(delegate, isNot(contains('IOPMAssertion')));
+
+      // The claim is kept in a property for as long as Baton runs: one that nothing holds ends
+      // with the line that made it, and the system slows Baton down as if it had never been asked.
+      expect(
+        _swiftCode(_swiftMethod(delegate, 'private func holdOffAppNap()')),
+        [
+          'private func holdOffAppNap() {',
+          'running = ProcessInfo.processInfo.beginActivity(',
+          'options: .userInitiatedAllowingIdleSystemSleep,',
+          'reason: "Baton answers the devices that are paired with this Mac")',
+          '}',
+        ],
+      );
+      expect(
+        _swiftCode(delegate),
+        contains('private var running: NSObjectProtocol?'),
+      );
     },
   );
 
@@ -493,6 +548,22 @@ void main() {
       launchBody,
       contains('if wasOpenedAtSignIn() {\n      startHidden()'),
     );
+    // What keeps Baton running with no window starts with every start, and the claim on the system
+    // and the item in the menu bar are made before anything is hidden.
+    final launches = _swiftMethod(
+      delegate,
+      'override func applicationDidFinishLaunching(',
+    );
+    expect(_swiftCode(launches), [
+      'override func applicationDidFinishLaunching(_ notification: Notification) {',
+      'super.applicationDidFinishLaunching(notification)',
+      'holdOffAppNap()',
+      'addMenuBarItem()',
+      'if wasOpenedAtSignIn() {',
+      'startHidden()',
+      '}',
+      '}',
+    ]);
     expect(
       'startHidden()'.allMatches(delegate),
       hasLength(2),
@@ -584,11 +655,15 @@ void main() {
     // is hidden when the system says it has left, not before: hiding one in full screen would
     // leave its space empty.
     final window = _read('macos/Runner/MainFlutterWindow.swift');
-    final close = window.indexOf('override func performClose(');
-    final closeBody = window.substring(close, window.indexOf('\n  }\n', close));
+    final closeBody = _swiftMethod(window, 'override func performClose(');
+    // A line that is missing is -1, which is before every line that is there: both must be found.
+    final waits = closeBody.indexOf('hideWhenOutOfFullScreen()');
+    final leaves = closeBody.indexOf('toggleFullScreen(sender)');
+    expect(waits, isNonNegative, reason: 'closing sets the wait');
+    expect(leaves, isNonNegative, reason: 'closing leaves full screen');
     expect(
-      closeBody.indexOf('hideWhenOutOfFullScreen()'),
-      lessThan(closeBody.indexOf('toggleFullScreen(sender)')),
+      waits,
+      lessThan(leaves),
       reason: 'the wait is set before the window starts to leave',
     );
     final wait = window.indexOf('private func hideWhenOutOfFullScreen()');
@@ -611,25 +686,28 @@ void main() {
     // they can (lib/src/arrival_notices.dart). They cannot while the window is hidden,
     // minimized, waiting to hide, behind another window or while another app is in front.
     final swift = _read('macos/Runner/MainFlutterWindow.swift');
-    final looking = swift.indexOf('private func personCanSeeBaton()');
-    expect(looking, isNonNegative);
-    final lookingBody = swift.substring(
-      looking,
-      swift.indexOf('\n}\n', looking),
-    );
-    for (final check in [
-      'NSApp.isActive',
-      'window.isVisible',
-      '!window.isMiniaturized',
-      'window.alphaValue > 0',
-      'window.occlusionState.contains(.visible)',
-    ]) {
-      expect(lookingBody, contains(check), reason: check);
-    }
+    // A Mac that is locked, whose screen is off or that another account has in front shows nobody
+    // anything, whatever the window is doing, and what the person is told by notification waits for
+    // them there. That check comes first, and every line is held whole: the names alone would pass
+    // with an answer turned round.
     expect(
-      lookingBody,
-      contains('return false'),
-      reason: 'no window, no seeing',
+      _swiftCode(_swiftFunction(swift, 'private func personCanSeeBaton()')),
+      [
+        'private func personCanSeeBaton() -> Bool {',
+        'if macIsNotInUse() { return false }',
+        'guard NSApp.isActive, let window = (NSApp.delegate as? AppDelegate)?.mainFlutterWindow else {',
+        'return false',
+        '}',
+        'return window.isVisible && !window.isMiniaturized && window.alphaValue > 0',
+        '&& window.occlusionState.contains(.visible)',
+        '}',
+      ],
+    );
+    // The question from the app reaches that function, and no other.
+    expect(
+      _swiftCode(_swiftFunction(swift, 'private func answerAboutStayingOn('))
+          .join('\n'),
+      contains(_inOrder(['case "looking":', 'result(personCanSeeBaton())'])),
     );
 
     // A click on a notification, and only a click, brings the window forward.

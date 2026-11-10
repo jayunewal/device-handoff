@@ -428,8 +428,11 @@ private func answerAboutStayingOn(messenger: FlutterBinaryMessenger) {
 /// Whether the person can see Baton now: it is the app in front, and its window is on the screen
 /// with some of it uncovered. A window that is hidden, minimized, waiting to hide or behind the
 /// windows of another app is not seen, and what comes for the person then is told by a
-/// notification (lib/src/arrival_notices.dart).
+/// notification (lib/src/arrival_notices.dart). Nobody sees a window of a Mac that is locked,
+/// whose screen is off or that another account has in front, however the window is placed, so
+/// that is checked first (`macIsNotInUse`): the notification waits for the person there.
 private func personCanSeeBaton() -> Bool {
+  if macIsNotInUse() { return false }
   guard NSApp.isActive, let window = (NSApp.delegate as? AppDelegate)?.mainFlutterWindow else {
     return false
   }
