@@ -7,6 +7,7 @@ import 'package:baton/src/backend.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fake_always_on.dart';
 import 'fake_backend.dart';
 
 void main() {
@@ -187,5 +188,38 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     expect(backend.session.stopped, isTrue);
     expect(backend.session.listening, isFalse);
+  });
+
+  testWidgets('says once that it is up, when the devices show and not before', (
+    tester,
+  ) async {
+    final alwaysOn = FakeAlwaysOn();
+    final backend = FakeBackend(
+      startFailures: [
+        const BatonError(
+          kind: ErrorKind.alreadyRunning,
+          message: 'Another Baton already has this device’s folder open.',
+        ),
+      ],
+    );
+    await tester.pumpWidget(BatonApp(backend: backend, alwaysOn: alwaysOn));
+    await tester.pumpAndSettle();
+    expect(find.text('Name this device'), findsOneWidget);
+    expect(alwaysOn.readies, 0, reason: 'the person has yet to name it');
+
+    await tester.enterText(find.byType(TextField), 'Desk');
+    await tester.tap(find.text('Continue'));
+    await tester.pumpAndSettle();
+    expect(find.text('Baton could not start'), findsOneWidget);
+    expect(alwaysOn.readies, 0, reason: 'a start that failed is not up');
+
+    await tester.tap(find.text('Try again'));
+    await tester.pumpAndSettle();
+    expect(find.text('Desk'), findsOneWidget);
+    expect(alwaysOn.readies, 1);
+
+    // Nothing says it again when the screen changes under it.
+    await tester.pump(const Duration(seconds: 5));
+    expect(alwaysOn.readies, 1);
   });
 }

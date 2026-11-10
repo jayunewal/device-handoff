@@ -13,6 +13,7 @@ import 'dart:async';
 import 'dart:io' as io show Platform;
 import 'dart:io' show Directory, File;
 
+import 'package:baton/src/always_on.dart';
 import 'package:baton/src/app.dart';
 import 'package:baton/src/awake.dart';
 import 'package:baton/src/backend.dart';
@@ -96,6 +97,25 @@ void main() {
       await RustBackend().deviceName();
     },
     skip: defaultTargetPlatform != TargetPlatform.iOS,
+  );
+
+  testWidgets(
+    'asks the Mac app whether Baton opens at sign-in, and is answered',
+    (tester) async {
+      // The Mac app answers on a channel of its own (macos/Runner/MainFlutterWindow.swift). A
+      // channel that nothing answers gives "unavailable", which is also what a Mac older than
+      // macOS 13 says, and the Macs that CI runs on are newer. Nothing is turned on: that would
+      // register the app to open at sign-in on the machine that runs the test.
+      const keeper = PlatformAlwaysOnKeeper();
+      expect(
+        await keeper.signIn(),
+        isNot(SignInOpening.unavailable),
+        reason: 'the Mac app answered the question and understood it',
+      );
+      // No window waits to hide, so this changes nothing, and the app answers it.
+      await keeper.ready();
+    },
+    skip: defaultTargetPlatform != TargetPlatform.macOS,
   );
 
   testWidgets(

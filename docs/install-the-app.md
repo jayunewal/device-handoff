@@ -67,6 +67,8 @@ The first build takes a while, because it compiles the Rust library for both kin
 
 The first time Baton opens, macOS may ask whether it may find devices on your local network. Choose **Allow**.
 
+Closing the window does not quit Baton on a Mac. It hides the window and stays in the menu bar, so that your other devices can still reach this Mac. Choose **Open Baton** from the menu bar item, or click Baton in the Dock, to bring the window back, and **Quit Baton** to end it. To have Baton open when you sign in, turn on **Open Baton when you sign in** in **Settings**. It needs macOS 13 or newer, and macOS may ask you to allow it under **System Settings**, **General**, **Login Items**; Baton opens that page for you.
+
 If you only want to run the Mac app and not build anything, CI builds it for every change that is merged into `main`. Open the [CI runs](https://github.com/jayunewal/device-handoff/actions/workflows/ci.yml), pick the latest run on `main` with a green tick and download `baton-app-macos` under **Artifacts** at the bottom of the page. GitHub asks you to sign in to download. Unzip it, then unzip the `Baton-macos-app.zip` inside it, move `Baton.app` to your Applications folder and run:
 
 ```sh

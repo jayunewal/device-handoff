@@ -6,6 +6,7 @@
 
 import 'dart:io';
 
+import 'package:baton/src/always_on.dart';
 import 'package:baton/src/awake.dart';
 import 'package:baton/src/file_shower.dart';
 import 'package:baton/src/notice_access.dart';
@@ -283,6 +284,136 @@ void main() {
     expect(swift, isNot(contains('content.sound')));
     expect(swift, isNot(contains('content.badge')));
     expect(swift, contains('requestAuthorization(options: [.alert])'));
+  });
+
+  test('the Mac app keeps running when its window is closed, and hides it', () {
+    // The devices that reach this Mac do so through Baton, so a Baton that ended with its window
+    // could be reached only while somebody sat at the Mac. Closing the window hides it, and the
+    // Dock, a second start of the app and the item in the menu bar bring it back.
+    final delegate = _read('macos/Runner/AppDelegate.swift');
+    final terminate = delegate.indexOf(
+      'override func applicationShouldTerminateAfterLastWindowClosed(',
+    );
+    expect(terminate, isNonNegative);
+    final terminateBody = delegate.substring(
+      terminate,
+      delegate.indexOf('\n  }\n', terminate),
+    );
+    expect(terminateBody, contains('return false'));
+    expect(terminateBody, isNot(contains('return true')));
+
+    final window = _read('macos/Runner/MainFlutterWindow.swift');
+    final close = window.indexOf('override func performClose(');
+    expect(close, isNonNegative);
+    final closeBody = window.substring(close, window.indexOf('\n  }\n', close));
+    expect(closeBody, contains('orderOut(sender)'));
+    expect(closeBody, isNot(contains('super.performClose')));
+    expect(closeBody, isNot(contains('.close()')));
+
+    expect(delegate, contains('override func applicationShouldHandleReopen('));
+    expect(delegate, contains('NSStatusBar.system.statusItem('));
+    expect(
+      delegate,
+      contains('menuBarItem = item'),
+      reason: 'the menu bar drops an item that nothing holds',
+    );
+    for (final entry in ['Open Baton', 'Quit Baton']) {
+      expect(delegate, contains('withTitle: "$entry"'), reason: entry);
+    }
+    expect(delegate, contains('#selector(NSApplication.terminate(_:))'));
+  });
+
+  test(
+    'the Mac app asks the system not to slow it down while it is hidden',
+    () {
+      // An app with no window on the screen is slowed by the system, and Baton would answer the
+      // devices that reach it late. The claim leaves the Mac free to sleep when the person is
+      // away: a Baton that kept it awake would drain a laptop in a bag.
+      final delegate = _read('macos/Runner/AppDelegate.swift');
+      expect(delegate, contains('ProcessInfo.processInfo.beginActivity('));
+      expect(delegate, contains('.userInitiatedAllowingIdleSystemSleep'));
+      expect(delegate, isNot(contains('idleSystemSleepDisabled')));
+      expect(delegate, isNot(contains('IOPMAssertion')));
+    },
+  );
+
+  test('a Baton that a login item opened hides its window only once the app '
+      'is up', () {
+    // Flutter builds no screen while no window is on the screen, so a window that hid at once
+    // would leave the app on its first screen, with nothing listening for what other devices
+    // send. The window is made invisible and stays, and it goes when the app says it is up.
+    final delegate = _read('macos/Runner/AppDelegate.swift');
+    expect(delegate, contains('keyAELaunchedAsLogInItem'));
+    final start = delegate.indexOf('private func startHidden()');
+    expect(start, isNonNegative);
+    final startBody = delegate.substring(
+      start,
+      delegate.indexOf('\n  }\n', start),
+    );
+    expect(startBody, contains('window.alphaValue = 0'));
+    expect(startBody, contains('window.ignoresMouseEvents = true'));
+    expect(
+      startBody,
+      isNot(contains('orderOut')),
+      reason: 'the window must be on the screen until the app says it is up',
+    );
+    expect(
+      startBody,
+      contains('self?.showBaton()'),
+      reason: 'a start that goes wrong must show its window',
+    );
+    final up = delegate.indexOf('func interfaceIsUp()');
+    expect(up, isNonNegative);
+    final upBody = delegate.substring(up, delegate.indexOf('\n  }\n', up));
+    expect(upBody, contains('window.orderOut(nil)'));
+    // A window that comes back after that is whole again.
+    expect(upBody, contains('window.alphaValue = 1'));
+    expect(upBody, contains('window.ignoresMouseEvents = false'));
+    expect(delegate, contains('if !visible || windowWaitsToHide {'));
+  });
+
+  test('the Mac app answers what Baton asks about opening at sign-in', () {
+    // The channel, its questions and the words of its answers are named in
+    // lib/src/always_on.dart and in the app. If they differ, the switch in the settings cannot
+    // be shown, or does nothing, and a Baton that a login item opened never hides its window.
+    final swift = _read('macos/Runner/MainFlutterWindow.swift');
+    expect(swift, contains('name: "${PlatformAlwaysOnKeeper.channelName}"'));
+    for (final question in [
+      PlatformAlwaysOnKeeper.signInQuestion,
+      PlatformAlwaysOnKeeper.setSignInQuestion,
+      PlatformAlwaysOnKeeper.openSignInSettingsQuestion,
+      PlatformAlwaysOnKeeper.readyQuestion,
+    ]) {
+      expect(swift, contains('case "$question":'), reason: question);
+    }
+    for (final word in ['on', 'off', 'needsApproval', 'unavailable']) {
+      expect(swift, contains('return "$word"'), reason: word);
+    }
+    expect(
+      swift,
+      contains(
+        '    answerAboutStayingOn(messenger: flutterViewController.engine.binaryMessenger)',
+      ),
+    );
+    // The system has no way for an app to open at sign-in before macOS 13, which Baton still
+    // runs on, so each use of it sits behind a check, and an older Mac says that it cannot.
+    expect(
+      'guard #available(macOS 13.0, *) else { return "unavailable" }'
+          .allMatches(swift),
+      hasLength(2),
+      reason: 'the state and the change',
+    );
+    expect(
+      'guard #available(macOS 13.0, *) else { return false }'.allMatches(swift),
+      hasLength(1),
+      reason: 'the pane of Settings',
+    );
+    expect(swift, contains('@available(macOS 13.0, *)'));
+    // It registers the app itself and nothing else: no helper program, no agent.
+    expect(swift, contains('SMAppService.mainApp'));
+    expect(swift, isNot(contains('SMAppService.agent')));
+    expect(swift, isNot(contains('SMAppService.daemon')));
+    expect(swift, isNot(contains('SMAppService.loginItem')));
   });
 
   test('the apps show the files that arrived and never open them', () {

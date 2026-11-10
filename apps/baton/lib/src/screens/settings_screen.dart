@@ -5,6 +5,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../always_on.dart';
 import '../backend.dart';
 import '../control_access.dart';
 import '../controller.dart';
@@ -19,8 +20,8 @@ import 'permissions_screen.dart';
 import 'restart_unlock_screen.dart';
 
 /// What is about this device rather than another one: its name, whether others can reach it and
-/// its fingerprint, what the system lets Baton do, unlocking a Mac after it restarts (on an
-/// iPhone or iPad), and the diagnostics.
+/// its fingerprint, what the system lets Baton do, whether a Mac opens Baton when its person signs
+/// in, unlocking a Mac after it restarts (on an iPhone or iPad), and the diagnostics.
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
     required this.session,
@@ -29,6 +30,7 @@ class SettingsScreen extends StatefulWidget {
     this.screenAccess = const PlatformScreenAccess(),
     this.notices = const PlatformNoticeKeeper(),
     this.system = const PlatformSystemSettings(),
+    this.alwaysOn = const PlatformAlwaysOnKeeper(),
     this.macPasswords,
     super.key,
   });
@@ -46,6 +48,10 @@ class SettingsScreen extends StatefulWidget {
   final NoticeKeeper notices;
   final SystemSettingsKeeper system;
 
+  /// Says whether a Mac opens Baton when its person signs in, and changes it. Tests give it one of
+  /// their own.
+  final AlwaysOnKeeper alwaysOn;
+
   /// Keeps the Macs to unlock after a restart, and their passwords. Only an iPhone or iPad has one,
   /// and only then is there a way in to it.
   final MacPasswordKeeper? macPasswords;
@@ -61,12 +67,19 @@ class _SettingsScreenState extends State<SettingsScreen>
   /// How many permissions need the person, or null before they were looked at.
   int? _permissionsOff;
 
+  /// Whether this Mac opens Baton when the person signs in, or null before it was looked at.
+  SignInOpening? _signIn;
+
+  /// Whether a change of that is on its way to the system.
+  bool _changingSignIn = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     unawaited(_controller.start());
     unawaited(_checkPermissions());
+    unawaited(_checkSignIn());
   }
 
   @override
@@ -78,7 +91,43 @@ class _SettingsScreenState extends State<SettingsScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) unawaited(_checkPermissions());
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_checkPermissions());
+      unawaited(_checkSignIn());
+    }
+  }
+
+  Future<void> _checkSignIn() async {
+    final opening = await widget.alwaysOn.signIn();
+    if (mounted) setState(() => _signIn = opening);
+  }
+
+  /// Turns opening at sign-in on or off. Where the system waits for the person's yes, which only
+  /// System Settings takes, the switch stays off and Settings opens at the place for it.
+  Future<void> _setSignIn(bool on) async {
+    if (_changingSignIn) return;
+    setState(() => _changingSignIn = true);
+    try {
+      final opening = await widget.alwaysOn.setSignIn(on);
+      if (!mounted) return;
+      setState(() => _signIn = opening);
+      if (on && opening == SignInOpening.needsApproval) {
+        await widget.alwaysOn.openSignInSettings();
+      }
+    } on AlwaysOnFailure catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(
+              'Baton could not change this. The system said: ${e.message}',
+            ),
+          ),
+        );
+    } finally {
+      if (mounted) setState(() => _changingSignIn = false);
+    }
   }
 
   Future<void> _checkPermissions() async {
@@ -101,6 +150,7 @@ class _SettingsScreenState extends State<SettingsScreen>
   Widget build(BuildContext context) {
     final keeper = widget.macPasswords;
     final off = _permissionsOff;
+    final signIn = _signIn;
     return Scaffold(
       appBar: AppBar(title: const Text('Settings')),
       body: SafeArea(
@@ -139,6 +189,17 @@ class _SettingsScreenState extends State<SettingsScreen>
                       ),
                     ),
                   ),
+                  if (signIn != null && signIn != SignInOpening.unavailable)
+                    _SwitchRow(
+                      icon: Icons.login_outlined,
+                      title: 'Open Baton when you sign in',
+                      subtitle: signIn == SignInOpening.needsApproval
+                          ? 'Turned off in System Settings. Tap to turn it on there.'
+                          : 'Baton stays in the menu bar, so that your other '
+                                'devices can reach this Mac.',
+                      value: signIn == SignInOpening.on,
+                      onChanged: _changingSignIn ? null : _setSignIn,
+                    ),
                   if (keeper != null)
                     _Row(
                       icon: Icons.lock_open_outlined,
@@ -310,15 +371,7 @@ class _Row extends StatelessWidget {
     final detail = this.detail;
     return ListTile(
       onTap: onTap,
-      leading: Container(
-        width: 32,
-        height: 32,
-        decoration: BoxDecoration(
-          color: scheme.primary.withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Icon(icon, size: 20, color: scheme.primary),
-      ),
+      leading: _RowIcon(icon),
       title: Text(title),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
@@ -334,6 +387,58 @@ class _Row extends StatelessWidget {
           Icon(Icons.chevron_right, color: scheme.onSurfaceVariant),
         ],
       ),
+    );
+  }
+}
+
+/// A row with a switch, which a tap on the row turns as well.
+class _SwitchRow extends StatelessWidget {
+  const _SwitchRow({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final bool value;
+
+  /// Null while a change is on its way, which leaves the switch as it is.
+  final ValueChanged<bool>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final onChanged = this.onChanged;
+    return ListTile(
+      onTap: onChanged == null ? null : () => onChanged(!value),
+      leading: _RowIcon(icon),
+      title: Text(title),
+      subtitle: Text(subtitle),
+      trailing: Switch(value: value, onChanged: onChanged),
+    );
+  }
+}
+
+/// The small colored square that leads each row.
+class _RowIcon extends StatelessWidget {
+  const _RowIcon(this.icon);
+
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      width: 32,
+      height: 32,
+      decoration: BoxDecoration(
+        color: scheme.primary.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Icon(icon, size: 20, color: scheme.primary),
     );
   }
 }

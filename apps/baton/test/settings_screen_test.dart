@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import 'package:baton/src/always_on.dart';
 import 'package:baton/src/backend.dart';
 import 'package:baton/src/control_access.dart';
 import 'package:baton/src/mac_passwords.dart';
@@ -11,6 +12,7 @@ import 'package:baton/src/screens/settings_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'fake_always_on.dart';
 import 'fake_backend.dart';
 import 'fake_control_access.dart';
 import 'fake_notices.dart';
@@ -46,6 +48,7 @@ Future<void> _show(
   WidgetTester tester,
   FakeSession session, {
   FakeSystemSettings? system,
+  FakeAlwaysOn? alwaysOn,
   MacPasswordKeeper? macPasswords,
 }) async {
   tester.view
@@ -65,6 +68,7 @@ Future<void> _show(
             FakeSystemSettings(const {
               Permission.accessibility: PermissionState.on,
             }),
+        alwaysOn: alwaysOn ?? FakeAlwaysOn(SignInOpening.unavailable),
         macPasswords: macPasswords,
       ),
     ),
@@ -146,5 +150,115 @@ void main() {
     await tester.tap(find.text('Unlock a Mac after restart'));
     await tester.pumpAndSettle();
     expect(find.byType(RestartUnlockScreen), findsOneWidget);
+  });
+  group('opening at sign-in', () {
+    const title = 'Open Baton when you sign in';
+
+    testWidgets('has no switch where the system cannot be asked to', (
+      tester,
+    ) async {
+      await _show(tester, _session());
+      expect(find.text(title), findsNothing);
+      expect(find.byType(Switch), findsNothing);
+    });
+
+    testWidgets('says where it stands, and turns it on', (tester) async {
+      final alwaysOn = FakeAlwaysOn();
+      await _show(tester, _session(), alwaysOn: alwaysOn);
+      expect(find.text(title), findsOneWidget);
+      expect(
+        find.text(
+          'Baton stays in the menu bar, so that your other devices can reach '
+          'this Mac.',
+        ),
+        findsOneWidget,
+      );
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+
+      await tester.tap(find.byType(Switch));
+      await tester.pumpAndSettle();
+
+      expect(alwaysOn.sets, [true]);
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+      expect(alwaysOn.settingsOpened, 0);
+    });
+
+    testWidgets('turns it off from the row as well as the switch', (
+      tester,
+    ) async {
+      final alwaysOn = FakeAlwaysOn(SignInOpening.on);
+      await _show(tester, _session(), alwaysOn: alwaysOn);
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+
+      await tester.tap(find.text(title));
+      await tester.pumpAndSettle();
+
+      expect(alwaysOn.sets, [false]);
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+    });
+
+    testWidgets('leaves the switch off and opens Settings where the system '
+        'waits for the person', (tester) async {
+      final alwaysOn = FakeAlwaysOn()..onAnswer = SignInOpening.needsApproval;
+      await _show(tester, _session(), alwaysOn: alwaysOn);
+
+      await tester.tap(find.byType(Switch));
+      await tester.pumpAndSettle();
+
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+      expect(alwaysOn.settingsOpened, 1);
+      expect(
+        find.text('Turned off in System Settings. Tap to turn it on there.'),
+        findsOneWidget,
+      );
+
+      // The person said no there, and asks again: Settings opens again, and no state is made up.
+      await tester.tap(find.byType(Switch));
+      await tester.pumpAndSettle();
+      expect(alwaysOn.settingsOpened, 2);
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+    });
+
+    testWidgets('says what the system said when it refuses, and leaves the '
+        'switch as it was', (tester) async {
+      final alwaysOn = FakeAlwaysOn()
+        ..failure = const AlwaysOnFailure('Operation not permitted');
+      await _show(tester, _session(), alwaysOn: alwaysOn);
+
+      await tester.tap(find.byType(Switch));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text(
+          'Baton could not change this. The system said: Operation not '
+          'permitted',
+        ),
+        findsOneWidget,
+      );
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+      expect(alwaysOn.settingsOpened, 0);
+
+      // The switch is free again after a refusal.
+      alwaysOn.failure = null;
+      await tester.tap(find.byType(Switch));
+      await tester.pumpAndSettle();
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+    });
+
+    testWidgets('looks again when the person comes back from Settings', (
+      tester,
+    ) async {
+      final alwaysOn = FakeAlwaysOn(SignInOpening.needsApproval);
+      await _show(tester, _session(), alwaysOn: alwaysOn);
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+
+      // They said yes there.
+      alwaysOn.opening = SignInOpening.on;
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+
+      expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
+    });
   });
 }
