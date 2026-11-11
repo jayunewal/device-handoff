@@ -8,6 +8,12 @@
 //! device only if they are the six digits that it worked out itself, and it does not show them,
 //! so the person has to read them off the phone.
 //!
+//! Nothing on the screen may be taken for them either. A stranger who holds the ticket works out
+//! the digits of its own pairing before it sends its name, and cleaning a name leaves digits in
+//! it, so a name shown with the question could hold exactly what the person is to type. So the
+//! question shows nothing that the device sent, but the system that it says it runs, which is one
+//! of a few fixed words. The name and the fingerprint are shown once the pairing is made.
+//!
 //! That is also why nothing typed ahead pairs anything. A terminal keeps what is typed while the
 //! program waits, so a `yes` typed before the phone asked would be waiting to answer the first
 //! device that did. A line typed before cannot know the digits of a pairing that had not begun,
@@ -33,11 +39,11 @@ const CODE_DIGITS: usize = 6;
 /// Offers a ticket to the person and waits for a phone to pair with it.
 ///
 /// The person gives the ticket to the phone, and when the phone asks to pair types here the six
-/// digits that it shows. The program does not show them, and a line that was typed before the
-/// phone asked is not them. A phone whose digits were typed is paired, and allowed to start the
-/// main screen of this Mac with control, which is all that it may do here
-/// ([`StartAccess::Control`]). A phone that is paired is returned. `stop` ends the wait, and the
-/// offer with it.
+/// digits that it shows. The program does not show them, nor anything that the device chose, and
+/// a line that was typed before the phone asked is not them. A phone whose digits were typed is
+/// paired, and allowed to start the main screen of this Mac with control, which is all that it
+/// may do here ([`StartAccess::Control`]). A phone that is paired is returned. `stop` ends the
+/// wait, and the offer with it.
 ///
 /// # Errors
 ///
@@ -152,22 +158,21 @@ fn is_the_code(typed: &str, code: &str) -> bool {
     code.len() == CODE_DIGITS && code.chars().all(|c| c.is_ascii_digit()) && typed == code
 }
 
-/// Shows a device that asks to pair, and asks for the digits that the phone shows. The digits are
-/// not shown here: the person has to read them off the phone, or they would only be copying
-/// what this screen says.
+/// Asks the person for the digits that the phone shows, when a device asks to pair.
+///
+/// The digits are not shown, so the person has to read them off the phone, and neither is
+/// anything else that the device sent but the system it says it runs, which is one of a few fixed
+/// words. Above all not its name: a stranger who holds the ticket works out the digits of its own
+/// pairing before it sends its name, and a cleaned name keeps digits, so the name could be the
+/// digits, in the form that a phone shows them, a few lines above where the person is told to type
+/// them. The fingerprint, the id and the code are left out for the same reason, and nothing here
+/// depends on them.
 fn show_request(person: &impl Person, request: &PairingRequest) {
     person.say("");
-    person.say("A device wants to pair with the login window of this Mac:");
-    person.say("");
     person.say(&format!(
-        "    Name:         {}",
-        sanitize_display_name(&request.name)
-    ));
-    person.say(&format!(
-        "    System:       {}",
+        "A device wants to pair with the login window of this Mac. It says that it runs {}.",
         platform_name(request.platform)
     ));
-    person.say(&format!("    Fingerprint:  {}", request.fingerprint));
     person.say("");
     person.say("If it is yours, it shows six digits. Type them here, and press Return.");
     person.say("Any other line says no, and nothing is paired. If it shows none, press Control-C.");
@@ -307,45 +312,107 @@ mod tests {
         PairingRequest {
             id: 1,
             device_id: "ab".repeat(32),
-            name: "Phone\u{1b}[2J\u{1b}[H\r\n    Name:         The Mac".to_owned(),
+            name: "Pocket Phone".to_owned(),
             platform: Platform::Ios,
             fingerprint: "abcd-efgh-ijkl-mnop-qrst".to_owned(),
             code: code.to_owned(),
         }
     }
 
-    #[test]
-    fn what_a_device_calls_itself_cannot_change_the_screen_of_the_terminal() {
+    /// What the person is told when `request` asks to pair.
+    fn asked_for(request: &PairingRequest) -> Vec<String> {
         let told = Told::default();
-
-        show_request(&told, &a_request("514 643"));
-
-        let lines = told.said();
-        assert!(
-            lines.iter().all(|line| !line.chars().any(char::is_control)),
-            "{lines:?}"
-        );
-        // The name is on the line that is for it, and cannot start a line of its own, such as one
-        // that says whose name it is.
-        let named = lines
-            .iter()
-            .filter(|line| line.trim_start().starts_with("Name:"))
-            .count();
-        assert_eq!(named, 1, "{lines:?}");
+        show_request(&told, request);
+        told.said()
     }
 
     #[test]
-    fn the_person_is_not_shown_the_digits_that_they_are_to_type() {
-        let told = Told::default();
+    fn a_device_whose_name_is_its_own_code_does_not_put_the_code_on_the_screen() {
+        // A stranger who holds the ticket works out the digits before it sends its name, and
+        // cleaning a name keeps digits and a space, so the name can be the code as a phone shows
+        // it. The core cleans it before the program sees it, which is done here too.
+        for name in [
+            "514 643",
+            "514643",
+            "Pocket Phone 514 643",
+            "5 1 4 6 4 3",
+            "My phone is 514 643",
+        ] {
+            let request = PairingRequest {
+                name: sanitize_display_name(name),
+                ..a_request("514 643")
+            };
+            assert!(
+                request.name.chars().any(char::is_numeric),
+                "{name:?}: cleaning took the digits out, so this tests nothing"
+            );
 
-        show_request(&told, &a_request("514 643"));
+            let text = asked_for(&request).join("\n");
 
-        // Not as the phone shows them, and not in any other way: a person who is shown the digits
-        // would be copying them, and not reading them off the phone.
-        let text = told.said().join("\n");
-        assert!(!text.contains("514"), "{text}");
-        assert!(!text.contains("643"), "{text}");
-        assert!(text.contains("six digits"), "{text}");
+            assert!(!text.contains("514"), "{name:?}: {text}");
+            assert!(!text.contains("643"), "{name:?}: {text}");
+            assert!(!text.contains(&request.name), "{name:?}: {text}");
+        }
+    }
+
+    #[test]
+    fn what_the_person_is_asked_does_not_depend_on_anything_that_the_device_sent_but_its_system() {
+        let plain = asked_for(&a_request("514 643"));
+
+        let names = [
+            "514 643",
+            "Pocket Phone 514 643",
+            "Phone\u{1b}[2J\u{1b}[H\r\n    Name:         The Mac",
+            "\u{ff15}\u{ff11}\u{ff14} \u{ff16}\u{ff14}\u{ff13}",
+        ];
+        for name in names {
+            for (fingerprint, code) in [
+                ("abcd-efgh-ijkl-mnop-qrst", "514 643"),
+                ("ab23-4567-cdef-gh23-4567", "234 567"),
+                ("a2b3-c4d5-e6f7-g2h3-i4j5", "999 000"),
+            ] {
+                let request = PairingRequest {
+                    id: 2,
+                    device_id: "cd".repeat(32),
+                    name: name.to_owned(),
+                    fingerprint: fingerprint.to_owned(),
+                    code: code.to_owned(),
+                    ..a_request("514 643")
+                };
+
+                assert_eq!(asked_for(&request), plain, "{name:?} {fingerprint} {code}");
+            }
+        }
+        // What it says is what the program wrote: it tells the person what to type, and nothing in
+        // it can move the cursor.
+        assert!(
+            plain.iter().any(|line| line.contains("Type them here")),
+            "{plain:?}"
+        );
+        assert!(
+            plain.iter().all(|line| !line.chars().any(char::is_control)),
+            "{plain:?}"
+        );
+    }
+
+    #[test]
+    fn the_system_that_is_shown_has_no_digit_in_its_name() {
+        for platform in [
+            Platform::MacOs,
+            Platform::Windows,
+            Platform::Linux,
+            Platform::Ios,
+            Platform::IpadOs,
+            Platform::Android,
+            Platform::Other,
+        ] {
+            let name = platform_name(platform);
+            assert!(
+                !name.chars().any(char::is_numeric),
+                "{name}: a digit in the one thing that is shown of the device could be mistaken \
+                 for the code"
+            );
+        }
     }
 
     #[test]

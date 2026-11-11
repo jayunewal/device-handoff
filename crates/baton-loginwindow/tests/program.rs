@@ -622,12 +622,11 @@ async fn a_phone_whose_digits_the_person_types_is_paired_and_may_open_the_login_
     assert_eq!(listed[0].device.id, phone.id());
     assert_eq!(listed[0].start, StartAccess::Control);
 
-    // The person was told who asks, and what to do, and the digits were not on the screen of the
-    // Mac: they were read off the phone, whose digits the program checked against its own.
+    // The person was asked for the digits and shown nothing that the device sent, but the system
+    // it says it runs. Not the digits, which are read off the phone, and not its name, which a
+    // stranger who holds the ticket could fill with them.
     let said = done.typist.said();
     let code = done.phone_code.expect("the phone showed no code");
-    assert!(said.contains(&"    Name:         Pocket Phone".to_owned()));
-    assert!(said.contains(&format!("    Fingerprint:  {}", at_mac.fingerprint)));
     assert!(done.typist.said_has(ASKED), "{said:?}");
     let asked_at = said
         .iter()
@@ -637,15 +636,24 @@ async fn a_phone_whose_digits_the_person_types_is_paired_and_may_open_the_login_
         .iter()
         .position(|line| line.starts_with("Paired with"))
         .expect("the person was not told that the device is paired");
+    let question = &said[asked_at..paired_at];
     let digits = code.replace(' ', "");
     assert!(
-        said[asked_at..paired_at]
+        question
             .iter()
-            // A fingerprint is made of anything, so that some digits in a row may be in it by
-            // chance.
-            .filter(|line| !line.contains("Fingerprint:"))
             .all(|line| !line.contains(&code) && !line.contains(&digits)),
         "the digits were shown at the Mac: {said:?}"
+    );
+    assert!(
+        question
+            .iter()
+            .all(|line| { !line.contains("Pocket Phone") && !line.contains(&at_mac.fingerprint) }),
+        "something that the device sent was shown with the question: {said:?}"
+    );
+    // Once it is paired, the person is told who it is.
+    assert!(
+        said[paired_at].contains("Pocket Phone") && said[paired_at].contains(&at_mac.fingerprint),
+        "{said:?}"
     );
     // The ticket was on the clipboard as well, and the person was told how to take the phone off.
     assert_eq!(done.typist.copied.lock().unwrap().len(), 1);

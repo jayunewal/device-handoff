@@ -13,8 +13,10 @@
 //! - It is a device of its own, with a key and a list of paired devices in a folder that only
 //!   its owner, root, can read ([`State`]). It shares nothing with the app.
 //! - It is paired in Terminal, at the Mac ([`pair()`]): it offers a ticket, and the person types
-//!   the six digits that the phone shows, which the program does not show itself. Pairing sets
-//!   what the device may do here to the main screen with control, and nothing else changes it.
+//!   the six digits that the phone shows. The program does not show them, and shows nothing that
+//!   the device sent with the question but the system it says it runs: a stranger who holds the
+//!   ticket could put the digits in its name. Pairing sets what the device may do here to the
+//!   main screen with control, and nothing else changes it.
 //! - It takes no links, no text, no files, reads nothing that a person works on and unlocks
 //!   nothing ([`Program`]). It asks nobody anything: nobody is signed in to answer.
 //! - It needs a platform ([`baton_app::Windows`]) that gives the main display of the login
