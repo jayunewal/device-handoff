@@ -314,7 +314,13 @@ async fn a_part_that_the_protocol_would_not_carry_is_left_out_and_the_other_is_g
 #[tokio::test]
 async fn the_reasons_that_the_handler_gives_are_the_ones_the_request_names() {
     let reads = Reads::giving(page());
-    let (laptop, phone) = laptop_and_phone(&reads).await;
+    let mut spec =
+        Spec::new("Laptop").with_continue(Arc::clone(&reads) as Arc<dyn ContinueHandler>);
+    // Eight requests in a row, more than the limit that a device starts with lets through.
+    spec.config.handoff.max_continues_per_minute = 20;
+    let laptop = spec.start().await;
+    let phone = device("Phone").await;
+    phone.pair_with(&laptop).await;
     allow(&laptop, &phone, true);
 
     for (gives, said) in [
@@ -425,6 +431,52 @@ async fn a_device_that_asks_too_often_is_told_to_slow_down() {
         ContinueOutcome::Declined(DeclineReason::RateLimited)
     );
     assert_eq!(reads.asked_by().len(), 3);
+}
+
+#[tokio::test]
+async fn a_device_may_ask_less_often_than_it_may_send_items() {
+    let reads = Reads::giving(page());
+    let mut spec =
+        Spec::new("Laptop").with_continue(Arc::clone(&reads) as Arc<dyn ContinueHandler>);
+    // The limit for items stays where it is, far above this one.
+    spec.config.handoff.max_continues_per_minute = 2;
+    let laptop = spec.start().await;
+    let phone = device("Phone").await;
+    phone.pair_with(&laptop).await;
+    allow(&laptop, &phone, true);
+
+    for _ in 0..2 {
+        assert!(matches!(
+            phone.node.continue_from(&laptop.id).await.unwrap(),
+            ContinueOutcome::Items(_)
+        ));
+    }
+    assert_eq!(
+        phone.node.continue_from(&laptop.id).await.unwrap(),
+        ContinueOutcome::Declined(DeclineReason::RateLimited)
+    );
+    assert_eq!(reads.asked_by().len(), 2);
+}
+
+#[tokio::test]
+async fn with_the_settings_that_a_device_starts_with_it_may_ask_six_times_a_minute() {
+    let reads = Reads::giving(page());
+    let (laptop, phone) = laptop_and_phone(&reads).await;
+    allow(&laptop, &phone, true);
+
+    for _ in 0..6 {
+        assert!(matches!(
+            phone.node.continue_from(&laptop.id).await.unwrap(),
+            ContinueOutcome::Items(_)
+        ));
+    }
+    // Asked as fast as the limit for items alone lets it, which is every two seconds, the
+    // clipboard of the laptop would be read thirty times a minute with nothing to show for it.
+    assert_eq!(
+        phone.node.continue_from(&laptop.id).await.unwrap(),
+        ContinueOutcome::Declined(DeclineReason::RateLimited)
+    );
+    assert_eq!(reads.asked_by().len(), 6);
 }
 
 #[tokio::test]
