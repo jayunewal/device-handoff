@@ -456,9 +456,69 @@ struct Paired {
     typist: Arc<Typist>,
 }
 
+/// What `pair` says when it asks for the digits of the phone.
+const ASKED: &str = "Type them here";
+
+/// A line that the person types once the phone has asked to pair.
+#[derive(Debug, Clone, Copy)]
+enum Typed<'a> {
+    /// The six digits that the phone shows, as it shows them.
+    TheCode,
+    /// The same six digits with nothing between them.
+    TheCodeWithoutTheSpace,
+    /// The six digits that the phone shows, with another last one.
+    TheCodeWithAnotherLastDigit,
+    /// The six digits that the phone shows, and then `more`.
+    TheCodeAnd(&'a str),
+    /// This line, whatever it is.
+    Line(&'a str),
+    /// Nothing more: the input ends.
+    TheEnd,
+}
+
+impl Typed<'_> {
+    /// Whether the line is made of the digits that the phone shows, so that the person can type
+    /// it only after the phone has shown them.
+    fn needs_the_code(self) -> bool {
+        !matches!(self, Self::Line(_) | Self::TheEnd)
+    }
+
+    /// The line, with `code` as the phone shows it. `None` is the end of the input.
+    fn line(self, code: &str) -> Option<String> {
+        match self {
+            Self::TheCode => Some(code.to_owned()),
+            Self::TheCodeWithoutTheSpace => Some(code.replace(' ', "")),
+            Self::TheCodeWithAnotherLastDigit => Some(with_another_last_digit(code)),
+            Self::TheCodeAnd(more) => Some(format!("{code} {more}")),
+            Self::Line(line) => Some(line.to_owned()),
+            Self::TheEnd => None,
+        }
+    }
+}
+
+/// `code` with its last digit changed to another one.
+fn with_another_last_digit(code: &str) -> String {
+    let mut digits: Vec<char> = code.chars().collect();
+    let last = digits.last_mut().expect("the code has digits");
+    let digit = last.to_digit(10).expect("the code ends with a digit");
+    *last = char::from_digit((digit + 1) % 10, 10).unwrap();
+    digits.into_iter().collect()
+}
+
 /// The person runs `pair` at the Mac and the phone is given the ticket. Once the person has been
-/// asked, they answer with `answer`.
-async fn pair_with(mac: &Mac, phone: &Phone, answer: Option<&str>) -> Paired {
+/// asked for the digits, they type `typed`, a line at a time.
+async fn pair_with(mac: &Mac, phone: &Phone, typed: &[Typed<'_>]) -> Paired {
+    pair_with_typing_ahead(mac, phone, &[], typed).await
+}
+
+/// As [`pair_with`], and the person has typed the lines of `ahead` before the phone asks, which a
+/// terminal keeps for the program to read later, like the ones typed after.
+async fn pair_with_typing_ahead(
+    mac: &Mac,
+    phone: &Phone,
+    ahead: &[&str],
+    typed: &[Typed<'_>],
+) -> Paired {
     let typist = Typist::new(true);
     let app = mac.program.app().clone();
     let pairing = tokio::spawn({
@@ -466,6 +526,9 @@ async fn pair_with(mac: &Mac, phone: &Phone, answer: Option<&str>) -> Paired {
         async move { pair(&app, &*typist, std::future::pending()).await }
     });
     let ticket = typist.ticket().await;
+    for &line in ahead {
+        typist.answer(Some(line));
+    }
     let code = Arc::new(Mutex::new(None));
     let joining = tokio::spawn({
         let app = phone.app.clone();
@@ -475,11 +538,17 @@ async fn pair_with(mac: &Mac, phone: &Phone, answer: Option<&str>) -> Paired {
                 .await
         }
     });
-    until("the person to be asked", || {
-        typist.said_has("Type yes to pair")
-    })
-    .await;
-    typist.answer(answer);
+    until("the person to be asked", || typist.said_has(ASKED)).await;
+    if typed.iter().any(|typed| typed.needs_the_code()) {
+        until("the phone to show its code", || {
+            code.lock().unwrap().is_some()
+        })
+        .await;
+    }
+    let shown = code.lock().unwrap().clone().unwrap_or_default();
+    for typed in typed {
+        typist.answer(typed.line(&shown).as_deref());
+    }
     let program = pairing.await.unwrap();
     let phone = joining.await.unwrap();
     let phone_code = code.lock().unwrap().clone();
@@ -491,9 +560,9 @@ async fn pair_with(mac: &Mac, phone: &Phone, answer: Option<&str>) -> Paired {
     }
 }
 
-/// The phone is paired with the program, and the person said yes.
+/// The phone is paired with the program, and the person typed the digits that it shows.
 async fn paired(mac: &Mac, phone: &Phone) {
-    let done = pair_with(mac, phone, Some("yes")).await;
+    let done = pair_with(mac, phone, &[Typed::TheCode]).await;
     done.program.unwrap();
     done.phone.unwrap();
 }
@@ -528,12 +597,12 @@ fn key(code: u16, down: bool) -> WindowInput {
 // Pairing, in Terminal.
 
 #[tokio::test]
-async fn a_phone_that_the_person_says_yes_to_is_paired_and_may_open_the_login_window_and_nothing_else()
+async fn a_phone_whose_digits_the_person_types_is_paired_and_may_open_the_login_window_and_nothing_else()
  {
     let mac = Mac::start().await;
     let phone = Phone::start("Pocket Phone").await;
 
-    let done = pair_with(&mac, &phone, Some("yes")).await;
+    let done = pair_with(&mac, &phone, &[Typed::TheCode]).await;
 
     // The phone is paired, and it knows the program by the name that says where it runs.
     let at_mac = done.program.unwrap();
@@ -553,12 +622,31 @@ async fn a_phone_that_the_person_says_yes_to_is_paired_and_may_open_the_login_wi
     assert_eq!(listed[0].device.id, phone.id());
     assert_eq!(listed[0].start, StartAccess::Control);
 
-    // The person was shown what to compare, and the code that the phone showed is that code.
+    // The person was told who asks, and what to do, and the digits were not on the screen of the
+    // Mac: they were read off the phone, whose digits the program checked against its own.
     let said = done.typist.said();
     let code = done.phone_code.expect("the phone showed no code");
-    assert!(said.contains(&format!("    {code}")), "{said:?}");
     assert!(said.contains(&"    Name:         Pocket Phone".to_owned()));
     assert!(said.contains(&format!("    Fingerprint:  {}", at_mac.fingerprint)));
+    assert!(done.typist.said_has(ASKED), "{said:?}");
+    let asked_at = said
+        .iter()
+        .position(|line| line.contains("A device wants to pair"))
+        .expect("the person was not told that a device asks");
+    let paired_at = said
+        .iter()
+        .position(|line| line.starts_with("Paired with"))
+        .expect("the person was not told that the device is paired");
+    let digits = code.replace(' ', "");
+    assert!(
+        said[asked_at..paired_at]
+            .iter()
+            // A fingerprint is made of anything, so that some digits in a row may be in it by
+            // chance.
+            .filter(|line| !line.contains("Fingerprint:"))
+            .all(|line| !line.contains(&code) && !line.contains(&digits)),
+        "the digits were shown at the Mac: {said:?}"
+    );
     // The ticket was on the clipboard as well, and the person was told how to take the phone off.
     assert_eq!(done.typist.copied.lock().unwrap().len(), 1);
     assert!(done.typist.said_has("on the clipboard"));
@@ -576,20 +664,112 @@ async fn a_phone_that_the_person_says_yes_to_is_paired_and_may_open_the_login_wi
 }
 
 #[tokio::test]
-async fn anything_but_yes_pairs_nothing() {
-    for answer in [Some("no"), Some("yes please"), Some(""), None] {
+async fn the_digits_are_taken_with_or_without_the_space_that_the_phone_shows_in_them() {
+    let mac = Mac::start().await;
+    let phone = Phone::start("Pocket Phone").await;
+
+    let done = pair_with(&mac, &phone, &[Typed::TheCodeWithoutTheSpace]).await;
+
+    done.program.unwrap();
+    done.phone.unwrap();
+    assert_eq!(devices::list(&mac.state).unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn anything_but_the_digits_that_the_phone_shows_pairs_nothing() {
+    let cases = [
+        // What the old question asked for, and what another one might.
+        Typed::Line("yes"),
+        Typed::Line("y"),
+        Typed::Line("YES"),
+        Typed::Line("no"),
+        Typed::Line("yes please"),
+        // Digits, but not those.
+        Typed::Line("123"),
+        Typed::TheCodeWithAnotherLastDigit,
+        Typed::TheCodeAnd("yes"),
+    ];
+    for typed in cases {
         let mac = Mac::start().await;
         let phone = Phone::start("Pocket Phone").await;
 
-        let done = pair_with(&mac, &phone, answer).await;
+        let done = pair_with(&mac, &phone, &[typed]).await;
 
         let error = done.program.unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Pairing, "{answer:?}: {error}");
-        assert!(done.phone.is_err(), "{answer:?}");
-        assert!(done.typist.said_has("Declined."), "{answer:?}");
-        assert!(devices::list(&mac.state).unwrap().is_empty(), "{answer:?}");
-        assert!(mac.program.app().devices().is_empty(), "{answer:?}");
+        assert_eq!(error.kind(), ErrorKind::Pairing, "{typed:?}: {error}");
+        assert!(done.phone.is_err(), "{typed:?}");
+        assert!(
+            done.typist.said_has("That is not what the phone shows."),
+            "{typed:?}"
+        );
+        assert!(devices::list(&mac.state).unwrap().is_empty(), "{typed:?}");
+        assert!(mac.program.app().devices().is_empty(), "{typed:?}");
     }
+}
+
+#[tokio::test]
+async fn an_input_that_ends_pairs_nothing() {
+    let mac = Mac::start().await;
+    let phone = Phone::start("Pocket Phone").await;
+
+    let done = pair_with(&mac, &phone, &[Typed::TheEnd]).await;
+
+    let error = done.program.unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Pairing, "{error}");
+    assert!(done.phone.is_err());
+    assert!(done.typist.said_has("Nothing more can be typed."));
+    assert!(
+        devices::list(&mac.state).unwrap().is_empty(),
+        "a device was kept"
+    );
+    assert!(
+        mac.program.app().devices().is_empty(),
+        "a device was paired"
+    );
+}
+
+#[tokio::test]
+async fn a_line_typed_before_the_phone_asks_pairs_nothing() {
+    // A terminal keeps what is typed while the program waits, and gives it to the next question:
+    // a `yes` typed then, by habit or by hurry, was waiting for the first device that asked.
+    for ahead in [&["yes"][..], &["y"], &["Yes", "yes"], &["", "yes"]] {
+        let mac = Mac::start().await;
+        let phone = Phone::start("Pocket Phone").await;
+
+        let done = pair_with_typing_ahead(&mac, &phone, ahead, &[]).await;
+
+        let error = done.program.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Pairing, "{ahead:?}: {error}");
+        assert!(done.phone.is_err(), "{ahead:?}");
+        assert!(
+            done.typist.said_has("That is not what the phone shows."),
+            "{ahead:?}"
+        );
+        assert!(devices::list(&mac.state).unwrap().is_empty(), "{ahead:?}");
+        assert!(mac.program.app().devices().is_empty(), "{ahead:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_return_is_not_an_answer_before_the_phone_asks_or_after() {
+    let mac = Mac::start().await;
+    let phone = Phone::start("Pocket Phone").await;
+
+    let done = pair_with_typing_ahead(
+        &mac,
+        &phone,
+        &["", "   "],
+        &[Typed::Line(""), Typed::Line("  "), Typed::TheCode],
+    )
+    .await;
+
+    done.program.unwrap();
+    done.phone.unwrap();
+    assert!(
+        !done.typist.said_has("not what the phone shows"),
+        "a Return was taken for an answer"
+    );
+    assert_eq!(devices::list(&mac.state).unwrap().len(), 1);
 }
 
 #[tokio::test]

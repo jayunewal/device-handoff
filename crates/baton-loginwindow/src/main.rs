@@ -34,8 +34,8 @@ enum Command {
     /// Show the login window to the devices that are paired with this program, until it is
     /// stopped. launchd runs this.
     Serve,
-    /// Pair a phone with this program: offer a ticket, and ask here whether the codes are the
-    /// same.
+    /// Pair a phone with this program: offer a ticket, and ask here for the six digits that the
+    /// phone shows.
     Pair {
         /// The name of this Mac, which the phone shows with "(login window)" after it. It is
         /// kept; without it the name that was kept before stays, or the Mac's host name is used.

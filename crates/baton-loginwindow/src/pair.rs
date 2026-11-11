@@ -4,9 +4,15 @@
 //!
 //! The login window has no screen of the program's own to ask the person on, so the person is in
 //! Terminal. The program offers a ticket, the person gives it to the phone, and when the phone
-//! asks to pair, the person compares the code that the program shows with the one on the phone
-//! and answers here. Nothing else pairs a device: no offer is open until this runs, and nothing
-//! that a device sends opens one.
+//! asks to pair, the person types here the six digits that the phone shows. The program pairs the
+//! device only if they are the six digits that it worked out itself, and it does not show them,
+//! so the person has to read them off the phone.
+//!
+//! That is also why nothing typed ahead pairs anything. A terminal keeps what is typed while the
+//! program waits, so a `yes` typed before the phone asked would be waiting to answer the first
+//! device that did. A line typed before cannot know the digits of a pairing that had not begun,
+//! and a line that is not the digits says no. Nothing else pairs a device: no offer is open until
+//! this runs, and nothing that a device sends opens one.
 
 use std::{
     future::Future,
@@ -16,25 +22,28 @@ use std::{
 use baton_app::{App, Device, Event, Offer, OfferOutcome, PairingRequest, Platform, StartAccess};
 use baton_proto::device::sanitize_display_name;
 
-use crate::{
-    Error, ErrorKind, Result,
-    person::{Person, is_yes},
-};
+use crate::{Error, ErrorKind, Result, person::Person};
 
 /// How many characters of a device's id are enough to name it to `forget`.
 const ID_PREFIX_CHARS: usize = 12;
 
+/// How many digits the code of a pairing has, which the person is asked to type.
+const CODE_DIGITS: usize = 6;
+
 /// Offers a ticket to the person and waits for a phone to pair with it.
 ///
-/// The person gives the ticket to the phone, and answers here when the phone asks. A phone that
-/// the person says yes to is paired, and allowed to start the main screen of this Mac with
-/// control, which is all that it may do here ([`StartAccess::Control`]). A phone that is paired
-/// is returned. `stop` ends the wait, and the offer with it.
+/// The person gives the ticket to the phone, and when the phone asks to pair types here the six
+/// digits that it shows. The program does not show them, and a line that was typed before the
+/// phone asked is not them. A phone whose digits were typed is paired, and allowed to start the
+/// main screen of this Mac with control, which is all that it may do here
+/// ([`StartAccess::Control`]). A phone that is paired is returned. `stop` ends the wait, and the
+/// offer with it.
 ///
 /// # Errors
 ///
-/// [`ErrorKind::Pairing`] if the person said no, the ticket ran out, the phone gave up or `stop`
-/// came first, and [`ErrorKind::Other`] if the pairing could not be kept.
+/// [`ErrorKind::Pairing`] if what was typed was not the digits (a blank line apart), the input
+/// ended, the ticket ran out, the phone gave up or `stop` came first, and [`ErrorKind::Other`] if
+/// the pairing could not be kept.
 pub async fn pair(
     app: &App,
     person: &impl Person,
@@ -63,9 +72,11 @@ pub async fn pair(
             }
             Some(Event::PairingRequested(request)) => {
                 show_request(person, &request);
-                // The question is put with the codes on the screen, and the answer is waited for
-                // here and nowhere else: whatever was typed before is not an answer to it.
-                let answer = tokio::select! {
+                // What is typed is waited for here and nowhere else, and only the digits of this
+                // request pair it. A terminal also hands over what was typed before the request
+                // came, but nothing had shown those digits yet, so such a line says no to the
+                // device that asked first and pairs nothing.
+                let typed = tokio::select! {
                     () = &mut stop => {
                         app.cancel_offer();
                         return Err(Error::new(
@@ -73,13 +84,20 @@ pub async fn pair(
                             "Stopped, and nothing was paired.",
                         ));
                     }
-                    answer = person.ask() => answer,
+                    typed = next_line(person) => typed,
                 };
-                let yes = is_yes(answer.as_deref());
-                if !yes {
-                    person.say("Declined.");
-                }
-                if !app.answer_pairing(request.id, yes) {
+                let right = match &typed {
+                    Some(typed) if is_the_code(typed, &request.code) => true,
+                    Some(_) => {
+                        person.say("That is not what the phone shows.");
+                        false
+                    }
+                    None => {
+                        person.say("Nothing more can be typed.");
+                        false
+                    }
+                };
+                if !app.answer_pairing(request.id, right) {
                     person.say("The request had ended before you answered.");
                 }
             }
@@ -103,14 +121,40 @@ fn tell_the_ticket(person: &impl Person, offer: &Offer) {
         person.say("The ticket is on the clipboard of this Mac as well.");
     }
     person.say(&format!(
-        "The ticket works once and for about {minutes} {}. Whoever holds it can ask to pair, and \
-         you still get to say no, but give it to no one else.",
+        "The ticket works once and for about {minutes} {}. Whoever holds it can ask to pair, but \
+         nothing is paired unless you type the six digits that the phone shows. Give it to no one \
+         else.",
         if minutes == 1 { "minute" } else { "minutes" }
     ));
     person.say("Waiting for the phone...");
 }
 
-/// Shows a device that asks to pair, and what the person has to compare.
+/// The next line that the person types that has something in it, or `None` if nothing more can be
+/// typed. A Return alone is not an answer, so a person who presses it while they wait does not
+/// say no by it.
+async fn next_line(person: &impl Person) -> Option<String> {
+    loop {
+        let line = person.ask().await?;
+        if !line.trim().is_empty() {
+            return Some(line);
+        }
+    }
+}
+
+/// Whether `typed` is the code of the pairing: the six digits of `code`, which the phone shows
+/// as two groups of three, with or without the space between them and with nothing else.
+///
+/// A code that is not six digits is not one that a person can be asked to type, so nothing
+/// matches it.
+fn is_the_code(typed: &str, code: &str) -> bool {
+    let code: String = code.chars().filter(|c| *c != ' ').collect();
+    let typed: String = typed.split_whitespace().collect();
+    code.len() == CODE_DIGITS && code.chars().all(|c| c.is_ascii_digit()) && typed == code
+}
+
+/// Shows a device that asks to pair, and asks for the digits that the phone shows. The digits are
+/// not shown here: the person has to read them off the phone, or they would only be copying
+/// what this screen says.
 fn show_request(person: &impl Person, request: &PairingRequest) {
     person.say("");
     person.say("A device wants to pair with the login window of this Mac:");
@@ -125,20 +169,17 @@ fn show_request(person: &impl Person, request: &PairingRequest) {
     ));
     person.say(&format!("    Fingerprint:  {}", request.fingerprint));
     person.say("");
-    person.say("If it is yours, it is showing this code:");
-    person.say("");
-    person.say(&format!("    {}", request.code));
-    person.say("");
-    person.say("Type yes to pair only if the codes are the same. Anything else says no.");
+    person.say("If it is yours, it shows six digits. Type them here, and press Return.");
+    person.say("Any other line says no, and nothing is paired. If it shows none, press Control-C.");
 }
 
 /// What happened to the offer, as the person is told, and what comes of a pairing.
 fn finish(app: &App, person: &impl Person, outcome: OfferOutcome) -> Result<Device> {
     match outcome {
         OfferOutcome::Paired(device) => {
-            // What a device may do here is decided now, by the person who just said yes: it may
-            // ask for the main screen and use it. A device that was paired and may do nothing is
-            // not left behind if that cannot be kept.
+            // What a device may do here is decided now, by the person who just typed its digits:
+            // it may ask for the main screen and use it. A device that was paired and may do
+            // nothing is not left behind if that cannot be kept.
             if let Err(error) = app.set_start_access(&device.id, StartAccess::Control) {
                 let _ = app.unpair(&device.id);
                 return Err(Error::new(
@@ -166,7 +207,10 @@ fn finish(app: &App, person: &impl Person, outcome: OfferOutcome) -> Result<Devi
             "The ticket ran out before a device used it. Run the command again for a new one.",
         )),
         OfferOutcome::Cancelled => Err(pairing_error("The pairing was withdrawn.")),
-        OfferOutcome::Declined => Err(pairing_error("You said no, so nothing was paired.")),
+        OfferOutcome::Declined => Err(pairing_error(
+            "The six digits that the phone shows were not typed, so nothing was paired. Run the \
+             command again for a new ticket.",
+        )),
         OfferOutcome::Abandoned => Err(pairing_error(
             "The device gave up before you answered, so nothing was paired.",
         )),
@@ -222,13 +266,32 @@ mod tests {
         );
     }
 
-    /// A person who is told things, and keeps them.
+    /// A person who is told things, and keeps them, and types the lines that they were given.
     #[derive(Default)]
-    struct Told(std::sync::Mutex<Vec<String>>);
+    struct Told {
+        said: std::sync::Mutex<Vec<String>>,
+        typing: std::sync::Mutex<std::collections::VecDeque<String>>,
+    }
+
+    impl Told {
+        /// A person who types these lines, one for each time that they are asked.
+        fn typing(lines: &[&str]) -> Self {
+            Self {
+                said: std::sync::Mutex::default(),
+                typing: std::sync::Mutex::new(
+                    lines.iter().map(|line| (*line).to_owned()).collect(),
+                ),
+            }
+        }
+
+        fn said(&self) -> Vec<String> {
+            self.said.lock().unwrap().clone()
+        }
+    }
 
     impl Person for Told {
         fn say(&self, text: &str) {
-            self.0.lock().unwrap().push(text.to_owned());
+            self.said.lock().unwrap().push(text.to_owned());
         }
 
         fn copy(&self, _text: &str) -> bool {
@@ -236,25 +299,28 @@ mod tests {
         }
 
         fn ask(&self) -> impl Future<Output = Option<String>> + Send {
-            std::future::ready(None)
+            std::future::ready(self.typing.lock().unwrap().pop_front())
         }
     }
 
-    #[test]
-    fn what_a_device_calls_itself_cannot_change_the_screen_of_the_terminal() {
-        let request = PairingRequest {
+    fn a_request(code: &str) -> PairingRequest {
+        PairingRequest {
             id: 1,
             device_id: "ab".repeat(32),
             name: "Phone\u{1b}[2J\u{1b}[H\r\n    Name:         The Mac".to_owned(),
             platform: Platform::Ios,
             fingerprint: "abcd-efgh-ijkl-mnop-qrst".to_owned(),
-            code: "514 643".to_owned(),
-        };
+            code: code.to_owned(),
+        }
+    }
+
+    #[test]
+    fn what_a_device_calls_itself_cannot_change_the_screen_of_the_terminal() {
         let told = Told::default();
 
-        show_request(&told, &request);
+        show_request(&told, &a_request("514 643"));
 
-        let lines = told.0.lock().unwrap().clone();
+        let lines = told.said();
         assert!(
             lines.iter().all(|line| !line.chars().any(char::is_control)),
             "{lines:?}"
@@ -266,5 +332,97 @@ mod tests {
             .filter(|line| line.trim_start().starts_with("Name:"))
             .count();
         assert_eq!(named, 1, "{lines:?}");
+    }
+
+    #[test]
+    fn the_person_is_not_shown_the_digits_that_they_are_to_type() {
+        let told = Told::default();
+
+        show_request(&told, &a_request("514 643"));
+
+        // Not as the phone shows them, and not in any other way: a person who is shown the digits
+        // would be copying them, and not reading them off the phone.
+        let text = told.said().join("\n");
+        assert!(!text.contains("514"), "{text}");
+        assert!(!text.contains("643"), "{text}");
+        assert!(text.contains("six digits"), "{text}");
+    }
+
+    #[test]
+    fn only_the_six_digits_of_the_pairing_are_the_code() {
+        let code = "514 643";
+        for typed in [
+            "514 643",
+            "514643",
+            " 514 643 ",
+            "514  643",
+            "514\t643",
+            "5 14 643",
+            "514 643\r",
+        ] {
+            assert!(is_the_code(typed, code), "{typed:?}");
+        }
+        for typed in [
+            "",
+            " ",
+            "yes",
+            "y",
+            "Yes",
+            "no",
+            "514",
+            "514 64",
+            "514 6433",
+            "514 644",
+            "415 643",
+            "643 514",
+            "514-643",
+            "514 643 yes",
+            "yes 514 643",
+            "0514 643",
+            "514 643x",
+            "+514643",
+            "\u{ff15}\u{ff11}\u{ff14} \u{ff16}\u{ff14}\u{ff13}",
+            "514 643\u{0}",
+        ] {
+            assert!(!is_the_code(typed, code), "{typed:?}");
+        }
+    }
+
+    #[test]
+    fn a_code_that_is_not_six_digits_is_matched_by_nothing() {
+        for code in [
+            "",
+            " ",
+            "12345",
+            "123 45",
+            "1234567",
+            "123 456 7",
+            "abc def",
+            "12a 456",
+            "\u{ff11}\u{ff12}\u{ff13} \u{ff14}\u{ff15}\u{ff16}",
+        ] {
+            for typed in [code, "123456", "123 456", "12345", "", "abcdef", "12a456"] {
+                assert!(!is_the_code(typed, code), "{code:?} typed as {typed:?}");
+            }
+        }
+        // A code of six digits is matched, which is what the loop above would not show.
+        assert!(is_the_code("123456", "123 456"));
+        assert!(is_the_code("123456", "123456"));
+    }
+
+    #[tokio::test]
+    async fn a_return_alone_is_not_an_answer_and_the_first_line_with_something_in_it_is() {
+        let told = Told::typing(&["", "   ", "514 643", "yes"]);
+
+        assert_eq!(next_line(&told).await.as_deref(), Some("514 643"));
+        assert_eq!(next_line(&told).await.as_deref(), Some("yes"));
+        assert_eq!(next_line(&told).await, None, "nothing more was typed");
+
+        let only_returns = Told::typing(&["", ""]);
+        assert_eq!(
+            next_line(&only_returns).await,
+            None,
+            "returns are not something, and then the input ended"
+        );
     }
 }

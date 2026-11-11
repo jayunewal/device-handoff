@@ -27,6 +27,10 @@ impl Program {
     /// platform that also shows the windows of other devices, or unlocks screens, is refused,
     /// since either would put a question to a person, and nobody is signed in to be asked.
     ///
+    /// The screen is asked for as it is ([`Privacy::Open`](baton_app::windows::Privacy::Open)),
+    /// never as a private one, and the device that controls it is told that it is not private.
+    /// So the platform gives the display open: it does not cover it or hold the keyboard.
+    ///
     /// # Errors
     ///
     /// [`ErrorKind::Platform`] if the platform is not as described, [`ErrorKind::Busy`] if

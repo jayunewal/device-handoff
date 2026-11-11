@@ -20,18 +20,15 @@ pub trait Person {
     /// depends on it.
     fn copy(&self, text: &str) -> bool;
 
-    /// Waits for the person to answer the question that was just put, with a line. `None` means
-    /// that nothing more can be typed: the input has ended.
+    /// Waits for the person to type a line, and returns it. `None` means that nothing more can be
+    /// typed: the input has ended.
+    ///
+    /// A terminal keeps what is typed while nothing asks, so the line may be one that the person
+    /// typed before the question was put, and a line is not an answer to a question only because
+    /// it came after it. A caller that has to be sure of an answer asks for something that cannot
+    /// be typed before the question, such as the digits that only this pairing shows
+    /// ([`pair()`](fn@crate::pair)).
     fn ask(&self) -> impl Future<Output = Option<String>> + Send;
-}
-
-/// Whether `answer` is a yes: `yes` or `y`, in any case, with nothing else. Anything else, and no
-/// answer at all, is a no.
-pub(crate) fn is_yes(answer: Option<&str>) -> bool {
-    answer.is_some_and(|answer| {
-        let answer = answer.trim();
-        answer.eq_ignore_ascii_case("yes") || answer.eq_ignore_ascii_case("y")
-    })
 }
 
 /// The person at a terminal: what is said goes to standard output, and the answer is a line from
@@ -88,33 +85,4 @@ fn copy_to_clipboard(text: &str) -> bool {
 #[cfg(not(target_os = "macos"))]
 fn copy_to_clipboard(_text: &str) -> bool {
     false
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_yes_is_yes() {
-        for yes in ["yes", "YES", "Yes", " yes ", "y", "Y", "yes\n"] {
-            assert!(is_yes(Some(yes)), "{yes:?}");
-        }
-        for no in [
-            "",
-            " ",
-            "no",
-            "n",
-            "yess",
-            "ye",
-            "y es",
-            "yes please",
-            "ok",
-            "true",
-            "1",
-            "yes yes",
-        ] {
-            assert!(!is_yes(Some(no)), "{no:?}");
-        }
-        assert!(!is_yes(None), "no answer is a no");
-    }
 }

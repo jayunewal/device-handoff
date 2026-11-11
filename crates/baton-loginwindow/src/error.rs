@@ -14,7 +14,8 @@ pub enum ErrorKind {
     Platform,
     /// Another program holds the folder: this one, or the running program, is already using it.
     Busy,
-    /// A pairing did not happen: the person said no, it ran out, or it was given up.
+    /// A pairing did not happen: the digits that the phone shows were not typed, it ran out, or it
+    /// was given up.
     Pairing,
     /// No paired device, or more than one, is called what the person typed.
     NoDevice,
