@@ -41,6 +41,19 @@ pub const DEFAULT_MAX_ITEMS_PER_MINUTE: u32 = 30;
 /// Most items per minute that can be configured.
 pub const MAX_ITEMS_PER_MINUTE_LIMIT: u32 = 600;
 
+/// Requests to continue accepted from one paired device per minute unless configured otherwise.
+///
+/// Each request reads the page that is in front in the browser and the text on the clipboard,
+/// and nothing shows that it was read, so the limit is lower than the one for items on purpose:
+/// with the limit for items alone a device that is allowed could read the clipboard every two
+/// seconds.
+pub const DEFAULT_MAX_CONTINUES_PER_MINUTE: u32 = 6;
+
+const _: () = assert!(
+    DEFAULT_MAX_CONTINUES_PER_MINUTE < DEFAULT_MAX_ITEMS_PER_MINUTE,
+    "a request to continue is limited more than an item is"
+);
+
 /// Most custom relays that can be listed.
 pub const MAX_RELAY_URLS: usize = 8;
 /// Longest relay URL, in bytes.
@@ -134,6 +147,14 @@ pub struct HandoffConfig {
     /// of a thousand photos is not throttled. Transfers get limits of their own, a byte quota
     /// per device and a minimum of free disk space, which come with file transfer.
     pub max_items_per_minute: u32,
+    /// Most requests to continue accepted from one paired device per minute.
+    ///
+    /// A request to continue reads what the person here is working on, the page that is in
+    /// front in the browser and the text on the clipboard, and nothing shows that it was read.
+    /// Each one counts against this limit and against
+    /// [`max_items_per_minute`](Self::max_items_per_minute), and this one is lower, so that a
+    /// device that is allowed cannot read the clipboard every few seconds.
+    pub max_continues_per_minute: u32,
 }
 
 impl Default for NetworkConfig {
@@ -162,6 +183,7 @@ impl Default for HandoffConfig {
             max_inbox_items: DEFAULT_MAX_INBOX_ITEMS,
             max_clipboard_bytes: DEFAULT_MAX_CLIPBOARD_BYTES,
             max_items_per_minute: DEFAULT_MAX_ITEMS_PER_MINUTE,
+            max_continues_per_minute: DEFAULT_MAX_CONTINUES_PER_MINUTE,
         }
     }
 }
@@ -320,6 +342,11 @@ impl HandoffConfig {
         check_range(
             "handoff.max_items_per_minute",
             self.max_items_per_minute,
+            1..=MAX_ITEMS_PER_MINUTE_LIMIT,
+        )?;
+        check_range(
+            "handoff.max_continues_per_minute",
+            self.max_continues_per_minute,
             1..=MAX_ITEMS_PER_MINUTE_LIMIT,
         )
     }
@@ -522,6 +549,7 @@ mod tests {
                 max_inbox_items: 10,
                 max_clipboard_bytes: 1024,
                 max_items_per_minute: 5,
+                max_continues_per_minute: 2,
             },
         };
         let text = config.to_toml().unwrap();
@@ -534,6 +562,16 @@ mod tests {
         assert!(!config.network.lan_discovery);
         assert!(!config.network.dns_discovery);
         assert_eq!(config.pairing, PairingConfig::default());
+    }
+
+    #[test]
+    fn a_file_from_before_the_limit_for_continuing_has_its_default() {
+        let config = Config::from_toml("[handoff]\nmax_items_per_minute = 5\n").unwrap();
+        assert_eq!(config.handoff.max_items_per_minute, 5);
+        assert_eq!(
+            config.handoff.max_continues_per_minute,
+            DEFAULT_MAX_CONTINUES_PER_MINUTE
+        );
     }
 
     #[test]
@@ -620,6 +658,8 @@ mod tests {
             "[handoff]\nmax_clipboard_bytes = 99999999",
             "[handoff]\nmax_items_per_minute = 0",
             "[handoff]\nmax_items_per_minute = 100000",
+            "[handoff]\nmax_continues_per_minute = 0",
+            "[handoff]\nmax_continues_per_minute = 100000",
         ] {
             assert!(Config::from_toml(text).is_err(), "accepted: {text}");
         }
