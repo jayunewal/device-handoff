@@ -66,7 +66,7 @@ class _AddMacScreenState extends State<AddMacScreen> {
   bool _other = false;
 
   /// Counts the looks for a Mac's key. The answer of one that is not the latest is let go: the
-  /// person has picked another Mac since.
+  /// person has picked another Mac since, or has typed another address.
   int _looks = 0;
 
   /// Whether the Mac is being asked for its key, and at which addresses.
@@ -142,6 +142,17 @@ class _AddMacScreenState extends State<AddMacScreen> {
     if (_saving) return;
     setState(() => _choose(mac));
     if (mac != null) _lookForPicked();
+  }
+
+  /// The person typed in the address box. A look that is still going would put the address that
+  /// answered back over what they type, so it is let go, as a pick lets go of it.
+  void _typedAddress() {
+    setState(() {
+      if (_checking) {
+        _looks++;
+        _checking = false;
+      }
+    });
   }
 
   /// Asks the addresses that the picked Mac was last reached at, if it has any.
@@ -342,7 +353,7 @@ class _AddMacScreenState extends State<AddMacScreen> {
                   asking: _checking ? _asking : null,
                   found: heard != null,
                   problem: heard == null ? _problem : null,
-                  onChanged: () => setState(() {}),
+                  onChanged: _typedAddress,
                   onCheck: _address.isEmpty ? null : _check,
                 ),
                 const SizedBox(height: BatonTheme.gap),

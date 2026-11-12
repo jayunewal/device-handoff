@@ -385,6 +385,36 @@ void main() {
     expect(keeper.macs, isEmpty);
   });
 
+  testWidgets('a check that could not be made is said so, in text that is safe '
+      'to show', (tester) async {
+    final failing = Completer<SshKeyCheck>();
+    final unlocker = _FakeUnlocker()..holds['mac.local'] = failing;
+    await _show(tester, _FakeKeeper(), unlocker);
+    await openAdd(tester);
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Address of the Mac'),
+      'mac.local',
+    );
+    await tester.pump();
+    await tester.tap(find.text('Check the Mac'));
+    await tester.pump();
+    expect(
+      find.textContaining('Looking for the Mac at mac.local'),
+      findsOneWidget,
+    );
+
+    // What the failure says may come from the network, so it is shown as text and nothing more.
+    failing.completeError(Exception('no route\u202E'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('The check could not be made (Exception: no route\u{FFFD}).'),
+      findsOneWidget,
+    );
+    expect(find.text('Account name'), findsNothing);
+    expect(find.text('They match. Save'), findsNothing);
+    expect(find.text('Check the Mac'), findsOneWidget);
+  });
+
   group('a Mac that is paired with this device', () {
     final mbp = _paired("Jay's MacBook Pro", ['192.168.73.20']);
 
@@ -583,6 +613,96 @@ void main() {
       expect(addressShown(tester), '192.168.73.20');
       expect(find.text(_key), findsOneWidget);
       expect(find.text(_other), findsNothing);
+    });
+
+    testWidgets('that is looked for is not put back over an address that is '
+        'typed', (tester) async {
+      final studio = _paired('Studio Mac', ['10.0.0.5']);
+      final slow = Completer<SshKeyCheck>();
+      final unlocker = _FakeUnlocker()..holds['10.0.0.5'] = slow;
+      await _show(tester, _FakeKeeper(), unlocker, macs: [studio, mbp]);
+      await openAdd(tester);
+
+      await tester.tap(find.text('Studio Mac'));
+      await tester.pump();
+      expect(
+        find.textContaining('Looking for the Mac at 10.0.0.5'),
+        findsOneWidget,
+      );
+
+      // The person knows better, and types the address while the look still waits for the old
+      // one. The look is let go: nothing is being looked for any more, and the Mac can be asked.
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Address of the Mac'),
+        '192.168.1.9',
+      );
+      await tester.pump();
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      expect(find.text('Check the Mac'), findsOneWidget);
+
+      // A Mac answers at the old address, late, and what was typed stays.
+      slow.complete(const SshKeyCheck.heard(fingerprint: _other));
+      await tester.pumpAndSettle();
+      expect(addressShown(tester), '192.168.1.9');
+      expect(find.text(_other), findsNothing);
+      expect(find.text('Account name'), findsNothing);
+
+      await tester.tap(find.text('Check the Mac'));
+      await tester.pumpAndSettle();
+      expect(unlocker.asked, [('10.0.0.5', 22), ('192.168.1.9', 22)]);
+      expect(addressShown(tester), '192.168.1.9');
+      expect(find.text(_key), findsOneWidget);
+    });
+
+    testWidgets('that is passed over for Another Mac while it is looked for is '
+        'not heard from after that', (tester) async {
+      final studio = _paired('Studio Mac', ['10.0.0.5']);
+      final slow = Completer<SshKeyCheck>();
+      final unlocker = _FakeUnlocker()..holds['10.0.0.5'] = slow;
+      await _show(tester, _FakeKeeper(), unlocker, macs: [studio, mbp]);
+      await openAdd(tester);
+
+      await tester.tap(find.text('Studio Mac'));
+      await tester.pump();
+      await tester.tap(find.text('Another Mac'));
+      await tester.pumpAndSettle();
+      expect(addressShown(tester), isEmpty);
+
+      slow.complete(const SshKeyCheck.heard(fingerprint: _other));
+      await tester.pumpAndSettle();
+      expect(addressShown(tester), isEmpty);
+      expect(find.text(_other), findsNothing);
+      expect(find.text('Account name'), findsNothing);
+      expect(unlocker.asked, [('10.0.0.5', 22)]);
+    });
+
+    testWidgets('that is passed over for a Mac that was not seen on a local '
+        'network is not heard from after that', (tester) async {
+      final studio = _paired('Studio Mac', ['10.0.0.5']);
+      final unseen = _paired("Jay's MacBook Pro", const []);
+      final slow = Completer<SshKeyCheck>();
+      final unlocker = _FakeUnlocker()..holds['10.0.0.5'] = slow;
+      await _show(tester, _FakeKeeper(), unlocker, macs: [studio, unseen]);
+      await openAdd(tester);
+
+      await tester.tap(find.text('Studio Mac'));
+      await tester.pump();
+      await tester.tap(find.text("Jay's MacBook Pro"));
+      await tester.pumpAndSettle();
+      expect(addressShown(tester), isEmpty);
+
+      slow.complete(const SshKeyCheck.heard(fingerprint: _other));
+      await tester.pumpAndSettle();
+      expect(addressShown(tester), isEmpty);
+      expect(find.text(_other), findsNothing);
+      expect(find.text('Account name'), findsNothing);
+      expect(
+        find.textContaining(
+          "Baton has not seen Jay's MacBook Pro on a local network yet.",
+        ),
+        findsOneWidget,
+      );
+      expect(unlocker.asked, [('10.0.0.5', 22)]);
     });
 
     testWidgets('is not trusted at a new address without a new check', (
