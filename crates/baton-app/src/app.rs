@@ -39,10 +39,10 @@ use crate::{
     error::unusable_folder,
     files::Files,
     model::{
-        ContinueItems, ContinueOutcome, Device, Me, Network, Offer, OfferOutcome, OutboxItem,
-        PairingRequest, Reach, Received, Receiving, ScreenStarted, SendResult, StartAccess,
-        TransferRequest, UnlockEntry, UnlockSetUp, UnlockStatus, WindowAbilities, WindowInput,
-        WindowRequest, WindowShared,
+        ClipboardAccess, ContinueItems, ContinueOutcome, Device, LinkAccess, Me, Network, Offer,
+        OfferOutcome, OutboxItem, PairingRequest, Reach, Received, Receiving, ScreenStarted,
+        SendResult, StartAccess, TransferRequest, UnlockEntry, UnlockSetUp, UnlockStatus,
+        WindowAbilities, WindowInput, WindowRequest, WindowShared,
     },
     outbox::Delivery,
     sessions::{Handler, Sessions},
@@ -632,6 +632,72 @@ impl App {
             .inner
             .trust
             .update(&peer, |device| device.policy.start = access.into())
+            .map_err(|e| Error::local(&e))?;
+        if kept {
+            Ok(())
+        } else {
+            Err(Error::not_paired())
+        }
+    }
+
+    /// What this device does with a link the paired device `id` sends it
+    /// (`docs/security.md`). [`LinkAccess::Inbox`] for a device that was just paired.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::NotPaired`] if `id` is not a paired device.
+    pub fn link_policy(&self, id: &str) -> Result<LinkAccess> {
+        let (peer, _) = self.paired(id)?;
+        let device = self.inner.trust.get(&peer).ok_or_else(Error::not_paired)?;
+        Ok(device.policy.links.into())
+    }
+
+    /// Says what this device does with a link the paired device `id` sends it. Only the person
+    /// at this device can: nothing a paired device sends changes it.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::NotPaired`] if `id` is not a paired device, and [`ErrorKind::Storage`] if the
+    /// setting could not be kept.
+    pub fn set_link_policy(&self, id: &str, access: LinkAccess) -> Result<()> {
+        let (peer, _) = self.paired(id)?;
+        let kept = self
+            .inner
+            .trust
+            .update(&peer, |device| device.policy.links = access.into())
+            .map_err(|e| Error::local(&e))?;
+        if kept {
+            Ok(())
+        } else {
+            Err(Error::not_paired())
+        }
+    }
+
+    /// What this device does with clipboard text the paired device `id` sends it
+    /// (`docs/security.md`). [`ClipboardAccess::Inbox`] for a device that was just paired.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::NotPaired`] if `id` is not a paired device.
+    pub fn clipboard_policy(&self, id: &str) -> Result<ClipboardAccess> {
+        let (peer, _) = self.paired(id)?;
+        let device = self.inner.trust.get(&peer).ok_or_else(Error::not_paired)?;
+        Ok(device.policy.clipboard.into())
+    }
+
+    /// Says what this device does with clipboard text the paired device `id` sends it. Only the
+    /// person at this device can: nothing a paired device sends changes it.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::NotPaired`] if `id` is not a paired device, and [`ErrorKind::Storage`] if the
+    /// setting could not be kept.
+    pub fn set_clipboard_policy(&self, id: &str, access: ClipboardAccess) -> Result<()> {
+        let (peer, _) = self.paired(id)?;
+        let kept = self
+            .inner
+            .trust
+            .update(&peer, |device| device.policy.clipboard = access.into())
             .map_err(|e| Error::local(&e))?;
         if kept {
             Ok(())
