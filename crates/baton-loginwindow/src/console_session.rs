@@ -35,6 +35,25 @@ pub(crate) fn refuses_start(session: ConsoleSession) -> bool {
     !matches!(session, ConsoleSession::NobodySignedIn)
 }
 
+/// `kSCStatusNoKey`, from `SystemConfiguration.h`: the one status that means a key asked for
+/// truly was not in the store. Every other status a read can come back with — including
+/// success, since that means a value was found — must not be read as nobody being signed in.
+const NO_SUCH_KEY: i32 = 1004;
+
+/// Turns a store lookup into a [`ConsoleSession`]: `found` is whether the value read back was
+/// non-null, and `status` is what the platform's own error call said right after that read. A
+/// plain function, kept apart from the call it follows, so a test can pin it without a Mac to
+/// read a real store on.
+fn answer(found: bool, status: i32) -> ConsoleSession {
+    if found {
+        ConsoleSession::SomeoneSignedIn
+    } else if status == NO_SUCH_KEY {
+        ConsoleSession::NobodySignedIn
+    } else {
+        ConsoleSession::CouldNotCheck
+    }
+}
+
 /// Reads the console session now. On a Mac, this is `State:/Users/ConsoleUser`
 /// ([`mac::read`]); elsewhere there is no console session to read.
 pub(crate) fn read() -> ConsoleSession {
@@ -88,6 +107,10 @@ mod mac {
             context: *const c_void,
         ) -> SCDynamicStoreRef;
         fn SCDynamicStoreCopyValue(store: SCDynamicStoreRef, key: CFStringRef) -> CFTypeRef;
+        /// The status of the last `SystemConfiguration` call on this thread (`SCError`, from
+        /// `SystemConfiguration.h`). Read right after a call that can fail, before any other
+        /// call that might set it to something else.
+        fn SCError() -> i32;
     }
 
     /// A `CFStringRef` made from a Rust string that has no `NUL` in it, released when it is
@@ -114,9 +137,11 @@ mod mac {
         }
     }
 
-    /// Reads `State:/Users/ConsoleUser` from the system configuration store: absent means nobody
-    /// is signed in to the console, present means someone is, and either is `CouldNotCheck` if
-    /// the store cannot be opened or the key cannot be asked for.
+    /// Reads `State:/Users/ConsoleUser` from the system configuration store: present means
+    /// someone is signed in to the console, and absent means nobody is — but only when `SCError`
+    /// says the key itself was not there (`kSCStatusNoKey`). The store failing to open, the key
+    /// failing to be asked for, or any other reason the read came back empty are all
+    /// `CouldNotCheck`: nothing here may read "the read failed" as "nobody is signed in".
     pub(super) fn read() -> ConsoleSession {
         let Some(name) = OwnedCFString::new(c"baton-loginwindow") else {
             return ConsoleSession::CouldNotCheck;
@@ -132,13 +157,13 @@ mod mac {
             return ConsoleSession::CouldNotCheck;
         };
         let value = unsafe { SCDynamicStoreCopyValue(store, key.0) };
+        let status = unsafe { SCError() };
         unsafe { CFRelease(store) };
-        if value.is_null() {
-            ConsoleSession::NobodySignedIn
-        } else {
+        let found = !value.is_null();
+        if found {
             unsafe { CFRelease(value) };
-            ConsoleSession::SomeoneSignedIn
         }
+        super::answer(found, status)
     }
 }
 
@@ -151,6 +176,15 @@ mod tests {
         assert!(!refuses_start(ConsoleSession::NobodySignedIn));
         assert!(refuses_start(ConsoleSession::SomeoneSignedIn));
         assert!(refuses_start(ConsoleSession::CouldNotCheck));
+    }
+
+    #[test]
+    fn only_the_true_absence_of_the_key_is_nobody_signed_in() {
+        assert_eq!(answer(false, NO_SUCH_KEY), ConsoleSession::NobodySignedIn);
+        assert_eq!(answer(false, 0), ConsoleSession::CouldNotCheck);
+        assert_eq!(answer(false, 1001), ConsoleSession::CouldNotCheck);
+        assert_eq!(answer(true, 0), ConsoleSession::SomeoneSignedIn);
+        assert_eq!(answer(true, NO_SUCH_KEY), ConsoleSession::SomeoneSignedIn);
     }
 
     #[cfg(not(target_os = "macos"))]
