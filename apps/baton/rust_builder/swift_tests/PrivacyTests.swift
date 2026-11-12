@@ -101,6 +101,7 @@ final class FakeCurtain: Curtain {
   private var attempts: [Int] = []
   private var lockedAfter: Int?
   private var isHealthy = true
+  private var healthReads = 0
 
   var raiseFailure: Error?
   /// Rung from inside `raise`, as an alarm is when something at the Mac happens at once.
@@ -123,6 +124,7 @@ final class FakeCurtain: Curtain {
     get {
       mutex.lock()
       defer { mutex.unlock() }
+      healthReads += 1
       return isHealthy
     }
     set {
@@ -130,6 +132,14 @@ final class FakeCurtain: Curtain {
       isHealthy = newValue
       mutex.unlock()
     }
+  }
+
+  /// How often `healthy` was read. Once the cover is up the beat reads it before each word to the
+  /// guard, so a test can wait for the beat to have looked a number of times, and not for a time.
+  var healthLooks: Int {
+    mutex.lock()
+    defer { mutex.unlock() }
+    return healthReads
   }
 
   /// What `darken` says of the screens when the curtain is well, and how often it was asked.
@@ -995,8 +1005,11 @@ func testTheGuardIsToldThatTheAppIsAtWorkWhileTheCoverGoesUp() {
   let privacy = session(curtain, guardian: guardian)
   do { try privacy.begin() } catch { check(false, "the cover could not be raised: \(error)") }
   check(during >= 3, "the guard was not told while the cover went up: \(during)")
-  // Once the cover is up the curtain is judged, and one that is not well is not said to be.
-  Thread.sleep(forTimeInterval: 0.05)
+  // Once the cover is up the curtain is judged, and one that is not well is not said to be. The
+  // beat looks at the curtain before each word that it gives the guard, so a word that it began
+  // before it judged is given by the time that it has looked a few times, however slow the Mac is.
+  let looked = curtain.healthLooks
+  check(eventually { curtain.healthLooks >= looked + 3 }, "the beat did not look at the curtain")
   let judged = guardian.beats
   Thread.sleep(forTimeInterval: 0.2)
   check(guardian.beats == judged, "the guard was told that a curtain that is not well is well")
@@ -1040,6 +1053,32 @@ func testTheGuardIsNotToldThatTheAppIsAtWorkForLongerThanTheBound() {
   do { try privacy.begin() } catch { check(false, "the cover could not be raised: \(error)") }
   check(first >= 2, "the guard was not told while the cover went up: \(first)")
   check(second == first, "the guard was told after the bound: \(first) then \(second)")
+  privacy.finish(.sessionOver)
+}
+
+func testTheGuardIsNotToldThatTheAppIsAtWorkForLongerThanTheBoundOnTheClockOfTheSystem() {
+  // The test before holds the clock of the bound. This one leaves the clock that the app really
+  // has, with a bound short enough to pass while the cover hangs, and waits for the guard to stop
+  // being told, which it does whatever time a Mac takes. A bound that never passes, as on a clock
+  // that stands still, keeps the beat telling the guard until the wait is over.
+  let curtain = FakeCurtain()
+  let guardian = FakeGuard()
+  curtain.healthy = false
+  var stopped = false
+  curtain.whileRaising = {
+    stopped = eventually {
+      let seen = guardian.beats
+      Thread.sleep(forTimeInterval: 0.1)
+      return guardian.beats == seen
+    }
+  }
+  let clock = FakeClock()
+  let privacy = PrivateSession(
+    curtain: curtain, guardian: guardian,
+    timing: PrivacyTiming(patience: 5, beat: 0.005, raise: 0.05), end: Told().tell,
+    sleep: clock.sleep, now: clock.now)
+  do { try privacy.begin() } catch { check(false, "the cover could not be raised: \(error)") }
+  check(stopped, "the guard was told for as long as the cover hung: \(guardian.beats)")
   privacy.finish(.sessionOver)
 }
 
