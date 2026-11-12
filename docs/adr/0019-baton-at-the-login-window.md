@@ -1,6 +1,6 @@
 # 0019: Baton at the login window: a small Baton starts with the Mac, shows the login window to a paired phone and passes its input
 
-Status: proposed. Written before any code, on the person's go. Nothing in it is built, and the two points that decide whether the picture and the typing work, L1 and L2 below, have not been tried on a Mac yet.
+Status: superseded in part by [ADR 0020](0020-screen-sharing-at-the-login-window.md). L1 and L2 below were tried on the person's Mac on 2026-11-11 and both failed, so the capture-and-post decision below is not built further. The device and the pairing it describes stay, and are reused as they are in ADR 0020.
 
 ## Context
 
