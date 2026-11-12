@@ -23,4 +23,4 @@ Short notes on decisions that are expensive to reverse, written when the decisio
 | [0017](0017-away-from-home.md) | Away from home: a private network that the person runs carries the way, and Baton checks it |
 | [0018](0018-stay-awake-while-plugged-in.md) | Stay awake while plugged in: a Mac holds off its idle sleep when the person asks and it is on a charger |
 | [0019](0019-baton-at-the-login-window.md) | Baton at the login window: a small Baton starts with the Mac, shows the login window to a paired phone and passes its input (superseded in part by 0020) |
-| [0020](0020-screen-sharing-at-the-login-window.md) | Screen Sharing at the login window: Baton carries Apple's own screen sharing instead of capturing the screen itself |
+| [0020](0020-screen-sharing-at-the-login-window.md) | Screen Sharing at the login window: Baton speaks Apple's own screen sharing instead of capturing the screen itself |
