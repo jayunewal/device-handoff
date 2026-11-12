@@ -1,0 +1,32 @@
+[package]
+name = "baton-loginwindow"
+description = "Baton at the login window of a Mac: a small Baton that starts with the Mac, shows the login window to a paired phone and passes its input (docs/adr/0019-baton-at-the-login-window.md)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "baton-loginwindow"
+path = "src/main.rs"
+
+[dependencies]
+baton-app.workspace = true
+baton-core.workspace = true
+baton-proto.workspace = true
+baton-stream-abi.workspace = true
+clap.workspace = true
+des.workspace = true
+gethostname.workspace = true
+tokio = { workspace = true, features = ["io-std", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+baton-stream.workspace = true
+tempfile.workspace = true
