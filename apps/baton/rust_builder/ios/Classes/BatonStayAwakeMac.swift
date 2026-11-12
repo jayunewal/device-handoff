@@ -6,8 +6,11 @@
 // management of the system, and a change of power is told by the system to the main run loop.
 //
 // This file talks to the system, so it is built on a Mac and nowhere else, and what it does there is
-// checked on one: StayAwakeTests.swift reads the power and looks for the hold in the assertions that
-// the system lists, as `pmset -g assertions` does. What it decides is in BatonStayAwake.swift.
+// checked on one: StayAwakeMacTests.swift looks for the hold in the assertions that the system
+// lists, as `pmset -g assertions` does. No test checks the read of the power in the sandbox, since
+// a read that fails answers the wall (see `macIsPluggedIn`): only unplugging a laptop shows it,
+// which is S2 of docs/adr/0018-stay-awake-while-plugged-in.md. What it decides is in
+// BatonStayAwake.swift.
 
 #if os(macOS)
 
@@ -25,8 +28,12 @@ let stayAwakeReason =
   "Baton keeps this Mac awake while it is plugged in, so that your other devices can reach it."
 
 /// Whether the Mac runs on the power of the wall, as the system says. A Mac with no battery always
-/// does, and so does a laptop that is plugged in, charging or not. Nothing where the system gives
-/// no answer, which is not the same as a Mac on its battery.
+/// does, and so does a laptop that is plugged in, charging or not. The call that says it,
+/// `IOPSGetProvidingPowerSourceType`, reads in Apple's published source as answering the wall when
+/// it cannot read the power at all, and `IOPSCopyPowerSourcesInfo` as giving an empty list and not
+/// nothing. So this is nil only if the system hands back nothing, which is not known to happen, and
+/// a read that fails looks like the wall: only a laptop that is unplugged shows that it did (S2 of
+/// docs/adr/0018-stay-awake-while-plugged-in.md). Nil is not the same as a Mac on its battery.
 func macIsPluggedIn() -> Bool? {
   guard let snapshot = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
     let source = IOPSGetProvidingPowerSourceType(snapshot)?.takeUnretainedValue()

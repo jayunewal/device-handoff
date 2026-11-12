@@ -24,9 +24,10 @@ enum StayAwakeState: String {
   /// The person asked, and the Mac runs on its battery, so nothing is held until it is plugged in.
   case waiting
 
-  /// The person asked, and Baton cannot do it: the system would not say whether the Mac is plugged
-  /// in, or would not give the hold. It is tried again whenever the power changes or the person asks
-  /// again.
+  /// The person asked, and Baton cannot do it: the system would not give the hold. A read of the
+  /// power that fails does not come here, since the call for it answers the wall then (see
+  /// `macIsPluggedIn`); a read that answered nothing would, and is not known to happen. It is tried
+  /// again whenever the power changes or the person asks again.
   case refused
 }
 

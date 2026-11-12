@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Tests of what BatonStayAwakeMac.swift asks of a Mac: the system says where the power comes from,
-// the hold shows in the list of assertions that the system keeps, as `pmset -g assertions` prints it,
-// with this process as its owner and the reason that Baton gave, and it is gone when it is let go of.
-// The choice of the person is kept in the defaults and held again by the next start of the app.
+// Tests of what BatonStayAwakeMac.swift asks of a Mac: the hold shows in the list of assertions that
+// the system keeps, as `pmset -g assertions` prints it, with this process as its owner and the
+// reason that Baton gave, and it is gone when it is let go of. The choice of the person is kept in
+// the defaults and held again by the next start of the app. The read of the power is not tested
+// here: the call answers the wall when it cannot read, so no Mac can fail it in a test, and a
+// laptop that is unplugged shows it (S2 of docs/adr/0018-stay-awake-while-plugged-in.md).
 
 #if os(macOS)
 
@@ -35,12 +37,6 @@ private func thisProcessHoldsTheMac(_ listing: String) -> Bool {
   return listing.split(separator: "\n").contains { line in
     line.contains(owner) && line.contains("PreventUserIdleSystemSleep") && line.contains(reason)
   }
-}
-
-func testTheSystemSaysWhereThePowerOfTheMacComesFrom() {
-  // A Mac with no battery, and a laptop that is plugged in, say yes. A laptop on its battery says no.
-  // What none of them does is not answer.
-  check(macIsPluggedIn() != nil, "the system did not say where the power of this Mac comes from")
 }
 
 func testTheHoldShowsToTheSystemAndIsGoneWhenItIsLetGoOf() {

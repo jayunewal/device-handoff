@@ -23,9 +23,8 @@ enum StayAwake {
   /// as soon as it is plugged in.
   waiting,
 
-  /// The person asked, and Baton cannot do it now: the system would not say whether the Mac is
-  /// plugged in, or would not give the hold. It tries again when the power changes, and when the
-  /// person asks again.
+  /// The person asked, and Baton cannot do it now: the system would not give the hold. It tries
+  /// again when the power changes, and when the person asks again.
   refused,
 }
 

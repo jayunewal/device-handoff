@@ -135,7 +135,9 @@ void main() {
       // and keeps the choice in its defaults, so the test puts it back as it found it, and the
       // machine that runs it is left as it was. What the Mac does of it is checked by the Swift
       // tests, which look at the assertions of the system, and this checks that the sandboxed app
-      // can ask the system at all: where the power comes from, and for the hold.
+      // can ask the system for the hold. It does not check the read of the power: the call answers
+      // the wall when it cannot read, and the Mac of the CI has no battery, so it says the wall
+      // either way. Unplugging a laptop (S2 of docs/adr/0018-stay-awake-while-plugged-in.md) does.
       const keeper = PlatformStayAwakeKeeper();
       final before = await keeper.state();
       expect(
@@ -151,7 +153,7 @@ void main() {
         anyOf(StayAwake.holding, StayAwake.waiting),
         reason:
             'the app held the Mac, or said that it runs on its battery. '
-            '"refused" is a sandbox that does not let it read the power or take the hold',
+            '"refused" is a sandbox that does not let it take the hold',
       );
       expect(await keeper.state(), asked);
 

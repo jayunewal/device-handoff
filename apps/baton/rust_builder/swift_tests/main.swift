@@ -985,6 +985,10 @@ tests += [
     testTheGuardIsNotToldThatTheAppIsAtWorkForLongerThanTheBound
   ),
   (
+    "the guard is not told that the app is at work for longer than the bound, on the clock of the system",
+    testTheGuardIsNotToldThatTheAppIsAtWorkForLongerThanTheBoundOnTheClockOfTheSystem
+  ),
+  (
     "the guard is told until the Mac is locked and the cover is down",
     testTheGuardIsToldUntilTheMacIsLockedAndTheCoverIsDown
   ),
@@ -2011,10 +2015,6 @@ tests += [
     (
       "a screen that never started is not unlocked and its key is wiped",
       testAScreenThatNeverStartedIsNotUnlockedAndItsKeyIsWiped
-    ),
-    (
-      "the system says where the power of the Mac comes from",
-      testTheSystemSaysWhereThePowerOfTheMacComesFrom
     ),
     (
       "the hold shows to the system and is gone when it is let go of",
