@@ -1,0 +1,57 @@
+[package]
+name = "baton-loginwindow"
+description = "Baton at the login window of a Mac: a small Baton that starts with the Mac, shows the login window to a paired phone and passes its input (docs/adr/0019-baton-at-the-login-window.md)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+# This crate holds the `unsafe` code of its console-session check (console_session.rs), which
+# calls CoreFoundation and SystemConfiguration directly. Unlike most of the workspace it
+# therefore cannot say `workspace = true`: the workspace forbids `unsafe_code`, and a forbid
+# cannot be lifted. Here it is denied everywhere except that one module (crates/baton-stream-abi
+# does the same for the modules that cross its own C interface). Keep every other line equal to
+# [workspace.lints] in the root Cargo.toml.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+
+[[bin]]
+name = "baton-loginwindow"
+path = "src/main.rs"
+
+[dependencies]
+baton-app.workspace = true
+baton-core.workspace = true
+baton-proto.workspace = true
+baton-stream-abi.workspace = true
+clap.workspace = true
+des.workspace = true
+gethostname.workspace = true
+tokio = { workspace = true, features = ["io-std", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+baton-stream.workspace = true
+tempfile.workspace = true

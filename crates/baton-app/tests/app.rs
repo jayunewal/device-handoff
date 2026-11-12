@@ -17,8 +17,8 @@ use std::{
 };
 
 use baton_app::{
-    App, ErrorKind, Event, Events, FileSend, FilesSent, OfferOutcome, Options, Platform,
-    ReceivedItem, Receiving, Route, SendStage, TransferResult, settings,
+    App, ClipboardAccess, ErrorKind, Event, Events, FileSend, FilesSent, LinkAccess, OfferOutcome,
+    Options, Platform, ReceivedItem, Receiving, Route, SendStage, TransferResult, settings,
 };
 use tempfile::TempDir;
 use tokio::sync::oneshot;
@@ -257,6 +257,60 @@ async fn two_devices_pair_and_hand_each_other_things() {
     assert!(a.app.devices().is_empty(), "an unpaired device is gone");
     assert_eq!(
         a.app.unpair(&b.id()).unwrap_err().kind(),
+        ErrorKind::NotPaired
+    );
+}
+
+#[tokio::test]
+async fn a_device_told_to_ignore_links_or_clipboard_text_is_declined_and_keeps_nothing() {
+    let a = Dev::start("Device A").await;
+    let b = Dev::start("Device B").await;
+    pair(&a, &b).await;
+
+    a.app.set_link_policy(&b.id(), LinkAccess::Ignore).unwrap();
+    a.app
+        .set_clipboard_policy(&b.id(), ClipboardAccess::Ignore)
+        .unwrap();
+    assert_eq!(a.app.link_policy(&b.id()).unwrap(), LinkAccess::Ignore);
+    assert_eq!(
+        a.app.clipboard_policy(&b.id()).unwrap(),
+        ClipboardAccess::Ignore
+    );
+
+    let link = b
+        .app
+        .send_link(&a.id(), "https://example.com/path", None)
+        .await
+        .unwrap_err();
+    assert_eq!(link.kind(), ErrorKind::Declined, "{link}");
+    let text = b.app.send_text(&a.id(), "hello").await.unwrap_err();
+    assert_eq!(text.kind(), ErrorKind::Declined, "{text}");
+    assert!(
+        a.app.inbox().unwrap().is_empty(),
+        "an ignored link or text is not kept"
+    );
+
+    // A device that is not paired has no policy to read or set.
+    assert_eq!(
+        a.app.link_policy("not an id").unwrap_err().kind(),
+        ErrorKind::NotPaired
+    );
+    assert_eq!(
+        a.app
+            .set_link_policy("not an id", LinkAccess::Ignore)
+            .unwrap_err()
+            .kind(),
+        ErrorKind::NotPaired
+    );
+    assert_eq!(
+        a.app.clipboard_policy("not an id").unwrap_err().kind(),
+        ErrorKind::NotPaired
+    );
+    assert_eq!(
+        a.app
+            .set_clipboard_policy("not an id", ClipboardAccess::Ignore)
+            .unwrap_err()
+            .kind(),
         ErrorKind::NotPaired
     );
 }

@@ -27,6 +27,9 @@ arboard = { version = "3.6", default-features = false }
 blake3 = { version = "1.8", default-features = false, features = ["zeroize"] }
 ciborium = "0.2"
 clap = { version = "4.6", features = ["derive"] }
+# The DES that RFC 6143's `VNC Authentication` still asks a client for, to answer Screen
+# Sharing's own challenge (`docs/adr/0020-screen-sharing-at-the-login-window.md`).
+des = "0.8"
 data-encoding = "2.11"
 directories = "6"
 getrandom = "0.4"
