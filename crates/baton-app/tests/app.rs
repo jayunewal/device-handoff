@@ -55,20 +55,6 @@ impl Dev {
         Self { app, dir, received }
     }
 
-    /// A device that is started to take no links and no text.
-    async fn start_taking_no_handoffs(name: &str) -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        write_settings(dir.path(), Some(name), false);
-        let mut options = Options::new(dir.path());
-        options.take_handoffs = false;
-        let app = App::start(options).await.unwrap();
-        Self {
-            app,
-            dir,
-            received: None,
-        }
-    }
-
     fn id(&self) -> String {
         self.app.me().id
     }
@@ -1325,32 +1311,6 @@ async fn a_device_that_takes_no_files_says_so_to_the_sender() {
         error.message().contains("Device A did not take the files"),
         "{error}"
     );
-}
-
-#[tokio::test]
-async fn a_device_that_is_started_to_take_no_handoffs_declines_links_and_text_and_keeps_nothing() {
-    let a = Dev::start_taking_no_handoffs("Device A").await;
-    let b = Dev::start("Device B").await;
-    pair(&a, &b).await;
-
-    let link = b
-        .app
-        .send_link(&a.id(), "https://example.com/path", None)
-        .await
-        .unwrap_err();
-    assert_eq!(link.kind(), ErrorKind::Declined, "{link}");
-    let text = b.app.send_text(&a.id(), "hello").await.unwrap_err();
-    assert_eq!(text.kind(), ErrorKind::Declined, "{text}");
-
-    assert!(a.app.inbox().unwrap().is_empty(), "an item was kept");
-    assert!(
-        !a.dir.path().join("inbox.json").exists(),
-        "nothing was written for an item that was not taken"
-    );
-    // The same pair of devices works as usual the other way round: the option is about what this
-    // device takes, not about what it may send.
-    a.app.send_text(&b.id(), "hello from A").await.unwrap();
-    assert_eq!(b.app.inbox().unwrap().len(), 1);
 }
 
 #[tokio::test]

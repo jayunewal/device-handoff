@@ -537,23 +537,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "baton-loginwindow"
-version = "0.1.0"
-dependencies = [
- "baton-app",
- "baton-core",
- "baton-proto",
- "baton-stream",
- "baton-stream-abi",
- "clap",
- "gethostname",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "baton-proto"
 version = "0.1.0"
 dependencies = [

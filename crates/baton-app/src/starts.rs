@@ -26,9 +26,6 @@ use crate::{
 /// screen.
 pub(crate) struct Starts {
     sessions: Arc<Sessions>,
-    /// Whether a screen that is controlled is asked for as private. A program that has no privacy
-    /// mode asks for it open ([`Options::privacy_mode`](crate::Options::privacy_mode)).
-    privacy_mode: bool,
     /// The node that makes the offer. The handler is given to the node when it is built, so the
     /// node exists only after the handler does; it is held loosely, since the node holds the
     /// handler.
@@ -36,10 +33,9 @@ pub(crate) struct Starts {
 }
 
 impl Starts {
-    pub(crate) fn new(sessions: Arc<Sessions>, privacy_mode: bool) -> Arc<Self> {
+    pub(crate) fn new(sessions: Arc<Sessions>) -> Arc<Self> {
         Arc::new(Self {
             sessions,
-            privacy_mode,
             node: OnceLock::new(),
         })
     }
@@ -98,8 +94,8 @@ impl StartHandler for Starts {
             // it could, and the person may have taken the consent back since.
             let control = control && sharer.control();
             // A screen that another device controls is one that nobody here may see or use
-            // meanwhile, unless this program has no privacy mode.
-            let privacy = if control && self.privacy_mode {
+            // meanwhile.
+            let privacy = if control {
                 Privacy::Private
             } else {
                 Privacy::Open

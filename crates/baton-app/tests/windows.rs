@@ -717,20 +717,11 @@ struct Dev {
 
 impl Dev {
     async fn start(name: &str, windows: Windows) -> Self {
-        Self::start_with_options(name, windows, |_| {}).await
-    }
-
-    /// The same, with the options changed by `change` before the app starts.
-    async fn start_with_options(
-        name: &str,
-        windows: Windows,
-        change: impl FnOnce(&mut Options),
-    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         write_settings(dir.path(), name);
-        let mut options = Options::new(dir.path());
-        change(&mut options);
-        let app = App::start_with(options, windows).await.unwrap();
+        let app = App::start_with(Options::new(dir.path()), windows)
+            .await
+            .unwrap();
         Self { app, _dir: dir }
     }
 
@@ -3082,38 +3073,6 @@ async fn lifts_heard(sharer: &Sharer, count: usize) {
         sharer.lifted().len() >= count
     })
     .await;
-}
-
-#[tokio::test]
-async fn a_program_with_no_privacy_mode_gives_a_controlled_screen_open_and_says_so_at_both_ends() {
-    // The Mac can post input, and the program is started without a privacy mode, as the one for
-    // the login window is: nothing private is on that screen, and a hold could lock the person out.
-    let sharer = Sharer::with_screen(true);
-    let viewer = Viewer::new();
-    let mac = Dev::start_with_options(
-        "Studio Mac",
-        Windows::none().sharing(sharer.clone()),
-        |options| options.privacy_mode = false,
-    )
-    .await;
-    let phone = Dev::start("Pocket Phone", Windows::none().showing(viewer.clone())).await;
-    pair(&mac, &phone).await;
-    mac.app
-        .set_start_access(&phone.id(), StartAccess::Control)
-        .unwrap();
-    let mut mac_events = mac.app.events();
-
-    let ScreenStarted::Started(session) = phone.app.start_screen(&mac.id(), true).await.unwrap()
-    else {
-        panic!("the screen was not started");
-    };
-    let on_mac = started_at(&mut mac_events).await;
-
-    // The platform was asked for the screen as it is, though the phone controls it, and the phone
-    // got the control it asked for and was told that the screen is not private.
-    assert_eq!(sharer.privacies(), [Privacy::Open]);
-    assert!(session.control && !session.private);
-    assert!(on_mac.control && !on_mac.private);
 }
 
 #[tokio::test]

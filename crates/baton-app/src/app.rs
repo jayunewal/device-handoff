@@ -98,28 +98,6 @@ pub struct Options {
     /// Even then, nothing is read until a paired device asks that the person at this device
     /// allowed ([`App::set_continue_access`]), and it is not kept.
     pub serve_continue: bool,
-    /// Whether this device takes the links and text that paired devices hand over, and keeps them
-    /// in the inbox. `true` unless the program says otherwise.
-    ///
-    /// A device that is started with `false` says no to everything that is handed to it, and
-    /// nothing is written to the inbox. It is for a program that is not a place to read things
-    /// in, such as the one that shows the login window of a Mac
-    /// (`docs/adr/0019-baton-at-the-login-window.md`).
-    pub take_handoffs: bool,
-    /// Whether a screen that another device controls is given in privacy mode: the platform keeps
-    /// it dark, keeps the keyboard and the pointer of this device out of anyone's hands for as long
-    /// as the session lasts, and locks the device when it ends ([`Privacy::Private`], and
-    /// `docs/adr/0011-privacy-mode.md`). `true` unless the program says otherwise.
-    ///
-    /// A program that has no such mode is started with `false`, such as the one that shows the
-    /// login window of a Mac (`docs/adr/0019-baton-at-the-login-window.md`), where nothing private
-    /// is on the screen and a hold could lock the person out. It asks its platform for the screen
-    /// as it is ([`Privacy::Open`]) whoever controls it, and the device that controls it is told
-    /// that the screen is not private.
-    ///
-    /// [`Privacy::Private`]: crate::windows::Privacy::Private
-    /// [`Privacy::Open`]: crate::windows::Privacy::Open
-    pub privacy_mode: bool,
 }
 
 impl Options {
@@ -131,8 +109,6 @@ impl Options {
             port_mapping: None,
             receive_dir: None,
             serve_continue: false,
-            take_handoffs: true,
-            privacy_mode: true,
         }
     }
 
@@ -290,8 +266,9 @@ impl App {
         // What the last run left at other devices is given up as soon as they can be reached: a
         // device that was sent files when Baton was closed would otherwise hold them for an hour.
         let builder = Node::builder(&identity, trust.clone(), config.clone())
+            .handoff_handler(InboxHandler::new(inbox.clone()))
             .holds(Holds::open(dir.holds_file()));
-        let mut builder = with_windows(with_handoffs(builder, &options, &inbox), &sessions);
+        let mut builder = with_windows(builder, &sessions);
         // A device whose platform reads what its person works on gives it to the devices that the
         // person allowed, when they ask; a device that cannot says nothing of the kind.
         if options.serve_continue {
@@ -303,7 +280,7 @@ impl App {
         let starts = sessions
             .sharer()
             .is_some_and(|sharer| sharer.can_give_screen())
-            .then(|| Starts::new(Arc::clone(&sessions), options.privacy_mode));
+            .then(|| Starts::new(Arc::clone(&sessions)));
         if let Some(starts) = &starts {
             builder = builder.start_handler(Arc::clone(starts));
         }
@@ -1582,17 +1559,6 @@ fn outcome_of(result: baton_core::Result<PairedDevice>) -> OfferOutcome {
         },
         Err(Core::Stopped) => OfferOutcome::Cancelled,
         Err(other) => OfferOutcome::Failed(Error::pairing(&other).message().to_owned()),
-    }
-}
-
-/// Takes the links and text that paired devices hand over into the inbox, if the app takes them.
-/// An app that does not leaves the node without a handler, which says no to every link and every
-/// piece of text.
-fn with_handoffs(builder: NodeBuilder, options: &Options, inbox: &Inbox) -> NodeBuilder {
-    if options.take_handoffs {
-        builder.handoff_handler(InboxHandler::new(inbox.clone()))
-    } else {
-        builder
     }
 }
 
