@@ -7,7 +7,11 @@
 //! ([`DevicePolicy::continuing`](crate::DevicePolicy::continuing)), and nothing that a paired
 //! device sends changes it. A device that may ask is given the page that is in front in the
 //! browser here and the text on the clipboard, when it asks and not before: nothing is read in
-//! advance, nothing is kept, and a device that is not asked is not read.
+//! advance, nothing is kept, and a device that is not asked is not read. Nothing shows that a
+//! device was read for either, so it may ask only a few times a minute, fewer than the items that
+//! it may send ([`HandoffConfig::max_continues_per_minute`]).
+//!
+//! [`HandoffConfig::max_continues_per_minute`]: crate::config::HandoffConfig::max_continues_per_minute
 
 use std::{
     sync::{
@@ -33,8 +37,8 @@ use crate::{
 ///
 /// By the time [`items`](Self::items) is called, the device is paired, the request is
 /// well-formed, the person here has allowed that device ([`DevicePolicy::continuing`]), it has
-/// not asked more often than the limit for items allows, and no other question is waiting. A
-/// device that was given one advertises `continue.serve`.
+/// not asked more often than the limits for requests to continue and for items allow, and no
+/// other question is waiting. A device that was given one advertises `continue.serve`.
 ///
 /// [`DevicePolicy::continuing`]: crate::DevicePolicy::continuing
 pub trait ContinueHandler: Send + Sync + 'static {
@@ -128,7 +132,8 @@ impl Continuing {
     }
 
     /// Answers a request that `asker` made. `charge` says whether the device may make one more
-    /// request of the kind that counts against the limit for items.
+    /// request of the kind that counts against the limits for requests to continue and for
+    /// items.
     pub(crate) async fn answer(
         &self,
         asker: &PairedDevice,

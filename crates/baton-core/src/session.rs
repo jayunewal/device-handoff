@@ -229,6 +229,8 @@ impl Recent {
 pub(crate) struct Intake {
     max_clipboard_bytes: usize,
     limiter: Arc<Mutex<RateLimiter<DeviceId>>>,
+    /// The lower limit for requests to continue, which read what a person works on.
+    continue_limiter: Arc<Mutex<RateLimiter<DeviceId>>>,
     recent: Mutex<Recent>,
 }
 
@@ -241,6 +243,11 @@ impl Intake {
                 Duration::from_mins(1),
                 MAX_DEVICES,
             ))),
+            continue_limiter: Arc::new(Mutex::new(RateLimiter::new(
+                config.max_continues_per_minute,
+                Duration::from_mins(1),
+                MAX_DEVICES,
+            ))),
             recent: Mutex::new(Recent::default()),
         }
     }
@@ -248,6 +255,7 @@ impl Intake {
     /// Forgets what is known about a device's recent behaviour, once it is unpaired.
     pub(crate) fn forget(&self, peer: &DeviceId) {
         lock(&self.limiter).forget(peer);
+        lock(&self.continue_limiter).forget(peer);
     }
 
     /// What charges a transfer to the device that offers it, as one item against the same limit as
@@ -256,6 +264,17 @@ impl Intake {
     pub(crate) fn item_charge(&self) -> impl Fn(&DeviceId) -> bool + Send + Sync + 'static {
         let limiter = Arc::clone(&self.limiter);
         move |peer| lock(&limiter).allow(peer, Instant::now())
+    }
+
+    /// What charges a request to continue to the device that makes it: one against the limit for
+    /// requests to continue, which is lower than the one for items on purpose, and, when that
+    /// allows it, one item against the limit for items. It says whether the device may make one
+    /// more. A request that the lower limit refuses costs no item, so a device that asks too
+    /// often does not use up what it may hand over.
+    pub(crate) fn continue_charge(&self) -> impl Fn(&DeviceId) -> bool + Send + Sync + 'static {
+        let continues = Arc::clone(&self.continue_limiter);
+        let item = self.item_charge();
+        move |peer| lock(&continues).allow(peer, Instant::now()) && item(peer)
     }
 
     pub(crate) async fn handle(
@@ -451,7 +470,7 @@ async fn serve_stream(
         Request::Continue(request) => Response::Continue(match &shared.continuing {
             Some(continuing) => {
                 continuing
-                    .answer(&paired, request, shared.intake.item_charge())
+                    .answer(&paired, request, shared.intake.continue_charge())
                     .await
             }
             None => ContinueReply::Declined(DeclineReason::Unsupported),
@@ -914,6 +933,7 @@ mod tests {
             max_inbox_items: 10,
             max_clipboard_bytes: max_clipboard,
             max_items_per_minute: per_minute,
+            ..HandoffConfig::default()
         })
     }
 
@@ -970,6 +990,43 @@ mod tests {
         intake.forget(&device(1).id);
         let again = intake.handle(&handler, &device(1), link(11)).await;
         assert_eq!(again.outcome, Outcome::Accepted);
+    }
+
+    fn intake_with_continues(per_minute: u32, continues_per_minute: u32) -> Intake {
+        Intake::new(&HandoffConfig {
+            max_items_per_minute: per_minute,
+            max_continues_per_minute: continues_per_minute,
+            ..HandoffConfig::default()
+        })
+    }
+
+    #[test]
+    fn a_request_to_continue_that_comes_too_often_costs_no_item() {
+        let intake = intake_with_continues(5, 2);
+        let id = device(1).id;
+        let ask = intake.continue_charge();
+        let item = intake.item_charge();
+        assert!(ask(&id));
+        assert!(ask(&id));
+        // The lower limit turns these away, and they are not charged as items either.
+        assert!(!ask(&id));
+        assert!(!ask(&id));
+        // Two of the five items went with the two requests that were let through.
+        for _ in 0..3 {
+            assert!(item(&id));
+        }
+        assert!(!item(&id));
+    }
+
+    #[test]
+    fn unpairing_a_device_gives_it_a_fresh_limit_for_requests_to_continue() {
+        let intake = intake_with_continues(30, 1);
+        let id = device(1).id;
+        let ask = intake.continue_charge();
+        assert!(ask(&id));
+        assert!(!ask(&id));
+        intake.forget(&id);
+        assert!(ask(&id));
     }
 
     #[tokio::test]
