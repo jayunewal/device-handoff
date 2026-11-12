@@ -8,8 +8,33 @@ license.workspace = true
 authors.workspace = true
 publish.workspace = true
 
-[lints]
-workspace = true
+# This crate holds the `unsafe` code of its console-session check (console_session.rs), which
+# calls CoreFoundation and SystemConfiguration directly. Unlike most of the workspace it
+# therefore cannot say `workspace = true`: the workspace forbids `unsafe_code`, and a forbid
+# cannot be lifted. Here it is denied everywhere except that one module (crates/baton-stream-abi
+# does the same for the modules that cross its own C interface). Keep every other line equal to
+# [workspace.lints] in the root Cargo.toml.
+[lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
 
 [[bin]]
 name = "baton-loginwindow"

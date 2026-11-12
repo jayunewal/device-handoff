@@ -22,8 +22,8 @@
 //!   nothing ([`Program`]). It asks nobody anything: nobody is signed in to answer.
 //! - It needs a platform ([`baton_app::Windows`]) that gives the main display of the login
 //!   window and posts the events of the phone there. ADR 0020 has this platform speak Apple's own
-//!   Screen Sharing as a client of it ([`screen_sharing`]), rather than capture the display
-//!   itself, and check who is signed in to the Mac's own console ([`console_session`]) rather than
+//!   Screen Sharing as a client of it (`screen_sharing`), rather than capture the display
+//!   itself, and check who is signed in to the Mac's own console (`console_session`) rather than
 //!   rely on a session the system ends at sign-in. Wiring the two into a [`baton_app::Windows`]
 //!   that `serve` can be given is not done here: ADR 0020's own V1 and V2 need an answer from the
 //!   real Mac first, since they decide how the two fit together.
