@@ -14,7 +14,8 @@ use std::{
 };
 
 use baton_core::{
-    ContinueOutcome as CoreContinueOutcome, InboxEntry, InboxItem, PairedDevice, StartPolicy,
+    ClipboardPolicy, ContinueOutcome as CoreContinueOutcome, InboxEntry, InboxItem, LinkPolicy,
+    PairedDevice, StartPolicy,
     link::PathKind,
     node::{NodeStatus, PingReport},
     streaming::{CancelReason, Settled, UnlockFinish, UnlockOutcome},
@@ -286,6 +287,73 @@ impl From<StartAccess> for StartPolicy {
             StartAccess::Off => Self::Off,
             StartAccess::Look => Self::Look,
             StartAccess::Control => Self::Control,
+        }
+    }
+}
+
+/// What this device does with a link a paired device sends it. It is [`Inbox`](Self::Inbox) for
+/// a device that was just paired, and only the person at this device can change it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LinkAccess {
+    /// Keep it in the inbox until the person opens it.
+    #[default]
+    Inbox,
+    /// Open it in the default browser straight away.
+    Open,
+    /// Discard links from this device.
+    Ignore,
+}
+
+impl From<LinkPolicy> for LinkAccess {
+    fn from(policy: LinkPolicy) -> Self {
+        match policy {
+            LinkPolicy::Inbox => Self::Inbox,
+            LinkPolicy::Open => Self::Open,
+            LinkPolicy::Ignore => Self::Ignore,
+        }
+    }
+}
+
+impl From<LinkAccess> for LinkPolicy {
+    fn from(access: LinkAccess) -> Self {
+        match access {
+            LinkAccess::Inbox => Self::Inbox,
+            LinkAccess::Open => Self::Open,
+            LinkAccess::Ignore => Self::Ignore,
+        }
+    }
+}
+
+/// What this device does with clipboard text a paired device sends it. It is
+/// [`Inbox`](Self::Inbox) for a device that was just paired, and only the person at this device
+/// can change it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClipboardAccess {
+    /// Keep it in the inbox until the person copies it.
+    #[default]
+    Inbox,
+    /// Replace the clipboard with it straight away.
+    Apply,
+    /// Discard clipboard text from this device.
+    Ignore,
+}
+
+impl From<ClipboardPolicy> for ClipboardAccess {
+    fn from(policy: ClipboardPolicy) -> Self {
+        match policy {
+            ClipboardPolicy::Inbox => Self::Inbox,
+            ClipboardPolicy::Apply => Self::Apply,
+            ClipboardPolicy::Ignore => Self::Ignore,
+        }
+    }
+}
+
+impl From<ClipboardAccess> for ClipboardPolicy {
+    fn from(access: ClipboardAccess) -> Self {
+        match access {
+            ClipboardAccess::Inbox => Self::Inbox,
+            ClipboardAccess::Apply => Self::Apply,
+            ClipboardAccess::Ignore => Self::Ignore,
         }
     }
 }
